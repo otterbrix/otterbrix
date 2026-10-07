@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <unistd.h>
+#include <vector>
 
 namespace {
     std::string test_db_path() {
@@ -647,19 +648,23 @@ TEST_CASE("partial_block_manager: every packed segment offset is 8-byte aligned"
     REQUIRE(!bm.create_new_database().has_error());
 
     auto pbm = partial_block_manager_t::for_checkpoint(bm);
+    const std::vector<std::byte> bytes(4096, std::byte{0x5a});
 
     // Offsets are later dereferenced as the segment's own element type, so misalignment is UB.
-    auto first = pbm.get_block_allocation(4); // CONSTANT INT32 main segment
-    REQUIRE(first.offset_in_block % 8 == 0);
-    auto validity = pbm.get_block_allocation(128); // 1024-row validity bitmap
-    REQUIRE(validity.block_id == first.block_id);
-    REQUIRE(validity.offset_in_block % 8 == 0);
+    auto first = pbm.place(bytes.data(), 4); // CONSTANT INT32 main segment
+    REQUIRE_FALSE(first.has_error());
+    REQUIRE(first.value().offset_in_block % 8 == 0);
+    auto validity = pbm.place(bytes.data(), 128); // 1024-row validity bitmap
+    REQUIRE_FALSE(validity.has_error());
+    REQUIRE(validity.value().block_id == first.value().block_id);
+    REQUIRE(validity.value().offset_in_block % 8 == 0);
 
     // Byte-granular sizes (RLE, dictionary, big-string) must still keep every placement aligned.
     const uint64_t odd_sizes[] = {1, 3, 20, 7, 8, 9, 4096, 5, 133};
     for (auto size : odd_sizes) {
-        auto alloc = pbm.get_block_allocation(size);
-        REQUIRE(alloc.offset_in_block % 8 == 0);
+        auto alloc = pbm.place(bytes.data(), size);
+        REQUIRE_FALSE(alloc.has_error());
+        REQUIRE(alloc.value().offset_in_block % 8 == 0);
     }
 
     cleanup_test_file();

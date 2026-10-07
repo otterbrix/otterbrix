@@ -84,7 +84,8 @@ namespace components::table::storage {
     core::error_t block_manager_t::write_range_impl(file_buffer_t& block,
                                                     uint64_t block_id,
                                                     uint64_t /*offset*/,
-                                                    uint64_t /*length*/) {
+                                                    uint64_t /*length*/,
+                                                    std::optional<uint32_t> /*covered_crc*/) {
         if (auto written = write(block, block_id); written.has_error()) {
             return written.error();
         }

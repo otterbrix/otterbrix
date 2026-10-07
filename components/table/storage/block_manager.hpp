@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -40,10 +41,14 @@ namespace components::table::storage {
         [[nodiscard]] core::result_wrapper_t<bool> write(block_t& block) { return write(block, block.id); }
         // Rewrites the checksum slot and payload bytes [offset, offset+length) of a block whose
         // other bytes are already on disk unchanged. A manager without positional writes writes
-        // the whole block, which is the same bytes.
-        [[nodiscard]] core::error_t
-        write_range(file_buffer_t& block, uint64_t block_id, uint64_t offset, uint64_t length) {
-            return write_range_impl(block, block_id, offset, length);
+        // the whole block, which is the same bytes. `covered_crc` is the caller's CRC32C of payload
+        // [0, offset+length), kept incrementally; without it the manager computes it.
+        [[nodiscard]] core::error_t write_range(file_buffer_t& block,
+                                                uint64_t block_id,
+                                                uint64_t offset,
+                                                uint64_t length,
+                                                std::optional<uint32_t> covered_crc = std::nullopt) {
+            return write_range_impl(block, block_id, offset, length, covered_crc);
         }
         // First write of a block whose payload beyond `length` is zero: a block past the end of the
         // file is written as the prefix over a sparse extension; a reused id (old bytes on disk
@@ -90,8 +95,11 @@ namespace components::table::storage {
         [[nodiscard]] core::result_wrapper_t<bool> set_block_allocation_size(uint64_t block_alloc_size);
 
     private:
-        virtual core::error_t
-        write_range_impl(file_buffer_t& block, uint64_t block_id, uint64_t offset, uint64_t length);
+        virtual core::error_t write_range_impl(file_buffer_t& block,
+                                               uint64_t block_id,
+                                               uint64_t offset,
+                                               uint64_t length,
+                                               std::optional<uint32_t> covered_crc);
         virtual core::error_t write_prefix_impl(file_buffer_t& block, uint64_t block_id, uint64_t length);
 
         // NO LOCK: exactly one block manager is reachable from exactly one disk agent thread, by construction.

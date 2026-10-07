@@ -164,8 +164,13 @@ namespace components::table::storage {
 #endif
 
     private:
-        core::error_t
-        write_range_impl(file_buffer_t& block, uint64_t block_id, uint64_t offset, uint64_t length) override;
+        core::error_t write_range_impl(file_buffer_t& block,
+                                       uint64_t block_id,
+                                       uint64_t offset,
+                                       uint64_t length,
+                                       std::optional<uint32_t> covered_crc) override;
+        // CRC32C of payload [0, covered) of a block image.
+        static uint32_t range_payload_crc(file_buffer_t& buffer, uint64_t covered);
         core::error_t write_prefix_impl(file_buffer_t& block, uint64_t block_id, uint64_t length) override;
 
         uint64_t block_location(uint64_t block_id) const;

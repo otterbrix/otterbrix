@@ -488,6 +488,89 @@ namespace components::table {
         return true;
     }
 
+    // The disk twin of a transient segment is built and switched in once the packer has the twin's
+    // block on the file. A transient that was unwound since (its block handle expired, and its column
+    // may be gone with it), replaced or truncated keeps what it has: the twin would name rows the live
+    // segment no longer holds.
+    class column_data_t::repoint_t final : public storage::placement_t {
+    public:
+        repoint_t(column_data_t& column,
+                  uint64_t index,
+                  column_segment_t& transient,
+                  uint64_t segment_size,
+                  base_statistics_t stats,
+                  bool has_stats,
+                  std::vector<uint64_t> overflow_ids)
+            : column_(column)
+            , index_(index)
+            , transient_(&transient)
+            , transient_block_(transient.block)
+            , start_(transient.start)
+            , count_(transient.count.load())
+            , segment_size_(segment_size)
+            , stats_(std::move(stats))
+            , has_stats_(has_stats)
+            , overflow_ids_(std::move(overflow_ids)) {}
+
+    private:
+        bool alive_impl() const override { return !transient_block_.expired(); }
+
+        bool adopt_impl(const storage::partial_block_allocation_t& at) override {
+            if (transient_block_.expired()) {
+                return false; // unwound with a refused append; nothing of the column is touched
+            }
+            auto* live = column_.data_.segment_at(static_cast<int64_t>(index_));
+            if (live != transient_ || live->count.load() != count_) {
+                return false; // replaced or truncated since the placement
+            }
+            auto block_handle = column_.block_manager_.register_block(at.block_id);
+            // Adopted markers name real file blocks, kept alive by the reload constructor's registration
+            // (test_string_write_through gate H).
+            std::unique_ptr<column_segment_state> overflow_state;
+            if (!overflow_ids_.empty()) {
+                overflow_state = std::make_unique<column_segment_state>();
+                overflow_state->blocks = std::move(overflow_ids_);
+            }
+            auto twin = std::make_unique<column_segment_t>(block_handle,
+                                                           column_.type_,
+                                                           start_,
+                                                           count_,
+                                                           static_cast<uint32_t>(at.block_id),
+                                                           at.offset_in_block,
+                                                           segment_size_,
+                                                           std::move(overflow_state));
+            // The reload constructor's one failure is a duplicate id in the overflow list, and these ids are
+            // the packer's own: unreachable, and a transient left in place loses nothing.
+            assert(!twin->has_construction_error());
+            if (twin->has_construction_error()) {
+                return false;
+            }
+            twin->set_compression(compression::compression_type::UNCOMPRESSED);
+            if (has_stats_) {
+                twin->set_segment_statistics(std::move(stats_));
+            }
+#ifdef DEV_MODE
+            g_segment_transitions.fetch_add(1, std::memory_order_relaxed);
+            if (live->block && live->block->readers() > 0) {
+                g_transitions_with_live_pin.fetch_add(1, std::memory_order_relaxed);
+            }
+#endif
+            column_.data_.replace_segment_at_index(index_, std::move(twin));
+            return true;
+        }
+
+        column_data_t& column_;
+        uint64_t index_;
+        column_segment_t* transient_;
+        std::weak_ptr<storage::block_handle_t> transient_block_;
+        int64_t start_;
+        uint64_t count_;
+        uint64_t segment_size_;
+        base_statistics_t stats_;
+        bool has_stats_;
+        std::vector<uint64_t> overflow_ids_;
+    };
+
     core::result_wrapper_t<bool> column_data_t::transition_segment_to_disk(uint64_t segment_index,
                                                                            storage::partial_block_manager_t& pbm) {
         auto* segment = data_.segment_at(static_cast<int64_t>(segment_index));
@@ -516,8 +599,6 @@ namespace components::table {
             return true;
         }
 
-        // Snapshot the segment metadata before touching the pin: the segment is destroyed by the swap below.
-        const int64_t seg_start = segment->start;
         const uint64_t seg_count = segment->count.load();
         const uint64_t alloc_segment_size = segment->segment_size();
         const uint64_t block_offset = segment->block_offset();
@@ -550,44 +631,18 @@ namespace components::table {
                     return persisted; // out_of_memory / data_corruption
                 }
             }
-            const auto string_alloc = pbm.get_block_allocation(tight_size);
-            if (auto written = pbm.write_to_block(string_alloc.block_id,
-                                                  string_alloc.offset_in_block,
-                                                  rewritten.data(),
-                                                  tight_size);
-                written.contains_error()) {
-                return written;
+            auto placed = pbm.place(rewritten.data(),
+                                    tight_size,
+                                    std::make_unique<repoint_t>(*this,
+                                                                segment_index,
+                                                                *segment,
+                                                                tight_size,
+                                                                std::move(seg_stats),
+                                                                has_stats,
+                                                                std::move(overflow_ids)));
+            if (placed.has_error()) {
+                return placed.convert_error<bool>();
             }
-            auto string_block_handle = block_manager_.register_block(string_alloc.block_id);
-            // Adopted markers name real file blocks, kept alive by the reload constructor's registration
-            // (test_string_write_through gate H).
-            std::unique_ptr<column_segment_state> overflow_state;
-            if (!overflow_ids.empty()) {
-                overflow_state = std::make_unique<column_segment_state>();
-                overflow_state->blocks = std::move(overflow_ids);
-            }
-            auto disk_segment = std::make_unique<column_segment_t>(string_block_handle,
-                                                                   type_,
-                                                                   seg_start,
-                                                                   seg_count,
-                                                                   static_cast<uint32_t>(string_alloc.block_id),
-                                                                   string_alloc.offset_in_block,
-                                                                   tight_size,
-                                                                   std::move(overflow_state));
-            if (disk_segment->has_construction_error()) {
-                return core::error_t(disk_segment->construction_error());
-            }
-            disk_segment->set_compression(compression::compression_type::UNCOMPRESSED);
-            if (has_stats) {
-                disk_segment->set_segment_statistics(std::move(seg_stats));
-            }
-#ifdef DEV_MODE
-            g_segment_transitions.fetch_add(1, std::memory_order_relaxed);
-            if (segment->block && segment->block->readers() > 0) {
-                g_transitions_with_live_pin.fetch_add(1, std::memory_order_relaxed);
-            }
-#endif
-            data_.replace_segment_at_index(segment_index, std::move(disk_segment));
             return true;
         }
 
@@ -605,42 +660,23 @@ namespace components::table {
         }
         const uint64_t segment_size = used_bytes;
 
-        const auto alloc = pbm.get_block_allocation(segment_size);
-
-        // On pin OOM, alloc.block_id stays allocated (a packed block may be shared); freeing it would corrupt others.
-        {
-            auto& buffer_manager = block_manager_.buffer_manager;
-            auto pinned = buffer_manager.pin(segment->block);
-            if (pinned.has_error()) {
-                return pinned.convert_error<bool>();
-            }
-            auto* payload = pinned.value().ptr() + block_offset;
-            if (auto written = pbm.write_to_block(alloc.block_id, alloc.offset_in_block, payload, segment_size);
-                written.contains_error()) {
-                return written;
-            }
+        // The pin comes first, so a pin that fails (out_of_memory) has issued no block id.
+        auto pinned = block_manager_.buffer_manager.pin(segment->block);
+        if (pinned.has_error()) {
+            return pinned.convert_error<bool>();
         }
-
-        auto block_handle = block_manager_.register_block(alloc.block_id);
-        auto new_segment = std::make_unique<column_segment_t>(block_handle,
-                                                              type_,
-                                                              seg_start,
-                                                              seg_count,
-                                                              static_cast<uint32_t>(alloc.block_id),
-                                                              alloc.offset_in_block,
-                                                              segment_size);
-        new_segment->set_compression(compression::compression_type::UNCOMPRESSED);
-        if (has_stats) {
-            new_segment->set_segment_statistics(std::move(seg_stats));
+        auto placed = pbm.place(pinned.value().ptr() + block_offset,
+                                segment_size,
+                                std::make_unique<repoint_t>(*this,
+                                                            segment_index,
+                                                            *segment,
+                                                            segment_size,
+                                                            std::move(seg_stats),
+                                                            has_stats,
+                                                            std::vector<uint64_t>{}));
+        if (placed.has_error()) {
+            return placed.convert_error<bool>();
         }
-
-#ifdef DEV_MODE
-        g_segment_transitions.fetch_add(1, std::memory_order_relaxed);
-        if (segment->block && segment->block->readers() > 0) {
-            g_transitions_with_live_pin.fetch_add(1, std::memory_order_relaxed);
-        }
-#endif
-        data_.replace_segment_at_index(segment_index, std::move(new_segment));
         return true;
     }
 
@@ -762,6 +798,8 @@ namespace components::table {
             return children.convert_error<persistent_column_data_t>();
         }
         // A separate, short-lived partial_block_manager re-points the live tail and flushes here (flush-before-evict).
+        // The live segments switch inside that flush, once their blocks are on the file; a refused
+        // flush (or a packer that dies here with its placements) leaves them transient and readable.
         auto repoint_pbm = storage::partial_block_manager_t::for_checkpoint(block_manager_);
         auto repointed = transition_to_disk(repoint_pbm);
         if (repointed.has_error()) {

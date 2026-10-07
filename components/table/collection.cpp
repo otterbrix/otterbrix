@@ -252,6 +252,13 @@ namespace components::table {
             new_row_group = true;
             auto next_start = current_row_group->start + static_cast<int64_t>(state.append_state.offset_in_row_group);
 
+            // The segments filled inside the columns above were placed as they filled; this flush
+            // switches them before the close below walks the row group, or the walk would place them
+            // a second time (a transient placed twice names two blocks).
+            if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
+                return unwind_append(state, entry_row_group, entry_offset, total_append_count, flushed.error());
+            }
+
             auto last_row_group = append_row_group(next_start);
             auto init = last_row_group->initialize_append(state.append_state);
             if (init.has_error()) {
@@ -265,9 +272,10 @@ namespace components::table {
                 return unwind_append(state, entry_row_group, entry_offset, total_append_count, transitioned.error());
             }
         }
-        // Once per append, for every segment re-pointed above or filled inside a column.
+        // Once per append, for every segment re-pointed above or filled inside a column: the packer
+        // writes the open tails and switches every placed segment whose block is on the file.
         if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
-            // io_error: the re-pointed segments' blocks are not on disk
+            // io_error: the segments of the tails not written stay transient; the unwind drops the rows
             return unwind_append(state, entry_row_group, entry_offset, total_append_count, flushed.error());
         }
         state.current_row += int64_t(total_append_count);

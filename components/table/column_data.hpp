@@ -165,6 +165,8 @@ namespace components::table {
         checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
                             persistent_column_data_t& persistent);
 
+        class repoint_t;
+
     protected:
         uint64_t column_index_;
         types::complex_logical_type type_;

@@ -6,8 +6,11 @@
 #include <components/table/storage/block_handle.hpp>
 #include <components/table/storage/buffer_handle.hpp>
 #include <components/table/storage/buffer_pool.hpp>
+#include <components/table/storage/metadata_manager.hpp>
+#include <components/table/storage/metadata_writer.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
+#include <components/table/test/fault_injection_file.hpp>
 #include <components/types/logical_value.hpp>
 #include <core/file/local_file_system.hpp>
 
@@ -150,6 +153,35 @@ namespace {
         return "/tmp/test_otterbrix_unwind_limits_" + std::string{tag} + "_" + std::to_string(::getpid()) + ".otbx";
     }
 
+    core::error_t checkpoint_production(tstorage::single_file_block_manager_t& bm, data_table_t& table) {
+        tstorage::metadata_manager_t meta_mgr(bm);
+        tstorage::metadata_writer_t writer(meta_mgr);
+        if (auto cp = table.checkpoint(writer); cp.has_error()) {
+            return cp.error();
+        }
+        if (auto fl = writer.flush(); fl.has_error()) {
+            return fl.error();
+        }
+        bm.set_meta_block(writer.get_block_pointer().block_pointer);
+        auto free_ptr = bm.serialize_free_list();
+        if (free_ptr.has_error()) {
+            return free_ptr.error();
+        }
+        if (auto s = bm.file_sync(); s.has_error()) {
+            return s.error();
+        }
+        tstorage::database_header_t header{};
+        header.initialize();
+        header.free_list = free_ptr.value().block_pointer;
+        if (auto h = bm.write_header(header); h.has_error()) {
+            return h.error();
+        }
+        if (auto s = bm.file_sync(); s.has_error()) {
+            return s.error();
+        }
+        return core::error_t::no_error();
+    }
+
     // 1022 committed rows, then a 4-row chunk that crosses into the next row group while the pool
     // keeps only `free_small_pins` 4 KiB pins. The append is refused and the kept rows stay.
     void crossing_chunk_refused(const char* tag, uint64_t free_small_pins) {
@@ -188,6 +220,211 @@ namespace {
         std::remove(path.c_str());
     }
 
+    // L2 at one cut: 1022 committed rows in row group 1; a 4-row chunk crosses into row group 2, so
+    // row group 1 is re-pointed at its close. The file refuses the `fail_at`-th write of the append
+    // and every later one (0: none -- a dry run that only counts the writes). Returns the writes
+    // the append attempted.
+    uint64_t l2_at(uint64_t fail_at) {
+        const std::string path = db_path("l2") + "." + std::to_string(fail_at);
+        std::remove(path.c_str());
+        env_t env;
+        otterbrix_test::fault_plan_t plan;
+        otterbrix_test::fault_injection_scope_t scope(plan);
+        const uint64_t kept_rows = DEFAULT_VECTOR_CAPACITY - 2;
+        uint64_t attempted = 0;
+        {
+            tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+            REQUIRE(!bm.create_new_database().has_error());
+            auto table = make_table(env, bm, complex_logical_type{logical_type::STRING_LITERAL});
+            REQUIRE(table->row_group()->row_group_size() == DEFAULT_VECTOR_CAPACITY);
+            {
+                auto chunk = string_chunk(env, *table, std::vector<std::string>(kept_rows, "kept"), 0);
+                committed_append(*table, chunk, env);
+            }
+            {
+                core::error_t err = core::error_t::no_error();
+                REQUIRE(scan_rows(*table, env, nullptr, &err) == kept_rows);
+                REQUIRE_FALSE(err.contains_error());
+            }
+            const uint64_t writes_before = plan.writes_seen;
+            if (fail_at != 0) {
+                plan.fail_writes_from = writes_before + fail_at; // the disk is full from here on
+            }
+            auto chunk = string_chunk(env, *table, {"a", "b", "c", "d"}, 1000000);
+            table_append_state state(&env.resource);
+            REQUIRE_FALSE(table->append_lock(state).has_error());
+            REQUIRE_FALSE(table->initialize_append(state).has_error());
+            auto appended = table->append(chunk, state);
+            attempted = plan.writes_seen - writes_before;
+            if (fail_at == 0) {
+                REQUIRE_FALSE(appended.has_error());
+                table->finalize_append(state, transaction_data::committed());
+                std::remove(path.c_str());
+                return attempted;
+            }
+            INFO("L2 cut at write " << fail_at << " of " << attempted << " attempted");
+            REQUIRE(appended.has_error());
+            INFO("refusal: " << appended.error().what);
+            CHECK(appended.error().type == core::error_code_t::io_error);
+            plan.fail_writes_from = 0; // space freed
+            CHECK(table->row_group()->row_group_tree()->segment_at(1) == nullptr);
+            CHECK(column_of(*table, 0).count() == kept_rows);
+            CHECK(column_of(*table, 1).count() == kept_rows);
+            std::vector<row_t> cells;
+            core::error_t err = core::error_t::no_error();
+            const auto seen = scan_rows(*table, env, &cells, &err);
+            INFO("scan after the refusal: " << seen << " row(s), error: " << err.what);
+            CHECK_FALSE(err.contains_error());
+            CHECK(seen == kept_rows);
+            if (cells.size() == kept_rows) {
+                CHECK(cells.front().k == 0);
+                CHECK(cells.front().v.value<std::string_view>() == "kept");
+                CHECK(cells.back().k == static_cast<int64_t>(kept_rows) - 1);
+                CHECK(cells.back().v.value<std::string_view>() == "kept");
+            }
+            // The latched durability error keeps the file at its last good root.
+            auto cp = checkpoint_production(bm, *table);
+            CHECK(cp.contains_error());
+        }
+        std::remove(path.c_str());
+        return attempted;
+    }
+
+    // L3 at one cut: 100 committed rows in an open (transient) row group; a checkpoint re-points the
+    // live tail and flushes it. The file refuses the `fail_at`-th write of the checkpoint and every
+    // later one (0: dry run). Returns the writes the checkpoint attempted.
+    uint64_t l3_at(uint64_t fail_at) {
+        const std::string path = db_path("l3") + "." + std::to_string(fail_at);
+        std::remove(path.c_str());
+        env_t env;
+        otterbrix_test::fault_plan_t plan;
+        otterbrix_test::fault_injection_scope_t scope(plan);
+        const uint64_t rows = 100;
+        uint64_t attempted = 0;
+        {
+            tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+            REQUIRE(!bm.create_new_database().has_error());
+            auto table = make_table(env, bm, complex_logical_type{logical_type::STRING_LITERAL});
+            {
+                auto chunk = string_chunk(env, *table, std::vector<std::string>(rows, "kept"), 0);
+                committed_append(*table, chunk, env);
+            }
+            {
+                core::error_t err = core::error_t::no_error();
+                REQUIRE(scan_rows(*table, env, nullptr, &err) == rows);
+                REQUIRE_FALSE(err.contains_error());
+            }
+            const uint64_t writes_before = plan.writes_seen;
+            if (fail_at != 0) {
+                plan.fail_writes_from = writes_before + fail_at;
+            }
+            auto cp = checkpoint_production(bm, *table);
+            attempted = plan.writes_seen - writes_before;
+            if (fail_at == 0) {
+                REQUIRE_FALSE(cp.contains_error());
+                std::remove(path.c_str());
+                return attempted;
+            }
+            INFO("L3 cut at write " << fail_at << " of " << attempted << " attempted");
+            // The refusal itself is not checked: the last write of a root is its copy into the other
+            // header slot, which the header writer tolerates (the root is durable in its own slot).
+            plan.fail_writes_from = 0;
+            std::vector<row_t> cells;
+            core::error_t err = core::error_t::no_error();
+            const auto seen = scan_rows(*table, env, &cells, &err);
+            INFO("scan after the refused checkpoint: " << seen << " row(s), error: " << err.what);
+            CHECK_FALSE(err.contains_error());
+            CHECK(seen == rows);
+            if (cells.size() == rows) {
+                CHECK(cells.front().v.value<std::string_view>() == "kept");
+                CHECK(cells.back().k == static_cast<int64_t>(rows) - 1);
+            }
+            auto more = string_chunk(env, *table, {"after"}, 1000);
+            committed_append(*table, more, env);
+            cells.clear();
+            err = core::error_t::no_error();
+            const auto seen_after = scan_rows(*table, env, &cells, &err);
+            CHECK_FALSE(err.contains_error());
+            CHECK(seen_after == rows + 1);
+        }
+        std::remove(path.c_str());
+        return attempted;
+    }
+
+    // L4 at one cut: two crossing appends share one open tail. Append B closes row group 1 into
+    // tail T (written, committed); append C closes row group 2 into the SAME tail T, so T's slot
+    // and range are rewritten over bytes that row group 1 already reads. The file refuses the
+    // `fail_at`-th write of append C and every later one (0: dry run).
+    uint64_t l4_at(uint64_t fail_at) {
+        const std::string path = db_path("l4") + "." + std::to_string(fail_at);
+        std::remove(path.c_str());
+        env_t env;
+        otterbrix_test::fault_plan_t plan;
+        otterbrix_test::fault_injection_scope_t scope(plan);
+        const uint64_t rg = DEFAULT_VECTOR_CAPACITY;
+        const uint64_t committed = rg + 2;
+        uint64_t attempted = 0;
+        {
+            tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+            REQUIRE(!bm.create_new_database().has_error());
+            auto table = make_table(env, bm, complex_logical_type{logical_type::STRING_LITERAL});
+            REQUIRE(table->row_group()->row_group_size() == rg);
+            {
+                auto chunk = string_chunk(env, *table, std::vector<std::string>(rg - 2, "a"), 0);
+                committed_append(*table, chunk, env);
+            }
+            {
+                auto chunk = string_chunk(env, *table, {"b", "b", "b", "b"}, static_cast<int64_t>(rg) - 2);
+                committed_append(*table, chunk, env);
+            }
+            {
+                core::error_t err = core::error_t::no_error();
+                REQUIRE(scan_rows(*table, env, nullptr, &err) == committed);
+                REQUIRE_FALSE(err.contains_error());
+            }
+            const uint64_t writes_before = plan.writes_seen;
+            if (fail_at != 0) {
+                plan.fail_writes_from = writes_before + fail_at;
+            }
+            auto chunk = string_chunk(env, *table, std::vector<std::string>(rg, "c"), 2000);
+            table_append_state state(&env.resource);
+            REQUIRE_FALSE(table->append_lock(state).has_error());
+            REQUIRE_FALSE(table->initialize_append(state).has_error());
+            auto appended = table->append(chunk, state);
+            attempted = plan.writes_seen - writes_before;
+            if (fail_at == 0) {
+                REQUIRE_FALSE(appended.has_error());
+                table->finalize_append(state, transaction_data::committed());
+                std::remove(path.c_str());
+                return attempted;
+            }
+            INFO("L4 cut at write " << fail_at << " of " << attempted << " attempted");
+            REQUIRE(appended.has_error());
+            CHECK(appended.error().type == core::error_code_t::io_error);
+            plan.fail_writes_from = 0;
+            CHECK(table->row_group()->row_group_tree()->segment_at(2) == nullptr);
+            // The scan before the append loaded row group 1's block; the packer patches a resident
+            // copy as it grows the tail, so the rows must be read back from the FILE to count.
+            REQUIRE_FALSE(env.buffer_pool.set_limit(uint64_t(1) << 17).has_error());
+            REQUIRE_FALSE(env.buffer_pool.set_limit(uint64_t(1) << 22).has_error());
+            std::vector<row_t> cells;
+            core::error_t err = core::error_t::no_error();
+            const auto seen = scan_rows(*table, env, &cells, &err);
+            INFO("scan after the refusal: " << seen << " row(s), error: " << err.what);
+            CHECK_FALSE(err.contains_error());
+            CHECK(seen == committed);
+            if (cells.size() == committed) {
+                CHECK(cells.front().k == 0);
+                CHECK(cells.front().v.value<std::string_view>() == "a");
+                CHECK(cells[rg - 1].v.value<std::string_view>() == "b");
+                CHECK(cells.back().k == static_cast<int64_t>(committed) - 1);
+                CHECK(cells.back().v.value<std::string_view>() == "b");
+            }
+        }
+        std::remove(path.c_str());
+        return attempted;
+    }
+
 } // namespace
 
 // L0. The next row group cannot open its append: the pool refuses its transient segments. The
@@ -201,4 +438,36 @@ TEST_CASE("unwind_limits: L0 a crossing chunk whose next row group cannot open i
 TEST_CASE("unwind_limits: L0b a crossing chunk whose filled row group cannot be re-pointed at the disk",
           "[unwind_limits][l0b]") {
     crossing_chunk_refused("l0b", 2);
+}
+
+// L2 at every cut: a dry run counts the writes of the crossing append, then the scenario is run
+// once per write index, the file refusing that write and every later one.
+TEST_CASE("unwind_limits: L2 a crossing chunk whose flush fails keeps the committed rows readable",
+          "[unwind_limits][l2]") {
+    const uint64_t writes = l2_at(0);
+    REQUIRE(writes >= 1);
+    for (uint64_t n = 1; n <= writes; n++) {
+        l2_at(n);
+    }
+}
+
+// L3 at every cut: a dry run counts the writes of the checkpoint, then one run per write index.
+TEST_CASE("unwind_limits: L3 a checkpoint whose re-point flush fails keeps the committed rows readable",
+          "[unwind_limits][l3]") {
+    const uint64_t writes = l3_at(0);
+    REQUIRE(writes >= 1);
+    for (uint64_t n = 1; n <= writes; n++) {
+        l3_at(n);
+    }
+}
+
+// L4 at every cut: the second crossing append writes into the tail the first one's committed row
+// group already reads.
+TEST_CASE("unwind_limits: L4 a refused write into a shared tail keeps the earlier row group readable",
+          "[unwind_limits][l4]") {
+    const uint64_t writes = l4_at(0);
+    REQUIRE(writes >= 1);
+    for (uint64_t n = 1; n <= writes; n++) {
+        l4_at(n);
+    }
 }

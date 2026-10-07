@@ -342,22 +342,25 @@ namespace components::table::storage {
     // leaves a block that fails its checksum -- acceptable only because no durable root names a
     // block still being grown (the append packer seals before every checkpoint), so recovery
     // never reads it; a live write failure latches durability_error_ like any other.
+    uint32_t single_file_block_manager_t::range_payload_crc(file_buffer_t& buffer, uint64_t covered) {
+        const auto* payload = reinterpret_cast<const char*>(buffer.internal_buffer() + sizeof(uint64_t));
+        return static_cast<uint32_t>(absl::ComputeCrc32c({payload, covered}));
+    }
+
     core::error_t single_file_block_manager_t::write_range_impl(file_buffer_t& buffer,
                                                                 uint64_t block_id,
                                                                 uint64_t offset,
-                                                                uint64_t length) {
+                                                                uint64_t length,
+                                                                std::optional<uint32_t> covered_crc) {
         auto* data = buffer.internal_buffer();
         auto alloc_size = buffer.allocation_size();
         auto* checksum_slot = reinterpret_cast<uint64_t*>(data);
         auto* payload = data + sizeof(uint64_t);
-        auto payload_size = alloc_size - sizeof(uint64_t);
         // The append packer never hands out a range past its block.
-        assert(offset + length <= payload_size);
-        *checksum_slot = static_cast<uint64_t>(
-            static_cast<uint32_t>(absl::ComputeCrc32c({reinterpret_cast<const char*>(payload), payload_size})));
+        assert(offset + length <= alloc_size - sizeof(uint64_t));
         const auto location = block_location(block_id);
         // A block past the end of the file is extended first (sparse zeros, which the buffer holds
-        // too, so the checksum above still matches a later whole-block read).
+        // too, so the checksum below still matches a later whole-block read).
         const uint64_t block_end = location + alloc_size;
         if (handle_->file_size() < block_end && !handle_->truncate(static_cast<int64_t>(block_end))) {
             return latch_durability_error(
@@ -365,12 +368,25 @@ namespace components::table::storage {
                               std::pmr::string{"Failed to extend " + path_ + " for block " + std::to_string(block_id),
                                                buffer_manager.resource()}));
         }
-        if (!handle_->write(data, sizeof(uint64_t), location) ||
-            !handle_->write(payload + offset, length, location + sizeof(uint64_t) + offset)) {
+        // The range lands BEFORE the slot, and the slot names the bytes it covers ([0, offset+length):
+        // length in the high 32 bits, 0 = the whole payload), so a write refused between the two
+        // leaves the previous slot valid for every byte an earlier segment of this block reads.
+        // Rejected: slot-then-range broke the block for those segments at that cut (unwind_limits L4).
+        if (!handle_->write(payload + offset, length, location + sizeof(uint64_t) + offset)) {
             return latch_durability_error(
                 core::error_t(core::error_code_t::io_error,
                               std::pmr::string{"Failed to rewrite block " + std::to_string(block_id) + " (offset " +
                                                    std::to_string(location) + ") of " + path_,
+                                               buffer_manager.resource()}));
+        }
+        const uint64_t covered = offset + length;
+        assert(!covered_crc || *covered_crc == range_payload_crc(buffer, covered));
+        *checksum_slot = (covered << 32) | (covered_crc ? *covered_crc : range_payload_crc(buffer, covered));
+        if (!handle_->write(data, sizeof(uint64_t), location)) {
+            return latch_durability_error(
+                core::error_t(core::error_code_t::io_error,
+                              std::pmr::string{"Failed to rewrite the checksum of block " + std::to_string(block_id) +
+                                                   " (offset " + std::to_string(location) + ") of " + path_,
                                                buffer_manager.resource()}));
         }
         return core::error_t::no_error();
@@ -387,7 +403,7 @@ namespace components::table::storage {
             }
             return core::error_t::no_error();
         }
-        return write_range_impl(buffer, block_id, 0, length);
+        return write_range_impl(buffer, block_id, 0, length, std::nullopt);
     }
 
     uint64_t single_file_block_manager_t::free_block_id() {
@@ -663,9 +679,15 @@ namespace components::table::storage {
         auto* payload = data + sizeof(uint64_t);
         auto payload_size = alloc_size - sizeof(uint64_t);
 
-        auto computed = static_cast<uint64_t>(
-            static_cast<uint32_t>(absl::ComputeCrc32c({reinterpret_cast<const char*>(payload), payload_size})));
-        return stored_checksum == computed;
+        // The high 32 bits name the covered prefix (0 = the whole payload, as every whole-block
+        // write and every file written before range slots stores it).
+        uint64_t covered = stored_checksum >> 32;
+        if (covered == 0 || covered > payload_size) {
+            covered = payload_size;
+        }
+        const auto computed =
+            static_cast<uint32_t>(absl::ComputeCrc32c({reinterpret_cast<const char*>(payload), covered}));
+        return static_cast<uint32_t>(stored_checksum) == computed;
     }
 
     core::result_wrapper_t<bool> single_file_block_manager_t::write_header(const database_header_t& header) {

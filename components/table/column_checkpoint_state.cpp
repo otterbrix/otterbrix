@@ -209,14 +209,11 @@ namespace components::table {
         if (loaded_compression != compression::compression_type::UNCOMPRESSED && data && segment.segment_size() > 0) {
             const auto compressed_size = segment.segment_size();
             auto* compressed_data = data + segment.block_offset();
-            auto allocation = partial_block_manager_.get_block_allocation(compressed_size);
-            if (auto written = partial_block_manager_.write_to_block(allocation.block_id,
-                                                                     allocation.offset_in_block,
-                                                                     compressed_data,
-                                                                     compressed_size);
-                written.contains_error()) {
-                return written;
+            auto placed = partial_block_manager_.place(compressed_data, compressed_size);
+            if (placed.has_error()) {
+                return placed.convert_error<bool>();
             }
+            const auto& allocation = placed.value();
             storage::data_pointer_t dp;
             dp.row_start = row_start;
             dp.tuple_count = tuple_count;
@@ -232,14 +229,11 @@ namespace components::table {
 
             if (is_constant_data(segment_data, segment.type_size, tuple_count)) {
                 auto constant_size = segment.type_size;
-                auto allocation = partial_block_manager_.get_block_allocation(constant_size);
-                if (auto written = partial_block_manager_.write_to_block(allocation.block_id,
-                                                                         allocation.offset_in_block,
-                                                                         segment_data,
-                                                                         constant_size);
-                    written.contains_error()) {
-                    return written;
+                auto placed = partial_block_manager_.place(segment_data, constant_size);
+                if (placed.has_error()) {
+                    return placed.convert_error<bool>();
                 }
+                const auto& allocation = placed.value();
 
                 storage::data_pointer_t dp;
                 dp.row_start = row_start;
@@ -260,14 +254,11 @@ namespace components::table {
                 std::vector<std::byte> rle_buf;
                 build_rle_buffer(segment_data, segment.type_size, tuple_count, rle_buf);
 
-                auto allocation = partial_block_manager_.get_block_allocation(rle_size);
-                if (auto written = partial_block_manager_.write_to_block(allocation.block_id,
-                                                                         allocation.offset_in_block,
-                                                                         rle_buf.data(),
-                                                                         rle_size);
-                    written.contains_error()) {
-                    return written;
+                auto placed = partial_block_manager_.place(rle_buf.data(), rle_size);
+                if (placed.has_error()) {
+                    return placed.convert_error<bool>();
                 }
+                const auto& allocation = placed.value();
 
                 storage::data_pointer_t dp;
                 dp.row_start = row_start;
@@ -284,14 +275,11 @@ namespace components::table {
                 std::vector<std::byte> dict_buf;
                 build_dict_buffer(segment_data, segment.type_size, tuple_count, dict_info, dict_buf);
 
-                auto allocation = partial_block_manager_.get_block_allocation(dict_info.compressed_size);
-                if (auto written = partial_block_manager_.write_to_block(allocation.block_id,
-                                                                         allocation.offset_in_block,
-                                                                         dict_buf.data(),
-                                                                         dict_info.compressed_size);
-                    written.contains_error()) {
-                    return written;
+                auto placed = partial_block_manager_.place(dict_buf.data(), dict_info.compressed_size);
+                if (placed.has_error()) {
+                    return placed.convert_error<bool>();
                 }
+                const auto& allocation = placed.value();
 
                 storage::data_pointer_t dp;
                 dp.row_start = row_start;
@@ -340,14 +328,11 @@ namespace components::table {
                     return persisted;
                 }
             }
-            auto string_allocation = partial_block_manager_.get_block_allocation(segment_size);
-            if (auto written = partial_block_manager_.write_to_block(string_allocation.block_id,
-                                                                     string_allocation.offset_in_block,
-                                                                     rewritten.data(),
-                                                                     segment_size);
-                written.contains_error()) {
-                return written;
+            auto placed = partial_block_manager_.place(rewritten.data(), segment_size);
+            if (placed.has_error()) {
+                return placed.convert_error<bool>();
             }
+            const auto& string_allocation = placed.value();
             dp.row_start = row_start;
             dp.tuple_count = tuple_count;
             dp.block_pointer = storage::block_pointer_t(string_allocation.block_id, string_allocation.offset_in_block);
@@ -357,19 +342,13 @@ namespace components::table {
             return true;
         }
 
-        auto allocation = partial_block_manager_.get_block_allocation(segment_size);
-        if (data && segment_size > 0) {
-            // A segment packed via partial-block packing lives at a NON-ZERO block_offset in a shared block;
-            // reading from data (offset 0) instead would copy a neighbour's bytes into the checkpoint.
-            auto* segment_data = data + segment.block_offset();
-            if (auto written = partial_block_manager_.write_to_block(allocation.block_id,
-                                                                     allocation.offset_in_block,
-                                                                     segment_data,
-                                                                     segment_size);
-                written.contains_error()) {
-                return written;
-            }
+        // A segment packed via partial-block packing lives at a NON-ZERO block_offset in a shared block;
+        // reading from data (offset 0) instead would copy a neighbour's bytes into the checkpoint.
+        auto placed = partial_block_manager_.place(data + segment.block_offset(), segment_size);
+        if (placed.has_error()) {
+            return placed.convert_error<bool>();
         }
+        const auto& allocation = placed.value();
 
         dp.row_start = row_start;
         dp.tuple_count = tuple_count;

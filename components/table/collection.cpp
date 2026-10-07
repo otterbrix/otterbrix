@@ -252,6 +252,8 @@ namespace components::table {
         uint64_t total_append_count = chunk.size();
         uint64_t remaining = chunk.size();
         state.total_append_count += total_append_count;
+        auto* entry_row_group = state.append_state.row_group;
+        const uint64_t entry_offset = state.append_state.offset_in_row_group;
         while (true) {
             auto current_row_group = state.append_state.row_group;
             uint64_t append_count =
@@ -261,7 +263,10 @@ namespace components::table {
                 auto appended = current_row_group->append(state.append_state, chunk, append_count);
                 allocation_size_ += current_row_group->allocation_size() - previous_allocation_size;
                 if (appended.has_error()) {
-                    return appended; // out_of_memory
+                    if (current_row_group == entry_row_group) {
+                        return appended; // out_of_memory
+                    }
+                    return unwind_append(state, entry_row_group, entry_offset, total_append_count, appended.error());
                 }
             }
             remaining -= append_count;
@@ -280,22 +285,60 @@ namespace components::table {
             auto last_row_group = row_groups_->last_segment(l);
             auto init = last_row_group->initialize_append(state.append_state);
             if (init.has_error()) {
-                return init; // out_of_memory
+                return unwind_append(state, entry_row_group, entry_offset, total_append_count, init.error());
             }
             // Write-through: the row group we just closed is now complete (segments final, append state
             // moved on), so re-pointing it to disk lets the pool evict+reload it -> bounded memory at any
             // table size. A write/alloc failure surfaces as io_error/out_of_memory, never a throw.
             auto transitioned = current_row_group->transition_to_disk(append_pbm_);
             if (transitioned.has_error()) {
-                return transitioned;
+                return unwind_append(state, entry_row_group, entry_offset, total_append_count, transitioned.error());
             }
         }
         // Once per append, for every segment re-pointed above or filled inside a column.
         if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
-            return flushed; // io_error: the re-pointed segments' blocks are not on disk
+            // io_error: the re-pointed segments' blocks are not on disk
+            return unwind_append(state, entry_row_group, entry_offset, total_append_count, flushed.error());
         }
         state.current_row += int64_t(total_append_count);
         return new_row_group;
+    }
+
+    core::error_t collection_t::unwind_append(table_append_state& state,
+                                              row_group_t* entry_row_group,
+                                              uint64_t entry_offset,
+                                              uint64_t append_count,
+                                              const core::error_t& cause) {
+        for (uint64_t c = 0; c < types_.size(); c++) {
+            state.append_state.states[c].release_pins();
+        }
+        std::pmr::vector<uint64_t> erased(resource_);
+        {
+            auto l = row_groups_->lock();
+            const auto& segments = row_groups_->reference_segments(l);
+            uint64_t entry_index = 0;
+            while (entry_index < segments.size() && segments[entry_index].node.get() != entry_row_group) {
+                entry_index++;
+            }
+            assert(entry_index < segments.size() && "the append started in a row group of this collection");
+            for (uint64_t later = entry_index + 1; later < segments.size(); later++) {
+                segments[later].node->collect_disk_block_ids(erased);
+            }
+            row_groups_->erase_segments(l, entry_index + 1);
+            entry_row_group->next = nullptr;
+        }
+        state.append_state.row_group = entry_row_group;
+        state.append_state.offset_in_row_group = entry_offset;
+        state.total_append_count -= append_count;
+        auto unwound =
+            entry_row_group->unwind_append(entry_row_group->start + static_cast<int64_t>(entry_offset), types_.size());
+        if (unwound.contains_error()) {
+            return unwind_refused(cause, unwound, resource_);
+        }
+        if (auto settled = settle_unwind(std::move(erased)); settled.contains_error()) {
+            return unwind_refused(cause, settled, resource_);
+        }
+        return cause;
     }
 
     core::error_t collection_t::settle_unwind(std::pmr::vector<uint64_t> erased_blocks) {

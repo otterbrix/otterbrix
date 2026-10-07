@@ -149,6 +149,11 @@ namespace components::table {
 
     private:
         bool is_empty(std::unique_lock<std::mutex>&) const;
+        [[nodiscard]] core::error_t unwind_append(table_append_state& state,
+                                                  row_group_t* entry_row_group,
+                                                  uint64_t entry_offset,
+                                                  uint64_t append_count,
+                                                  const core::error_t& cause);
 
         std::pmr::memory_resource* resource_;
         storage::block_manager_t& block_manager_;

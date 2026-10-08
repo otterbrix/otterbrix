@@ -350,7 +350,11 @@ namespace components::table {
         if (old_collection) {
             std::pmr::vector<uint64_t> reclaimable{resource_};
             old_collection->collect_disk_block_ids(reclaimable);
-            release_disk_blocks(old_collection->block_manager(), std::move(reclaimable));
+            // Dropped first: a block a handle still names is freed only once that handle is gone, and the
+            // outgoing segments hold theirs until the collection dies. A holder elsewhere keeps its blocks
+            // the same way, and gives them back with its last handle.
+            old_collection.reset();
+            release_disk_blocks(row_groups_->block_manager(), std::move(reclaimable));
         }
         // The swap may have renumbered row ids; every index answer stamped with the old epoch is refused from here on.
         ++compact_epoch_;

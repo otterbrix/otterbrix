@@ -24,9 +24,8 @@ namespace components::table {
     // marks blocks as free
     void release_disk_blocks(storage::block_manager_t& block_manager, std::pmr::vector<uint64_t> block_ids);
 
-    // A copy of this pointer taken before data_table_t::compact swaps in a rebuilt collection must
-    // outlive the swap — block_manager_t::unregister_block's identity check depends on it
-    // (test_root_reclaim, test_block_manager).
+    // A copy of this pointer taken before data_table_t::compact swaps in a rebuilt collection keeps its
+    // blocks: they are freed when the copy dies, not under it (test_root_reclaim [item_c]).
     class collection_t final : public boost::intrusive_ref_counter<collection_t> {
     public:
         collection_t(std::pmr::memory_resource* resource,

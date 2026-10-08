@@ -1,6 +1,7 @@
 #include "collection.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <components/table/storage/block_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -322,18 +323,7 @@ namespace components::table {
         if (auto sealed = append_pbm_.seal(); sealed.contains_error()) {
             return sealed;
         }
-        std::pmr::vector<uint64_t> live(resource_);
-        collect_disk_block_ids(live);
-        std::sort(live.begin(), live.end());
-        std::sort(erased_blocks.begin(), erased_blocks.end());
-        erased_blocks.erase(std::unique(erased_blocks.begin(), erased_blocks.end()), erased_blocks.end());
-        for (uint64_t block_id : erased_blocks) {
-            if (std::binary_search(live.begin(), live.end(), block_id) || block_manager_.registry_alive(block_id)) {
-                continue;
-            }
-            block_manager_.mark_as_free(block_id);
-            block_manager_.unregister_block(block_id);
-        }
+        release_disk_blocks(block_manager_, std::move(erased_blocks));
         return core::error_t::no_error();
     }
 
@@ -387,16 +377,16 @@ namespace components::table {
         return row_group->delete_stamp(row_id);
     }
 
+    // The one way a collection's blocks reach the free list. Every segment holds its block's handle
+    // (reload and write-through register it), so a live handle means a surviving segment, a successor
+    // sharing the column or a pinned reader still names the block: the manager then holds the free back
+    // until that handle is gone (freed_while_held_), never freeing under them. The caller drops the
+    // segments it no longer wants BEFORE calling (erase, reset) or their blocks wait for them.
     void release_disk_blocks(storage::block_manager_t& block_manager, std::pmr::vector<uint64_t> block_ids) {
         std::sort(block_ids.begin(), block_ids.end());
         block_ids.erase(std::unique(block_ids.begin(), block_ids.end()), block_ids.end());
         for (uint64_t block_id : block_ids) {
-            if (block_id >= block_manager.total_blocks()) {
-                block_manager.mark_as_free(block_id);
-                continue;
-            }
             block_manager.mark_as_free(block_id);
-            block_manager.unregister_block(block_id);
         }
     }
 
@@ -413,17 +403,33 @@ namespace components::table {
             return core::error_t(core::error_code_t::data_corruption,
                                  std::pmr::string("table revert: no row group brackets the revert row", resource_));
         }
+        std::pmr::vector<uint64_t> erased{resource_};
         const auto& segments = row_groups_->reference_segments();
-        std::pmr::vector<uint64_t> released{resource_};
         for (uint64_t later = segment_index + 1; later < segments.size(); ++later) {
-            segments[later]->collect_disk_block_ids(released);
+            segments[later]->collect_disk_block_ids(erased);
         }
-        release_disk_blocks(block_manager_, std::move(released));
         row_groups_->erase_segments(segment_index + 1);
-
         auto* row_group = row_groups_->segment_at(static_cast<int64_t>(segment_index));
         total_rows_ = static_cast<uint64_t>(row_start - row_start_);
-        return row_group->revert_append(static_cast<uint64_t>(row_start - row_group->start));
+        // The kept row group drops its segments past the row and truncates the one holding it; their blocks go
+        // with the later row groups' through settle_unwind, like a refused append's (unwind_append).
+        std::pmr::vector<uint64_t> before(resource_);
+        row_group->collect_disk_block_ids(before);
+        auto reverted = row_group->revert_append(static_cast<uint64_t>(row_start - row_group->start));
+        std::pmr::vector<uint64_t> after(resource_);
+        row_group->collect_disk_block_ids(after);
+        std::sort(before.begin(), before.end());
+        before.erase(std::unique(before.begin(), before.end()), before.end());
+        std::sort(after.begin(), after.end());
+        std::set_difference(before.begin(), before.end(), after.begin(), after.end(), std::back_inserter(erased));
+        auto settled = settle_unwind(std::move(erased));
+        if (reverted.has_error()) {
+            return reverted;
+        }
+        if (settled.contains_error()) {
+            return settled;
+        }
+        return true;
     }
 
     void collection_t::merge_storage(collection_t& data) {

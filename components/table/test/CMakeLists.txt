@@ -51,6 +51,8 @@ set(${PROJECT_NAME}_SOURCES
         test_unwind_limits.cpp
         test_compact_packer_bound.cpp
         test_checkpoint_blocks.cpp
+        test_txn_revert_blocks.cpp
+        test_block_registry_threads.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

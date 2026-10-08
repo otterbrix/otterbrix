@@ -101,8 +101,7 @@ namespace services::disk {
                                      std::vector<components::table::column_definition_t> columns,
                                      const std::filesystem::path& otbx_path)
         : buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
-        , buffer_manager_(resource, fs_, buffer_pool_)
-        , pending_released_blocks_(resource) {
+        , buffer_manager_(resource, fs_, buffer_pool_) {
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
@@ -120,8 +119,7 @@ namespace services::disk {
                                      std::vector<components::table::column_definition_t> catalog_columns,
                                      bool allow_schemaless)
         : buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
-        , buffer_manager_(resource, fs_, buffer_pool_)
-        , pending_released_blocks_(resource) {
+        , buffer_manager_(resource, fs_, buffer_pool_) {
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
@@ -185,9 +183,6 @@ namespace services::disk {
     bool table_storage_t::needs_checkpoint() const noexcept {
         if (!table_) {
             return false;
-        }
-        if (!pending_released_blocks_.empty()) {
-            return true;
         }
         if (table_->modified_since_checkpoint()) {
             return true;
@@ -255,8 +250,6 @@ namespace services::disk {
 
         auto* disk_bm = static_cast<components::table::storage::single_file_block_manager_t*>(block_manager_.get());
         disk_bm->set_meta_block(writer.get_block_pointer().block_pointer);
-        // Must run exactly here, between the new root's pointer stream and the free-list serialize.
-        release_dropped_column_blocks();
         auto free_list_r = disk_bm->serialize_free_list();
         if (free_list_r.has_error()) {
             disk_bm->roll_back_uncommitted_round();
@@ -320,8 +313,8 @@ namespace services::disk {
         if (!found) {
             return false;
         }
-        // Names the blocks before the rebuild drops the only record of them (release happens later).
-        std::pmr::vector<uint64_t> released(pending_released_blocks_.get_allocator().resource());
+        // Names the blocks before the rebuild drops the only record of them.
+        std::pmr::vector<uint64_t> released(buffer_manager_.resource());
         if (block_manager_) {
             table_->collect_column_disk_block_ids(idx, released);
         }
@@ -330,8 +323,12 @@ namespace services::disk {
             // The column is still live in table_, so its blocks must not be released either.
             return core::error_t(new_table->construction_error());
         }
-        pending_released_blocks_.insert(pending_released_blocks_.end(), released.begin(), released.end());
+        // The superseded collection dies with the parent table here; a block a surviving column still
+        // packs into (or a reader still holds) stays registered and is freed with that handle instead.
         table_ = std::move(new_table);
+        if (block_manager_) {
+            components::table::release_disk_blocks(*block_manager_, std::move(released));
+        }
         return true;
     }
 
@@ -340,52 +337,12 @@ namespace services::disk {
         if (!table_) {
             // The caller's catalog rename is already committed, so this can't just answer "nothing to do".
             std::pmr::string msg{"table_storage_t::rename_column: no loaded table for column '",
-                                 pending_released_blocks_.get_allocator().resource()};
-            msg += std::pmr::string{old_attname, pending_released_blocks_.get_allocator().resource()};
-            msg += std::pmr::string{"'", pending_released_blocks_.get_allocator().resource()};
+                                 buffer_manager_.resource()};
+            msg += std::pmr::string{old_attname, buffer_manager_.resource()};
+            msg += std::pmr::string{"'", buffer_manager_.resource()};
             return core::error_t{core::error_code_t::missing_table, std::move(msg)};
         }
         return table_->rename_column(old_attname, new_attname);
-    }
-
-    // Deferred, not immediate: freeing a still-referenced block is worse than leaking it. Safe only
-    // once the drop's superseded collection is gone (row_group() hands out counted copies BY VALUE).
-    // Measured with the naming removed: 15 blocks (~3.75 MB on a 10k-row table) orphaned durably.
-    void table_storage_t::release_dropped_column_blocks() {
-        if (pending_released_blocks_.empty() || !block_manager_ || !table_) {
-            return;
-        }
-        auto& block_manager = *block_manager_;
-        // Same id can repeat (many segments pack into one block); dedup before the loop below.
-        std::sort(pending_released_blocks_.begin(), pending_released_blocks_.end());
-        pending_released_blocks_.erase(std::unique(pending_released_blocks_.begin(), pending_released_blocks_.end()),
-                                       pending_released_blocks_.end());
-
-        // NOT held across the frees below -- a holder that outlives them keeps handles alive past reclaim.
-        std::pmr::vector<uint64_t> live(pending_released_blocks_.get_allocator().resource());
-        {
-            auto collection = table_->row_group();
-            collection->collect_disk_block_ids(live);
-        }
-        std::sort(live.begin(), live.end());
-        live.erase(std::unique(live.begin(), live.end()), live.end());
-
-        for (uint64_t block_id : pending_released_blocks_) {
-            if (block_id >= block_manager.total_blocks()) {
-                block_manager.mark_as_free(block_id); // refuses the id and latches the corruption
-                continue;
-            }
-            if (std::binary_search(live.begin(), live.end(), block_id)) {
-                continue; // still carries a surviving column's segment (block packing)
-            }
-            if (block_manager.registry_alive(block_id)) {
-                continue; // somebody still holds a handle for it
-            }
-            block_manager.mark_as_free(block_id);
-            // ABA break: unregister only after the free, so no expired slot can be revived.
-            block_manager.unregister_block(block_id);
-        }
-        pending_released_blocks_.clear();
     }
 
     manager_disk_t::manager_disk_t(std::pmr::memory_resource* resource,

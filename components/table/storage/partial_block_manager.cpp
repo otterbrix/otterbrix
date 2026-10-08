@@ -233,7 +233,7 @@ namespace components::table::storage {
         // Every block these placements name is on the file now (the tails written
         // above and by place()); the ones written before a refused tail are adopted too, their
         // segments read bytes that are there. A block none of whose placements adopted is unnamed
-        // and, when no handle holds it either, given back.
+        // and given back (a handle still holding it parks the free in the manager).
         auto adopted = std::move(ready_);
         ready_.clear();
         std::pmr::vector<uint64_t> unadopted(block_manager_.buffer_manager.resource());
@@ -245,9 +245,7 @@ namespace components::table::storage {
         std::sort(unadopted.begin(), unadopted.end());
         unadopted.erase(std::unique(unadopted.begin(), unadopted.end()), unadopted.end());
         for (uint64_t block_id : unadopted) {
-            if (!block_manager_.registry_alive(block_id)) {
-                block_manager_.mark_as_free(block_id);
-            }
+            block_manager_.mark_as_free(block_id);
         }
         return result;
     }

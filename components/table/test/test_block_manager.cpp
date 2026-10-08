@@ -599,8 +599,12 @@ TEST_CASE("block_manager: create_new_database refuses an unusable block allocati
     std::remove(path.c_str());
 }
 
-// unregister_block must check identity: a freed id can get a fresh handle while a stale one for it is still alive.
-TEST_CASE("block_manager: a stale handle's destructor must not erase the live handle's slot") {
+// A block freed while a handle still names it is not free yet: the id stays out of every pool and the slot
+// stays with the live handle (register_block dedups onto it, never a second handle for one block). The
+// handle's death changes nothing by itself (its destructor writes nothing on the manager); the next
+// serialize_free_list finds the slot expired, moves the id to pending_free_ and publishes it, and the
+// header that commits that list is what lets free_block_id draw it again.
+TEST_CASE("block_manager: a block freed under a live handle is given back by the checkpoint after its death") {
     using namespace components::table::storage;
     cleanup_test_file();
 
@@ -610,31 +614,74 @@ TEST_CASE("block_manager: a stale handle's destructor must not erase the live ha
 
     const uint64_t id = bm.free_block_id();
 
-    auto stale = bm.register_block(id);
-    REQUIRE(stale);
+    auto held = bm.register_block(id);
+    REQUIRE(held);
     REQUIRE(bm.registry_alive(id));
 
-    // Release the id and drop the registry entry while `stale` is still alive.
+    // Freed while `held` is alive: parked, not performed.
     bm.mark_as_free(id);
-    bm.unregister_block(id);
-    CHECK_FALSE(bm.registry_alive(id));
-
-    auto live = bm.register_block(id);
-    REQUIRE(live);
-    CHECK(live.get() != stale.get());
     CHECK(bm.registry_alive(id));
+    CHECK(bm.free_blocks() == 0);
+    CHECK(bm.dev_freed_while_held_snapshot().count(id) == 1);
+    CHECK(bm.dev_freed_ids().empty());
 
-    stale.reset();
-
-    INFO("after the stale handle died, the live handle's registry entry must survive");
-    CHECK(bm.registry_alive(id));
-    // register_block must still dedup onto it, not mint a second handle for the same block.
     auto again = bm.register_block(id);
-    CHECK(again.get() == live.get());
-
+    REQUIRE(again);
+    CHECK(again.get() == held.get());
     again.reset();
-    live.reset();
+    CHECK(bm.registry_alive(id));
+
+    // Not reissued while held: the next id is a fresh one.
+    const uint64_t fresh = bm.free_block_id();
+    CHECK(fresh != id);
+
+    held.reset();
+
+    INFO("the handle is gone, the free is still parked until the manager's own thread looks");
     CHECK_FALSE(bm.registry_alive(id));
+    CHECK(bm.dev_freed_while_held_snapshot().count(id) == 1);
+    CHECK(bm.free_blocks() == 0);
+    CHECK(bm.free_block_id() != id);
+
+    auto free_ptr = bm.serialize_free_list();
+    REQUIRE_FALSE(free_ptr.has_error());
+    CHECK(bm.dev_freed_while_held_snapshot().empty());
+    CHECK(bm.dev_pending_free_snapshot().count(id) == 1);
+    CHECK(bm.free_blocks() == 1);
+
+    // Still quarantined: a header has to commit before the id is drawn again.
+    CHECK(bm.free_block_id() != id);
+    database_header_t promoting_header{};
+    promoting_header.initialize();
+    promoting_header.free_list = free_ptr.value().block_pointer;
+    REQUIRE_FALSE(bm.write_header(promoting_header).has_error());
+    CHECK(bm.free_block_id() == id);
+
+    cleanup_test_file();
+}
+
+// The registry slot of a dead handle stays until the manager's own free list drops it: the handle's
+// destructor writes nothing on the manager.
+TEST_CASE("block_manager: a handle's death writes nothing on its manager") {
+    using namespace components::table::storage;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    REQUIRE(!bm.create_new_database().has_error());
+
+    const uint64_t id = bm.free_block_id();
+    auto handle = bm.register_block(id);
+    REQUIRE(handle);
+    const uint64_t slots = bm.dev_registry_slots();
+
+    handle.reset();
+    CHECK_FALSE(bm.registry_alive(id));
+    CHECK(bm.dev_registry_slots() == slots);
+
+    auto free_ptr = bm.serialize_free_list();
+    REQUIRE_FALSE(free_ptr.has_error());
+    CHECK(bm.dev_registry_slots() == slots - 1);
 
     cleanup_test_file();
 }

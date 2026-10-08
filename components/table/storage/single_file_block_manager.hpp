@@ -156,6 +156,7 @@ namespace components::table::storage {
         }
         std::set<uint64_t> dev_reusable_snapshot() { return reusable_; }
         std::set<uint64_t> dev_pending_free_snapshot() { return pending_free_; }
+        std::set<uint64_t> dev_freed_while_held_snapshot() { return freed_while_held_; }
         std::set<uint64_t> dev_durable_root_data_snapshot() { return durable_root_data_; }
         void dev_reset_tracking() {
             dev_issued_.clear();
@@ -196,6 +197,13 @@ namespace components::table::storage {
         // merge in promote_durable_root(), once write_header and its fsync both succeed.
         std::set<uint64_t> reusable_;
         std::set<uint64_t> pending_free_;
+        // Freed while a handle still named the block (a surviving segment packed into the same block, a
+        // successor sharing the column, a held collection copy): mark_as_free parks it here instead of
+        // pending_free_, and serialize_free_list moves it on once the handle is gone. Measured without it:
+        // a held copy's 6 blocks (1 572 864 B) leave the free list for good when the holder dies. (DuckDB
+        // v1.5.6 keeps the same set, free_blocks_in_use, but drains it from the handle's destructor under a
+        // lock.)
+        std::set<uint64_t> freed_while_held_;
         std::set<uint64_t> used_blocks_;
         std::set<uint64_t> modified_blocks_;
         uint64_t max_block_{0};

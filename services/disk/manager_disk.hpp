@@ -116,8 +116,8 @@ namespace services::disk {
         /// Rebuilds table_, invalidating old references; kept for tests/WAL-replay, not SQL ALTER TABLE ADD COLUMN.
         void add_column(components::table::column_definition_t& col);
 
-        /// Rebuilds without col; block release waits for checkpoint(). Outside a checkpoint round the split
-        /// free pool only spends space (measured +2.9 MB per VACUUM at agent_disk_t::maybe_cleanup_inner).
+        /// Rebuilds without col and releases the column's own blocks (a block a surviving column packs into is
+        /// still registered and waits for that handle, single_file_block_manager_t::freed_while_held_).
         /// false: no such column; io_error: the append packer could not be sealed, table_ is untouched.
         [[nodiscard]] core::result_wrapper_t<bool> drop_column(const std::string& attname);
 
@@ -127,16 +127,11 @@ namespace services::disk {
                                                                  const std::string& new_attname);
 
     private:
-        /// Deferred half of drop_column, in checkpoint() before the free list serializes; PROVEN-orphan blocks only.
-        void release_dropped_column_blocks();
-
         core::filesystem::local_file_system_t fs_;
         components::table::storage::buffer_pool_t buffer_pool_;
         components::table::storage::standard_buffer_manager_t buffer_manager_;
         std::unique_ptr<components::table::storage::block_manager_t> block_manager_;
         std::unique_ptr<components::table::data_table_t> table_;
-        // Blocks drop_column removed but not yet released; not durable, so a crash just leaks space.
-        std::pmr::vector<uint64_t> pending_released_blocks_;
         wal::id_t checkpoint_wal_id_{0};
         bool checkpoint_wal_id_known_{true};
         wal::id_t prev_checkpoint_wal_id_{0};

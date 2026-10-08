@@ -427,6 +427,7 @@ namespace components::table::storage {
             block_id = max_block_++;
         }
 
+        freed_while_held_.erase(block_id);
         used_blocks_.insert(block_id);
         issued_since_root_.insert(block_id);
 #ifdef DEV_MODE
@@ -493,6 +494,10 @@ namespace components::table::storage {
                                                                    " blocks, so it is past the end of the file");
             return;
         }
+        if (registry_alive(block_id)) {
+            freed_while_held_.insert(block_id); // somebody still reads it: freed once that handle is gone
+            return;
+        }
         used_blocks_.erase(block_id);
         modified_blocks_.erase(block_id);
 #ifdef DEV_MODE
@@ -507,6 +512,7 @@ namespace components::table::storage {
     void single_file_block_manager_t::mark_as_used(uint64_t block_id) {
         reusable_.erase(block_id);
         pending_free_.erase(block_id);
+        freed_while_held_.erase(block_id);
         used_blocks_.insert(block_id);
     }
 
@@ -566,12 +572,7 @@ namespace components::table::storage {
             if (pending_root_data_.count(block_id) != 0 || issued_since_root_.count(block_id) != 0) {
                 continue;
             }
-            if (registry_alive(block_id)) {
-                continue;
-            }
-            // unregister_block prevents the same ABA that data_table_t::compact guards against.
-            mark_as_free(block_id);
-            unregister_block(block_id);
+            mark_as_free(block_id); // held by a reader the new root does not name: freed once it lets go
             ++reclaimed;
         }
         return reclaimed;
@@ -599,8 +600,8 @@ namespace components::table::storage {
             // Load-bearing: a second failed round can free the first round's still-unpromoted ids too (measured
             // 14 ids, two failed 12k-row rounds; test_failed_round_rollback.cpp).
             pending_free_.erase(block_id);
+            freed_while_held_.erase(block_id);
             reusable_.insert(block_id);
-            unregister_block(block_id);
 #ifdef DEV_MODE
             dev_freed_.push_back(block_id);
 #endif
@@ -817,6 +818,18 @@ namespace components::table::storage {
     // Persisted list = reusable_ u pending_free_ u {live-only blocks the new root doesn't name}, since reclaim
     // only walks roots (measured 8 blocks, 2 MiB leaked per restart at 6k rows without the third term).
     core::result_wrapper_t<meta_block_pointer_t> single_file_block_manager_t::serialize_free_list() {
+        prune_expired_slots();
+        // A free parked under a handle lands in pending_free_ the first round after that handle died, so
+        // this header publishes it and the next round may draw it, like any other free of this round.
+        for (auto it = freed_while_held_.begin(); it != freed_while_held_.end();) {
+            if (registry_alive(*it)) {
+                ++it;
+                continue;
+            }
+            const uint64_t released = *it;
+            it = freed_while_held_.erase(it);
+            mark_as_free(released);
+        }
         std::set<uint64_t> live_unnamed;
         for (uint64_t block_id : live_registry_ids()) {
             if (block_id >= max_block_) {

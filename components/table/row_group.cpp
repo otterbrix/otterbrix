@@ -323,6 +323,7 @@ namespace components::table {
 
     template<table_scan_type TYPE>
     void row_group_t::templated_scan(collection_scan_state& state, vector::data_chunk_t& result) {
+        assert(result.column_count() >= state.result_width() && "a scan chunk narrower than its scanned ordinals");
         const auto& column_ids = state.column_ids();
         auto* filter = state.filter();
         for (auto& column_state : state.column_scans) {

@@ -101,9 +101,11 @@ namespace components::table {
 
         [[nodiscard]] const std::vector<uint64_t>& visible_to_physical() const noexcept;
         [[nodiscard]] uint64_t physical_column(uint64_t visible) const noexcept;
+        [[nodiscard]] uint64_t result_width() const noexcept { return result_width_; }
 
     private:
         table_scan_state& parent_;
+        uint64_t result_width_ = 0;
     };
 
     class table_scan_state {

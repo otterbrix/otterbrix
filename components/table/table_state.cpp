@@ -2,6 +2,7 @@
 
 #include <components/vector/data_chunk.hpp>
 
+#include <algorithm>
 #include <cassert>
 
 #include "collection.hpp"
@@ -35,7 +36,10 @@ namespace components::table {
     void collection_scan_state::initialize(const std::pmr::vector<types::complex_logical_type>& types) {
         auto& ids = column_ids();
         column_scans.resize(ids.size());
+        result_width_ = 0;
         for (uint64_t i = 0; i < ids.size(); i++) {
+            const uint64_t slot = ids[i].is_row_id_column() ? i : ids[i].primary_index();
+            result_width_ = std::max(result_width_, slot + 1);
             if (ids[i].is_row_id_column()) {
                 continue;
             }

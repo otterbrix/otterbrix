@@ -54,6 +54,7 @@ set(${PROJECT_NAME}_SOURCES
         test_txn_revert_blocks.cpp
         test_block_registry_threads.cpp
         test_list_revert_pin.cpp
+        test_scan_chunk_width.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

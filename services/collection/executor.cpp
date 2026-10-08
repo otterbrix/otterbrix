@@ -344,6 +344,7 @@ namespace services::collection::executor {
         out.applied_setting = result.applied_setting;
         out.applied_setting_value = std::move(result.applied_setting_value);
         out.captured_explain_ir = std::move(captured_ir);
+        out.referenced_deletes = std::move(result.referenced_deletes);
         co_return std::move(out);
     }
 
@@ -393,7 +394,8 @@ namespace services::collection::executor {
         for (std::size_t i = 0; (run_sub_queries || plan_only) && i + 1 < plan.sub_queries.size(); ++i) {
             auto* sub_root = plan.sub_queries[i].get();
             const node_type sub_type = sub_root ? sub_root->type() : node_type::unused;
-            if (sub_type == node_type::insert_t || sub_type == node_type::update_t || sub_type == node_type::delete_t) {
+            if (sub_type == node_type::insert_t || sub_type == node_type::insert_on_conflict_t ||
+                sub_type == node_type::update_t || sub_type == node_type::delete_t) {
                 co_return execute_result_t{make_cursor(
                     resource(),
                     core::error_t{core::error_code_t::sql_parse_error,
@@ -496,6 +498,16 @@ namespace services::collection::executor {
 
         services::context_storage_t context_storage(resource(), log_.clone(), session_ctx.settings);
 
+        if (original_type == node_type::transaction_t && plan.explain == components::logical_plan::explain_type::none &&
+            static_cast<const components::logical_plan::node_transaction_t*>(plan.sub_queries.back().get())->op() ==
+                components::logical_plan::transaction_op::commit) {
+            co_return co_await run_commit_pipeline_(session,
+                                                    resolve_txn,
+                                                    context_storage.execution_context,
+                                                    session_ctx.lowest_active_start_time,
+                                                    /*ddl_mode=*/false);
+        }
+
         const bool needs_ddl_txn =
             original_type == node_type::create_collection_t || original_type == node_type::create_constraint_t ||
             original_type == node_type::create_sequence_t || original_type == node_type::create_view_t ||
@@ -505,8 +517,9 @@ namespace services::collection::executor {
             original_type == node_type::create_matview_t;
         const bool is_plan_only_explain = plan.explain == components::logical_plan::explain_type::plan;
         const bool needs_dml_txn =
-            !is_plan_only_explain && (original_type == node_type::insert_t || original_type == node_type::update_t ||
-                                      original_type == node_type::delete_t);
+            !is_plan_only_explain &&
+            (original_type == node_type::insert_t || original_type == node_type::insert_on_conflict_t ||
+             original_type == node_type::update_t || original_type == node_type::delete_t);
         const bool needs_commit_txn = original_type == node_type::set_setting_t || original_type == node_type::vacuum_t;
 
         auto run_resolve_subplan = [this, session, resolve_txn, &session_ctx, &context_storage, &plan](
@@ -1553,8 +1566,7 @@ namespace services::collection::executor {
                 auto [_pa, paf] = actor_zeta::otterbrix::send(disk_address_,
                                                               &services::disk::manager_disk_t::storage_revert_appends,
                                                               pgc_ctx,
-                                                              std::move(revert_ranges),
-                                                              /*tail_only=*/false);
+                                                              std::move(revert_ranges));
                 if (const auto reverted = co_await std::move(paf); reverted.contains_error()) {
                     ::error(log_, "executor: pg_catalog append rollback did not complete: {}", reverted.what);
                 }
@@ -1616,6 +1628,23 @@ namespace services::collection::executor {
             }
             exec_result.pg_catalog_delete_tables.clear();
 
+            std::pmr::set<components::catalog::oid_t> column_stamped_tables{resource()};
+            for (const auto& backfill : exec_result.pg_attribute_commit_id_backfills) {
+                if (const auto table_oid = backfill.column_stamped_table();
+                    table_oid != components::catalog::INVALID_OID) {
+                    column_stamped_tables.insert(table_oid);
+                }
+            }
+            if (resolve_txn.transaction_id != 0 && !column_stamped_tables.empty()) {
+                components::execution_context_t cs_ctx{session, resolve_txn, session_ctx.settings.timezone_offset};
+                auto [_cs, csf] = actor_zeta::otterbrix::send(disk_address_,
+                                                              &services::disk::manager_disk_t::revert_column_stamps,
+                                                              cs_ctx,
+                                                              std::move(column_stamped_tables));
+                co_await std::move(csf);
+            }
+            exec_result.pg_attribute_commit_id_backfills.clear();
+
             exec_result.dml_appends.clear();
             exec_result.dml_deletes.clear();
         };
@@ -1638,6 +1667,7 @@ namespace services::collection::executor {
                 payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
                 payload.created_storage_oids = std::move(exec_result.created_storage_oids);
                 payload.created_indexes = std::move(exec_result.created_indexes);
+                payload.referenced_deletes = std::move(exec_result.referenced_deletes);
                 trace(log_,
                       "executor::execute_plan_full: txn {} — accumulating {} appends, {} deletes ({})",
                       resolve_txn.transaction_id,
@@ -1744,8 +1774,7 @@ namespace services::collection::executor {
                         actor_zeta::otterbrix::send(disk_address_,
                                                     &services::disk::manager_disk_t::storage_revert_appends,
                                                     rv_ctx,
-                                                    std::move(revert_ranges),
-                                                    /*tail_only=*/false);
+                                                    std::move(revert_ranges));
                     if (const auto reverted = co_await std::move(rvf); reverted.contains_error()) {
                         ::error(log_, "executor: pg_index append rollback did not complete: {}", reverted.what);
                     }
@@ -2424,6 +2453,10 @@ namespace services::collection::executor {
                 result_tracking.created_indexes.push_back(std::move(index));
             }
             pipeline_context.created_indexes.clear();
+            for (auto& rows : pipeline_context.referenced_deletes) {
+                result_tracking.referenced_deletes.push_back(std::move(rows));
+            }
+            pipeline_context.referenced_deletes.clear();
             if (pipeline_context.committed_id != 0) {
                 result_tracking.commit_id = pipeline_context.committed_id;
             }
@@ -2443,6 +2476,73 @@ namespace services::collection::executor {
                                      const components::graph_execution_context& settings,
                                      uint64_t lowest_active_start_time,
                                      bool ddl_mode) {
+        using components::logical_plan::resolve_direction;
+        using components::logical_plan::resolve_entry_t;
+        using components::logical_plan::resolve_kind;
+
+        // The drain takes the commit snapshot, which the constraints are resolved under
+        services::commit_input_t input;
+        if (parent_address_ != actor_zeta::address_t::empty_address()) {
+            auto [_dr, drain_future] =
+                actor_zeta::otterbrix::send(parent_address_,
+                                            &services::dispatcher::manager_dispatcher_t::txn_commit_drain_msg,
+                                            session,
+                                            txn.transaction_id);
+            input.drain = co_await std::move(drain_future);
+        }
+        const auto& drain = input.drain;
+        // Nothing committed since the transaction's snapshot: what its statements checked still holds
+        const bool rechecks = drain.txn.transaction_id != 0 && drain.commit_id > 0 &&
+                              disk_address_ != actor_zeta::address_t::empty_address() &&
+                              !drain.commit_view.snapshot_is_current &&
+                              (!drain.base_appends.empty() || !drain.base_delete_tables.empty());
+        components::logical_plan::catalog_resolves_t resolves;
+        if (rechecks) {
+            auto& tables = resolves.ensure(resource(), resolve_kind::table);
+            auto& constraints = resolves.ensure(resource(), resolve_kind::constraint);
+            // Every written table is resolved: one a commit before this one dropped refuses the commit
+            auto request_table = [&](components::catalog::oid_t table_oid) {
+                resolve_entry_t table;
+                table.relation_oid = table_oid;
+                return tables.add(std::move(table));
+            };
+            auto request_constraints = [&](components::catalog::oid_t table_oid, resolve_direction direction) {
+                resolve_entry_t constraint;
+                constraint.target = request_table(table_oid);
+                constraint.direction = direction;
+                constraints.add(std::move(constraint));
+            };
+            for (const auto& append : drain.base_appends) {
+                request_constraints(append.table_oid, resolve_direction::outgoing);
+            }
+            for (const auto table_oid : drain.base_delete_tables) {
+                request_table(table_oid);
+            }
+            for (const auto& removed : drain.referenced_deletes) {
+                request_constraints(removed.table_oid, resolve_direction::referencing);
+            }
+            auto root = boost::intrusive_ptr<components::logical_plan::node_t>(
+                new components::logical_plan::node_sequence_t(resource()));
+            root->append_child(resolves.tables);
+            if (!constraints.empty()) {
+                root->append_child(resolves.constraints);
+            }
+            services::context_storage_t resolve_storage(resource(), log_.clone(), settings);
+            resolve_storage.catalog_resolves = &resolves;
+            auto resolved = co_await execute_plan(
+                session,
+                components::logical_plan::execution_plan_t{resource(),
+                                                           std::move(root),
+                                                           components::logical_plan::make_parameter_node(resource())},
+                std::move(resolve_storage),
+                drain.commit_view.snapshot,
+                lowest_active_start_time,
+                std::pmr::vector<explain_plan_node>{resource()});
+            if (resolved.cursor->is_error()) {
+                input.resolve_error = resolved.cursor->get_error();
+            }
+        }
+
         auto commit_node =
             components::logical_plan::make_node_transaction(resource(),
                                                             components::logical_plan::transaction_op::commit);
@@ -2454,6 +2554,8 @@ namespace services::collection::executor {
         }
         auto cparams = components::logical_plan::make_parameter_node(resource());
         services::context_storage_t cstor(resource(), log_.clone(), settings);
+        cstor.catalog_resolves = rechecks ? &resolves : nullptr;
+        cstor.commit_input = &input;
         co_return co_await execute_plan(
             session,
             components::logical_plan::execution_plan_t{resource(), std::move(commit_node), std::move(cparams)},

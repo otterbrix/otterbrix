@@ -33,6 +33,7 @@ namespace components::operators {
         index_scan,
         pushed_reduce_scan,
         insert,
+        insert_on_conflict,
         remove,
         update,
         sort,

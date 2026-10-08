@@ -61,7 +61,8 @@ namespace components::table {
         : resource_(resource)
         , column_definitions_(std::move(column_definitions))
         , is_root_(true)
-        , name_(std::move(name)) {
+        , name_(std::move(name))
+        , prepared_(resource) {
         // Plain `new`, never the pmr resource: `delete` is the matching deallocation (ref count lives inside).
         this->row_groups_ =
             boost::intrusive_ptr<collection_t>(new collection_t(resource_, block_manager, copy_types(), 0));
@@ -70,7 +71,8 @@ namespace components::table {
     data_table_t::data_table_t(data_table_t& parent, column_definition_t& new_column)
         : resource_(parent.resource_)
         , is_root_(true)
-        , compact_epoch_(parent.compact_epoch_) {
+        , compact_epoch_(parent.compact_epoch_)
+        , prepared_(parent.prepared_, parent.resource_) {
         for (auto& column_def : parent.column_definitions_) {
             column_definitions_.emplace_back(column_def);
         }
@@ -94,7 +96,8 @@ namespace components::table {
     data_table_t::data_table_t(data_table_t& parent, uint64_t removed_column)
         : resource_(parent.resource_)
         , is_root_(true)
-        , compact_epoch_(parent.compact_epoch_) {
+        , compact_epoch_(parent.compact_epoch_)
+        , prepared_(parent.prepared_, parent.resource_) {
         for (auto& column_def : parent.column_definitions_) {
             column_definitions_.emplace_back(column_def);
         }
@@ -124,6 +127,15 @@ namespace components::table {
     }
 
     const std::vector<column_definition_t>& data_table_t::columns() const { return column_definitions_; }
+
+    std::pmr::vector<std::uint32_t> data_table_t::column_attoids() const {
+        std::pmr::vector<std::uint32_t> attoids(resource_);
+        attoids.reserve(column_definitions_.size());
+        for (const auto& column : column_definitions_) {
+            attoids.push_back(column.attoid());
+        }
+        return attoids;
+    }
 
     std::vector<uint64_t> data_table_t::visible_columns(const transaction_data& txn) const {
         std::vector<uint64_t> positions;
@@ -178,6 +190,312 @@ namespace components::table {
         return published;
     }
 
+    uint64_t data_table_t::revert_column_stamps(uint64_t txn_id) {
+        if (txn_id < TRANSACTION_ID_START) {
+            return 0;
+        }
+        uint64_t reverted = 0;
+        for (auto& column : column_definitions_) {
+            if (column.added_at() == txn_id) {
+                column.set_added_at(ABORTED_ID);
+                ++reverted;
+            }
+            if (column.dropped_at() == txn_id) {
+                column.set_dropped_at(NOT_DELETED_ID);
+                ++reverted;
+            }
+        }
+        if (reverted != 0) {
+            mark_modified();
+        }
+        return reverted;
+    }
+
+    write_decision_t data_table_t::decide_claim(const transaction_data& txn, uint64_t stamp) noexcept {
+        if (stamp == NOT_DELETED_ID) {
+            return write_decision_t::proceed;
+        }
+        if (txn.transaction_id != 0 && stamp == txn.transaction_id) {
+            return write_decision_t::skip;
+        }
+        return write_decision_t::conflict;
+    }
+
+    bool data_table_t::stands_at_commit(const transaction_data& txn, uint64_t stamp) const noexcept {
+        if (stamp == NOT_DELETED_ID || stamp == ABORTED_ID) {
+            return false;
+        }
+        if (stamp < TRANSACTION_ID_START) {
+            return true;
+        }
+        return stamp == txn.transaction_id || std::find(prepared_.begin(), prepared_.end(), stamp) != prepared_.end();
+    }
+
+    // TODO: NOT NULL should be handled as any other constraint
+    core::error_t data_table_t::refuse_nulls_at_commit(const transaction_data& txn,
+                                                       const std::pmr::vector<storage_index_t>& columns,
+                                                       std::span<const row_range_t> ranges) {
+        constexpr uint64_t max_batch_rows = vector::DEFAULT_VECTOR_CAPACITY;
+        std::pmr::vector<types::complex_logical_type> types(resource_);
+        types.reserve(columns.size());
+        for (const auto& column : columns) {
+            types.push_back(column_definitions_[column.primary_index()].type());
+        }
+        vector::data_chunk_t cells(resource_, types, max_batch_rows);
+        vector::vector_t row_ids(resource_, types::complex_logical_type(types::logical_type::BIGINT), max_batch_rows);
+        std::pmr::vector<uint64_t> inserted(max_batch_rows, resource_);
+        std::pmr::vector<uint64_t> deleted(max_batch_rows, resource_);
+        column_fetch_state state;
+
+        for (const auto& range : ranges) {
+            for (uint64_t done = 0; done < range.count; done += max_batch_rows) {
+                uint64_t batch = std::min(max_batch_rows, range.count - done);
+                int64_t first_row = range.row_start + static_cast<int64_t>(done);
+                row_groups_->fill_stamps(first_row, batch, inserted.data(), deleted.data());
+                auto* live_rows = row_ids.data<int64_t>();
+                uint64_t live = 0;
+                for (uint64_t offset = 0; offset < batch; offset++) {
+                    if (stands_at_commit(txn, inserted[offset]) && !stands_at_commit(txn, deleted[offset])) {
+                        live_rows[live++] = first_row + static_cast<int64_t>(offset);
+                    }
+                }
+                if (live == 0) {
+                    continue;
+                }
+                cells.reset();
+                row_groups_->fetch(cells, columns, row_ids, live, state, {}, txn, fetch_visibility_t::RAW);
+                if (state.fetch_error.contains_error()) {
+                    return state.fetch_error;
+                }
+                for (uint64_t column = 0; column < columns.size(); column++) {
+                    const auto& cells_of_column = cells.data[column];
+                    for (uint64_t cell = 0; cell < cells.size(); cell++) {
+                        if (!cells_of_column.is_null(cell)) {
+                            continue;
+                        }
+                        std::pmr::string what{"commit refused: column '", resource_};
+                        what +=
+                            std::pmr::string{column_definitions_[columns[column].primary_index()].name(), resource_};
+                        what += std::pmr::string{"' of table '", resource_};
+                        what += std::pmr::string{name_, resource_};
+                        what += std::pmr::string{"' is NOT NULL without a default, and a row that would be live "
+                                                 "after this commit holds NULL in it",
+                                                 resource_};
+                        return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+                    }
+                }
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t data_table_t::prepare(const transaction_data& txn, const std::pmr::vector<row_range_t>& own_appends) {
+        assert(txn.transaction_id >= TRANSACTION_ID_START && "data_table_t::prepare: not a transaction");
+        // Empty unless a rule applies, which most commits never meet
+        std::pmr::vector<storage_index_t> added_columns(resource_);
+        std::pmr::vector<storage_index_t> unseen_columns(resource_);
+        for (uint64_t position = 0; position < column_definitions_.size(); position++) {
+            const auto& column = column_definitions_[position];
+            bool fills_with_a_value = column.has_default_value() && !column.default_value().is_null();
+            if (!column.is_not_null() || fills_with_a_value || !stands_at_commit(txn, column.added_at()) ||
+                stands_at_commit(txn, column.dropped_at())) {
+                continue;
+            }
+            if (column.added_at() == txn.transaction_id) {
+                added_columns.emplace_back(position);
+            } else if (!column.visible_to(txn)) {
+                unseen_columns.emplace_back(position);
+            }
+        }
+        if (!added_columns.empty()) {
+            row_range_t every_row{0, row_groups_->total_rows()};
+            if (auto refused = refuse_nulls_at_commit(txn, added_columns, {&every_row, 1}); refused.contains_error()) {
+                return refused;
+            }
+        }
+        if (!unseen_columns.empty() && !own_appends.empty()) {
+            if (auto refused = refuse_nulls_at_commit(txn, unseen_columns, own_appends); refused.contains_error()) {
+                return refused;
+            }
+        }
+        if (std::find(prepared_.begin(), prepared_.end(), txn.transaction_id) == prepared_.end()) {
+            prepared_.push_back(txn.transaction_id);
+        }
+        return core::error_t::no_error();
+    }
+
+    void data_table_t::release_prepared(uint64_t txn_id) {
+        prepared_.erase(std::remove(prepared_.begin(), prepared_.end(), txn_id), prepared_.end());
+    }
+
+    vector::vector_t data_table_t::default_column(uint64_t position, const vector::data_chunk_t& chunk) const {
+        const auto& column = column_definitions_[position];
+        if (column.has_default_value() && !column.default_value().is_null()) {
+            vector::vector_t filled(resource_, column.default_value(), chunk.capacity());
+            filled.flatten(chunk.size());
+            filled.set_type_alias(column.name());
+            return filled;
+        }
+        auto type = column.type();
+        type.set_alias(column.name());
+        vector::vector_t filled(resource_, type, chunk.capacity());
+        filled.validity().set_all_invalid(chunk.size());
+        return filled;
+    }
+
+    core::error_t data_table_t::take_payload_column(uint64_t position,
+                                                    vector::vector_t& payload,
+                                                    std::vector<vector::vector_t>& physical) const {
+        const auto& column = column_definitions_[position];
+        if (payload.type() != column.type()) {
+            std::pmr::string what{"write to table '", resource_};
+            what += std::pmr::string{name_, resource_};
+            what += std::pmr::string{"': column '", resource_};
+            what += std::pmr::string{column.name(), resource_};
+            what += std::pmr::string{"' stores a type other than the payload carries; nothing was written", resource_};
+            return core::error_t{core::error_code_t::schema_error, std::move(what)};
+        }
+        payload.set_type_alias(column.name());
+        physical.push_back(std::move(payload));
+        return core::error_t::no_error();
+    }
+
+    core::error_t data_table_t::widen_insert(const transaction_data& txn, vector::data_chunk_t& chunk) const {
+        const auto visible = visible_columns(txn);
+        assert(chunk.column_count() == visible.size() && "widen_insert: payload width is validated");
+        std::vector<vector::vector_t> physical;
+        physical.reserve(column_definitions_.size());
+        uint64_t next_visible = 0;
+        for (uint64_t position = 0; position < column_definitions_.size(); position++) {
+            if (next_visible < visible.size() && visible[next_visible] == position) {
+                if (auto taken = take_payload_column(position, chunk.data[next_visible], physical);
+                    taken.contains_error()) {
+                    return taken;
+                }
+                next_visible++;
+            } else {
+                physical.push_back(default_column(position, chunk));
+            }
+        }
+        chunk.data = std::move(physical);
+        return core::error_t::no_error();
+    }
+
+    core::error_t data_table_t::widen_update(const transaction_data& txn,
+                                             const vector::vector_t& row_ids,
+                                             vector::data_chunk_t& chunk) {
+        const auto visible = visible_columns(txn);
+        assert(chunk.column_count() == visible.size() && "widen_update: payload width is validated");
+
+        // Read before the delete stamps the rows
+        std::pmr::vector<storage_index_t> hidden_ids(resource_);
+        std::pmr::vector<types::complex_logical_type> hidden_types(resource_);
+        uint64_t next_visible = 0;
+        for (uint64_t position = 0; position < column_definitions_.size(); position++) {
+            if (next_visible < visible.size() && visible[next_visible] == position) {
+                next_visible++;
+                continue;
+            }
+            hidden_ids.emplace_back(static_cast<int64_t>(position));
+            hidden_types.push_back(column_definitions_[position].type());
+        }
+        vector::data_chunk_t old_values(resource_, hidden_types, chunk.capacity());
+        if (!hidden_ids.empty()) {
+            column_fetch_state state;
+            state.result_outlives_pins = true;
+            row_groups_->fetch(old_values, hidden_ids, row_ids, chunk.size(), state, {}, txn, fetch_visibility_t::RAW);
+            if (state.fetch_error.contains_error()) {
+                return state.fetch_error;
+            }
+            if (old_values.size() != chunk.size()) {
+                std::pmr::string what{"update of table '", resource_};
+                what += std::pmr::string{name_, resource_};
+                what += std::pmr::string{"': a row id names no row of it; nothing was written", resource_};
+                return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
+            }
+        }
+
+        std::vector<vector::vector_t> physical;
+        physical.reserve(column_definitions_.size());
+        next_visible = 0;
+        uint64_t next_hidden = 0;
+        for (uint64_t position = 0; position < column_definitions_.size(); position++) {
+            if (next_visible < visible.size() && visible[next_visible] == position) {
+                if (auto taken = take_payload_column(position, chunk.data[next_visible], physical);
+                    taken.contains_error()) {
+                    return taken;
+                }
+                next_visible++;
+            } else {
+                auto& kept = old_values.data[next_hidden++];
+                kept.set_type_alias(column_definitions_[position].name());
+                physical.push_back(std::move(kept));
+            }
+        }
+        chunk.data = std::move(physical);
+        return core::error_t::no_error();
+    }
+
+    core::error_t data_table_t::widen_by_name(const transaction_data& txn, vector::data_chunk_t& chunk) const {
+        std::pmr::vector<bool> placed(chunk.column_count(), false, resource_);
+        std::vector<vector::vector_t> physical;
+        physical.reserve(column_definitions_.size());
+        for (uint64_t position = 0; position < column_definitions_.size(); position++) {
+            const auto& column = column_definitions_[position];
+            uint64_t source = chunk.column_count();
+            if (column.visible_to(txn)) {
+                for (uint64_t candidate = 0; candidate < chunk.column_count(); candidate++) {
+                    const auto& type = chunk.data[candidate].type();
+                    if (!placed[candidate] && type.has_alias() && type.alias() == column.name() &&
+                        type.type() == column.type().type()) {
+                        source = candidate;
+                        break;
+                    }
+                }
+            }
+            if (source == chunk.column_count()) {
+                physical.push_back(default_column(position, chunk));
+                continue;
+            }
+            placed[source] = true;
+            if (auto taken = take_payload_column(position, chunk.data[source], physical); taken.contains_error()) {
+                return taken;
+            }
+        }
+        for (uint64_t candidate = 0; candidate < chunk.column_count(); candidate++) {
+            if (!placed[candidate]) {
+                std::pmr::string what{"write to table '", resource_};
+                what += std::pmr::string{name_, resource_};
+                what += std::pmr::string{"': the payload names a column the writer does not see", resource_};
+                return core::error_t{core::error_code_t::schema_error, std::move(what)};
+            }
+        }
+        chunk.data = std::move(physical);
+        return core::error_t::no_error();
+    }
+
+    core::error_t data_table_t::widen_by_attoid(std::span<const std::uint32_t> attoids,
+                                                vector::data_chunk_t& chunk) const {
+        assert(attoids.size() == chunk.column_count() && "widen_by_attoid: every payload column names its attoid");
+        std::vector<vector::vector_t> physical;
+        physical.reserve(column_definitions_.size());
+        for (uint64_t position = 0; position < column_definitions_.size(); position++) {
+            const auto attoid = column_definitions_[position].attoid();
+            assert(attoid != 0 && "widen_by_attoid: a regular table's column always carries its attoid");
+            const auto source = std::find(attoids.begin(), attoids.end(), attoid);
+            if (source == attoids.end()) {
+                physical.push_back(default_column(position, chunk));
+                continue;
+            }
+            const auto index = static_cast<uint64_t>(source - attoids.begin());
+            if (auto taken = take_payload_column(position, chunk.data[index], physical); taken.contains_error()) {
+                return taken;
+            }
+        }
+        chunk.data = std::move(physical);
+        return core::error_t::no_error();
+    }
+
     uint64_t data_table_t::find_visible_column(const transaction_data& txn, std::uint32_t attoid) const {
         if (attoid == 0) {
             return storage::INVALID_INDEX;
@@ -213,9 +531,9 @@ namespace components::table {
         mark_modified();
     }
 
-    std::vector<storage_index_t> data_table_t::to_physical_columns(const std::vector<storage_index_t>& column_ids,
-                                                                   const std::vector<uint64_t>& visible) const {
-        std::vector<storage_index_t> physical_ids;
+    std::pmr::vector<storage_index_t> data_table_t::to_physical_columns(const std::vector<storage_index_t>& column_ids,
+                                                                        const std::vector<uint64_t>& visible) const {
+        std::pmr::vector<storage_index_t> physical_ids(resource_);
         physical_ids.reserve(column_ids.size());
         for (const auto& id : column_ids) {
             storage_index_t physical = id;
@@ -516,9 +834,15 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> data_table_t::revert_append(int64_t row_start, uint64_t count) {
-        auto reverted = row_groups_->revert_append(row_start, count);
+        if (row_groups_->is_tail(row_start, count)) {
+            auto reverted = row_groups_->revert_append(row_start, count);
+            mark_modified();
+            return reverted;
+        }
+        // Not the tail: truncating would take the rows behind it down too.
+        row_groups_->abort_append(row_start, count);
         mark_modified();
-        return reverted;
+        return true;
     }
 
     void data_table_t::commit_all_deletes(uint64_t txn_id, uint64_t commit_id) {
@@ -553,15 +877,42 @@ namespace components::table {
     core::result_wrapper_t<uint64_t> data_table_t::delete_rows(table_delete_state&,
                                                                vector::vector_t& row_identifiers,
                                                                uint64_t count,
-                                                               uint64_t transaction_id) {
+                                                               const transaction_data& txn) {
         assert(row_identifiers.type().type() == types::logical_type::BIGINT);
         if (count == 0) {
             return core::result_wrapper_t<uint64_t>{uint64_t{0}};
         }
 
-        mark_modified();
         row_identifiers.flatten(count);
-        auto ids = row_identifiers.data<int64_t>();
+        const auto* requested = row_identifiers.data<int64_t>();
+
+        std::pmr::vector<int64_t> claimed(resource_);
+        claimed.reserve(count);
+        for (uint64_t i = 0; i < count; i++) {
+            switch (decide_claim(txn, row_groups_->delete_stamp(requested[i]))) {
+                case write_decision_t::proceed:
+                    claimed.push_back(requested[i]);
+                    break;
+                case write_decision_t::skip:
+                    break;
+                case write_decision_t::conflict: {
+                    std::pmr::string what{"could not delete row ", resource_};
+                    what += std::pmr::string{std::to_string(requested[i]), resource_};
+                    what += std::pmr::string{" of table '", resource_};
+                    what += std::pmr::string{name_, resource_};
+                    what += std::pmr::string{"': it already carries a delete stamp that is not this transaction's",
+                                             resource_};
+                    return core::error_t{core::error_code_t::write_conflict, std::move(what)};
+                }
+            }
+        }
+        if (claimed.empty()) {
+            return core::result_wrapper_t<uint64_t>{uint64_t{0}};
+        }
+
+        mark_modified();
+        auto* ids = claimed.data();
+        count = claimed.size();
 
         uint64_t pos = 0;
         uint64_t delete_count = 0;
@@ -579,7 +930,7 @@ namespace components::table {
 
             vector::vector_t offset_ids(row_identifiers, current_offset, pos);
             VALUE_OR_RETURN(auto deleted,
-                            row_groups_->delete_rows(*this, ids + current_offset, current_count, transaction_id));
+                            row_groups_->delete_rows(*this, ids + current_offset, current_count, txn.transaction_id));
             delete_count += deleted;
         }
         return core::result_wrapper_t<uint64_t>{delete_count};

@@ -24,6 +24,10 @@ namespace components::catalog {
     // oid < FIRST_USER_OID partition used by manager_disk_t::pool_idx_for_oid.
     inline constexpr bool is_catalog_table(oid_t oid) noexcept { return oid != INVALID_OID && oid < FIRST_USER_OID; }
 
+    // System tables' columns are numbered from here in definition order, clear of every other well-known oid;
+    // a new system column is only ever appended, but FIRST_USER_OID is a long way away for now
+    inline constexpr oid_t FIRST_SYSTEM_ATTOID = 1000;
+
     // Well-known OIDs — built-in objects assigned at bootstrap.
     namespace well_known_oid {
         // Default database (pg_database.oid). Otterbrix has no cluster-vs-database split, so

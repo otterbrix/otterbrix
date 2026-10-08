@@ -18,6 +18,7 @@
 #include <limits>
 #include <services/disk/manager_disk.hpp>
 
+#include <chrono>
 #include <filesystem>
 #include <thread>
 #include <unistd.h>
@@ -72,7 +73,8 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (!future.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler->run(1000);
                 std::this_thread::yield();
             }
@@ -272,9 +274,8 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
     REQUIRE_FALSE(before_other.found);
     // The handler grew an error channel (it used to return void), so the rollback is asserted here
     // rather than discarded -- that is the whole point of the channel.
-    REQUIRE_FALSE(
-        fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn), std::move(appends_for_test), false)
-            .contains_error());
+    REQUIRE_FALSE(fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn), std::move(appends_for_test))
+                      .contains_error());
     auto after = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("ephemeral"));
     REQUIRE_FALSE(after.found);
     auto after_same = test_probe::probe_table(fx, fx.txn_ctx(txn), ns_oid, std::string("ephemeral"));
@@ -379,7 +380,7 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_rollback_undoes") {
     REQUIRE(before.found);
     REQUIRE(before.columns.size() == 0);
 
-    REQUIRE_FALSE(fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn1), std::move(pending_ranges), false)
+    REQUIRE_FALSE(fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn1), std::move(pending_ranges))
                       .contains_error());
 
     auto after_other = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("docs"));

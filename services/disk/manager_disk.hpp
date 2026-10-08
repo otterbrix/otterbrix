@@ -68,6 +68,7 @@ namespace services::disk {
                         bool allow_schemaless = false);
 
         components::table::data_table_t& table() { return *table_; }
+        const components::table::data_table_t& table() const { return *table_; }
 
         /// Refuses a `.wal_id` sidecar that claims a checkpoint over a never-checkpointed file.
         [[nodiscard]] bool never_checkpointed() const noexcept { return never_checkpointed_; }
@@ -417,7 +418,15 @@ namespace services::disk {
         unique_future<void> publish_column_stamps(execution_context_t ctx,
                                                   uint64_t commit_id,
                                                   std::pmr::set<components::catalog::oid_t> tables);
-
+        // The abort half: ctx.txn's column stamps on `tables'
+        unique_future<void> revert_column_stamps(execution_context_t ctx,
+                                                 std::pmr::set<components::catalog::oid_t> tables);
+        // ctx.txn's COMMIT, above its WAL marker
+        unique_future<core::error_t> storage_prepare(execution_context_t ctx,
+                                                     std::pmr::set<components::catalog::oid_t> tables,
+                                                     std::vector<components::pg_catalog_append_range_t> appends);
+        unique_future<void> storage_release_prepared(execution_context_t ctx,
+                                                     std::pmr::set<components::catalog::oid_t> tables);
         // ALTER TABLE RENAME COLUMN's physical half; ordering mirrors drop_storage_column — a reverted
         // ALTER can never leave storage renamed against a catalog that took the rename back.
         unique_future<core::result_wrapper_t<bool>> rename_storage_column(session_id_t session,
@@ -428,6 +437,7 @@ namespace services::disk {
         // ALTER TABLE ADD COLUMN: operator_alter_column_add_t; computed tables: operator_computed_field_register_t.
 
         core::result_wrapper_t<uint64_t> append_sync(components::catalog::oid_t table_oid,
+                                                     const std::pmr::vector<components::catalog::oid_t>& attoids,
                                                      components::vector::data_chunk_t& data,
                                                      components::table::transaction_data txn);
         [[nodiscard]] core::error_t
@@ -441,10 +451,13 @@ namespace services::disk {
         [[nodiscard]] core::result_wrapper_t<components::storage::appended_range_t>
         update_sync(components::catalog::oid_t table_oid,
                     const std::pmr::vector<int64_t>& row_ids,
+                    const std::pmr::vector<components::catalog::oid_t>& attoids,
                     components::vector::data_chunk_t& new_data,
                     components::table::transaction_data txn);
         [[nodiscard]] core::error_t direct_add_column_sync(components::catalog::oid_t table_oid,
-                                                           const components::vector::data_chunk_t& schema_chunk);
+                                                           const std::pmr::vector<components::catalog::oid_t>& attoids,
+                                                           const components::vector::data_chunk_t& schema_chunk,
+                                                           uint64_t first_position);
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char* { return "manager_disk"; }
@@ -486,8 +499,8 @@ namespace services::disk {
         /// Rewrites a DROP's dropped_at_commit_id from TXN-ID space into commit-id space once commit allocates one.
         unique_future<void> storage_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
 
-        /// Abort mirror of storage_dropped_committed: erases dropped_storages_ entries for an aborted txn.
-        unique_future<void> storage_drop_aborted(session_id_t session, uint64_t txn_id);
+        unique_future<core::error_t> abort_transaction(session_id_t session,
+                                                       components::table::txn_abort_drain_t drain);
 
         /// Bootstrap helper: fans the dispatcher address to every agent (no manager-side mirror).
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
@@ -549,7 +562,7 @@ namespace services::disk {
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::data_chunk_t> data);
 
-        unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
+        unique_future<core::result_wrapper_t<components::storage::updated_rows_t>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::vector_t> row_ids,
@@ -568,8 +581,7 @@ namespace services::disk {
                                                     std::set<components::catalog::oid_t> tables);
 
         unique_future<core::error_t> storage_revert_appends(execution_context_t ctx,
-                                                            std::vector<components::pg_catalog_append_range_t> ranges,
-                                                            bool tail_only);
+                                                            std::vector<components::pg_catalog_append_range_t> ranges);
 
         unique_future<void> storage_revert_deletes(execution_context_t ctx,
                                                    std::vector<components::catalog::oid_t> tables);
@@ -613,11 +625,14 @@ namespace services::disk {
                                                        &manager_disk_t::on_horizon_advanced,
                                                        &manager_disk_t::mark_storage_dropped_many,
                                                        &manager_disk_t::storage_dropped_committed,
-                                                       &manager_disk_t::storage_drop_aborted,
+                                                       &manager_disk_t::abort_transaction,
                                                        // Appended last — positional msg ids (see
                                                        // disk_contract::dispatch_traits).
                                                        &manager_disk_t::storage_open_scan_hold,
-                                                       &manager_disk_t::storage_compact_epoch>;
+                                                       &manager_disk_t::storage_compact_epoch,
+                                                       &manager_disk_t::revert_column_stamps,
+                                                       &manager_disk_t::storage_prepare,
+                                                       &manager_disk_t::storage_release_prepared>;
 
     private:
         // Returns no_error(), or data_corruption/io_error instead of throwing, when the .otbx is
@@ -631,6 +646,9 @@ namespace services::disk {
         [[nodiscard]] std::unordered_map<components::catalog::oid_t,
                                          std::vector<components::table::column_definition_t>>
         collect_catalog_columns_sync(const std::unordered_set<components::catalog::oid_t>& wanted) const;
+
+        // Abort mirror of storage_dropped_committed: erases dropped_storages_ entries for an aborted txn.
+        unique_future<void> storage_drop_aborted(uint64_t txn_id);
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
@@ -647,6 +665,7 @@ namespace services::disk {
         // No storages_ map here (pure router): agent 0 takes system oids, others split the user pool.
         std::pmr::vector<agent_disk_ptr> agents_{resource_};
         components::catalog::oid_generator oid_gen_;
+        components::catalog::oid_t oid_reserved_until_{components::catalog::INVALID_OID};
         components::catalog::session_catalog_t stored_catalog_;
 
         // dropped_storages_ per-agent slices are the sole owner of GC state — no manager-side mirror.

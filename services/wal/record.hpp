@@ -7,14 +7,14 @@
 
 namespace services::wal {
 
+    using column_attoids_t = std::pmr::vector<components::catalog::oid_t>;
+
     enum class wal_record_type : uint8_t
     {
         COMMIT = 1,
         PHYSICAL_INSERT = 10,
         PHYSICAL_DELETE = 11,
         PHYSICAL_UPDATE = 12,
-        // Written BEFORE the dependent PHYSICAL_INSERT so WAL-first replay applies the schema
-        // change first; payload is a 0-row data_chunk whose columns ARE the new ones, idempotent on replay.
         PHYSICAL_ADD_COLUMN = 13,
     };
 
@@ -24,6 +24,7 @@ namespace services::wal {
         // process-global arena; last_crc32/id are likewise zeroed until the CRC check succeeds.
         explicit record_t(std::pmr::memory_resource* resource)
             : physical_data(resource)
+            , physical_attoids(resource)
             , physical_row_ids(resource) {}
 
         size_tt size{0};
@@ -38,6 +39,8 @@ namespace services::wal {
         // physical_data batches the payload as ≤DEFAULT_VECTOR_CAPACITY chunks; empty for DELETE/no-payload records.
         components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
         std::pmr::vector<components::vector::data_chunk_t> physical_data;
+        // INSERT/UPDATE: replay places physical_data's columns by attoid
+        column_attoids_t physical_attoids;
         std::pmr::vector<int64_t> physical_row_ids;
         uint64_t physical_row_start{0};
         uint64_t physical_row_count{0};

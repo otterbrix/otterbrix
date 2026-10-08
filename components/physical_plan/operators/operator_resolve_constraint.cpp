@@ -14,7 +14,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,7 +29,7 @@ namespace components::operators {
             std::pmr::vector<std::uint64_t> cols(resource);
             cols.emplace_back(catalog::pg_attribute_col::attoid);  // matched against the FK attoid list
             cols.emplace_back(catalog::pg_attribute_col::attname); // the name carried into fk_info
-            cols.emplace_back(catalog::pg_attribute_col::attnum);  // referencing direction only
+            cols.emplace_back(catalog::pg_attribute_col::attnum);  // orders the schema positions
             cols.emplace_back(catalog::pg_attribute_col::attisdropped);
             cols.emplace_back(catalog::pg_attribute_col::attdefspec);
             return cols;
@@ -40,6 +39,7 @@ namespace components::operators {
             std::pmr::vector<std::uint64_t> cols(resource);
             cols.emplace_back(catalog::pg_attribute_col::attoid);
             cols.emplace_back(catalog::pg_attribute_col::attname);
+            cols.emplace_back(catalog::pg_attribute_col::attnum);
             // Without attisdropped, the tombstone filter below can't see dropped columns and binds to them.
             cols.emplace_back(catalog::pg_attribute_col::attisdropped);
             return cols;
@@ -49,6 +49,74 @@ namespace components::operators {
             return chunk.column_count() > catalog::pg_attribute_col::attisdropped &&
                    !chunk.is_null(catalog::pg_attribute_col::attisdropped, row) &&
                    chunk.get_value<bool>(catalog::pg_attribute_col::attisdropped, row);
+        }
+
+        struct live_column_t {
+            catalog::oid_t attoid{catalog::INVALID_OID};
+            std::int32_t attnum{0};
+            const components::vector::data_chunk_t* chunk{nullptr};
+            uint64_t row{0};
+        };
+
+        // A table's live columns in attnum order
+        std::pmr::vector<live_column_t>
+        live_columns(std::pmr::memory_resource* resource,
+                     const std::pmr::vector<components::vector::data_chunk_t>& attributes,
+                     std::uint64_t required_column) {
+            std::pmr::vector<live_column_t> columns(resource);
+            for (const auto& attr_chunk : attributes) {
+                if (attr_chunk.column_count() <= required_column) {
+                    continue;
+                }
+                for (uint64_t row = 0; row < attr_chunk.size(); ++row) {
+                    if (attribute_row_is_dropped(attr_chunk, row)) {
+                        continue;
+                    }
+                    live_column_t column;
+                    column.attoid = static_cast<catalog::oid_t>(
+                        attr_chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, row));
+                    column.attnum = attr_chunk.is_null(catalog::pg_attribute_col::attnum, row)
+                                        ? 0
+                                        : attr_chunk.get_value<std::int32_t>(catalog::pg_attribute_col::attnum, row);
+                    column.chunk = &attr_chunk;
+                    column.row = row;
+                    columns.push_back(column);
+                }
+            }
+            std::sort(columns.begin(), columns.end(), [](const live_column_t& lhs, const live_column_t& rhs) {
+                return lhs.attnum < rhs.attnum;
+            });
+            return columns;
+        }
+
+        // False when a key column is not among the live ones
+        bool key_positions(const std::pmr::vector<live_column_t>& columns,
+                           const std::vector<catalog::oid_t>& attoids,
+                           std::vector<std::size_t>* positions) {
+            positions->clear();
+            positions->reserve(attoids.size());
+            for (const auto wanted : attoids) {
+                const auto found = std::find_if(columns.begin(), columns.end(), [wanted](const live_column_t& column) {
+                    return column.attoid == wanted;
+                });
+                if (found == columns.end()) {
+                    return false;
+                }
+                positions->push_back(static_cast<std::size_t>(found - columns.begin()));
+            }
+            return true;
+        }
+
+        std::vector<std::string> key_names(const std::pmr::vector<live_column_t>& columns,
+                                           const std::vector<std::size_t>& positions) {
+            std::vector<std::string> names;
+            names.reserve(positions.size());
+            for (const auto position : positions) {
+                const auto& column = columns[position];
+                names.emplace_back(
+                    column.chunk->get_value<std::string_view>(catalog::pg_attribute_col::attname, column.row));
+            }
+            return names;
         }
     } // namespace
 
@@ -429,150 +497,42 @@ namespace components::operators {
                     auto& child_attr = k < child_results.size() ? child_results[k] : empty_child;
                     auto& parent_attr = k < parent_results.size() ? parent_results[k] : empty_parent;
 
-                    {
-                        std::vector<std::string> names;
-                        names.reserve(child_attoids.size());
-                        for (const auto& wanted_oid : child_attoids) {
-                            for (auto& attr_chunk : child_attr) {
-                                if (attr_chunk.column_count() <= catalog::pg_attribute_col::attisdropped) {
-                                    continue;
-                                }
-                                bool found = false;
-                                for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
-                                    if (attribute_row_is_dropped(attr_chunk, ai)) {
-                                        continue;
-                                    }
-                                    auto row_attoid = static_cast<catalog::oid_t>(
-                                        attr_chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, ai));
-                                    if (row_attoid == wanted_oid) {
-                                        names.emplace_back(std::string(
-                                            attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname,
-                                                                                   ai)));
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if (found) {
-                                    break;
-                                }
-                            }
-                        }
-                        if (names.size() != child_attoids.size()) {
-                            std::string msg = "foreign key constraint \"";
-                            msg += describe_constraint();
-                            msg += "\": referencing column list cannot be resolved — a column it is "
-                                   "declared on no longer exists";
-                            set_error(core::error_t{core::error_code_t::schema_error,
-                                                    std::pmr::string{std::move(msg), resource_}});
-                            co_return;
-                        }
-                        fk.child_col_names = std::move(names);
+                    auto child_columns = live_columns(resource_, child_attr, catalog::pg_attribute_col::attdefspec);
+                    if (!key_positions(child_columns, child_attoids, &fk.child_col_indices)) {
+                        std::string msg = "foreign key constraint \"";
+                        msg += describe_constraint();
+                        msg += "\": referencing column list cannot be resolved — a column it is "
+                               "declared on no longer exists";
+                        set_error(core::error_t{core::error_code_t::schema_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
                     }
+                    fk.child_col_names = key_names(child_columns, fk.child_col_indices);
 
                     if (direction == direction_t::referencing) {
-                        struct row_meta_t {
-                            std::int32_t attnum{0};
-                            std::string attname;
-                            std::string attdefspec;
-                        };
-                        std::vector<row_meta_t> ordered;
-                        for (auto& attr_chunk : child_attr) {
-                            // Narrower reads attdefspec as "no default": SET NULL applies where SET DEFAULT was meant.
-                            if (attr_chunk.column_count() <= catalog::pg_attribute_col::attdefspec) {
-                                continue;
-                            }
-                            for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
-                                if (!attr_chunk.is_null(catalog::pg_attribute_col::attisdropped, ai) &&
-                                    attr_chunk.get_value<bool>(catalog::pg_attribute_col::attisdropped, ai)) {
-                                    continue;
-                                }
-                                row_meta_t row;
-                                if (!attr_chunk.is_null(catalog::pg_attribute_col::attname, ai)) {
-                                    row.attname.assign(
-                                        attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname, ai));
-                                }
-                                row.attnum =
-                                    attr_chunk.is_null(catalog::pg_attribute_col::attnum, ai)
-                                        ? 0
-                                        : attr_chunk.get_value<std::int32_t>(catalog::pg_attribute_col::attnum, ai);
-                                if (!attr_chunk.is_null(catalog::pg_attribute_col::attdefspec, ai)) {
-                                    row.attdefspec.assign(
-                                        attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attdefspec,
-                                                                               ai));
-                                }
-                                ordered.push_back(std::move(row));
-                            }
-                        }
-                        std::sort(ordered.begin(), ordered.end(), [](const row_meta_t& lhs, const row_meta_t& rhs) {
-                            return lhs.attnum < rhs.attnum;
-                        });
-                        for (const auto& col_name : fk.child_col_names) {
-                            std::size_t pos = std::numeric_limits<std::size_t>::max();
+                        for (auto position : fk.child_col_indices) {
+                            const auto& column = child_columns[position];
                             std::string def_spec;
-                            for (std::size_t i = 0; i < ordered.size(); ++i) {
-                                if (ordered[i].attname == col_name) {
-                                    pos = i;
-                                    def_spec = ordered[i].attdefspec;
-                                    break;
-                                }
+                            if (!column.chunk->is_null(catalog::pg_attribute_col::attdefspec, column.row)) {
+                                def_spec.assign(
+                                    column.chunk->get_value<std::string_view>(catalog::pg_attribute_col::attdefspec,
+                                                                              column.row));
                             }
-                            // Pushing max() instead would make operator_fk_cascade_t skip the column: the parent
-                            // row goes, the child keeps pointing at a row that no longer exists.
-                            if (pos == std::numeric_limits<std::size_t>::max()) {
-                                std::string msg = "foreign key constraint \"";
-                                msg += describe_constraint();
-                                msg += "\": referencing column \"";
-                                msg += col_name;
-                                msg += "\" has no position in the child table's schema — its "
-                                       "ON DELETE action cannot be applied";
-                                set_error(core::error_t{core::error_code_t::schema_error,
-                                                        std::pmr::string{std::move(msg), resource_}});
-                                co_return;
-                            }
-                            fk.child_col_schema_indices.push_back(pos);
                             fk.child_col_default_specs.push_back(std::move(def_spec));
                         }
                     }
 
-                    {
-                        std::vector<std::string> names;
-                        names.reserve(parent_attoids.size());
-                        for (const auto& wanted_oid : parent_attoids) {
-                            for (auto& attr_chunk : parent_attr) {
-                                if (attr_chunk.column_count() <= catalog::pg_attribute_col::attisdropped) {
-                                    continue;
-                                }
-                                bool found = false;
-                                for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
-                                    if (attribute_row_is_dropped(attr_chunk, ai)) {
-                                        continue;
-                                    }
-                                    auto row_attoid = static_cast<catalog::oid_t>(
-                                        attr_chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, ai));
-                                    if (row_attoid == wanted_oid) {
-                                        names.emplace_back(std::string(
-                                            attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname,
-                                                                                   ai)));
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if (found) {
-                                    break;
-                                }
-                            }
-                        }
-                        if (names.size() != parent_attoids.size()) {
-                            std::string msg = "foreign key constraint \"";
-                            msg += describe_constraint();
-                            msg += "\": referenced column list cannot be resolved — a parent column it "
-                                   "points at no longer exists";
-                            set_error(core::error_t{core::error_code_t::schema_error,
-                                                    std::pmr::string{std::move(msg), resource_}});
-                            co_return;
-                        }
-                        fk.parent_col_names = std::move(names);
+                    auto parent_columns = live_columns(resource_, parent_attr, catalog::pg_attribute_col::attisdropped);
+                    if (!key_positions(parent_columns, parent_attoids, &fk.parent_col_indices)) {
+                        std::string msg = "foreign key constraint \"";
+                        msg += describe_constraint();
+                        msg += "\": referenced column list cannot be resolved — a parent column it "
+                               "points at no longer exists";
+                        set_error(core::error_t{core::error_code_t::schema_error,
+                                                std::pmr::string{std::move(msg), resource_}});
+                        co_return;
                     }
+                    fk.parent_col_names = key_names(parent_columns, fk.parent_col_indices);
 
                     if (direction == direction_t::referencing) {
                         // pg_namespace keys off an oid from the pg_class read — a 2-hop chained read, not batchable.
@@ -646,7 +606,7 @@ namespace components::operators {
                 }
             }
 
-            std::vector<std::vector<std::string>> unique_groups;
+            std::vector<catalog::unique_key_t> unique_groups;
             std::vector<std::string> pk_columns;
             if (!pending_uniques.empty()) {
                 std::pmr::vector<std::uint64_t> attr_keys(resource_);
@@ -727,7 +687,7 @@ namespace components::operators {
                     if (pending.is_pk) {
                         pk_columns.insert(pk_columns.end(), names.begin(), names.end());
                     }
-                    unique_groups.push_back(std::move(names));
+                    unique_groups.push_back(catalog::unique_key_t{pending.constraint_name, std::move(names)});
                 }
             }
 

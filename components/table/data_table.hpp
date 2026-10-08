@@ -1,5 +1,6 @@
 #pragma once
 
+#include <span>
 #include <utility>
 
 #include "collection.hpp"
@@ -13,6 +14,18 @@ namespace components::table {
     uint64_t table_scan_rows_streamed() noexcept;
     void reset_table_scan_rows_streamed() noexcept;
 #endif
+
+    struct row_range_t {
+        int64_t row_start{0};
+        uint64_t count{0};
+    };
+
+    enum class write_decision_t : uint8_t
+    {
+        proceed,
+        skip,
+        conflict
+    };
 
     class data_table_t {
     public:
@@ -33,11 +46,35 @@ namespace components::table {
 
         [[nodiscard]] std::vector<uint64_t> visible_columns(const transaction_data& txn) const;
         [[nodiscard]] std::pmr::vector<types::complex_logical_type> visible_types(const transaction_data& txn) const;
+        // Every physical column's attoid, in physical order
+        [[nodiscard]] std::pmr::vector<std::uint32_t> column_attoids() const;
 
         void stamp_column_identity(uint64_t position, std::uint32_t attoid);
         void stamp_column_added(uint64_t position, uint64_t stamp);
         void stamp_column_dropped(uint64_t position, uint64_t stamp);
         uint64_t publish_column_stamps(uint64_t txn_id, uint64_t commit_id);
+        uint64_t revert_column_stamps(uint64_t txn_id);
+
+        // The only write decided at write time
+        // TODO: pass Isolation level here, when it will be implemented
+        [[nodiscard]] static write_decision_t decide_claim(const transaction_data& txn, uint64_t stamp) noexcept;
+
+        // Prepare for commit
+        [[nodiscard]] core::error_t prepare(const transaction_data& txn,
+                                            const std::pmr::vector<row_range_t>& own_appends);
+        // Transform prepared into commit marker (commit is finished everywhere)
+        void release_prepared(uint64_t txn_id);
+
+        // Write payload is the writer's visible columns in its visible order
+        // which is not complete from table point of view
+        [[nodiscard]] core::error_t widen_insert(const transaction_data& txn, vector::data_chunk_t& chunk) const;
+        [[nodiscard]] core::error_t
+        widen_update(const transaction_data& txn, const vector::vector_t& row_ids, vector::data_chunk_t& chunk);
+        // A dynamic-schema table's columns have no identity but their names.
+        [[nodiscard]] core::error_t widen_by_name(const transaction_data& txn, vector::data_chunk_t& chunk) const;
+        // A column the table does not have is dropped (e.g. ADD never committed); a column the payload lacks was added
+        [[nodiscard]] core::error_t widen_by_attoid(std::span<const std::uint32_t> attoids,
+                                                    vector::data_chunk_t& chunk) const;
 
         [[nodiscard]] uint64_t find_visible_column(const transaction_data& txn, std::uint32_t attoid) const;
         void adopt_schema(const std::pmr::vector<types::complex_logical_type>& types);
@@ -79,7 +116,7 @@ namespace components::table {
         std::unique_ptr<table_delete_state>
         initialize_delete(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
         [[nodiscard]] core::result_wrapper_t<uint64_t>
-        delete_rows(table_delete_state& state, vector::vector_t& row_ids, uint64_t count, uint64_t transaction_id);
+        delete_rows(table_delete_state& state, vector::vector_t& row_ids, uint64_t count, const transaction_data& txn);
 
         // write_conflict when concurrent DDL altered the table (no longer root); true on success.
         [[nodiscard]] core::result_wrapper_t<bool> append_lock(table_append_state& state);
@@ -145,8 +182,8 @@ namespace components::table {
         uint64_t collection_owner_count() const;
 #endif
 
-        [[nodiscard]] std::vector<storage_index_t> to_physical_columns(const std::vector<storage_index_t>& column_ids,
-                                                                       const std::vector<uint64_t>& visible) const;
+        [[nodiscard]] std::pmr::vector<storage_index_t>
+        to_physical_columns(const std::vector<storage_index_t>& column_ids, const std::vector<uint64_t>& visible) const;
 
     private:
         // Plain bool, not atomic: same single-actor ownership as row_groups_ below.
@@ -170,6 +207,17 @@ namespace components::table {
         bool modified_since_checkpoint_{true};
         uint64_t compact_epoch_{0};
         std::string name_;
+        // Transaction ids between prepare and release_prepared. Same single-agent ownership as row_groups_.
+        std::pmr::vector<uint64_t> prepared_;
+
+        [[nodiscard]] bool stands_at_commit(const transaction_data& txn, uint64_t stamp) const noexcept;
+        [[nodiscard]] core::error_t refuse_nulls_at_commit(const transaction_data& txn,
+                                                           const std::pmr::vector<storage_index_t>& columns,
+                                                           std::span<const row_range_t> ranges);
+        [[nodiscard]] vector::vector_t default_column(uint64_t position, const vector::data_chunk_t& chunk) const;
+        [[nodiscard]] core::error_t take_payload_column(uint64_t position,
+                                                        vector::vector_t& payload,
+                                                        std::vector<vector::vector_t>& physical) const;
     };
 
 } // namespace components::table

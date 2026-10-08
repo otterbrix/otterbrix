@@ -9,13 +9,11 @@ namespace components::operators {
     //
     // Steps (in await_async_and_resume):
     //   1. txn_abort_drain_msg(session) to the dispatcher (sole owner of
-    //      transaction_manager_t): the handler snapshots txn_data, drains the
-    //      pg_catalog appends, discards delete-tables + backfills, and ends the
-    //      transaction (a failed one stays until its session ends it) — all by
-    //      value, returning a txn_abort_drain_t.
-    //   2. If txn_data.transaction_id != 0 and disk_address is set: send
-    //      storage_revert_appends(execution_context_t{...}, ranges) so any DDL rows
-    //      this transaction wrote into pg_catalog tables are tombstoned.
+    //      transaction_manager_t): the handler snapshots txn_data, drains every
+    //      range the transaction parked, and ends the transaction (a failed one
+    //      stays until its session ends it) — all by value, as a txn_abort_drain_t.
+    //   2. revert_transaction (transaction_teardown.hpp) undoes those writes — the
+    //      same teardown a COMMIT refused before its durable point runs.
     //   3. mark_executed().
     //
     // WAL semantics: there is no wal::abort_txn message; the legacy dispatcher

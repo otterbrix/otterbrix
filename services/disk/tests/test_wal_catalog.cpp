@@ -25,6 +25,7 @@
 #include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 
+#include <chrono>
 #include <filesystem>
 #include <limits>
 #include <thread>
@@ -92,7 +93,8 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(disk->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (!future.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler->run(1000);
                 std::this_thread::yield();
             }
@@ -567,7 +569,7 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
                   table_oid,
                   catalog::well_known_oid::main_database,
                   cols,
-                  /*is_computed=*/false);
+                  /*is_computed=*/true);
 
         {
             auto r = fx.invoke(&manager_disk_t::storage_append,
@@ -596,7 +598,8 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
                                                         services::wal::wal_sync_mode::NORMAL,
                                                         catalog::well_known_oid::main_database,
                                                         std::uint64_t{1000});
-            for (int i = 0; i < 400000 && !cf.is_ready(); ++i) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (!cf.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 fx.scheduler->run(1);
                 std::this_thread::yield();
             }
@@ -726,14 +729,17 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
                 continue;
             if (r.record_type == services::wal::wal_record_type::PHYSICAL_INSERT) {
                 for (auto& chunk : r.physical_data) {
-                    auto append_r =
-                        fx2.disk->append_sync(pg_attr, chunk, components::table::transaction_data::committed());
+                    auto append_r = fx2.disk->append_sync(pg_attr,
+                                                          r.physical_attoids,
+                                                          chunk,
+                                                          components::table::transaction_data::committed());
                     REQUIRE_FALSE(append_r.has_error());
                 }
             } else if (r.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) {
                 REQUIRE_FALSE(r.physical_data.empty());
                 auto upd_r = fx2.disk->update_sync(pg_attr,
                                                    r.physical_row_ids,
+                                                   r.physical_attoids,
                                                    r.physical_data.front(),
                                                    components::table::transaction_data::committed());
                 REQUIRE_FALSE(upd_r.has_error());

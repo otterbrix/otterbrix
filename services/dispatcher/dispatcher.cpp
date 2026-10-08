@@ -1218,17 +1218,21 @@ namespace services::dispatcher {
         out.dropped_storage_oids = txn_t->drain_dropped_storages();
         out.created_storage_oids = txn_t->drain_created_storages();
         out.created_indexes = txn_t->drain_created_indexes();
+        out.referenced_deletes = txn_t->drain_referenced_deletes();
         // No publish barrier here — txn_publish_msg runs it after storage/WAL, so no snapshot sees it half-flipped.
-        out.commit_id = txn_manager_.commit(session);
+        out.commit_id = txn_manager_.commit(session, &out.commit_view);
         co_return out;
     }
 
-    txn_abort_drain_t manager_dispatcher_t::drain_for_abort_(components::table::transaction_t& txn) {
-        txn_abort_drain_t out;
+    components::table::txn_abort_drain_t manager_dispatcher_t::drain_for_abort_(components::table::transaction_t& txn) {
+        components::table::txn_abort_drain_t out;
         out.txn = txn.data();
         txn.drain_pg_catalog_pending(out.swap_appends, out.pg_catalog_delete_tables);
-        auto backfills_discarded = txn.drain_pg_attribute_commit_id_backfills();
-        (void) backfills_discarded;
+        for (const auto& backfill : txn.drain_pg_attribute_commit_id_backfills()) {
+            if (const auto table_oid = backfill.column_stamped_table(); table_oid != components::catalog::INVALID_OID) {
+                out.column_stamped_tables.insert(table_oid);
+            }
+        }
         auto drained_appends = txn.drain_base_appends();
         out.base_appends.reserve(drained_appends.size());
         for (const auto& r : drained_appends) {
@@ -1246,7 +1250,7 @@ namespace services::dispatcher {
         return out;
     }
 
-    manager_dispatcher_t::unique_future<txn_abort_drain_t>
+    manager_dispatcher_t::unique_future<components::table::txn_abort_drain_t>
     manager_dispatcher_t::txn_abort_drain_msg(components::session::session_id_t session, uint64_t transaction_id) {
         trace(log_, "manager_dispatcher_t::txn_abort_drain_msg, session: {}", session.data());
         auto* txn_t = statement_transaction_(session, transaction_id);
@@ -1300,6 +1304,9 @@ namespace services::dispatcher {
         }
         for (auto& index : payload.created_indexes) {
             txn_t->accumulate_created_index(std::move(index));
+        }
+        for (auto& rows : payload.referenced_deletes) {
+            txn_t->accumulate_referenced_delete(std::move(rows));
         }
         co_return core::error_t::no_error();
     }

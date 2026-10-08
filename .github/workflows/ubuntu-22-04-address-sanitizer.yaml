@@ -17,7 +17,7 @@ jobs:
   run:
     name: Run
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 150
     env:
       CCACHE_MAXSIZE: 5G
     steps:

@@ -13,6 +13,8 @@ namespace components::operators {
     public:
         operator_fk_check_t(std::pmr::memory_resource* resource, log_t log, catalog::fk_info_t fk);
 
+        actor_zeta::unique_future<core::error_t> check_rows(pipeline::context_t* ctx, const chunks_vector_t& in_chunks);
+
         // STREAMING CONSTRAINT SINK. fk_check is the PARENT of a DML sink in the
         // plan chain (fk_check -> insert/update -> scan). Marking it a sink with
         // needs_async_finalize lets the whole chain stream: the executor pumps the

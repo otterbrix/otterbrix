@@ -424,8 +424,7 @@ namespace components::sql::transform {
                     return std::holds_alternative<expressions::expression_ptr>(arg);
                 });
                 for (const auto& expr : context.group->expressions()) {
-                    if (const auto* found =
-                            find_call(expr.get(), called, args, args_comparable, func->agg_distinct)) {
+                    if (const auto* found = find_call(expr.get(), called, args, args_comparable, func->agg_distinct)) {
                         return found->key();
                     }
                 }
@@ -464,10 +463,10 @@ namespace components::sql::transform {
                     VALUE_OR_RETURN(auto resolved, recurse(pg_ptr_cast<Node>(arg.data)));
                     args.emplace_back(std::move(resolved));
                 }
-                return param_storage{expression_ptr{make_function_expression(
-                    resource_,
-                    qualified_name_t{expr->op == MinMaxOp::IS_GREATEST ? "greatest" : "least"},
-                    std::move(args))}};
+                return param_storage{expression_ptr{
+                    make_function_expression(resource_,
+                                             qualified_name_t{expr->op == MinMaxOp::IS_GREATEST ? "greatest" : "least"},
+                                             std::move(args))}};
             }
             case T_SubLink: {
                 auto* sub = pg_ptr_cast<SubLink>(node);

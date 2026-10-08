@@ -23,6 +23,7 @@
 #include <logical_plan/node_fk_cascade.hpp>
 #include <logical_plan/node_fk_check.hpp>
 #include <logical_plan/node_insert.hpp>
+#include <logical_plan/node_insert_on_conflict.hpp>
 #include <logical_plan/node_refresh_matview.hpp>
 #include <logical_plan/node_sequence.hpp>
 #include <logical_plan/node_update.hpp>
@@ -43,7 +44,9 @@ namespace components::planner {
             return ins;
         }
 
-        node_ptr rewrite_insert(std::pmr::memory_resource* r, node_ptr node) {
+        node_ptr rewrite_insert(std::pmr::memory_resource* r,
+                                node_ptr node,
+                                std::vector<std::vector<std::string>> conflict_groups = {}) {
             auto* ins = static_cast<logical_plan::node_insert_t*>(node.get());
             node_ptr cur = node;
 
@@ -63,6 +66,7 @@ namespace components::planner {
                     std::vector<std::string>(ins->not_null_cols()),
                     std::vector<std::pair<std::string, uint64_t>>(ins->array_size_reqs())));
                 cc->set_unique_groups(ins->unique_groups());
+                cc->set_conflict_groups(std::move(conflict_groups));
                 cc->set_table_oid(ins->table_oid());
                 cc->set_check_predicates(ins->check_predicates());
                 cc->set_check_params(ins->check_params());
@@ -118,6 +122,17 @@ namespace components::planner {
             return cur;
         }
 
+        node_ptr rewrite_insert_on_conflict(std::pmr::memory_resource* r, node_ptr node) {
+            auto* statement = static_cast<logical_plan::node_insert_on_conflict_t*>(node.get());
+            auto& insert = statement->children().front();
+            insert = rewrite_insert(r, insert, statement->on_conflict().arbiter_groups);
+            if (statement->children().size() > 1) {
+                auto& update = statement->children()[1];
+                update = rewrite_update(r, update);
+            }
+            return node;
+        }
+
         node_ptr rewrite_delete(std::pmr::memory_resource* r, node_ptr node) {
             auto* del = static_cast<logical_plan::node_delete_t*>(node.get());
             if (del->referencing_fks().empty())
@@ -138,6 +153,8 @@ namespace components::planner {
             switch (node->type()) {
                 case node_type::insert_t:
                     return rewrite_insert(r, node);
+                case node_type::insert_on_conflict_t:
+                    return rewrite_insert_on_conflict(r, node);
                 case node_type::update_t:
                     return rewrite_update(r, node);
                 case node_type::delete_t:
@@ -616,6 +633,8 @@ namespace components::planner {
             switch (node->type()) {
                 case node_type::insert_t:
                     return rewrite_insert(r, node);
+                case node_type::insert_on_conflict_t:
+                    return rewrite_insert_on_conflict(r, node);
                 case node_type::update_t:
                     return rewrite_update(r, node);
                 case node_type::delete_t:

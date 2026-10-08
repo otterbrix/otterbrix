@@ -22,6 +22,7 @@
 
 #include <unistd.h>
 
+#include <chrono>
 #include <limits>
 #include <string>
 #include <thread>
@@ -53,7 +54,8 @@ namespace {
     // Disk actor runs on its own scheduler; poll rather than block-wait.
     template<typename Future>
     void spin_until_ready(Future& fut) {
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::yield();
         }
         REQUIRE(fut.is_ready());

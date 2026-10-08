@@ -10,6 +10,7 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -189,7 +190,8 @@ namespace {
                                                     &services::disk::manager_disk_t::resolve_function_by_name,
                                                     exec_ctx,
                                                     name);
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
             std::this_thread::yield();
         }
         REQUIRE(fut.is_ready());

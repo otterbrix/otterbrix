@@ -3,6 +3,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <filesystem>
+#include <vector>
+
 using namespace components;
 using namespace components::cursor;
 
@@ -364,5 +367,62 @@ TEST_CASE("integration::cpp::alter_add_column_reads") {
         CHECK(cur->value(0, 1).value<int64_t>() == 2);
         CHECK(cur->value(1, 1).value<int64_t>() == 42);
         CHECK(cur->value(2, 1).value<int64_t>() == 43);
+    }
+
+    SECTION("rows written while an ADD was open replay as they were") {
+        const auto crash_path = integration_fixture_path("alter_add_column_reads_crash");
+        std::filesystem::remove_all(crash_path);
+
+        auto run_scenario = [&](const std::string& end_of_add,
+                                const std::string& select,
+                                const std::vector<std::vector<int64_t>>& expected) {
+            {
+                test_spaces space(config);
+                auto* dispatcher = space.dispatcher();
+                run_ok(dispatcher, "CREATE DATABASE TestDatabase;");
+                run_ok(dispatcher, "CREATE TABLE TestDatabase.t (a bigint, b bigint);");
+                run_ok(dispatcher, "INSERT INTO TestDatabase.t (a, b) VALUES (1, 10);");
+                run_ok(dispatcher, "CHECKPOINT;");
+
+                auto adder = otterbrix::session_id_t();
+                REQUIRE(dispatcher->execute_sql(adder, "BEGIN;")->is_success());
+                REQUIRE(dispatcher->execute_sql(adder, "ALTER TABLE TestDatabase.t ADD COLUMN c bigint DEFAULT 77;")
+                            ->is_success());
+                run_ok(dispatcher, "INSERT INTO TestDatabase.t (a, b) VALUES (2, 20);");
+                run_ok(dispatcher, "UPDATE TestDatabase.t SET b = 11 WHERE a = 1;");
+                REQUIRE(dispatcher->execute_sql(adder, end_of_add)->is_success());
+
+                run_ok(dispatcher, "ALTER TABLE TestDatabase.t ADD COLUMN d bigint DEFAULT 9;");
+                run_ok(dispatcher,
+                       end_of_add == "COMMIT;" ? "INSERT INTO TestDatabase.t (a, b, c, d) VALUES (3, 30, 33, 39);"
+                                               : "INSERT INTO TestDatabase.t (a, b, d) VALUES (3, 30, 39);");
+                std::filesystem::copy(config.main_path, crash_path, std::filesystem::copy_options::recursive);
+            }
+
+            auto crash_config = test_create_config(crash_path);
+            crash_config.log.level = log_t::level::off;
+            test_spaces space(crash_config);
+            auto cur = run_ok(space.dispatcher(), select);
+            REQUIRE(cur->size() == expected.size());
+            for (std::size_t row = 0; row < expected.size(); ++row) {
+                for (std::size_t column = 0; column < expected[row].size(); ++column) {
+                    INFO("row " << row << ", column " << column);
+                    CHECK(cur->value(column, row).value<int64_t>() == expected[row][column]);
+                }
+            }
+        };
+
+        SECTION("the ADD rolls back") {
+            run_scenario("ROLLBACK;",
+                         "SELECT a, b, d FROM TestDatabase.t ORDER BY a;",
+                         {{1, 11, 9}, {2, 20, 9}, {3, 30, 39}});
+        }
+
+        SECTION("the ADD commits") {
+            run_scenario("COMMIT;",
+                         "SELECT a, b, c, d FROM TestDatabase.t ORDER BY a;",
+                         {{1, 11, 77, 9}, {2, 20, 77, 9}, {3, 30, 33, 39}});
+        }
+        std::filesystem::remove_all(crash_path);
     }
 }

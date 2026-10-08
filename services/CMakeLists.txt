@@ -19,6 +19,7 @@ set(${PROJECT_NAME}_SOURCES
         disk/manager_disk_ddl.cpp
         disk/manager_disk_resolve.cpp
         disk/manager_disk_storage.cpp
+        disk/oid_reservation.cpp
 
     # dispatcher
        dispatcher/dispatcher.cpp

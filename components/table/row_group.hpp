@@ -82,7 +82,7 @@ namespace components::table {
                            const std::vector<uint64_t>& column_indices);
 
         void fetch_row(column_fetch_state& state,
-                       const std::vector<storage_index_t>& column_ids,
+                       const std::pmr::vector<storage_index_t>& column_ids,
                        int64_t row_id,
                        vector::data_chunk_t& result,
                        uint64_t result_idx,
@@ -92,10 +92,12 @@ namespace components::table {
         bool is_visible(const transaction_data& txn, int64_t row_id);
 
         uint64_t delete_stamp(int64_t row_id);
+        void fill_stamps(int64_t row_id, uint64_t count, uint64_t* inserted, uint64_t* deleted);
 
         void append_version_info(transaction_data txn, uint64_t count);
 
         void commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count);
+        void abort_append(uint64_t row_group_start, uint64_t count);
         // The count shrinks even on a column refusal: an untruncated count over a truncated column would over-read.
         [[nodiscard]] core::result_wrapper_t<bool> revert_append(uint64_t row_group_start);
 

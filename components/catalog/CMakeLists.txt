@@ -10,6 +10,7 @@ set(SOURCE_${PROJECT_NAME}
         settings.cpp
         system_table_schemas.cpp
         table_id.cpp
+        unique_key.cpp
 )
 
 add_library(otterbrix_${PROJECT_NAME}

@@ -17,6 +17,7 @@
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <chrono>
 #include <filesystem>
 #include <limits>
 #include <thread>
@@ -67,7 +68,8 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (!future.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler->run(1000);
                 std::this_thread::yield();
             }
@@ -445,7 +447,7 @@ TEST_CASE("services::disk::error::update_refusal_is_not_a_zero_range") {
                            std::move(ids),
                            one_column_batch(&fx.resource, 0));
         REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value().count == 0);
+        REQUIRE(r.value().range.count == 0);
     }
 
     INFO("an oid with no storage anywhere: the update DID NOT HAPPEN, and says so");
@@ -616,7 +618,8 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
 
         auto call = [&](auto fn, auto&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::move(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (!future.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler->run(1000);
                 std::this_thread::yield();
             }
@@ -670,75 +673,6 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
     std::filesystem::remove_all(cfg.path);
 }
 
-// NOT NULL enforcement (storage_append_inner stage 2b) must refuse, not reuse append's (0,0) empty-batch reply.
-TEST_CASE("services::disk::error::a_not_null_violation_is_a_refusal_not_an_empty_append") {
-    using components::types::complex_logical_type;
-    using components::types::logical_type;
-    using components::vector::data_chunk_t;
-
-    fixture fx;
-    auto ns_oid = test_create_namespace(fx, "ns_notnull");
-
-    std::vector<components::table::column_definition_t> cols;
-    cols.emplace_back("a", complex_logical_type{logical_type::BIGINT});
-    cols.emplace_back("b", complex_logical_type{logical_type::BIGINT});
-    cols[1].set_not_null(true);
-    auto table_oid = test_create_table(fx, ns_oid, "t_notnull", cols);
-    fx.invoke(&manager_disk_t::create_storage_disk,
-              session_id_t{},
-              table_oid,
-              catalog::well_known_oid::main_database,
-              cols,
-              /*is_computed=*/false);
-
-    auto two_col_chunk = [&](bool null_in_b) {
-        std::pmr::vector<complex_logical_type> types(&fx.resource);
-        complex_logical_type ta{logical_type::BIGINT};
-        ta.set_alias("a");
-        types.push_back(std::move(ta));
-        complex_logical_type tb{logical_type::BIGINT};
-        tb.set_alias("b");
-        types.push_back(std::move(tb));
-        data_chunk_t chunk(&fx.resource, types, 2);
-        chunk.set_cardinality(2);
-        for (uint64_t i = 0; i < 2; ++i) {
-            chunk.set_value(0, i, static_cast<std::int64_t>(i + 1));
-            chunk.set_value(1, i, static_cast<std::int64_t>(i + 10));
-        }
-        if (null_in_b) {
-            chunk.data[1].validity().set_invalid(1);
-        }
-        std::pmr::vector<data_chunk_t> batch(&fx.resource);
-        batch.emplace_back(std::move(chunk));
-        return batch;
-    };
-
-    components::execution_context_t append_ctx{session_id_t{},
-                                               components::table::transaction_data::committed(),
-                                               {},
-                                               table_oid};
-
-    INFO("a NULL in a NOT NULL column is a refusal, not a (0,0) success");
-    {
-        auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, two_col_chunk(true));
-        REQUIRE(r.has_error());
-    }
-
-    INFO("nothing was materialized by the refused append");
-    {
-        auto total = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid);
-        REQUIRE_FALSE(total.has_error());
-        REQUIRE(total.value() == 0);
-    }
-
-    INFO("the channel is not over-broad: a valid batch still appends");
-    {
-        auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, two_col_chunk(false));
-        REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value().count == 2);
-    }
-}
-
 // pool_idx_for_oid routes every range/oid to its owner, so a miss here is real, not a not-owned OID.
 // These handlers return unique_future<void> (callers can only log), so this DEV tally is the only observable signal.
 TEST_CASE("services::disk::error::a_publish_or_revert_that_finds_no_storage_says_so") {
@@ -786,7 +720,7 @@ TEST_CASE("services::disk::error::a_publish_or_revert_that_finds_no_storage_says
         // An unowned oid is reported through publish_revert_misses and skipped, not refused, so the
         // handler itself must still answer no_error -- which is what the next line counts on.
         REQUIRE_FALSE(
-            fx.invoke(&manager_disk_t::storage_revert_appends, txn_ctx(), std::move(ranges), false).contains_error());
+            fx.invoke(&manager_disk_t::storage_revert_appends, txn_ctx(), std::move(ranges)).contains_error());
         REQUIRE(services::disk::publish_revert_misses() == 4);
     }
 

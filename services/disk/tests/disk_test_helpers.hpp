@@ -91,7 +91,8 @@ namespace disk_test_helpers {
                                      catalog::oid_t ns_oid,
                                      const std::string& name,
                                      const std::vector<components::table::column_definition_t>& cols,
-                                     char relkind_char = catalog::relkind::regular) {
+                                     char relkind_char = catalog::relkind::regular,
+                                     std::vector<components::table::column_definition_t>* stamped_out = nullptr) {
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1 + cols.size()});
         const catalog::oid_t table_oid = oids[0];
         catalog::oid_batch_t batch;
@@ -112,7 +113,20 @@ namespace disk_test_helpers {
                   rebuild_ctx(),
                   std::uint64_t{1000},
                   std::move(appends_local));
+        if (stamped_out != nullptr) {
+            *stamped_out = std::move(stamped_cols);
+        }
         return table_oid;
+    }
+
+    // Each column's attoid, in column order.
+    inline std::pmr::vector<catalog::oid_t>
+    attoids_of(std::pmr::memory_resource* resource, const std::vector<components::table::column_definition_t>& cols) {
+        std::pmr::vector<catalog::oid_t> attoids(resource);
+        for (const auto& column : cols) {
+            attoids.push_back(column.attoid());
+        }
+        return attoids;
     }
 
     template<typename Fx>

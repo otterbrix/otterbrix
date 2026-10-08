@@ -1,5 +1,4 @@
 #include "agent_disk.hpp"
-#include "expand_chunk.hpp"
 #include "inline_scan.hpp"
 #include "manager_disk.hpp"
 #include <algorithm>
@@ -239,7 +238,7 @@ namespace services::disk {
         }
         // The storage refuses a row id that names no row group; the count-mismatch check below
         // stays for the case where it deleted fewer than journalled without refusing.
-        VALUE_OR_RETURN(const uint64_t deleted, entry->storage->delete_rows(ids_vec, count, txn.transaction_id));
+        VALUE_OR_RETURN(const uint64_t deleted, entry->storage->delete_rows(ids_vec, count, txn));
         if (deleted != count) {
             std::pmr::string what{"agent_disk::delete_sync: the storage deleted ", resource()};
             what.append(std::to_string(deleted).c_str());
@@ -256,6 +255,7 @@ namespace services::disk {
     core::result_wrapper_t<components::storage::appended_range_t>
     agent_disk_t::update_sync(components::catalog::oid_t table_oid,
                               const std::pmr::vector<int64_t>& row_ids,
+                              const std::pmr::vector<components::catalog::oid_t>& attoids,
                               components::vector::data_chunk_t& new_data,
                               components::table::transaction_data txn) {
         if (row_ids.empty() && new_data.size() == 0) {
@@ -287,50 +287,66 @@ namespace services::disk {
         components::vector::data_chunk_t local(resource(), new_data.types(), new_data.size());
         new_data.copy(local, 0);
 
-        const auto& table_columns = entry->storage->columns();
-        if (!table_columns.empty() && local.column_count() < table_columns.size()) {
-            if (auto expanded = detail::expand_chunk_to_columns(resource(),
-                                                                table_oid,
-                                                                table_columns,
-                                                                local,
-                                                                /*is_computed=*/false);
-                expanded.contains_error()) {
-                return expanded;
+        if (!entry->storage->columns().empty() && local.column_count() > 0) {
+            const auto& table = entry->table_storage.table();
+            if (auto widened =
+                    entry->is_computed ? table.widen_by_name(txn, local) : table.widen_by_attoid(attoids, local);
+                widened.contains_error()) {
+                return widened;
             }
         }
         return entry->storage->update(ids_vec, local, txn);
     }
 
     core::error_t agent_disk_t::direct_add_column_sync(components::catalog::oid_t table_oid,
-                                                       const components::vector::data_chunk_t& schema_chunk) {
+                                                       const std::pmr::vector<components::catalog::oid_t>& attoids,
+                                                       const components::vector::data_chunk_t& schema_chunk,
+                                                       uint64_t first_position) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
             return no_replay_storage_error("direct_add_column_sync", table_oid);
         }
         auto& entry = it->second;
-        auto* s = entry->storage.get();
-        const bool is_computed_table = entry->is_computed;
         for (uint64_t col = 0; col < schema_chunk.column_count(); ++col) {
-            const auto ctype = schema_chunk.data[col].type();
-            if (!ctype.has_alias()) {
-                continue;
-            }
-            const auto name = std::string(ctype.alias());
-            bool present = false;
-            for (const auto& tc : s->columns()) {
-                if (tc.name() == name && (!is_computed_table || tc.type().type() == ctype.type())) {
-                    present = true;
-                    break;
+            uint64_t stored = entry->table_storage.table().column_count();
+            if (!entry->is_computed) {
+                const auto& columns = entry->table_storage.table().columns();
+                bool present = std::any_of(columns.begin(), columns.end(), [&](const auto& column) {
+                    return column.attoid() == attoids[col];
+                });
+                if (present) {
+                    continue;
                 }
             }
-            if (present) {
+            uint64_t position = entry->is_computed ? first_position + col : stored;
+            if (position < stored) {
                 continue;
             }
-            components::table::column_definition_t def(name, ctype);
+            if (position > stored) {
+                std::pmr::string what{"direct_add_column_sync: table oid ", resource()};
+                what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
+                what.append(" holds ");
+                what.append(std::to_string(stored).c_str());
+                what.append(" column(s), the journalled ADD COLUMN lands at position ");
+                what.append(std::to_string(position).c_str());
+                what.append(" — a column in between was never journalled; the ADD is NOT replayed");
+                return core::error_t{core::error_code_t::data_corruption, std::move(what)};
+            }
+            const auto& ctype = schema_chunk.data[col].type();
+            std::optional<components::types::logical_value_t> default_value;
+            if (schema_chunk.size() > 0 && !schema_chunk.data[col].is_null(0)) {
+                default_value = schema_chunk.data[col].value(0);
+            }
+            components::table::column_definition_t def(ctype.has_alias() ? std::string(ctype.alias()) : std::string{},
+                                                       ctype,
+                                                       std::move(default_value));
+            def.set_attoid(attoids[col]);
             entry->add_column(def, resource());
-            s = entry->storage.get();
-            if (s == nullptr) {
+            if (entry->storage == nullptr) {
                 return no_replay_storage_error("direct_add_column_sync", table_oid);
+            }
+            if (entry->table_storage.table().has_construction_error()) {
+                return core::error_on(resource(), entry->table_storage.table().construction_error());
             }
         }
         return core::error_t::no_error();
@@ -486,6 +502,18 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &agent_disk_t::storage_compact_epoch_inner, msg);
                 break;
             }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::revert_column_stamps_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::revert_column_stamps_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_prepare_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_prepare_inner, msg);
+                break;
+            }
+            case actor_zeta::msg_id<agent_disk_t, &agent_disk_t::storage_release_prepared_inner>: {
+                co_await actor_zeta::dispatch(this, &agent_disk_t::storage_release_prepared_inner, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -527,8 +555,7 @@ namespace services::disk {
             s->adopt_schema(data->types());
         }
 
-        if (s->has_schema() && data->column_count() > 0 &&
-            (is_computed_table || data->column_count() != s->columns().size())) {
+        if (is_computed_table && s->has_schema() && data->column_count() > 0) {
             std::vector<components::table::column_definition_t> new_columns;
             for (uint64_t col = 0; col < data->column_count(); col++) {
                 if (!data->data[col].type().has_alias()) {
@@ -567,27 +594,10 @@ namespace services::disk {
 
         const auto& table_columns = s->columns();
         if (!table_columns.empty() && data->column_count() > 0) {
-            if (auto expanded =
-                    detail::expand_chunk_to_columns(resource(), table_oid, table_columns, *data, is_computed_table);
-                expanded.contains_error()) {
-                co_return expanded;
-            }
-        }
-
-        if (!table_columns.empty()) {
-            for (size_t col = 0; col < table_columns.size() && col < data->column_count(); col++) {
-                if (table_columns[col].is_not_null()) {
-                    for (uint64_t row = 0; row < data->size(); row++) {
-                        if (!data->data[col].validity().row_is_valid(row)) {
-                            std::pmr::string what{"storage_append: NOT NULL violation on column '", resource()};
-                            what.append(table_columns[col].name().c_str());
-                            what.append("' of table oid ");
-                            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-                            what.append("; nothing was appended");
-                            co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
-                        }
-                    }
-                }
+            auto& table = entry->table_storage.table();
+            if (auto widened = is_computed_table ? table.widen_by_name(txn, *data) : table.widen_insert(txn, *data);
+                widened.contains_error()) {
+                co_return widened;
             }
         }
 
@@ -615,6 +625,7 @@ namespace services::disk {
                                                             &wal::manager_wal_replicate_t::write_physical_insert,
                                                             ctx.session,
                                                             table_oid,
+                                                            entry->table_storage.table().column_attoids(),
                                                             std::move(wal_chunks),
                                                             start_row,
                                                             actual_count,
@@ -631,17 +642,19 @@ namespace services::disk {
                 }
                 auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 0);
                 schema_chunk->set_cardinality(0);
-                auto [_g, gf] = actor_zeta::otterbrix::send(manager_wal_addr_,
-                                                            &wal::manager_wal_replicate_t::write_physical_grow,
-                                                            ctx.session,
-                                                            table_oid,
-                                                            std::move(schema_chunk),
-                                                            static_cast<std::uint64_t>(wal_added_columns.size()),
-                                                            std::move(wal_chunks),
-                                                            start_row,
-                                                            actual_count,
-                                                            txn.transaction_id,
-                                                            db_oid);
+                auto [_g, gf] = actor_zeta::otterbrix::send(
+                    manager_wal_addr_,
+                    &wal::manager_wal_replicate_t::write_physical_grow,
+                    ctx.session,
+                    table_oid,
+                    std::move(schema_chunk),
+                    static_cast<std::uint64_t>(s->columns().size() - wal_added_columns.size()),
+                    entry->table_storage.table().column_attoids(),
+                    std::move(wal_chunks),
+                    start_row,
+                    actual_count,
+                    txn.transaction_id,
+                    db_oid);
                 wal_future = std::move(gf);
             }
             auto wal_result = co_await std::move(wal_future);
@@ -780,8 +793,7 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<core::error_t>
-    agent_disk_t::storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges,
-                                               bool tail_only) {
+    agent_disk_t::storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges) {
         // Reports the FIRST refusal but keeps unwinding: a range that cannot be rolled back must not
         // strand the ranges after it.
         auto first_error = core::error_t::no_error();
@@ -801,22 +813,6 @@ namespace services::disk {
             }
             // Reverse iteration is what makes a multi-statement transaction work here: dropping its LAST
             // range moves the frontier back onto the one before it, so each in turn becomes the tail.
-            if (tail_only) {
-                const auto frontier = entry->storage->total_rows();
-                if (it->start_row < 0 || static_cast<uint64_t>(it->start_row) + it->count != frontier) {
-                    warn(log_,
-                         "agent_disk[{}]::storage_revert_appends_inner oid={} range [{}, {}) is no longer the "
-                         "table's tail (it holds {} rows) — the rows stay, and their pending stamps keep "
-                         "deferring this table's checkpoint rounds until the process restarts; truncating here "
-                         "would take a concurrent session's rows down with them",
-                         pool_idx_,
-                         static_cast<unsigned>(it->table_oid),
-                         it->start_row,
-                         static_cast<uint64_t>(it->start_row) + it->count,
-                         frontier);
-                    continue;
-                }
-            }
             if (auto reverted = entry->storage->revert_append(it->start_row, it->count);
                 reverted.contains_error() && !first_error.contains_error()) {
                 first_error = reverted;
@@ -825,13 +821,16 @@ namespace services::disk {
         co_return first_error;
     }
 
-    agent_disk_t::unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
+    agent_disk_t::unique_future<core::result_wrapper_t<components::storage::updated_rows_t>>
     agent_disk_t::storage_update_inner(components::catalog::oid_t table_oid,
                                        components::vector::vector_t row_ids,
                                        std::unique_ptr<components::vector::data_chunk_t> data,
                                        components::table::transaction_data txn) {
         if (!data || data->size() == 0) {
-            co_return components::storage::appended_range_t{};
+            co_return components::storage::updated_rows_t{
+                {},
+                std::pmr::vector<components::vector::data_chunk_t>{resource()},
+                std::pmr::vector<std::uint32_t>{resource()}};
         }
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
@@ -850,20 +849,21 @@ namespace services::disk {
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
-        // data was constructed based on visible columns to a specific transactions
-        // but table might have all columns for all transactions
-        const auto& table_columns = entry->storage->columns();
-        if (!table_columns.empty() && data->column_count() < table_columns.size()) {
-            if (auto expanded = detail::expand_chunk_to_columns(resource(),
-                                                                table_oid,
-                                                                table_columns,
-                                                                *data,
-                                                                /*is_computed=*/false);
-                expanded.contains_error()) {
-                co_return expanded;
-            }
+        auto& table = entry->table_storage.table();
+        if (auto widened =
+                entry->is_computed ? table.widen_by_name(txn, *data) : table.widen_update(txn, row_ids, *data);
+            widened.contains_error()) {
+            co_return widened;
         }
-        co_return entry->storage->update(row_ids, *data, txn);
+        auto updated = entry->storage->update(row_ids, *data, txn);
+        if (updated.has_error()) {
+            co_return updated.convert_error<components::storage::updated_rows_t>();
+        }
+        components::storage::updated_rows_t result{updated.value(),
+                                                   std::pmr::vector<components::vector::data_chunk_t>{resource()},
+                                                   table.column_attoids()};
+        result.written.push_back(std::move(*data));
+        co_return result;
     }
 
     agent_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
@@ -891,7 +891,7 @@ namespace services::disk {
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
-        co_return entry->storage->delete_rows(row_ids, count, txn.transaction_id);
+        co_return entry->storage->delete_rows(row_ids, count, txn);
     }
 
     agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
@@ -1019,7 +1019,7 @@ namespace services::disk {
                                                 const components::table::transaction_data& txn,
                                                 std::pmr::memory_resource* resource,
                                                 PerBatch&& fn) {
-        auto all_types = storage.types();
+        auto all_types = storage.types(txn);
         scan_position.next_row = 0;
         scan_position.max_row = static_cast<int64_t>(storage.total_rows());
         while (!scan_position.drained && scan_position.next_row < scan_position.max_row) {
@@ -1445,12 +1445,12 @@ namespace services::disk {
                 std::pmr::string{"fk semi-join: key chunk arity does not match key columns", resource}};
         }
 
-        const auto& cols = storage.columns();
+        const auto visible_types = storage.types(txn);
 
         std::pmr::vector<components::types::complex_logical_type> stored_key_types{resource};
         stored_key_types.reserve(key_col_indices.size());
         for (auto ci : key_col_indices) {
-            stored_key_types.push_back(cols[ci].type());
+            stored_key_types.push_back(visible_types[ci]);
         }
         components::vector::data_chunk_t norm_keys(resource, stored_key_types, nkeys);
         norm_keys.set_cardinality(nkeys);
@@ -1585,8 +1585,10 @@ namespace services::disk {
     }
 
     // Must error, not return empty, or a misrouted/corrupt read looks like "Database does not exist".
+    // Positions count only the columns `txn` sees: the scan reads its ids in that numbering
     static core::error_t resolve_key_col_indices(const collection_storage_entry_t* entry,
                                                  const std::pmr::vector<std::string>& key_col_names,
+                                                 const components::table::transaction_data& txn,
                                                  std::pmr::vector<std::uint64_t>& out_indices,
                                                  std::pmr::memory_resource* resource) {
         if (entry == nullptr || entry->storage == nullptr) {
@@ -1601,11 +1603,16 @@ namespace services::disk {
         out_indices.reserve(key_col_names.size());
         for (const auto& kname : key_col_names) {
             std::size_t col_idx = cols.size();
-            for (std::size_t ci = 0; ci < cols.size(); ++ci) {
-                if (cols[ci].name() == kname) {
-                    col_idx = ci;
+            std::size_t visible = 0;
+            for (const auto& column : cols) {
+                if (!column.visible_to(txn)) {
+                    continue;
+                }
+                if (column.name() == kname) {
+                    col_idx = visible;
                     break;
                 }
+                ++visible;
             }
             if (col_idx == cols.size()) {
                 std::pmr::string what{"keyed read: table has no column ", resource};
@@ -1649,7 +1656,7 @@ namespace services::disk {
         auto it = storages_.find(table_oid);
         const collection_storage_entry_t* entry = (it == storages_.end()) ? nullptr : it->second.get();
         std::pmr::vector<std::uint64_t> key_col_indices{resource()};
-        if (auto resolved = resolve_key_col_indices(entry, key_col_names, key_col_indices, resource());
+        if (auto resolved = resolve_key_col_indices(entry, key_col_names, txn, key_col_indices, resource());
             resolved.contains_error()) {
             co_return resolved;
         }
@@ -2323,6 +2330,8 @@ namespace services::disk {
             const char* ns_alias;
             core::error_code_t code;
             const char* kind;
+            // A row with this flag set is a tombstone and holds no name; -1 when the catalog has none
+            int64_t tombstone_col;
         };
 
         const catalog_name_key_t* catalog_name_key_for(components::catalog::oid_t table_oid) {
@@ -2332,19 +2341,30 @@ namespace services::disk {
                                                              "relname",
                                                              "relnamespace",
                                                              core::error_code_t::table_already_exists,
-                                                             "relation"};
+                                                             "relation",
+                                                             int64_t{-1}};
             static constexpr catalog_name_key_t pg_namespace_key{cat::pg_namespace_col::nspname,
                                                                  int64_t{-1},
                                                                  "nspname",
                                                                  nullptr,
                                                                  core::error_code_t::database_already_exists,
-                                                                 "database"};
+                                                                 "database",
+                                                                 int64_t{-1}};
             static constexpr catalog_name_key_t pg_type_key{cat::pg_type_col::typname,
                                                             static_cast<int64_t>(cat::pg_type_col::typnamespace),
                                                             "typname",
                                                             "typnamespace",
                                                             core::error_code_t::type_already_exists,
-                                                            "type"};
+                                                            "type",
+                                                            int64_t{-1}};
+            static constexpr catalog_name_key_t pg_attribute_key{
+                cat::pg_attribute_col::attname,
+                static_cast<int64_t>(cat::pg_attribute_col::attrelid),
+                "attname",
+                "attrelid",
+                core::error_code_t::already_exists,
+                "column",
+                static_cast<int64_t>(cat::pg_attribute_col::attisdropped)};
             switch (table_oid) {
                 case cat::well_known_oid::pg_class_table:
                     return &pg_class_key;
@@ -2352,6 +2372,8 @@ namespace services::disk {
                     return &pg_namespace_key;
                 case cat::well_known_oid::pg_type_table:
                     return &pg_type_key;
+                case cat::well_known_oid::pg_attribute_table:
+                    return &pg_attribute_key;
                 default:
                     return nullptr;
             }
@@ -2379,9 +2401,11 @@ namespace services::disk {
             }
             int64_t in_name_col = -1;
             int64_t in_ns_col = -1;
+            int64_t in_tombstone_col = -1;
             if (row.column_count() == def->columns.size()) {
                 in_name_col = static_cast<int64_t>(key.name_col);
                 in_ns_col = key.ns_col;
+                in_tombstone_col = key.tombstone_col;
             } else {
                 for (uint64_t c = 0; c < row.column_count(); c++) {
                     if (!row.data[c].type().has_alias()) {
@@ -2406,44 +2430,68 @@ namespace services::disk {
             if (key.ns_col >= 0) {
                 projected.push_back(static_cast<size_t>(key.ns_col));
             }
+            if (key.tombstone_col >= 0) {
+                projected.push_back(static_cast<size_t>(key.tombstone_col));
+            }
+            auto is_tombstone = [](const components::vector::data_chunk_t& rows, int64_t column, uint64_t index) {
+                return column >= 0 && !rows.is_null(static_cast<uint64_t>(column), index) &&
+                       rows.get_value<bool>(static_cast<uint64_t>(column), index);
+            };
 
+            struct incoming_name_t {
+                std::string_view name;
+                bool has_ns;
+                std::uint32_t ns;
+            };
+            std::pmr::vector<incoming_name_t> incoming(resource);
             for (uint64_t in_r = 0; in_r < row.size(); in_r++) {
-                if (row.is_null(static_cast<uint64_t>(in_name_col), in_r)) {
+                if (row.is_null(static_cast<uint64_t>(in_name_col), in_r) ||
+                    is_tombstone(row, in_tombstone_col, in_r)) {
                     continue;
                 }
-                const auto in_name = row.get_value<std::string_view>(static_cast<uint64_t>(in_name_col), in_r);
                 const bool has_ns =
                     key.ns_col >= 0 && in_ns_col >= 0 && !row.is_null(static_cast<uint64_t>(in_ns_col), in_r);
-                const std::uint32_t in_ns =
-                    has_ns ? row.get_value<std::uint32_t>(static_cast<uint64_t>(in_ns_col), in_r) : 0;
+                incoming.push_back(
+                    incoming_name_t{row.get_value<std::string_view>(static_cast<uint64_t>(in_name_col), in_r),
+                                    has_ns,
+                                    has_ns ? row.get_value<std::uint32_t>(static_cast<uint64_t>(in_ns_col), in_r) : 0});
+            }
+            if (incoming.empty()) {
+                return core::error_t::no_error();
+            }
 
-                for (uint64_t offset = 0; offset < total; offset += components::vector::DEFAULT_VECTOR_CAPACITY) {
-                    const uint64_t n = std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, total - offset);
-                    components::vector::vector_t window_ids(resource, components::types::logical_type::BIGINT, n);
-                    auto* ids = window_ids.data<int64_t>();
-                    for (uint64_t i = 0; i < n; i++) {
-                        ids[i] = static_cast<int64_t>(offset + i);
+            // One pass over the catalog for every name this append brings
+            for (uint64_t offset = 0; offset < total; offset += components::vector::DEFAULT_VECTOR_CAPACITY) {
+                const uint64_t n = std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, total - offset);
+                components::vector::vector_t window_ids(resource, components::types::logical_type::BIGINT, n);
+                auto* ids = window_ids.data<int64_t>();
+                for (uint64_t i = 0; i < n; i++) {
+                    ids[i] = static_cast<int64_t>(offset + i);
+                }
+                components::vector::data_chunk_t chunk(resource, types, n);
+                auto fetch_r = entry.storage->fetch(chunk,
+                                                    window_ids,
+                                                    n,
+                                                    projected,
+                                                    txn,
+                                                    components::table::fetch_visibility_t::RAW);
+                if (fetch_r.has_error()) {
+                    return fetch_r.error();
+                }
+                const auto* got_ids = chunk.row_ids.data<int64_t>();
+                for (uint64_t i = 0; i < chunk.size(); i++) {
+                    if (chunk.is_null(key.name_col, i) || is_tombstone(chunk, key.tombstone_col, i)) {
+                        continue;
                     }
-                    components::vector::data_chunk_t chunk(resource, types, n);
-                    auto fetch_r = entry.storage->fetch(chunk,
-                                                        window_ids,
-                                                        n,
-                                                        projected,
-                                                        txn,
-                                                        components::table::fetch_visibility_t::RAW);
-                    if (fetch_r.has_error()) {
-                        return fetch_r.error();
-                    }
-                    const auto* got_ids = chunk.row_ids.data<int64_t>();
-                    for (uint64_t i = 0; i < chunk.size(); i++) {
-                        if (chunk.is_null(key.name_col, i)) {
+                    auto held_name = chunk.get_value<std::string_view>(key.name_col, i);
+                    bool held_has_ns = key.ns_col >= 0 && !chunk.is_null(static_cast<uint64_t>(key.ns_col), i);
+                    std::uint32_t held_ns =
+                        held_has_ns ? chunk.get_value<std::uint32_t>(static_cast<uint64_t>(key.ns_col), i) : 0;
+                    for (const auto& wanted : incoming) {
+                        if (held_name != wanted.name) {
                             continue;
                         }
-                        if (chunk.get_value<std::string_view>(key.name_col, i) != in_name) {
-                            continue;
-                        }
-                        if (has_ns && !chunk.is_null(static_cast<uint64_t>(key.ns_col), i) &&
-                            chunk.get_value<std::uint32_t>(static_cast<uint64_t>(key.ns_col), i) != in_ns) {
+                        if (wanted.has_ns && held_has_ns && held_ns != wanted.ns) {
                             continue;
                         }
                         const uint64_t stamp = table.row_group()->delete_stamp(got_ids[i]);
@@ -2452,7 +2500,7 @@ namespace services::disk {
                         }
                         std::pmr::string msg{key.kind, resource};
                         msg += " '";
-                        msg.append(in_name.data(), in_name.size());
+                        msg.append(wanted.name.data(), wanted.name.size());
                         msg += "' already exists: the catalog holds a live row under this name "
                                "(committed, or pending in another transaction)";
                         return core::error_t{key.code, std::move(msg)};
@@ -2496,15 +2544,17 @@ namespace services::disk {
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
             wal_chunks.emplace_back(std::move(wal_chunk));
             constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-            auto [_w, wf] = actor_zeta::otterbrix::send(manager_wal_addr_,
-                                                        &wal::manager_wal_replicate_t::write_physical_insert,
-                                                        ctx.session,
-                                                        table_oid,
-                                                        std::move(wal_chunks),
-                                                        std::uint64_t{0},
-                                                        static_cast<std::uint64_t>(row.size()),
-                                                        ctx.txn.transaction_id,
-                                                        db_oid);
+            auto [_w, wf] =
+                actor_zeta::otterbrix::send(manager_wal_addr_,
+                                            &wal::manager_wal_replicate_t::write_physical_insert,
+                                            ctx.session,
+                                            table_oid,
+                                            components::catalog::system_column_attoids(resource(), table_oid),
+                                            std::move(wal_chunks),
+                                            std::uint64_t{0},
+                                            static_cast<std::uint64_t>(row.size()),
+                                            ctx.txn.transaction_id,
+                                            db_oid);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
                 error(log_,
@@ -2808,15 +2858,17 @@ namespace services::disk {
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
             wal_chunks.emplace_back(std::move(wal_chunk));
             std::pmr::vector<std::int64_t> wal_row_ids(row_ids.begin(), row_ids.end(), resource());
-            auto [_w, wf] = actor_zeta::otterbrix::send(manager_wal_addr_,
-                                                        &wal::manager_wal_replicate_t::write_physical_update,
-                                                        ctx.session,
-                                                        pg_attr_oid,
-                                                        std::move(wal_row_ids),
-                                                        std::move(wal_chunks),
-                                                        static_cast<std::uint64_t>(row_ids.size()),
-                                                        ctx.txn.transaction_id,
-                                                        components::catalog::well_known_oid::main_database);
+            auto [_w, wf] =
+                actor_zeta::otterbrix::send(manager_wal_addr_,
+                                            &wal::manager_wal_replicate_t::write_physical_update,
+                                            ctx.session,
+                                            pg_attr_oid,
+                                            std::move(wal_row_ids),
+                                            components::catalog::system_column_attoids(resource(), pg_attr_oid),
+                                            std::move(wal_chunks),
+                                            static_cast<std::uint64_t>(row_ids.size()),
+                                            ctx.txn.transaction_id,
+                                            components::catalog::well_known_oid::main_database);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
                 error(log_,
@@ -2836,7 +2888,11 @@ namespace services::disk {
             }
         }
 
-        auto stamped = update_sync(pg_attr_oid, row_ids, patch, ctx.txn);
+        auto stamped = update_sync(pg_attr_oid,
+                                   row_ids,
+                                   components::catalog::system_column_attoids(resource(), pg_attr_oid),
+                                   patch,
+                                   ctx.txn);
         if (stamped.has_error()) {
             error(log_,
                   "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: the slice it had just read "
@@ -2977,14 +3033,21 @@ namespace services::disk {
             auto type = column.type();
             type.set_alias(column.name());
             col_types.push_back(std::move(type));
-            auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 0);
-            schema_chunk->set_cardinality(0);
+            auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 1);
+            if (column.has_default_value() && !column.default_value().is_null()) {
+                schema_chunk->set_value(0, 0, column.default_value());
+            } else {
+                schema_chunk->data[0].validity().set_invalid(0);
+            }
+            schema_chunk->set_cardinality(1);
+            auto position = static_cast<std::uint64_t>(it->second->table_storage.table().column_count());
             auto [_w, wf] = actor_zeta::otterbrix::send(manager_wal_addr_,
                                                         &wal::manager_wal_replicate_t::write_physical_add_column,
                                                         ctx.session,
                                                         table_oid,
+                                                        wal::column_attoids_t{{column.attoid()}, resource()},
                                                         std::move(schema_chunk),
-                                                        std::uint64_t{1},
+                                                        position,
                                                         ctx.txn.transaction_id,
                                                         components::catalog::well_known_oid::main_database);
             auto journalled = co_await std::move(wf);
@@ -3061,6 +3124,60 @@ namespace services::disk {
                   static_cast<unsigned>(table_oid),
                   published,
                   commit_id);
+        }
+        co_return;
+    }
+
+    agent_disk_t::unique_future<void>
+    agent_disk_t::revert_column_stamps_inner(uint64_t txn_id, std::pmr::vector<components::catalog::oid_t> tables) {
+        for (const auto& table_oid : tables) {
+            auto it = storages_.find(table_oid);
+            if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+                report_publish_revert_miss(log_, pool_idx_, "revert_column_stamps_inner", table_oid);
+                continue;
+            }
+            auto reverted = it->second->table_storage.table().revert_column_stamps(txn_id);
+            trace(log_,
+                  "agent_disk[{}]::revert_column_stamps_inner: oid={} reverted={} stamp(s) of txn={}",
+                  pool_idx_,
+                  static_cast<unsigned>(table_oid),
+                  reverted,
+                  txn_id);
+        }
+        co_return;
+    }
+
+    agent_disk_t::unique_future<core::error_t>
+    agent_disk_t::storage_prepare_inner(components::table::transaction_data txn,
+                                        std::pmr::vector<components::catalog::oid_t> tables,
+                                        std::pmr::vector<components::pg_catalog_append_range_t> appends) {
+        std::pmr::vector<components::table::row_range_t> own_appends(resource());
+        for (const auto& table_oid : tables) {
+            auto it = storages_.find(table_oid);
+            if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+                continue;
+            }
+            own_appends.clear();
+            for (const auto& range : appends) {
+                if (range.table_oid == table_oid) {
+                    own_appends.push_back(components::table::row_range_t{range.start_row, range.count});
+                }
+            }
+            if (auto refused = it->second->table_storage.table().prepare(txn, own_appends); refused.contains_error()) {
+                co_return core::error_on(resource(), refused);
+            }
+        }
+        co_return core::error_t::no_error();
+    }
+
+    agent_disk_t::unique_future<void>
+    agent_disk_t::storage_release_prepared_inner(uint64_t txn_id, std::pmr::vector<components::catalog::oid_t> tables) {
+        for (const auto& table_oid : tables) {
+            auto it = storages_.find(table_oid);
+            if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+                continue;
+            }
+            it->second->table_storage.table().release_prepared(txn_id);
         }
         co_return;
     }

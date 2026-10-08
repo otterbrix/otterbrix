@@ -128,7 +128,7 @@ namespace services::index {
         // dropped_table_agents_[oid] is recorded in TXN-ID space (>= 2^62), rewritten here once commit_id is allocated.
         unique_future<void> table_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
 
-        unique_future<void> table_drop_aborted(session_id_t session, uint64_t txn_id);
+        unique_future<void> abort_transaction(session_id_t session, components::table::txn_abort_drain_t drain);
 
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
 
@@ -283,7 +283,7 @@ namespace services::index {
                                                        &manager_index_t::on_horizon_advanced,
                                                        &manager_index_t::mark_table_dropped,
                                                        &manager_index_t::table_dropped_committed,
-                                                       &manager_index_t::table_drop_aborted,
+                                                       &manager_index_t::abort_transaction,
                                                        &manager_index_t::apply_wal_record_for_index>;
 
     private:
@@ -336,6 +336,9 @@ namespace services::index {
 
         void forget_deferred_deletes(components::catalog::oid_t table_oid);
         void forget_deferred_deletes(components::catalog::oid_t table_oid, components::catalog::oid_t index_oid);
+
+        // Abort mirror of table_dropped_committed: erases, not remaps, since the table must stay indexed.
+        void forget_aborted_drops(uint64_t txn_id);
 
         // Two vectors, not one polymorphic vector: the owning deleter returns sizeof(STATIC T) to
         // the pool, so erasing through a common base would free the wrong size.

@@ -22,6 +22,35 @@ namespace components::sql::transform {
         return as_expression(std::move(operand));
     }
 
+    core::result_wrapper_t<std::pmr::vector<expressions::expression_ptr>>
+    transformer::transform_set_list(List* targets,
+                                    const name_collection_t& names,
+                                    logical_plan::execution_plan_t* plan) {
+        std::pmr::vector<expression_ptr> updates(resource_);
+        for (auto target : targets->lst) {
+            auto res = pg_ptr_cast<ResTarget>(target.data);
+            expressions::key_t target_key{resource_, res->name, side_t::left};
+            if (!res->indirection->lst.empty()) {
+                std::pmr::vector<std::pmr::string> path{resource_};
+                path.emplace_back(std::pmr::string{res->name, resource_});
+                for (const auto& val : res->indirection->lst) {
+                    if (nodeTag(val.data) == T_A_Indices) {
+                        auto indices = pg_ptr_cast<A_Indices>(val.data);
+                        VALUE_OR_RETURN(auto segment, indices_to_str(resource_, indices));
+                        path.emplace_back(std::move(segment));
+                    } else {
+                        path.emplace_back(pmrStrVal(val.data, resource_));
+                    }
+                }
+                target_key = expressions::key_t{std::move(path), side_t::left};
+            }
+            VALUE_OR_RETURN(auto value, transform_update_expr(res->val, names, plan));
+            value->key() = std::move(target_key);
+            updates.emplace_back(std::move(value));
+        }
+        return updates;
+    }
+
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_update(UpdateStmt& node,
                                                                                  logical_plan::execution_plan_t* plan) {
         // A leading WITH must be registered before the body so the WHERE / FROM can reference the CTE.
@@ -46,30 +75,7 @@ namespace components::sql::transform {
             names.right_name = source_names.left_name;
             names.right_alias = source_names.left_alias;
         }
-        // set
-        {
-            for (auto target : node.targetList->lst) {
-                auto res = pg_ptr_cast<ResTarget>(target.data);
-                expressions::key_t target_key{resource_, res->name, side_t::left};
-                if (!res->indirection->lst.empty()) {
-                    std::pmr::vector<std::pmr::string> path{resource_};
-                    path.emplace_back(std::pmr::string{res->name, resource_});
-                    for (const auto& val : res->indirection->lst) {
-                        if (nodeTag(val.data) == T_A_Indices) {
-                            auto indices = pg_ptr_cast<A_Indices>(val.data);
-                            VALUE_OR_RETURN(auto segment, indices_to_str(resource_, indices));
-                            path.emplace_back(std::move(segment));
-                        } else {
-                            path.emplace_back(pmrStrVal(val.data, resource_));
-                        }
-                    }
-                    target_key = expressions::key_t{std::move(path), side_t::left};
-                }
-                VALUE_OR_RETURN(auto value, transform_update_expr(res->val, names, plan));
-                value->key() = std::move(target_key);
-                updates.emplace_back(std::move(value));
-            }
-        }
+        VALUE_OR_RETURN(updates, transform_set_list(node.targetList, names, plan));
 
         // where
         if (node.whereClause) {
@@ -92,7 +98,7 @@ namespace components::sql::transform {
                                         core::relname_t{names.left_name.collection},
                                         plan));
         auto upd_limit = std::move(upd_limit_res);
-        auto upd = logical_plan::make_node_update(resource_, match, upd_limit, updates, false);
+        auto upd = logical_plan::make_node_update(resource_, match, upd_limit, updates);
         set_target(*upd, names.left_name);
         // The FROM source is a child sub-plan (the RIGHT side of the update join).
         // Its scans self-resolve by name during enrich, so no table_oid_from / sibling

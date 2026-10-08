@@ -24,6 +24,7 @@
 #include <services/wal/wal_sync_mode.hpp>
 #include <thread>
 #include <unistd.h>
+#include "wal_test_attoids.hpp"
 
 using namespace services::wal;
 using namespace components::session;
@@ -123,10 +124,12 @@ struct test_wal_manager {
         // Uses the fixture's own arena (not the ASAN-tracked global): resource_ outlives the manager.
         auto* arena = &resource_;
         auto chunk = gen_data_chunk(row_count, arena);
+        auto attoids = wal_test::attoids_for(chunk);
         auto [ns, fut] = actor_zeta::otterbrix::send(address(),
                                                      &manager_wal_replicate_t::write_physical_insert,
                                                      session_id_t::generate_uid(),
                                                      table_oid,
+                                                     std::move(attoids),
                                                      to_batch(std::make_unique<data_chunk_t>(std::move(chunk))),
                                                      row_start,
                                                      row_count,

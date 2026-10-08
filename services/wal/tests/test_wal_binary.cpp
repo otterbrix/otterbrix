@@ -6,7 +6,10 @@
 #include <services/wal/record.hpp>
 #include <services/wal/wal_binary.hpp>
 
+#include "wal_test_attoids.hpp"
+
 using namespace services::wal;
+using wal_test::attoids_for;
 using namespace components::types;
 using namespace components::vector;
 
@@ -37,12 +40,14 @@ TEST_CASE("wal_binary::encode_decode_insert") {
     auto chunk = gen_data_chunk(10, 0, wal_test_types(&resource), &resource);
 
     buffer_t buffer(&resource);
+    auto attoids = attoids_for(chunk);
     encode_insert(buffer,
                   &resource,
                   /*last_crc32=*/0,
                   /*wal_id=*/1,
                   /*txn_id=*/100,
                   kTestTableOid,
+                  attoids,
                   to_chunk_batch(chunk),
                   /*row_start=*/0,
                   /*row_count=*/10);
@@ -52,6 +57,7 @@ TEST_CASE("wal_binary::encode_decode_insert") {
     auto record = decode_record(buffer, &resource);
     REQUIRE(record.is_valid());
     REQUIRE_FALSE(record.is_corrupt);
+    REQUIRE(record.physical_attoids == attoids);
     REQUIRE(record.id == 1);
     REQUIRE(record.transaction_id == 100);
     REQUIRE(record.record_type == wal_record_type::PHYSICAL_INSERT);
@@ -98,6 +104,7 @@ TEST_CASE("wal_binary::encode_decode_update") {
     std::vector<int64_t> row_ids = {0, 2, 4, 6, 8};
 
     buffer_t buffer(&resource);
+    auto attoids = attoids_for(new_data);
     encode_update(buffer,
                   &resource,
                   /*last_crc32=*/0,
@@ -105,6 +112,7 @@ TEST_CASE("wal_binary::encode_decode_update") {
                   /*txn_id=*/102,
                   kTestTableOid,
                   row_ids.data(),
+                  attoids,
                   to_chunk_batch(new_data),
                   /*count=*/5);
 
@@ -113,6 +121,7 @@ TEST_CASE("wal_binary::encode_decode_update") {
     auto record = decode_record(buffer, &resource);
     REQUIRE(record.is_valid());
     REQUIRE_FALSE(record.is_corrupt);
+    REQUIRE(record.physical_attoids == attoids);
     REQUIRE(record.id == 3);
     REQUIRE(record.transaction_id == 102);
     REQUIRE(record.record_type == wal_record_type::PHYSICAL_UPDATE);
@@ -162,6 +171,7 @@ TEST_CASE("wal_binary::crc32_corruption") {
                   /*wal_id=*/1,
                   /*txn_id=*/100,
                   kTestTableOid,
+                  attoids_for(chunk),
                   to_chunk_batch(chunk),
                   /*row_start=*/0,
                   /*row_count=*/10);
@@ -186,6 +196,7 @@ TEST_CASE("wal_binary::truncated_input") {
                   /*wal_id=*/1,
                   /*txn_id=*/100,
                   kTestTableOid,
+                  attoids_for(chunk),
                   to_chunk_batch(chunk),
                   /*row_start=*/0,
                   /*row_count=*/10);
@@ -620,6 +631,7 @@ TEST_CASE("wal_binary::encode_decode_insert_carries_nested_payload") {
                   /*wal_id=*/7,
                   /*txn_id=*/42,
                   kTestTableOid,
+                  attoids_for(chunk),
                   to_chunk_batch(chunk),
                   /*row_start=*/0,
                   /*row_count=*/3);

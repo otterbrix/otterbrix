@@ -28,6 +28,7 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
 #include <services/wal/wal_reader.hpp>
+#include "wal_test_attoids.hpp"
 
 // A CRC break must not make the allocator forget what is on disk: recover_from_disk() took the id
 // allocator's resume point from the same replay scan, so it resumed below ids still on disk and reissued them.
@@ -112,6 +113,7 @@ namespace {
                                                          &manager_wal_replicate_t::write_physical_insert,
                                                          session_id_t::generate_uid(),
                                                          kTestTableOid,
+                                                         wal_test::attoids_for(make_insert_batch(rows)),
                                                          make_insert_batch(rows),
                                                          row_start,
                                                          static_cast<uint64_t>(rows),

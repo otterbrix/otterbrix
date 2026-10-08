@@ -73,7 +73,7 @@ namespace components::table {
         // reads deleted rows on purpose). An invisible or unmatched row id shortens result.row_ids
         // rather than being masked, so the reply is not positional with the request.
         void fetch(vector::data_chunk_t& result,
-                   const std::vector<storage_index_t>& column_ids,
+                   const std::pmr::vector<storage_index_t>& column_ids,
                    const vector::vector_t& row_identifiers,
                    uint64_t fetch_count,
                    column_fetch_state& state,
@@ -84,12 +84,15 @@ namespace components::table {
         // NOT_DELETED_ID when no delete was recorded (or the id names no row group), else a commit
         // id (committed) or transaction id (pending) — the read-only companion of fetch's RAW visibility.
         uint64_t delete_stamp(int64_t row_id);
+        void fill_stamps(int64_t row_start, uint64_t count, uint64_t* inserted, uint64_t* deleted);
 
         // append's bool, on success, reports whether a new row group was started (not plain success).
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(table_append_state& state);
         [[nodiscard]] core::result_wrapper_t<bool> append(vector::data_chunk_t& chunk, table_append_state& state);
         void finalize_append(table_append_state& state, transaction_data txn);
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
+        [[nodiscard]] bool is_tail(int64_t row_start, uint64_t count) const;
+        void abort_append(int64_t row_start, uint64_t count);
         // Reverts only the table's tail: row groups past row_start go whole, the one holding it is truncated;
         // any other range is refused.
         core::result_wrapper_t<bool> revert_append(int64_t row_start, uint64_t count);

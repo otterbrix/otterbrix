@@ -20,6 +20,7 @@
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <chrono>
 #include <limits>
 #include <map>
 #include <vector>
@@ -372,7 +373,8 @@ TEST_CASE("pushdown_reduce: a manager with no agents refuses instead of folding 
                                                        std::vector<size_t>{},
                                                        open_txn(88),
                                                        build_sum_spec(&resource, /*group_col=*/-1, /*val_col=*/0));
-        for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+        while (!future.is_ready() && std::chrono::steady_clock::now() < deadline) {
             scheduler->run(1000);
             std::this_thread::yield();
         }

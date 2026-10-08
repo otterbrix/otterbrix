@@ -4,6 +4,7 @@
 
 #include <components/casts/cast_function.hpp>
 #include <components/catalog/fk_info.hpp>
+#include <components/catalog/unique_key.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/types/logical_value.hpp>
@@ -26,12 +27,17 @@ namespace components::logical_plan {
     // before the append, so storage, the WAL record and the constraint operators all
     // see a full-width row from pg_attribute.attdefspec, not an absent column.
     struct insert_fill_column_t {
-        std::pmr::string name;            // catalog column name — the append routes by it
+        size_t target_index{0};           // the column's position among those the writer sees
+        std::pmr::string name;            // catalog column name
         types::complex_logical_type type; // the column's stored type
         types::logical_value_t value;     // the DEFAULT, or a typed NULL when there is none
     };
 
     using insert_fill_list_t = std::pmr::vector<insert_fill_column_t>;
+
+    [[nodiscard]] std::pmr::vector<size_t> insert_target_order(std::pmr::memory_resource* resource,
+                                                               const insert_column_bindings_t& bindings,
+                                                               const insert_fill_list_t& fill);
 
     // A bare fractional literal in VALUES carries no declared target type, and the catalog is
     // out of the transformer's reach, so the only value it can build is a double —
@@ -97,12 +103,12 @@ namespace components::logical_plan {
         void set_array_size_reqs(std::vector<std::pair<std::string, uint64_t>> v) { array_size_reqs_ = std::move(v); }
         const std::vector<std::pair<std::string, uint64_t>>& array_size_reqs() const { return array_size_reqs_; }
 
-        // UNIQUE / PRIMARY KEY column groups (contype 'u'/'p'), one ordered
-        // column-name list per constraint. Stamped by the dispatcher's enrich pass
-        // from the resolved pg_constraint rows; the planner forwards these onto the
-        // node_check_constraint_t wrapper so operator_unique_constraint_t enforces them.
-        void set_unique_groups(std::vector<std::vector<std::string>> v) { unique_groups_ = std::move(v); }
-        const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
+        // UNIQUE / PRIMARY KEY constraints (contype 'u'/'p'), one per constraint. Stamped by the
+        // dispatcher's enrich pass;
+        // validation resolves an ON CONFLICT target against them.
+        void set_unique_keys(std::vector<catalog::unique_key_t> v) { unique_keys_ = std::move(v); }
+        const std::vector<catalog::unique_key_t>& unique_keys() const { return unique_keys_; }
+        std::vector<std::vector<std::string>> unique_groups() const;
 
         // stamped by enrich; operator_insert materialises these in push()
         void set_fill_list(insert_fill_list_t v) { fill_list_ = std::move(v); }
@@ -133,7 +139,7 @@ namespace components::logical_plan {
         std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates_;
         parameter_node_ptr check_params_;
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
-        std::vector<std::vector<std::string>> unique_groups_;           // UNIQUE / PK column groups
+        std::vector<catalog::unique_key_t> unique_keys_;
         insert_column_bindings_t column_bindings_;
         insert_fill_list_t fill_list_; // omitted columns + the value each is filled with
         insert_literal_digits_list_t literal_digits_;

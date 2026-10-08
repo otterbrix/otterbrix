@@ -86,6 +86,7 @@ namespace services::collection::executor {
         std::optional<explain_plan_node> captured_explain_ir{};
         std::optional<std::pair<components::types::complex_logical_type, components::types::complex_logical_type>>
             resolved_cast{};
+        std::vector<components::table::referenced_delete_t> referenced_deletes{};
     };
 
     using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
@@ -110,6 +111,7 @@ namespace services::collection::executor {
         std::vector<components::catalog::oid_t> dropped_storage_oids;
         std::vector<components::catalog::oid_t> created_storage_oids;
         std::vector<components::table::created_index_t> created_indexes;
+        std::vector<components::table::referenced_delete_t> referenced_deletes;
 
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
         std::set<components::catalog::oid_t> pg_catalog_delete_tables;

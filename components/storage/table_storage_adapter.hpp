@@ -216,10 +216,11 @@ namespace components::storage {
             auto delete_state = table_.initialize_delete({});
             // An update is a delete then an append: if the delete refuses, appending would leave
             // both the old and the new row.
-            if (auto deleted = table_.delete_rows(*delete_state, row_ids, count, txn.transaction_id);
-                deleted.has_error()) {
+            auto deleted = table_.delete_rows(*delete_state, row_ids, count, txn);
+            if (deleted.has_error()) {
                 return deleted.convert_error<appended_range_t>();
             }
+            assert(deleted.value() == count && "update: row can not be deleted twice");
 
             table::table_append_state append_state(resource_);
             auto lock_r = table_.append_lock(append_state);
@@ -241,9 +242,9 @@ namespace components::storage {
         }
 
         core::result_wrapper_t<uint64_t>
-        delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t txn_id) override {
+        delete_rows(vector::vector_t& row_ids, uint64_t count, const table::transaction_data& txn) override {
             auto delete_state = table_.initialize_delete({});
-            return table_.delete_rows(*delete_state, row_ids, count, txn_id);
+            return table_.delete_rows(*delete_state, row_ids, count, txn);
         }
 
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count) override {

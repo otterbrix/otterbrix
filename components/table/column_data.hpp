@@ -75,12 +75,12 @@ namespace components::table {
 
         virtual uint64_t scan_count(column_scan_state& state, vector::vector_t& result, uint64_t count);
 
-        virtual void select(uint64_t vector_index,
+        virtual void select(uint64_t scan_upper_bound,
                             column_scan_state& state,
                             vector::vector_t& result,
                             vector::indexing_vector_t& indexing,
                             uint64_t count);
-        virtual void select_committed(uint64_t vector_index,
+        virtual void select_committed(uint64_t scan_upper_bound,
                                       column_scan_state& state,
                                       vector::vector_t& result,
                                       vector::indexing_vector_t& indexing,

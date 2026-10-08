@@ -8,7 +8,8 @@ namespace components::logical_plan {
 
     bool resolve_entry_t::operator==(const resolve_entry_t& other) const noexcept {
         return dbname == other.dbname && relname == other.relname && type_name == other.type_name &&
-               direction == other.direction && target == other.target && names_only == other.names_only;
+               relation_oid == other.relation_oid && direction == other.direction && target == other.target &&
+               names_only == other.names_only;
     }
 
     node_catalog_resolve_t::node_catalog_resolve_t(std::pmr::memory_resource* resource, resolve_kind kind)

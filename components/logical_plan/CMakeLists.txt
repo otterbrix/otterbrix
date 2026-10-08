@@ -38,6 +38,7 @@ set(SOURCE_${PROJECT_NAME}
         node_group.cpp
         node_having.cpp
         node_insert.cpp
+        node_insert_on_conflict.cpp
         node_join.cpp
         node_limit.cpp
         node_match.cpp

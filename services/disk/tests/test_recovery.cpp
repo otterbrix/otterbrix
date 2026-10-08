@@ -18,6 +18,7 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
+#include <chrono>
 #include <filesystem>
 #include <limits>
 #include <thread>
@@ -80,7 +81,8 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(disk->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            while (!future.is_ready() && std::chrono::steady_clock::now() < deadline) {
                 scheduler->run(1000);
                 std::this_thread::yield();
             }
@@ -161,11 +163,12 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
     auto dir = recovery_test_dir() + "/orphaned_ddl";
     cleanup_dir(dir);
 
+    components::catalog::oid_t ns_oid = components::catalog::INVALID_OID;
     {
         recovery_fixture fx(dir);
         components::execution_context_t uncommitted_ctx{session_id_t{}, components::table::transaction_data{1, 0}, {}};
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
-        const components::catalog::oid_t ns_oid = oids[0];
+        ns_oid = oids[0];
         REQUIRE(ns_oid != components::catalog::INVALID_OID);
         auto writes =
             components::catalog::build_create_namespace_writes(&fx.resource, std::string("orphaned_ns"), ns_oid);
@@ -183,6 +186,11 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
         auto res = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("orphaned_ns"));
         REQUIRE_FALSE(res.has_error());
         REQUIRE_FALSE(res.value().found);
+
+        INFO("restart creates new oid");
+        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+        REQUIRE(oids.size() == 1);
+        CHECK(oids[0] > ns_oid);
     }
     cleanup_dir(dir);
 }

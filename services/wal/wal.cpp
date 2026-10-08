@@ -124,6 +124,7 @@ namespace services::wal {
     wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>>
     wal_worker_t::write_physical_insert(session_id_t /*session*/,
                                         components::catalog::oid_t table_oid,
+                                        column_attoids_t attoids,
                                         std::pmr::vector<components::vector::data_chunk_t> chunks,
                                         uint64_t row_start,
                                         uint64_t row_count,
@@ -149,6 +150,7 @@ namespace services::wal {
                                               wal_id,
                                               txn_id,
                                               table_oid,
+                                              attoids,
                                               chunks,
                                               row_start,
                                               row_count);
@@ -210,6 +212,7 @@ namespace services::wal {
     wal_worker_t::write_physical_update(session_id_t /*session*/,
                                         components::catalog::oid_t table_oid,
                                         std::pmr::vector<int64_t> row_ids,
+                                        column_attoids_t attoids,
                                         std::pmr::vector<components::vector::data_chunk_t> new_chunks,
                                         uint64_t count,
                                         uint64_t txn_id,
@@ -229,6 +232,7 @@ namespace services::wal {
                                               txn_id,
                                               table_oid,
                                               row_ids.data(),
+                                              attoids,
                                               new_chunks,
                                               count);
 
@@ -253,8 +257,9 @@ namespace services::wal {
     wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>>
     wal_worker_t::write_physical_add_column(session_id_t /*session*/,
                                             components::catalog::oid_t table_oid,
+                                            column_attoids_t attoids,
                                             std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
-                                            uint64_t column_count,
+                                            uint64_t first_position,
                                             uint64_t txn_id,
                                             wal::id_t wal_id) {
         if (recovery_error_.contains_error()) {
@@ -263,14 +268,20 @@ namespace services::wal {
         id_.store(wal_id, std::memory_order_relaxed);
 
         trace(log_,
-              "wal_worker::write_physical_add_column , wal_id : {} , txn : {} , cols : {}",
+              "wal_worker::write_physical_add_column , wal_id : {} , txn : {} , first position : {}",
               wal_id,
               txn_id,
-              column_count);
+              first_position);
 
         encode_buf_.clear();
-        const auto record_crc =
-            encode_add_column(encode_buf_, last_crc_, wal_id, txn_id, table_oid, *schema_chunk, column_count);
+        const auto record_crc = encode_add_column(encode_buf_,
+                                                  last_crc_,
+                                                  wal_id,
+                                                  txn_id,
+                                                  table_oid,
+                                                  attoids,
+                                                  *schema_chunk,
+                                                  first_position);
 
         if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{std::move(writer_error)};
@@ -294,17 +305,22 @@ namespace services::wal {
     wal_worker_t::write_physical_grow(session_id_t session,
                                       components::catalog::oid_t table_oid,
                                       std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
-                                      uint64_t column_count,
+                                      uint64_t first_position,
+                                      column_attoids_t attoids,
                                       std::pmr::vector<components::vector::data_chunk_t> chunks,
                                       uint64_t row_start,
                                       uint64_t row_count,
                                       uint64_t txn_id,
                                       wal::id_t add_column_id,
                                       wal::id_t insert_id) {
+        column_attoids_t added_attoids(attoids.end() - static_cast<std::ptrdiff_t>(schema_chunk->column_count()),
+                                       attoids.end(),
+                                       attoids.get_allocator().resource());
         auto added = co_await write_physical_add_column(session,
                                                         table_oid,
+                                                        std::move(added_attoids),
                                                         std::move(schema_chunk),
-                                                        column_count,
+                                                        first_position,
                                                         txn_id,
                                                         add_column_id);
         if (added.has_error()) {
@@ -312,6 +328,7 @@ namespace services::wal {
         }
         co_return co_await write_physical_insert(session,
                                                  table_oid,
+                                                 std::move(attoids),
                                                  std::move(chunks),
                                                  row_start,
                                                  row_count,

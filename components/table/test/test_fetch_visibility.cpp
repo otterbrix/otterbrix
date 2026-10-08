@@ -103,8 +103,7 @@ namespace {
         ids.data[0].set_value(0, row_id);
         ids.set_cardinality(1);
 
-        table_delete_state del_state(&env.resource);
-        REQUIRE(deleted_or_fail(table.delete_rows(del_state, ids.data[0], 1, txn_id)) == 1);
+        REQUIRE(deleted_or_fail(table.delete_rows(ids.data[0], 1, txn_id)) == 1);
     }
 
     struct fetched_t {

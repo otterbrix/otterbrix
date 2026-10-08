@@ -147,49 +147,4 @@ namespace components::table {
         virtual bool has_row_group_data() { return false; }
     };
 
-    enum class constraint_type : uint8_t
-    {
-        INVALID = 0,
-        NOT_NULL = 1,
-        CHECK = 2,
-        UNIQUE = 3,
-        FOREIGN_KEY = 4
-    };
-
-    class bound_constraint_t {
-    public:
-        explicit bound_constraint_t(constraint_type type)
-            : type(type){};
-        virtual ~bound_constraint_t() = default;
-
-        constraint_type type;
-
-        template<class TARGET>
-        TARGET& cast() {
-            return reinterpret_cast<TARGET&>(*this);
-        }
-
-        template<class TARGET>
-        const TARGET& cast() const {
-            return reinterpret_cast<const TARGET&>(*this);
-        }
-    };
-
-    struct constraint_state {
-        explicit constraint_state(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints)
-            : bound_constraints(bound_constraints) {}
-
-        const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints;
-    };
-
-    struct table_delete_state {
-        table_delete_state(std::pmr::memory_resource*) {}
-        std::unique_ptr<constraint_state> constraint;
-        bool has_delete_constraints = false;
-    };
-
-    struct table_update_state {
-        std::unique_ptr<constraint_state> constraint;
-    };
-
 } // namespace components::table

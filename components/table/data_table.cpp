@@ -475,11 +475,6 @@ namespace components::table {
         row_groups_->fetch(result, physical_ids, row_identifiers, fetch_count, state, projected_cols, txn, visibility);
     }
 
-    std::unique_ptr<constraint_state> data_table_t::initialize_constraint_state(
-        const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints) {
-        return std::make_unique<constraint_state>(bound_constraints);
-    }
-
     core::result_wrapper_t<bool> data_table_t::append_lock(table_append_state& state) {
         state.append_locked = true;
         // write_conflict, not a throw: under -fno-exceptions an actor-zeta coroutine throw is swallowed silently.
@@ -543,19 +538,8 @@ namespace components::table {
         mark_modified();
     }
 
-    std::unique_ptr<table_delete_state>
-    data_table_t::initialize_delete(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints) {
-        auto result = std::make_unique<table_delete_state>(resource_);
-        if (result->has_delete_constraints) {
-            result->constraint = std::make_unique<constraint_state>(bound_constraints);
-        }
-        return result;
-    }
-
-    core::result_wrapper_t<uint64_t> data_table_t::delete_rows(table_delete_state&,
-                                                               vector::vector_t& row_identifiers,
-                                                               uint64_t count,
-                                                               uint64_t transaction_id) {
+    core::result_wrapper_t<uint64_t>
+    data_table_t::delete_rows(vector::vector_t& row_identifiers, uint64_t count, uint64_t transaction_id) {
         assert(row_identifiers.type().type() == types::logical_type::BIGINT);
         if (count == 0) {
             return core::result_wrapper_t<uint64_t>{uint64_t{0}};

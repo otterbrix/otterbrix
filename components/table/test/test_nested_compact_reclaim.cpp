@@ -244,8 +244,7 @@ namespace {
                 row_ids_chunk.data[0].set_value(i, static_cast<int64_t>(deleted + i));
             }
             row_ids_chunk.set_cardinality(batch);
-            table_delete_state del_state(&env.resource);
-            REQUIRE_FALSE(table.delete_rows(del_state, row_ids_chunk.data[0], batch, txn_id).has_error());
+            REQUIRE_FALSE(table.delete_rows(row_ids_chunk.data[0], batch, txn_id).has_error());
             deleted += batch;
         }
         auto commit_id = mgr.commit(session);

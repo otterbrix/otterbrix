@@ -77,10 +77,8 @@ namespace components::table {
                    const transaction_data& txn,
                    fetch_visibility_t visibility);
 
-        std::unique_ptr<table_delete_state>
-        initialize_delete(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
         [[nodiscard]] core::result_wrapper_t<uint64_t>
-        delete_rows(table_delete_state& state, vector::vector_t& row_ids, uint64_t count, uint64_t transaction_id);
+        delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t transaction_id);
 
         // write_conflict when concurrent DDL altered the table (no longer root); true on success.
         [[nodiscard]] core::result_wrapper_t<bool> append_lock(table_append_state& state);
@@ -99,8 +97,6 @@ namespace components::table {
         std::vector<column_segment_info> get_column_segment_info();
         bool create_index_scan(table_scan_state& state, vector::data_chunk_t& result, table_scan_type type);
 
-        std::unique_ptr<constraint_state>
-        initialize_constraint_state(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
         std::string table_name() const;
         void set_table_name(std::string new_name);
 

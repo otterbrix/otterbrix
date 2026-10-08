@@ -38,8 +38,7 @@ namespace components::table {
         column_scans.resize(ids.size());
         result_width_ = 0;
         for (uint64_t i = 0; i < ids.size(); i++) {
-            const uint64_t slot = ids[i].is_row_id_column() ? i : ids[i].primary_index();
-            result_width_ = std::max(result_width_, slot + 1);
+            result_width_ = std::max(result_width_, ids[i].primary_index() + 1);
             if (ids[i].is_row_id_column()) {
                 continue;
             }

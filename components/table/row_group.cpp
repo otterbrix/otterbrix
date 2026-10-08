@@ -357,17 +357,12 @@ namespace components::table {
             if (count == max_count && !filter) {
                 for (uint64_t i = 0; i < column_ids.size(); i++) {
                     const auto& column = column_ids[i];
-                    size_t out_idx = column.is_row_id_column() ? i : column.primary_index();
-                    if (column.is_row_id_column()) {
-                        assert(result.data[out_idx].type().type() == types::logical_type::BIGINT);
-                        result.data[out_idx].sequence(static_cast<int64_t>(start + current_row), 1, count);
+                    const size_t out_idx = column.primary_index();
+                    auto& col_data = get_column(state.physical_column(column.primary_index()));
+                    if (TYPE == table_scan_type::REGULAR) {
+                        col_data.scan(state.vector_index, state.column_scans[i], result.data[out_idx]);
                     } else {
-                        auto& col_data = get_column(state.physical_column(column.primary_index()));
-                        if (TYPE == table_scan_type::REGULAR) {
-                            col_data.scan(state.vector_index, state.column_scans[i], result.data[out_idx]);
-                        } else {
-                            col_data.scan_committed(state.vector_index, state.column_scans[i], result.data[out_idx]);
-                        }
+                        col_data.scan_committed(state.vector_index, state.column_scans[i], result.data[out_idx]);
                     }
                 }
                 state.valid_indexing = vector::indexing_vector_t(result.resource(), 0, result.capacity());
@@ -401,9 +396,6 @@ namespace components::table {
                 if (approved_tuple_count == 0) {
                     for (uint64_t i = 0; i < column_ids.size(); i++) {
                         auto& col_idx = column_ids[i];
-                        if (col_idx.is_row_id_column()) {
-                            continue;
-                        }
                         auto& col_data = get_column(col_idx);
                         col_data.skip(state.column_scans[i]);
                     }
@@ -412,74 +404,61 @@ namespace components::table {
                 }
                 for (uint64_t i = 0; i < column_ids.size(); i++) {
                     auto& column = column_ids[i];
-                    size_t out_idx = column.is_row_id_column() ? i : column.primary_index();
-                    if (column.is_row_id_column()) {
-                        assert(result.data[out_idx].type().type() == types::logical_type::BIGINT);
-                        result.data[out_idx].set_vector_type(vector::vector_type::FLAT);
-                        auto result_data = result.data[out_idx].data<int64_t>();
-                        for (size_t indexing_idx = 0; indexing_idx < approved_tuple_count; indexing_idx++) {
-                            result_data[indexing_idx] =
-                                start + current_row + static_cast<int64_t>(indexing.get_index(indexing_idx));
+                    const size_t out_idx = column.primary_index();
+                    auto& col_data = get_column(state.physical_column(column.primary_index()));
+                    if (TYPE == table_scan_type::REGULAR) {
+                        // Selective filter: gather only surviving rows via fetch_row instead of scanning+slicing
+                        // (measured ~7x fewer decompressed rows at 0.2% survival; per-row gather wins below ~20%
+                        // survival). No set_vector_type(FLAT): forcing it would reset an already-FLAT constant-size
+                        // STRUCT buffer (e.g. INTERVAL) and crash fetch_row.
+                        const bool late_materialize =
+                            filter != nullptr && approved_tuple_count * uint64_t{5} < max_count;
+                        if (late_materialize) {
+                            const uint64_t base = state.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+                            const uint64_t off = state.column_scans[i].result_offset;
+                            column_fetch_state fetch_state;
+                            // Chunk outlives our pins: strings must be copied, not borrowed from a released block.
+                            fetch_state.result_outlives_pins = true;
+#ifdef DEV_MODE
+                            if (!fetch_state.result_outlives_pins &&
+                                result.data[out_idx].type().to_physical_type() == types::physical_type::STRING) {
+                                g_gathered_borrowed_strings.fetch_add(approved_tuple_count, std::memory_order_relaxed);
+                            }
+#endif
+                            for (uint64_t k = 0; k < approved_tuple_count; k++) {
+                                col_data.fetch_row(fetch_state,
+                                                   static_cast<int64_t>(base + indexing.get_index(k)),
+                                                   result.data[out_idx],
+                                                   off + k);
+                                // A pin OOM leaves the cell unwritten; abort via scan_error, not garbage.
+                                if (fetch_state.fetch_error.contains_error()) {
+                                    state.scan_error = fetch_state.fetch_error;
+                                    return;
+                                }
+                            }
+                            col_data.skip(state.column_scans[i], max_count);
+                        } else {
+                            vector::vector_t select_vector(result.resource(), result.data[out_idx].type(), max_count);
+                            auto prev_offset = state.column_scans[i].result_offset;
+                            state.column_scans[i].result_offset = 0;
+                            col_data.select(state.vector_index,
+                                            state.column_scans[i],
+                                            select_vector,
+                                            indexing,
+                                            approved_tuple_count);
+                            state.column_scans[i].result_offset = prev_offset;
+                            vector::vector_ops::copy(select_vector,
+                                                     result.data[out_idx],
+                                                     approved_tuple_count,
+                                                     0,
+                                                     state.column_scans[i].result_offset);
                         }
                     } else {
-                        auto& col_data = get_column(state.physical_column(column.primary_index()));
-                        if (TYPE == table_scan_type::REGULAR) {
-                            // Selective filter: gather only surviving rows via fetch_row instead of scanning+slicing
-                            // (measured ~7x fewer decompressed rows at 0.2% survival; per-row gather wins below ~20%
-                            // survival). No set_vector_type(FLAT): forcing it would reset an already-FLAT constant-size
-                            // STRUCT buffer (e.g. INTERVAL) and crash fetch_row.
-                            const bool late_materialize =
-                                filter != nullptr && approved_tuple_count * uint64_t{5} < max_count;
-                            if (late_materialize) {
-                                const uint64_t base = state.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
-                                const uint64_t off = state.column_scans[i].result_offset;
-                                column_fetch_state fetch_state;
-                                // Chunk outlives our pins: strings must be copied, not borrowed from a released block.
-                                fetch_state.result_outlives_pins = true;
-#ifdef DEV_MODE
-                                if (!fetch_state.result_outlives_pins &&
-                                    result.data[out_idx].type().to_physical_type() == types::physical_type::STRING) {
-                                    g_gathered_borrowed_strings.fetch_add(approved_tuple_count,
-                                                                          std::memory_order_relaxed);
-                                }
-#endif
-                                for (uint64_t k = 0; k < approved_tuple_count; k++) {
-                                    col_data.fetch_row(fetch_state,
-                                                       static_cast<int64_t>(base + indexing.get_index(k)),
-                                                       result.data[out_idx],
-                                                       off + k);
-                                    // A pin OOM leaves the cell unwritten; abort via scan_error, not garbage.
-                                    if (fetch_state.fetch_error.contains_error()) {
-                                        state.scan_error = fetch_state.fetch_error;
-                                        return;
-                                    }
-                                }
-                                col_data.skip(state.column_scans[i], max_count);
-                            } else {
-                                vector::vector_t select_vector(result.resource(),
-                                                               result.data[out_idx].type(),
-                                                               max_count);
-                                auto prev_offset = state.column_scans[i].result_offset;
-                                state.column_scans[i].result_offset = 0;
-                                col_data.select(state.vector_index,
-                                                state.column_scans[i],
-                                                select_vector,
-                                                indexing,
-                                                approved_tuple_count);
-                                state.column_scans[i].result_offset = prev_offset;
-                                vector::vector_ops::copy(select_vector,
-                                                         result.data[out_idx],
-                                                         approved_tuple_count,
-                                                         0,
-                                                         state.column_scans[i].result_offset);
-                            }
-                        } else {
-                            col_data.select_committed(state.vector_index,
-                                                      state.column_scans[i],
-                                                      result.data[out_idx],
-                                                      indexing,
-                                                      approved_tuple_count);
-                        }
+                        col_data.select_committed(state.vector_index,
+                                                  state.column_scans[i],
+                                                  result.data[out_idx],
+                                                  indexing,
+                                                  approved_tuple_count);
                     }
                 }
 

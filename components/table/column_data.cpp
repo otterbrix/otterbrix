@@ -29,15 +29,18 @@ namespace components::table {
     namespace {
         std::atomic<uint64_t> g_transitions_with_live_pin{0};
         std::atomic<uint64_t> g_segment_transitions{0};
+        std::atomic<uint64_t> g_segment_placements{0};
     } // namespace
 
     uint64_t transitions_with_live_pin() noexcept {
         return g_transitions_with_live_pin.load(std::memory_order_relaxed);
     }
     uint64_t segment_transitions() noexcept { return g_segment_transitions.load(std::memory_order_relaxed); }
+    uint64_t segment_placements() noexcept { return g_segment_placements.load(std::memory_order_relaxed); }
     void reset_transitions_with_live_pin() noexcept {
         g_transitions_with_live_pin.store(0, std::memory_order_relaxed);
         g_segment_transitions.store(0, std::memory_order_relaxed);
+        g_segment_placements.store(0, std::memory_order_relaxed);
     }
 #endif
     column_data_t::column_data_t(std::pmr::memory_resource* resource,
@@ -631,6 +634,9 @@ namespace components::table {
                     return persisted; // out_of_memory / data_corruption
                 }
             }
+#ifdef DEV_MODE
+            g_segment_placements.fetch_add(1, std::memory_order_relaxed);
+#endif
             auto placed = pbm.place(rewritten.data(),
                                     tight_size,
                                     std::make_unique<repoint_t>(*this,
@@ -665,6 +671,9 @@ namespace components::table {
         if (pinned.has_error()) {
             return pinned.convert_error<bool>();
         }
+#ifdef DEV_MODE
+        g_segment_placements.fetch_add(1, std::memory_order_relaxed);
+#endif
         auto placed = pbm.place(pinned.value().ptr() + block_offset,
                                 segment_size,
                                 std::make_unique<repoint_t>(*this,
@@ -694,7 +703,7 @@ namespace components::table {
         }
     }
 
-    core::result_wrapper_t<bool> column_data_t::transition_to_disk(storage::partial_block_manager_t& pbm) {
+    core::result_wrapper_t<bool> column_data_t::transition_own_segments(storage::partial_block_manager_t& pbm) {
         const uint64_t count = data_.segment_count();
         for (uint64_t i = 0; i < count; i++) {
             auto transitioned = transition_segment_to_disk(i, pbm);
@@ -703,6 +712,18 @@ namespace components::table {
             }
         }
         return true;
+    }
+
+    core::result_wrapper_t<bool> column_data_t::transition_to_disk(storage::partial_block_manager_t& pbm) {
+        auto own = transition_own_segments(pbm);
+        if (own.has_error()) {
+            return own;
+        }
+        return transition_children(pbm);
+    }
+
+    core::result_wrapper_t<bool> column_data_t::transition_children(storage::partial_block_manager_t& /*pbm*/) {
+        return true; // flat column: no child columns to place
     }
 
     uint64_t column_data_t::scan_vector(column_scan_state& state,
@@ -802,7 +823,7 @@ namespace components::table {
         // Rejected: a packer per column, flushed here -- every live tail and its validity child's took
         // a dedicated 256 KiB block each round: 67 blocks and a 17.6 MB file for 100 rows x 32
         // INTEGER (test_checkpoint_blocks).
-        auto repointed = transition_to_disk(partial_block_manager);
+        auto repointed = transition_own_segments(partial_block_manager);
         if (repointed.has_error()) {
             return repointed.convert_error<persistent_column_data_t>();
         }

@@ -13,6 +13,7 @@
 // the reusable set -- run at every write of the checkpoint.
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/table/column_data.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/metadata_manager.hpp>
@@ -359,3 +360,157 @@ TEST_CASE("checkpoint: a write refused in the middle of a table checkpoint leave
         refusal_at(n);
     }
 }
+
+#ifdef DEV_MODE
+namespace {
+
+    // One column of each shape: flat, string, and the three nested ones with their validity and element children.
+    enum class shape_t
+    {
+        INTEGER,
+        VARCHAR,
+        LIST,
+        STRUCT,
+        ARRAY
+    };
+
+    constexpr uint64_t NESTED_WIDTH = 3;
+
+    const char* shape_name(shape_t shape) {
+        switch (shape) {
+            case shape_t::INTEGER:
+                return "INTEGER";
+            case shape_t::VARCHAR:
+                return "VARCHAR";
+            case shape_t::LIST:
+                return "LIST(UBIGINT)";
+            case shape_t::STRUCT:
+                return "STRUCT(BIGINT, VARCHAR)";
+            case shape_t::ARRAY:
+                return "ARRAY(UBIGINT, 3)";
+        }
+        return "?";
+    }
+
+    complex_logical_type pair_type(std::pmr::memory_resource* resource) {
+        std::pmr::vector<complex_logical_type> fields(resource);
+        fields.emplace_back(logical_type::BIGINT, "num");
+        fields.emplace_back(logical_type::STRING_LITERAL, "name");
+        return complex_logical_type::create_struct("pair", fields);
+    }
+
+    complex_logical_type shape_type(shape_t shape, std::pmr::memory_resource* resource) {
+        switch (shape) {
+            case shape_t::INTEGER:
+                return logical_type::INTEGER;
+            case shape_t::VARCHAR:
+                return logical_type::STRING_LITERAL;
+            case shape_t::LIST:
+                return complex_logical_type::create_list(logical_type::UBIGINT);
+            case shape_t::STRUCT:
+                return pair_type(resource);
+            case shape_t::ARRAY:
+                return complex_logical_type::create_array(logical_type::UBIGINT, NESTED_WIDTH);
+        }
+        return logical_type::INTEGER;
+    }
+
+    void append_shaped_rows(data_table_t& table,
+                            shape_t shape,
+                            std::pmr::memory_resource* resource,
+                            uint64_t first_row,
+                            uint64_t rows) {
+        auto types = table.copy_types();
+        data_chunk_t chunk(resource, types, rows);
+        chunk.set_cardinality(rows);
+        for (uint64_t i = 0; i < rows; i++) {
+            const uint64_t row = first_row + i;
+            switch (shape) {
+                case shape_t::INTEGER:
+                    chunk.set_value(0, i, static_cast<int32_t>(row));
+                    break;
+                case shape_t::VARCHAR: {
+                    const std::string s = "s" + std::to_string(row);
+                    chunk.set_value(0, i, std::string_view{s});
+                    break;
+                }
+                case shape_t::LIST:
+                case shape_t::ARRAY: {
+                    std::vector<uint64_t> elements;
+                    for (uint64_t j = 0; j < NESTED_WIDTH; j++) {
+                        elements.push_back(row * 10 + j);
+                    }
+                    chunk.set_value(0, i, elements);
+                    break;
+                }
+                case shape_t::STRUCT: {
+                    std::vector<logical_value_t> members;
+                    members.emplace_back(resource, static_cast<int64_t>(row));
+                    members.emplace_back(resource, "name_" + std::to_string(row));
+                    chunk.set_value(0, i, logical_value_t::create_struct(resource, types[0], members));
+                    break;
+                }
+            }
+        }
+        table_append_state state(resource);
+        REQUIRE_FALSE(table.append_lock(state).has_error());
+        REQUIRE_FALSE(table.initialize_append(state).has_error());
+        REQUIRE_FALSE(table.append(chunk, state).has_error());
+        table.finalize_append(state, transaction_data::committed());
+    }
+
+    // Every segment of the table's column trees, by (row group, column path, index), that is in memory.
+    std::set<std::string> transient_segments(data_table_t& table) {
+        std::set<std::string> keys;
+        for (const auto& info : table.get_column_segment_info()) {
+            if (info.segment_type == "TRANSIENT" && info.segment_count > 0) {
+                keys.insert(std::to_string(info.row_group_index) + info.column_path + "#" +
+                            std::to_string(info.segment_idx));
+            }
+        }
+        return keys;
+    }
+
+} // namespace
+
+// The checkpoint hands the packer one placement per live segment it switches to the file; a second
+// placement of the same segment is never adopted, and its bytes sit in a block the root names
+// under nobody's segment. Measured before: a validity child placed by its own checkpoint() AND by
+// its parent's transition_to_disk(), 128 B per 1024 rows per standard column and per round.
+TEST_CASE("checkpoint: every live segment of a column tree is placed once", "[checkpoint][packing]") {
+    for (auto shape : {shape_t::INTEGER, shape_t::VARCHAR, shape_t::LIST, shape_t::STRUCT, shape_t::ARRAY}) {
+        const std::string path = "/tmp/test_otterbrix_checkpoint_placements_" + std::to_string(::getpid()) + ".otbx";
+        std::remove(path.c_str());
+
+        core::pmr::otterbrix_resource resource;
+        core::filesystem::local_file_system_t fs;
+        tstorage::buffer_pool_t pool(&resource, uint64_t(1) << 30, false, uint64_t(1) << 24);
+        tstorage::standard_buffer_manager_t buffer_manager(&resource, fs, pool);
+        tstorage::single_file_block_manager_t bm(buffer_manager, fs, path);
+        REQUIRE_FALSE(bm.create_new_database().has_error());
+
+        std::vector<column_definition_t> columns;
+        columns.emplace_back("c", shape_type(shape, &resource));
+        data_table_t table(&resource, bm, std::move(columns), "checkpoint_placements");
+
+        for (uint64_t round = 1; round <= 2; round++) {
+            append_shaped_rows(table, shape, &resource, round == 1 ? 0 : 100, round == 1 ? 100 : 1);
+            const auto before = transient_segments(table);
+            reset_transitions_with_live_pin();
+            checkpoint(table, bm);
+            const auto after = transient_segments(table);
+            uint64_t switched = 0;
+            for (const auto& key : before) {
+                switched += after.count(key) == 0 ? 1 : 0;
+            }
+            INFO(shape_name(shape) << ", round " << round << ": " << before.size() << " transient segments, "
+                                   << switched << " switched, " << segment_placements() << " placements, "
+                                   << segment_transitions() << " adopted");
+            CHECK(segment_transitions() == switched);
+            CHECK(segment_placements() == switched);
+        }
+        REQUIRE(table.calculate_size() == 101);
+        std::remove(path.c_str());
+    }
+}
+#endif

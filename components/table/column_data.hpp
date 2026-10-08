@@ -14,6 +14,9 @@ namespace components::table {
     uint64_t transitions_with_live_pin() noexcept;
     // Denominator, so a test can tell "none happened" from "none needed a live pin".
     uint64_t segment_transitions() noexcept;
+    // Placements handed to the packer for live segments; every one must be adopted (segment_transitions()):
+    // a second placement of a segment already placed is bytes in a block that nobody names.
+    uint64_t segment_placements() noexcept;
     void reset_transitions_with_live_pin() noexcept;
 #endif
 
@@ -137,9 +140,12 @@ namespace components::table {
         [[nodiscard]] virtual core::result_wrapper_t<bool>
         initialize_column(const persistent_column_data_t& persistent_data);
 
-        // Caller owns `pbm` and MUST flush_partial_blocks() before a re-pointed segment can be
-        // evicted or reloaded, or a live segment could load() an unflushed block.
-        [[nodiscard]] virtual core::result_wrapper_t<bool> transition_to_disk(storage::partial_block_manager_t& pbm);
+        // Places every transient segment of this node and of its children (the write-through of a closed
+        // row group). Caller owns `pbm` and MUST flush_partial_blocks() before a re-pointed segment can be
+        // evicted or reloaded, or a live segment could load() an unflushed block. checkpoint() places only
+        // this node's segments: every child checkpoints, and places, its own -- a segment placed twice is
+        // adopted once and the second copy's bytes are named by nobody.
+        [[nodiscard]] core::result_wrapper_t<bool> transition_to_disk(storage::partial_block_manager_t& pbm);
 
         // Mirrors checkpoint_children's recursion, not transition_to_disk's; skipping the override orphans blocks.
         virtual void collect_disk_block_ids(std::pmr::vector<uint64_t>& out) const;
@@ -164,6 +170,12 @@ namespace components::table {
         [[nodiscard]] virtual core::result_wrapper_t<bool>
         checkpoint_children(storage::partial_block_manager_t& partial_block_manager,
                             persistent_column_data_t& persistent);
+
+        // This node's segments only: the one place a segment of this node is handed to the packer.
+        [[nodiscard]] core::result_wrapper_t<bool> transition_own_segments(storage::partial_block_manager_t& pbm);
+        // NVI hook of transition_to_disk(): the children, each through its own transition_to_disk.
+        [[nodiscard]] virtual core::result_wrapper_t<bool>
+        transition_children(storage::partial_block_manager_t& pbm);
 
         class repoint_t;
 

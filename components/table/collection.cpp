@@ -19,7 +19,8 @@ namespace components::table {
                                int64_t row_start,
                                uint64_t total_rows,
                                uint64_t row_group_size)
-        : resource_(resource)
+        : session_cuts_(resource)
+        , resource_(resource)
         , block_manager_(block_manager)
         , append_pbm_(storage::partial_block_manager_t::for_appends(block_manager))
         , row_group_size_(row_group_size)
@@ -214,7 +215,14 @@ namespace components::table {
         assert(row_start_ + static_cast<int64_t>(total_rows_.load()) ==
                state.start_row_group->start + static_cast<int64_t>(state.start_row_group->count));
         state.append_state.pbm = &append_pbm_;
-        return state.start_row_group->initialize_append(state.append_state); // out_of_memory
+        auto init = state.start_row_group->initialize_append(state.append_state); // out_of_memory
+        if (init.has_error()) {
+            return init;
+        }
+        // The session's cut: the counts before its first row (re-taken if that row opens a row group).
+        state.cut.counts.clear();
+        state.start_row_group->snapshot_counts(state.cut);
+        return true;
     }
 
     core::result_wrapper_t<bool> collection_t::append(vector::data_chunk_t& chunk, table_append_state& state) {
@@ -227,6 +235,9 @@ namespace components::table {
         state.total_append_count += total_append_count;
         auto* entry_row_group = state.append_state.row_group;
         const uint64_t entry_offset = state.append_state.offset_in_row_group;
+        // The entry row group's counts before this chunk: what a refusal in a later row group cuts it back to.
+        append_cut_t entry_cut(resource_);
+        entry_row_group->snapshot_counts(entry_cut);
         while (true) {
             auto current_row_group = state.append_state.row_group;
             uint64_t append_count =
@@ -239,7 +250,8 @@ namespace components::table {
                     if (current_row_group == entry_row_group) {
                         return appended; // out_of_memory
                     }
-                    return unwind_append(state, entry_row_group, entry_offset, total_append_count, appended.error());
+                    return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count,
+                                         appended.error());
                 }
             }
             remaining -= append_count;
@@ -250,6 +262,10 @@ namespace components::table {
             if (remaining < chunk.size()) {
                 chunk.slice(resource_, append_count, remaining);
             }
+            // No row of this session has landed yet: the session's first row opens the new row group,
+            // so its cut is that row group's (empty) counts, not the full entry row group's.
+            const bool session_untouched = remaining == total_append_count &&
+                                           state.total_append_count == total_append_count;
             new_row_group = true;
             auto next_start = current_row_group->start + static_cast<int64_t>(state.append_state.offset_in_row_group);
 
@@ -257,27 +273,35 @@ namespace components::table {
             // switches them before the close below walks the row group, or the walk would place them
             // a second time (a transient placed twice names two blocks).
             if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
-                return unwind_append(state, entry_row_group, entry_offset, total_append_count, flushed.error());
+                return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count,
+                                     flushed.error());
             }
 
             auto last_row_group = append_row_group(next_start);
             auto init = last_row_group->initialize_append(state.append_state);
             if (init.has_error()) {
-                return unwind_append(state, entry_row_group, entry_offset, total_append_count, init.error());
+                return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count,
+                                     init.error());
+            }
+            if (session_untouched) {
+                state.cut.counts.clear();
+                last_row_group->snapshot_counts(state.cut);
             }
             // Write-through: the row group we just closed is now complete (segments final, append state
             // moved on), so re-pointing it to disk lets the pool evict+reload it -> bounded memory at any
             // table size. A write/alloc failure surfaces as io_error/out_of_memory, never a throw.
             auto transitioned = current_row_group->transition_to_disk(append_pbm_);
             if (transitioned.has_error()) {
-                return unwind_append(state, entry_row_group, entry_offset, total_append_count, transitioned.error());
+                return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count,
+                                     transitioned.error());
             }
         }
         // Once per append, for every segment re-pointed above or filled inside a column: the packer
         // writes the open tails and switches every placed segment whose block is on the file.
         if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
             // io_error: the segments of the tails not written stay transient; the unwind drops the rows
-            return unwind_append(state, entry_row_group, entry_offset, total_append_count, flushed.error());
+            return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count,
+                                 flushed.error());
         }
         state.current_row += int64_t(total_append_count);
         return new_row_group;
@@ -286,6 +310,7 @@ namespace components::table {
     core::error_t collection_t::unwind_append(table_append_state& state,
                                               row_group_t* entry_row_group,
                                               uint64_t entry_offset,
+                                              const append_cut_t& entry_cut,
                                               uint64_t append_count,
                                               const core::error_t& cause) {
         for (uint64_t c = 0; c < types_.size(); c++) {
@@ -301,8 +326,7 @@ namespace components::table {
         state.append_state.row_group = entry_row_group;
         state.append_state.offset_in_row_group = entry_offset;
         state.total_append_count -= append_count;
-        auto unwound =
-            entry_row_group->unwind_append(entry_row_group->start + static_cast<int64_t>(entry_offset), types_.size());
+        auto unwound = entry_row_group->unwind_append(entry_cut, types_.size());
         if (unwound.contains_error()) {
             return unwind_refused(cause, unwound, resource_);
         }
@@ -338,11 +362,19 @@ namespace components::table {
         }
         total_rows_ += state.total_append_count;
 
+        // A committed session's cut outlives only the next session's end (see session_cuts_).
+        for (auto it = session_cuts_.begin(); it != session_cuts_.end();) {
+            it = it->second.transaction_id == DIRECT_WRITE_TXN_ID ? session_cuts_.erase(it) : std::next(it);
+        }
+        session_cuts_.insert_or_assign(state.row_start, session_cut_t{std::move(state.cut), txn.transaction_id});
+        state.cut.counts.clear();
+
         state.total_append_count = 0;
         state.start_row_group = nullptr;
     }
 
     void collection_t::commit_append(uint64_t commit_id, int64_t row_start, uint64_t count) {
+        session_cuts_.erase(row_start);
         for (auto& rg : row_groups_->segments()) {
             auto rg_end = rg.start + static_cast<int64_t>(rg.count.load());
             if (rg.start >= row_start + static_cast<int64_t>(count))
@@ -398,6 +430,14 @@ namespace components::table {
         if (count == 0) {
             return true;
         }
+        // A revert targets the first row of an append session; its cut is the only cut the columns
+        // take (a LIST element column's cut is not a row number, and reading it needs a pin).
+        auto cut_it = session_cuts_.find(row_start);
+        if (cut_it == session_cuts_.end()) {
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string("table revert: no append session started at the revert row", resource_));
+        }
         uint64_t segment_index;
         if (!row_groups_->try_segment_index(row_start, segment_index)) {
             return core::error_t(core::error_code_t::data_corruption,
@@ -415,7 +455,10 @@ namespace components::table {
         // with the later row groups' through settle_unwind, like a refused append's (unwind_append).
         std::pmr::vector<uint64_t> before(resource_);
         row_group->collect_disk_block_ids(before);
-        auto reverted = row_group->revert_append(static_cast<uint64_t>(row_start - row_group->start));
+        cut_cursor_t cursor(cut_it->second.cut);
+        auto reverted = row_group->revert_append(static_cast<uint64_t>(row_start - row_group->start), cursor);
+        // The reverted session and every later one are gone with their rows.
+        session_cuts_.erase(cut_it, session_cuts_.end());
         std::pmr::vector<uint64_t> after(resource_);
         row_group->collect_disk_block_ids(after);
         std::sort(before.begin(), before.end());

@@ -138,7 +138,9 @@ namespace components::table {
             : append_state(*this)
             , total_append_count(0)
             , start_row_group(nullptr)
-            , hashes(resource, types::logical_type::UBIGINT) {}
+            , hashes(resource, types::logical_type::UBIGINT)
+            , cut(resource)
+            , piece_cut(resource) {}
         ~table_append_state() = default;
 
         row_group_append_state append_state;
@@ -151,6 +153,12 @@ namespace components::table {
         uint64_t total_append_count;
         row_group_t* start_row_group;
         vector::vector_t hashes;
+        // The counts of the row group holding row_start, before the session's first row: what
+        // collection_t keeps for the transaction's revert of this session.
+        append_cut_t cut;
+        // The counts of the current row group before the chunk being appended: what its own unwind
+        // of a refused chunk cuts back to.
+        append_cut_t piece_cut;
     };
 
     class storage_commit_state {

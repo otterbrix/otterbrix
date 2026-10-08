@@ -303,8 +303,22 @@ namespace components::table {
         return true;
     }
 
-    core::result_wrapper_t<bool> column_data_t::revert_append(int64_t start_row) {
-        count_ = static_cast<uint64_t>(start_row - start_);
+    void column_data_t::snapshot_counts(append_cut_t& cut) const { cut.counts.push_back(count_); }
+
+    core::result_wrapper_t<bool> column_data_t::revert_append(cut_cursor_t& cut) {
+        if (cut.exhausted()) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("column revert: the cut names fewer columns than the table holds", resource_));
+        }
+        const uint64_t kept = cut.take();
+        if (kept > count_) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("column revert: the cut keeps more rows than the column holds", resource_));
+        }
+        const int64_t start_row = start_ + static_cast<int64_t>(kept);
+        count_ = kept;
         auto last_segment = data_.last_segment();
         if (!last_segment) {
             return true;
@@ -327,7 +341,8 @@ namespace components::table {
             return true;
         }
         data_.erase_segments(segment_index + 1);
-        return segment->revert_append(static_cast<uint64_t>(start_row));
+        segment->revert_append(static_cast<uint64_t>(start_row));
+        return true;
     }
 
     uint64_t column_data_t::fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) {

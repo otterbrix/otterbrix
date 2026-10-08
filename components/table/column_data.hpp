@@ -106,8 +106,13 @@ namespace components::table {
         append(column_append_state& state, vector::vector_t& vector, uint64_t count);
         [[nodiscard]] virtual core::result_wrapper_t<bool>
         append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t count);
-        // `start_row` is COLLECTION-ABSOLUTE; a failed rollback pin must be REPORTED, not asserted away.
-        [[nodiscard]] virtual core::result_wrapper_t<bool> revert_append(int64_t start_row);
+        // Records this column's row count and then its children's, in append order; revert_append takes
+        // them back in the same order.
+        virtual void snapshot_counts(append_cut_t& cut) const;
+        // Cuts this column (and its children) back to the counts the cursor yields. Reads nothing: a
+        // revert runs when the pool has just refused memory, and a read that failed after the cuts
+        // left the element column holding the reverted elements (test_list_revert_pin R1-R4).
+        [[nodiscard]] virtual core::result_wrapper_t<bool> revert_append(cut_cursor_t& cut);
 
         virtual uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result);
         virtual void

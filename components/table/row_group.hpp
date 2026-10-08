@@ -100,7 +100,10 @@ namespace components::table {
 
         void commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count);
         // The count shrinks even on a column refusal: an untruncated count over a truncated column would over-read.
-        [[nodiscard]] core::result_wrapper_t<bool> revert_append(uint64_t row_group_start);
+        // The cut was taken by snapshot_counts when the reverted append began (collection_t keeps one per session).
+        [[nodiscard]] core::result_wrapper_t<bool> revert_append(uint64_t row_group_start, cut_cursor_t& cut);
+        // Every column's row count, own first then its children, in the order revert_append takes them back.
+        void snapshot_counts(append_cut_t& cut);
 
         uint64_t delete_rows(data_table_t& table, int64_t* row_ids, uint64_t count, uint64_t transaction_id);
         void commit_delete(uint64_t commit_id, uint64_t vector_idx, const delete_info& info);
@@ -113,7 +116,7 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(row_group_append_state& append_state);
         [[nodiscard]] core::result_wrapper_t<bool>
         append(row_group_append_state& append_state, vector::data_chunk_t& chunk, uint64_t append_count);
-        [[nodiscard]] core::error_t unwind_append(int64_t start_row, uint64_t column_count);
+        [[nodiscard]] core::error_t unwind_append(const append_cut_t& cut, uint64_t column_count);
 
         void get_column_segment_info(uint64_t row_group_index, std::vector<column_segment_info>& result);
 

@@ -100,12 +100,17 @@ namespace components::table {
         return validity.append_data(state.child_appends[0], uvf, count);
     }
 
-    core::result_wrapper_t<bool> standard_column_data_t::revert_append(int64_t start_row) {
-        auto own = column_data_t::revert_append(start_row);
+    void standard_column_data_t::snapshot_counts(append_cut_t& cut) const {
+        column_data_t::snapshot_counts(cut);
+        validity.snapshot_counts(cut);
+    }
+
+    core::result_wrapper_t<bool> standard_column_data_t::revert_append(cut_cursor_t& cut) {
+        auto own = column_data_t::revert_append(cut);
         if (own.has_error()) {
             return own;
         }
-        return validity.revert_append(start_row);
+        return validity.revert_append(cut);
     }
 
     core::result_wrapper_t<bool> standard_column_data_t::transition_children(storage::partial_block_manager_t& pbm) {

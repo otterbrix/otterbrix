@@ -53,6 +53,7 @@ set(${PROJECT_NAME}_SOURCES
         test_checkpoint_blocks.cpp
         test_txn_revert_blocks.cpp
         test_block_registry_threads.cpp
+        test_list_revert_pin.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

@@ -1,5 +1,6 @@
 #pragma once
 #include <atomic>
+#include <map>
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/types/types.hpp>
@@ -137,8 +138,19 @@ namespace components::table {
         [[nodiscard]] core::error_t unwind_append(table_append_state& state,
                                                   row_group_t* entry_row_group,
                                                   uint64_t entry_offset,
+                                                  const append_cut_t& entry_cut,
                                                   uint64_t append_count,
                                                   const core::error_t& cause);
+
+        // One cut per append session, keyed by its first row: the counts of the row group that took it,
+        // before it. commit_append drops the session's; a session appended as committed keeps its cut
+        // until the next session ends (agent_disk reverts one right after its own append); revert_append
+        // drops every cut from the reverted row on.
+        struct session_cut_t {
+            append_cut_t cut;
+            uint64_t transaction_id;
+        };
+        std::pmr::map<int64_t, session_cut_t> session_cuts_;
 
         std::pmr::memory_resource* resource_;
         storage::block_manager_t& block_manager_;

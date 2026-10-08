@@ -261,30 +261,24 @@ namespace components::table {
         return validity.append_data(state.child_appends[0], uvf, count);
     }
 
-    core::result_wrapper_t<bool> list_column_data_t::revert_append(int64_t start_row) {
-        auto own = column_data_t::revert_append(start_row);
+    void list_column_data_t::snapshot_counts(append_cut_t& cut) const {
+        column_data_t::snapshot_counts(cut);
+        validity.snapshot_counts(cut);
+        child_column->snapshot_counts(cut);
+    }
+
+    core::result_wrapper_t<bool> list_column_data_t::revert_append(cut_cursor_t& cut) {
+        auto own = column_data_t::revert_append(cut);
         if (own.has_error()) {
             return own;
         }
-        auto v = validity.revert_append(start_row);
+        auto v = validity.revert_append(cut);
         if (v.has_error()) {
             return v;
         }
-        // start_row is collection-absolute; stored offsets are cumulative element counts within
-        // this row group, so the child's truncation row is start_ + <last surviving entry's end
-        // offset>. The old guard compared the RELATIVE surviving count against ABSOLUTE start_,
-        // leaving any row group with start_ > 0 untruncated and desynced.
-        uint64_t child_offset = 0;
-        if (start_row > start_) {
-            auto fetched = fetch_list_offset(start_row - 1);
-            if (fetched.has_error()) {
-                // Truncating the child to a guessed offset is the desync this function
-                // exists to prevent; report instead.
-                return fetched.convert_error<bool>();
-            }
-            child_offset = fetched.value();
-        }
-        return child_column->revert_append(start_ + static_cast<int64_t>(child_offset));
+        // The element column cuts at the element count the snapshot recorded for it: the stored offset
+        // of the last kept row says the same, but reading it needed a pin the exhausted pool refused.
+        return child_column->revert_append(cut);
     }
 
     uint64_t list_column_data_t::fetch(column_scan_state& state, int64_t, vector::vector_t&) {

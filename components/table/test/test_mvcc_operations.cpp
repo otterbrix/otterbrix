@@ -165,9 +165,16 @@ TEST_CASE("components::table::mvcc::append_revert_across_row_groups") {
     const auto kept_rows = static_cast<uint64_t>(group_size * 1.3);
     const auto reverted_rows = static_cast<uint64_t>(group_size * 2.6);
     const uint64_t batch_rows = static_cast<uint64_t>(static_cast<double>(DEFAULT_VECTOR_CAPACITY) * 0.7);
-    const auto append_in_batches = [&](int64_t start, uint64_t count) {
+    // The reverted batches are one transaction's: a revert targets the first row of an uncommitted
+    // append session (the committed batches' cuts are gone with their commit).
+    const auto append_in_batches = [&](int64_t start, uint64_t count, bool committed) {
         for (uint64_t done = 0; done < count; done += batch_rows) {
-            append_rows(*table, env, start + static_cast<int64_t>(done), std::min(batch_rows, count - done));
+            const auto rows = std::min(batch_rows, count - done);
+            if (committed) {
+                append_rows(*table, env, start + static_cast<int64_t>(done), rows);
+            } else {
+                append_rows_txn(*table, env, start + static_cast<int64_t>(done), rows, transaction_data{5, 5});
+            }
         }
     };
     const auto scan_all = [&]() {
@@ -189,8 +196,8 @@ TEST_CASE("components::table::mvcc::append_revert_across_row_groups") {
         }
     };
 
-    append_in_batches(0, kept_rows);
-    append_in_batches(static_cast<int64_t>(kept_rows), reverted_rows);
+    append_in_batches(0, kept_rows, true);
+    append_in_batches(static_cast<int64_t>(kept_rows), reverted_rows, false);
     // Not vacuous: the reverted rows fill more than one row group of their own.
     REQUIRE(reverted_rows > table->row_group_size());
 
@@ -710,7 +717,9 @@ TEST_CASE("components::table::mvcc::revert_append_truncates_columns_direct") {
     test_env env;
     auto table = make_int2_table(env);
 
-    append_rows2(*table, env, 0, 100);
+    // Two sessions: a revert targets the first row of an append session.
+    append_rows2(*table, env, 0, 40);
+    append_rows2(*table, env, 40, 60);
     REQUIRE(table->row_group()->total_rows() == 100);
 
     REQUIRE_FALSE(table->revert_append(40, 60).has_error()); // keep [0,40), drop the last 60
@@ -1052,7 +1061,8 @@ TEST_CASE("components::table::mvcc::revert_append_list_child_row_group_1") {
     auto table = make_list_table(env);
 
     append_list_rows(*table, env, 0, 1024, 0); // fills row group 0, then 40 rows into row group 1
-    append_list_rows(*table, env, 1024, 40, 0);
+    append_list_rows(*table, env, 1024, 20, 0);
+    append_list_rows(*table, env, 1044, 20, 0); // its own session: a revert targets a session's first row
     REQUIRE(table->row_group()->total_rows() == 1064);
 
     REQUIRE_FALSE(table->revert_append(1044, 20).has_error()); // keep [0, 1044)
@@ -1072,7 +1082,8 @@ TEST_CASE("components::table::mvcc::revert_append_array_child_row_group_1") {
     auto table = make_array_table(env);
 
     append_array_rows(*table, env, 0, 1024, 0);
-    append_array_rows(*table, env, 1024, 40, 0);
+    append_array_rows(*table, env, 1024, 20, 0);
+    append_array_rows(*table, env, 1044, 20, 0); // its own session: a revert targets a session's first row
     REQUIRE(table->row_group()->total_rows() == 1064);
 
     REQUIRE_FALSE(table->revert_append(1044, 20).has_error());

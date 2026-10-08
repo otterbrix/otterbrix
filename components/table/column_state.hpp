@@ -5,6 +5,7 @@
 #include <core/operations_helper.hpp>
 #include <core/result_wrapper.hpp>
 #include <memory>
+#include <memory_resource>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -98,6 +99,24 @@ namespace components::table {
 
         // uint64_t, not uint32_t: block ids share a domain with transient ids (>= storage::MAXIMUM_BLOCK).
         std::vector<uint64_t> blocks;
+    };
+
+    // The row count of every column of a row group, own count first then the children's, in the order
+    // column_data_t::snapshot_counts walks them. A revert takes each column back to the count recorded
+    // here: no column reads anything to find its cut.
+    struct append_cut_t {
+        explicit append_cut_t(std::pmr::memory_resource* resource)
+            : counts(resource) {}
+        std::pmr::vector<uint64_t> counts;
+    };
+
+    struct cut_cursor_t {
+        explicit cut_cursor_t(const append_cut_t& cut)
+            : cut(cut) {}
+        bool exhausted() const { return next >= cut.counts.size(); }
+        uint64_t take() { return cut.counts[next++]; }
+        const append_cut_t& cut;
+        uint64_t next{0};
     };
 
     struct column_append_state {

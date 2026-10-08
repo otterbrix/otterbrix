@@ -600,16 +600,22 @@ namespace components::table {
         }
     }
 
-    core::result_wrapper_t<bool> row_group_t::revert_append(uint64_t row_group_start) {
+    void row_group_t::snapshot_counts(append_cut_t& cut) {
+        for (uint64_t c = 0; c < get_column_count(); c++) {
+            get_column(c).snapshot_counts(cut);
+        }
+    }
+
+    core::result_wrapper_t<bool> row_group_t::revert_append(uint64_t row_group_start, cut_cursor_t& cut) {
         auto vinfo = version_info();
         if (vinfo) {
             vinfo->revert_append(row_group_start);
         }
-        // row_group_start is row-group-local; a column's start_ is absolute, so truncate at start + local, or
-        // stale tails let a later scan overrun the result vector. Best-effort: first refusal wins, count still shrinks.
+        // Each column cuts back to the count the snapshot recorded for it (a LIST element column's is not
+        // a row number). Best-effort: first refusal wins, count still shrinks.
         core::error_t first_error = core::error_t::no_error();
         for (uint64_t c = 0; c < get_column_count(); c++) {
-            auto reverted = get_column(c).revert_append(this->start + static_cast<int64_t>(row_group_start));
+            auto reverted = get_column(c).revert_append(cut);
             if (reverted.has_error() && !first_error.contains_error()) {
                 first_error = reverted.error();
             }
@@ -641,6 +647,10 @@ namespace components::table {
     core::result_wrapper_t<bool>
     row_group_t::append(row_group_append_state& state, vector::data_chunk_t& chunk, uint64_t append_count) {
         assert(chunk.column_count() == get_column_count());
+        // The counts before this chunk: what a refused column cuts the row group back to.
+        auto& piece_cut = state.parent.piece_cut;
+        piece_cut.counts.clear();
+        snapshot_counts(piece_cut);
         for (uint64_t i = 0; i < get_column_count(); i++) {
             auto& col_data = get_column(i);
             auto prev_allocation_size = col_data.allocation_size();
@@ -650,7 +660,7 @@ namespace components::table {
                 for (uint64_t c = 0; c <= i; c++) {
                     state.states[c].release_pins();
                 }
-                auto unwound = unwind_append(this->start + static_cast<int64_t>(state.offset_in_row_group), i + 1);
+                auto unwound = unwind_append(piece_cut, i + 1);
                 if (unwound.contains_error()) {
                     return unwind_refused(appended.error(), unwound, collection_->resource());
                 }
@@ -661,13 +671,14 @@ namespace components::table {
         return true;
     }
 
-    core::error_t row_group_t::unwind_append(int64_t start_row, uint64_t column_count) {
+    core::error_t row_group_t::unwind_append(const append_cut_t& cut, uint64_t column_count) {
         auto* resource = collection_->resource();
         std::pmr::vector<uint64_t> before(resource);
         collect_disk_block_ids(before);
         core::error_t first_error = core::error_t::no_error();
+        cut_cursor_t cursor(cut);
         for (uint64_t c = 0; c < column_count; c++) {
-            auto reverted = get_column(c).revert_append(start_row);
+            auto reverted = get_column(c).revert_append(cursor);
             if (reverted.has_error() && !first_error.contains_error()) {
                 first_error = reverted.error();
             }

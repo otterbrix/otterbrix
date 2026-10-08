@@ -361,9 +361,9 @@ namespace components::table {
                     } else {
                         auto& col_data = get_column(state.physical_column(column.primary_index()));
                         if (TYPE == table_scan_type::REGULAR) {
-                            col_data.scan(state.vector_index, state.column_scans[i], result.data[out_idx]);
+                            col_data.scan(state.column_scans[i], result.data[out_idx], max_count);
                         } else {
-                            col_data.scan_committed(state.vector_index, state.column_scans[i], result.data[out_idx]);
+                            col_data.scan_committed(state.column_scans[i], result.data[out_idx], max_count);
                         }
                     }
                 }
@@ -458,7 +458,7 @@ namespace components::table {
                                                                max_count);
                                 auto prev_offset = state.column_scans[i].result_offset;
                                 state.column_scans[i].result_offset = 0;
-                                col_data.select(state.vector_index,
+                                col_data.select(max_count,
                                                 state.column_scans[i],
                                                 select_vector,
                                                 indexing,
@@ -471,7 +471,7 @@ namespace components::table {
                                                          state.column_scans[i].result_offset);
                             }
                         } else {
-                            col_data.select_committed(state.vector_index,
+                            col_data.select_committed(max_count,
                                                       state.column_scans[i],
                                                       result.data[out_idx],
                                                       indexing,

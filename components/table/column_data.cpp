@@ -170,21 +170,21 @@ namespace components::table {
         return scan_vector(state, result, count, scan_vector_type::SCAN_FLAT_VECTOR);
     }
 
-    void column_data_t::select(uint64_t vector_index,
+    void column_data_t::select(uint64_t scan_upper_bound,
                                column_scan_state& state,
                                vector::vector_t& result,
                                vector::indexing_vector_t& indexing,
                                uint64_t s_count) {
-        scan(vector_index, state, result);
+        scan(state, result, scan_upper_bound);
         result.slice(indexing, s_count);
     }
 
-    void column_data_t::select_committed(uint64_t vector_index,
+    void column_data_t::select_committed(uint64_t scan_upper_bound,
                                          column_scan_state& state,
                                          vector::vector_t& result,
                                          vector::indexing_vector_t& indexing,
                                          uint64_t s_count) {
-        scan_committed(vector_index, state, result);
+        scan_committed(state, result, scan_upper_bound);
         result.slice(indexing, s_count);
     }
 

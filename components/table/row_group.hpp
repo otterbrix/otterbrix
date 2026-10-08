@@ -104,6 +104,8 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> revert_append(uint64_t row_group_start, cut_cursor_t& cut);
         // Every column's row count, own first then its children, in the order revert_append takes them back.
         void snapshot_counts(append_cut_t& cut);
+        // The same for one column only.
+        void snapshot_counts(uint64_t column, append_cut_t& cut);
 
         uint64_t delete_rows(data_table_t& table, int64_t* row_ids, uint64_t count, uint64_t transaction_id);
         void commit_delete(uint64_t commit_id, uint64_t vector_idx, const delete_info& info);

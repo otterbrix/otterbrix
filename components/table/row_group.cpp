@@ -606,6 +606,8 @@ namespace components::table {
         }
     }
 
+    void row_group_t::snapshot_counts(uint64_t column, append_cut_t& cut) { get_column(column).snapshot_counts(cut); }
+
     core::result_wrapper_t<bool> row_group_t::revert_append(uint64_t row_group_start, cut_cursor_t& cut) {
         auto vinfo = version_info();
         if (vinfo) {

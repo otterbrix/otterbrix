@@ -620,3 +620,114 @@ TEST_CASE("list_revert_pin: a revert from inside an append session is refused", 
     }
     std::remove(path.c_str());
 }
+
+namespace {
+
+    // A committed seed row, then an uncommitted 4-row session at row 1: what the transaction will
+    // revert after its own ALTER.
+    std::unique_ptr<data_table_t>
+    table_with_open_session(env_t& env, tstorage::single_file_block_manager_t& bm, const complex_logical_type& list_type) {
+        auto table = make_table(env, bm, list_type);
+        auto seed = one_row(env, *table, 1, list_of(env, list_type, {"seed"}));
+        committed_append(*table, seed, env);
+        auto types = table->copy_types();
+        data_chunk_t chunk(&env.resource, types, 4);
+        chunk.set_cardinality(4);
+        for (uint64_t i = 0; i < 4; i++) {
+            chunk.set_value(0, i, static_cast<int64_t>(10 + i));
+            chunk.set_value(1, i, list_of(env, list_type, {"a", "b"}));
+        }
+        transaction_append(*table, chunk, env, 5);
+        REQUIRE(column_of(*table, 1).count() == 5);
+        return table;
+    }
+
+    // Element counts of the LIST column at `column`, one entry per row, in row order.
+    std::vector<uint64_t> list_sizes(data_table_t& table, env_t& env, uint64_t column) {
+        auto types = table.copy_types();
+        std::vector<storage_index_t> column_ids;
+        for (uint64_t c = 0; c < types.size(); c++) {
+            column_ids.emplace_back(c);
+        }
+        table_scan_state state(&env.resource);
+        table.initialize_scan(state, column_ids, transaction_data::committed(), nullptr);
+        data_chunk_t chunk(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
+        std::vector<uint64_t> sizes;
+        while (true) {
+            chunk.reset();
+            table.scan(chunk, state);
+            REQUIRE_FALSE(state.table_state.has_error());
+            if (chunk.size() == 0) {
+                break;
+            }
+            for (uint64_t i = 0; i < chunk.size(); i++) {
+                sizes.push_back(chunk.value(column, i).children().size());
+            }
+        }
+        return sizes;
+    }
+
+} // namespace
+
+// The transaction appended before its own ADD COLUMN and rolls back after it: the revert runs on the
+// successor, which must hold the session's cut with the added column's counts at that row.
+TEST_CASE("list_revert_pin: a session begun before ADD COLUMN reverts after it", "[list_revert_pin][alter]") {
+    const std::string path = db_path("alter_add");
+    std::remove(path.c_str());
+    env_t env;
+    const auto list_type = complex_logical_type::create_list(logical_type::STRING_LITERAL);
+    {
+        tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+        REQUIRE(!bm.create_new_database().has_error());
+        auto table = table_with_open_session(env, bm, list_type);
+        column_definition_t added("w", complex_logical_type::create_list(logical_type::STRING_LITERAL));
+        auto extended = std::make_unique<data_table_t>(*table, added);
+        REQUIRE_FALSE(extended->has_construction_error());
+
+        auto reverted = extended->revert_append(1, 4);
+        INFO("revert: " << (reverted.has_error() ? reverted.error().what : std::pmr::string{"ok"}));
+        REQUIRE_FALSE(reverted.has_error());
+        CHECK(column_of(*extended, 1).count() == 1);
+        CHECK(column_of(*extended, 2).count() == 1);
+
+        auto types = extended->copy_types();
+        data_chunk_t good(&env.resource, types, 1);
+        good.set_cardinality(1);
+        good.set_value(0, 0, int64_t{8});
+        good.set_value(1, 0, list_of(env, list_type, {"ok"}));
+        good.set_value(2, 0, list_of(env, list_type, {"x", "y", "z"}));
+        committed_append(*extended, good, env);
+        CHECK(list_sizes(*extended, env, 1) == std::vector<uint64_t>{1, 1});
+        CHECK(list_sizes(*extended, env, 2) == std::vector<uint64_t>{0, 3});
+    }
+    std::remove(path.c_str());
+}
+
+// The same after DROP COLUMN of the column in front of the LIST: the cut loses that column's span.
+TEST_CASE("list_revert_pin: a session begun before DROP COLUMN reverts after it", "[list_revert_pin][alter]") {
+    const std::string path = db_path("alter_drop");
+    std::remove(path.c_str());
+    env_t env;
+    const auto list_type = complex_logical_type::create_list(logical_type::STRING_LITERAL);
+    {
+        tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+        REQUIRE(!bm.create_new_database().has_error());
+        auto table = table_with_open_session(env, bm, list_type);
+        auto reduced = std::make_unique<data_table_t>(*table, uint64_t{0});
+        REQUIRE_FALSE(reduced->has_construction_error());
+
+        auto reverted = reduced->revert_append(1, 4);
+        INFO("revert: " << (reverted.has_error() ? reverted.error().what : std::pmr::string{"ok"}));
+        REQUIRE_FALSE(reverted.has_error());
+        CHECK(column_of(*reduced, 0).count() == 1);
+
+        auto types = reduced->copy_types();
+        data_chunk_t good(&env.resource, types, 1);
+        good.set_cardinality(1);
+        good.set_value(0, 0, list_of(env, list_type, {"ok"}));
+        committed_append(*reduced, good, env);
+        CHECK(list_sizes(*reduced, env, 0) == std::vector<uint64_t>{1, 1});
+    }
+    std::remove(path.c_str());
+}
+

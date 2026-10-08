@@ -580,6 +580,26 @@ namespace components::table {
         if (auto flushed = result->append_pbm_.flush_partial_blocks(); flushed.has_error()) {
             return flushed.convert_error<boost::intrusive_ptr<collection_t>>(); // io_error
         }
+        // A session begun before the ALTER may be reverted on the successor: its cut gets the added
+        // column's counts at the session's row. The back-fill wrote one value per row, so each of those
+        // counts grows linearly with the rows: at `kept` rows it is count * kept / rows.
+        for (const auto& [session_row, session] : session_cuts_) {
+            uint64_t index;
+            if (!result->row_groups_->try_segment_index(session_row, index)) {
+                continue; // a session of no rows: nothing to revert
+            }
+            auto* row_group = result->row_groups_->segment_at(static_cast<int64_t>(index));
+            const uint64_t rows = row_group->count;
+            const uint64_t kept = session.cut.counts.front();
+            append_cut_t added(resource_);
+            row_group->snapshot_counts(types_.size(), added);
+            session_cut_t inherited{append_cut_t(resource_), session.transaction_id};
+            inherited.cut.counts.assign(session.cut.counts.begin(), session.cut.counts.end());
+            for (uint64_t count : added.counts) {
+                inherited.cut.counts.push_back(rows == 0 ? 0 : count * kept / rows);
+            }
+            result->session_cuts_.emplace(session_row, std::move(inherited));
+        }
         return result;
     }
 
@@ -604,6 +624,27 @@ namespace components::table {
         for (auto& current_row_group : row_groups_->segments()) {
             auto new_row_group = current_row_group.remove_column(result.get(), col_idx);
             result->row_groups_->append_segment(std::move(new_row_group));
+        }
+        // A session begun before the ALTER may be reverted on the successor: its cut loses the removed
+        // column's span (its own count and its children's).
+        for (const auto& [session_row, session] : session_cuts_) {
+            uint64_t index;
+            if (!row_groups_->try_segment_index(session_row, index)) {
+                continue; // a session of no rows: nothing to revert
+            }
+            auto* row_group = row_groups_->segment_at(static_cast<int64_t>(index));
+            append_cut_t before(resource_);
+            for (uint64_t c = 0; c < col_idx; c++) {
+                row_group->snapshot_counts(c, before);
+            }
+            append_cut_t removed(resource_);
+            row_group->snapshot_counts(col_idx, removed);
+            assert(before.counts.size() + removed.counts.size() <= session.cut.counts.size());
+            session_cut_t inherited{append_cut_t(resource_), session.transaction_id};
+            inherited.cut.counts.assign(session.cut.counts.begin(), session.cut.counts.end());
+            const auto from = inherited.cut.counts.begin() + static_cast<int64_t>(before.counts.size());
+            inherited.cut.counts.erase(from, from + static_cast<int64_t>(removed.counts.size()));
+            result->session_cuts_.emplace(session_row, std::move(inherited));
         }
         return result;
     }

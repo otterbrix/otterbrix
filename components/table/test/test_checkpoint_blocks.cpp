@@ -501,7 +501,9 @@ TEST_CASE("checkpoint: every live segment of a column tree is placed once", "[ch
             const auto after = transient_segments(table);
             uint64_t switched = 0;
             for (const auto& key : before) {
-                switched += after.count(key) == 0 ? 1 : 0;
+                if (!after.contains(key)) {
+                    ++switched;
+                }
             }
             INFO(shape_name(shape) << ", round " << round << ": " << before.size() << " transient segments, "
                                    << switched << " switched, " << segment_placements() << " placements, "

@@ -131,13 +131,8 @@ namespace components::table {
         }
         state.max_row_group_row = std::min(start + group_count, state.max_row);
         for (uint64_t i = 0; i < column_ids.size(); i++) {
-            const auto& column = column_ids[i];
-            if (!column.is_row_id_column()) {
-                auto& column_data = get_column(state.physical_column(column.primary_index()));
-                column_data.initialize_scan_with_offset(state.column_scans[i], row_number);
-            } else {
-                state.column_scans[i].current = nullptr;
-            }
+            auto& column_data = get_column(state.physical_column(column_ids[i].primary_index()));
+            column_data.initialize_scan_with_offset(state.column_scans[i], row_number);
         }
         return true;
     }
@@ -151,13 +146,8 @@ namespace components::table {
             return false;
         }
         for (uint64_t i = 0; i < column_ids.size(); i++) {
-            auto column = column_ids[i];
-            if (!column.is_row_id_column()) {
-                auto& column_data = get_column(state.physical_column(column.primary_index()));
-                column_data.initialize_scan(state.column_scans[i]);
-            } else {
-                state.column_scans[i].current = nullptr;
-            }
+            auto& column_data = get_column(state.physical_column(column_ids[i].primary_index()));
+            column_data.initialize_scan(state.column_scans[i]);
         }
         return true;
     }
@@ -226,11 +216,7 @@ namespace components::table {
         state.vector_index++;
         const auto& column_ids = state.column_ids();
         for (uint64_t i = 0; i < column_ids.size(); i++) {
-            const auto& column = column_ids[i];
-            if (column.is_row_id_column()) {
-                continue;
-            }
-            get_column(state.physical_column(column.primary_index())).skip(state.column_scans[i]);
+            get_column(state.physical_column(column_ids[i].primary_index())).skip(state.column_scans[i]);
         }
     }
 
@@ -519,22 +505,14 @@ namespace components::table {
                     projected_cols.end()) {
                 continue;
             }
-            auto& column = column_ids[col_idx];
             auto& result_vector = result.data[col_idx];
             assert(result_vector.get_vector_type() == vector::vector_type::FLAT);
             assert(!result_vector.is_null(result_idx));
-            if (column.is_row_id_column()) {
-                assert(result_vector.type().to_physical_type() == types::physical_type::INT64);
-                result_vector.set_vector_type(vector::vector_type::FLAT);
-                auto data = result_vector.data<int64_t>();
-                data[result_idx] = row_id;
-            } else {
-                auto& col_data = get_column(column);
-                auto& column_state = state.child(col_idx);
-                col_data.fetch_row(column_state, row_id, result_vector, result_idx);
-                if (state.absorb_error(column_state)) {
-                    return;
-                }
+            auto& col_data = get_column(column_ids[col_idx]);
+            auto& column_state = state.child(col_idx);
+            col_data.fetch_row(column_state, row_id, result_vector, result_idx);
+            if (state.absorb_error(column_state)) {
+                return;
             }
         }
     }

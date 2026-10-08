@@ -42,8 +42,6 @@ namespace components::table {
     struct column_segment_state;
 
     struct storage_index_t {
-        storage_index_t()
-            : index_(storage::INVALID_INDEX) {}
         explicit storage_index_t(uint64_t index)
             : index_(index) {}
         storage_index_t(uint64_t index, std::vector<storage_index_t> child_indexes)
@@ -60,8 +58,6 @@ namespace components::table {
         storage_index_t& child_index(uint64_t idx) { return child_indexes_[idx]; }
         const std::vector<storage_index_t>& child_indexes() const { return child_indexes_; }
         void add_child_index(storage_index_t new_index) { child_indexes_.push_back(std::move(new_index)); }
-        void set_index(uint64_t new_index) { index_ = new_index; }
-        bool is_row_id_column() const { return index_ == storage::INVALID_INDEX; }
 
     private:
         uint64_t index_;

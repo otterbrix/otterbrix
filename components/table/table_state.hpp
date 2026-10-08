@@ -29,33 +29,6 @@ namespace components::table {
         LATEST_COMMITTED_ROWS = 4
     };
 
-    struct column_index_t {
-        column_index_t()
-            : index_(storage::INVALID_INDEX) {}
-        explicit column_index_t(uint64_t index)
-            : index_(index) {}
-        column_index_t(uint64_t index, std::vector<column_index_t> child_indexes)
-            : index_(index)
-            , child_indexes_(std::move(child_indexes)) {}
-
-        bool operator==(const column_index_t& rhs) const { return index_ == rhs.index_; }
-        bool operator!=(const column_index_t& rhs) const { return index_ != rhs.index_; }
-        bool operator<(const column_index_t& rhs) const { return index_ < rhs.index_; }
-        uint64_t primary_index() const { return index_; }
-        bool has_children() const { return !child_indexes_.empty(); }
-        uint64_t child_index_count() const { return child_indexes_.size(); }
-        const column_index_t& child_index(uint64_t idx) const { return child_indexes_[idx]; }
-        column_index_t& child_index(uint64_t idx) { return child_indexes_[idx]; }
-        const std::vector<column_index_t>& child_indexes() const { return child_indexes_; }
-        std::vector<column_index_t>& child_indexes() { return child_indexes_; }
-        void add_child_index(column_index_t new_index) { child_indexes_.push_back(std::move(new_index)); }
-        bool is_row_id_column() const { return index_ == storage::INVALID_INDEX; }
-
-    private:
-        uint64_t index_;
-        std::vector<column_index_t> child_indexes_;
-    };
-
     class collection_scan_state {
     public:
         explicit collection_scan_state(std::pmr::memory_resource* resource, table_scan_state& parent);
@@ -213,7 +186,6 @@ namespace components::table {
         table_delete_state(std::pmr::memory_resource*) {}
         std::unique_ptr<constraint_state> constraint;
         bool has_delete_constraints = false;
-        std::vector<storage_index_t> col_ids;
     };
 
     struct table_update_state {

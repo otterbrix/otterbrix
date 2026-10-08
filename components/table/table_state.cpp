@@ -39,9 +39,6 @@ namespace components::table {
         result_width_ = 0;
         for (uint64_t i = 0; i < ids.size(); i++) {
             result_width_ = std::max(result_width_, ids[i].primary_index() + 1);
-            if (ids[i].is_row_id_column()) {
-                continue;
-            }
             auto col_id = ids[i].primary_index();
             column_scans[i].initialize(types[col_id], ids[i].child_indexes());
         }

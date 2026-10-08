@@ -225,14 +225,10 @@ namespace components::table {
         std::vector<storage_index_t> physical_ids;
         physical_ids.reserve(column_ids.size());
         for (const auto& id : column_ids) {
-            storage_index_t physical = id;
-            if (!id.is_row_id_column()) {
-                const auto index = id.primary_index();
-                assert(index < visible.size() && "to_physical_columns: the id names a column this transaction "
-                                                 "cannot see");
-                physical.set_index(visible[index]);
-            }
-            physical_ids.push_back(std::move(physical));
+            const auto index = id.primary_index();
+            assert(index < visible.size() && "to_physical_columns: the id names a column this transaction "
+                                             "cannot see");
+            physical_ids.emplace_back(visible[index], id.child_indexes());
         }
         return physical_ids;
     }
@@ -549,13 +545,8 @@ namespace components::table {
 
     std::unique_ptr<table_delete_state>
     data_table_t::initialize_delete(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints) {
-        std::pmr::vector<types::complex_logical_type> types(resource_);
         auto result = std::make_unique<table_delete_state>(resource_);
         if (result->has_delete_constraints) {
-            for (uint64_t i = 0; i < column_definitions_.size(); i++) {
-                result->col_ids.emplace_back(column_definitions_[i].storage_oid());
-                types.emplace_back(column_definitions_[i].type());
-            }
             result->constraint = std::make_unique<constraint_state>(bound_constraints);
         }
         return result;

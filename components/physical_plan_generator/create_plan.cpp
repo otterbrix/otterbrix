@@ -198,7 +198,7 @@ namespace services::planner {
             case node_type::allocate_oids_t:
                 return impl::create_plan_allocate_oids(context, node);
             case node_type::function_t:
-                return impl::create_plan_function(context, node);
+                return impl::create_plan_function(context, function_registry, node);
             case node_type::extension_t: {
                 const auto& ext = static_cast<const components::logical_plan::node_extension_t&>(*node);
                 VALUE_OR_RETURN(auto op, ext.operator_fn()(context, function_registry, ext));

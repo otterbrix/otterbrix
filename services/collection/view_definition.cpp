@@ -4,7 +4,9 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
-#include <components/expressions/udf_references.hpp>
+#include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/cast_expression.hpp>
+#include <components/expressions/function_expression.hpp>
 #include <components/physical_plan/operators/catalog_util.hpp>
 #include <components/planner/view_expansion.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
@@ -238,7 +240,9 @@ namespace services::collection {
         std::pmr::vector<components::compute::function_pin_t> out{resource};
         auto visit = [&out](const expressions::function_expression_t& call) {
             const components::compute::function_pin_t use = call.pin();
-            if (expressions::is_udf_uid(use.uid) && std::none_of(out.begin(), out.end(), [&use](const auto& seen) {
+            const bool user_defined =
+                use.uid != components::compute::invalid_function_uid && !components::compute::is_builtin(use.uid);
+            if (user_defined && std::none_of(out.begin(), out.end(), [&use](const auto& seen) {
                     return seen.uid == use.uid && seen.signature == use.signature;
                 })) {
                 out.push_back(use);

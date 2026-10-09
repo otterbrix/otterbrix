@@ -46,7 +46,6 @@ namespace components::operators {
             merged_types.insert(merged_types.end(), build_types.begin(), build_types.end());
 
             auto built = expressions::build_condition_graph(resource_,
-                                                            *context->function_registry,
                                                             context->parameters.parameters,
                                                             expression_.get(),
                                                             merged_types,

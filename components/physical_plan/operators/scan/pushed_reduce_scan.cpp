@@ -32,7 +32,6 @@ namespace components::operators {
             pushed_aggregate_t c{target};
             c.function_name = a.function_name;
             c.arg_col_path = a.arg_col_path;
-            c.func_uid = a.func_uid;
             c.distinct = a.distinct;
             c.alias = a.alias;
             c.result_type = a.result_type;

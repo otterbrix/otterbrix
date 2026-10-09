@@ -52,6 +52,8 @@ namespace components::expressions {
         // The match function, resolved by validation. Should become a plain function call operand.
         void add_function_uid(compute::function_uid uid) noexcept;
         compute::function_uid function_uid() const noexcept;
+        void set_function(compute::function_ptr function) noexcept;
+        const compute::function* function() const noexcept;
 
     private:
         compare_type type_;
@@ -59,6 +61,7 @@ namespace components::expressions {
         bool do_not_fold_ = false;
         core::parameter_id_t regex_flags_param_{0};
         compute::function_uid function_uid_{compute::invalid_function_uid};
+        compute::function_ptr function_;
         param_storage left_;
         param_storage right_;
         std::pmr::vector<expression_ptr> children_;

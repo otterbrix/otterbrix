@@ -7,7 +7,6 @@
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/expressions/compare_expression.hpp>
-#include <components/expressions/udf_references.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_having.hpp>
@@ -105,12 +104,9 @@ namespace services::planner::impl {
                                        t == compare_type::lte || t == compare_type::gt || t == compare_type::gte;
                 const bool col_op_col = no_expr && plain_cmp && is_key(comp_expr->left()) && is_key(comp_expr->right());
                 // The non-expression operand may be a column too: this filter resolves paths on both
-                // sides, not just the expression side. UDF-free only — the disk agent can't resolve a
-                // UDF (components/expressions/udf_references.hpp).
-                const bool expr_op_other = ((is_expr(comp_expr->left()) && !is_expr(comp_expr->right())) ||
-                                            (is_expr(comp_expr->right()) && !is_expr(comp_expr->left()))) &&
-                                           !expr::param_references_udf(comp_expr->left()) &&
-                                           !expr::param_references_udf(comp_expr->right());
+                // sides, not just the expression side.
+                const bool expr_op_other = (is_expr(comp_expr->left()) && !is_expr(comp_expr->right())) ||
+                                           (is_expr(comp_expr->right()) && !is_expr(comp_expr->left()));
                 if (!col_op_const && !col_op_col && !expr_op_other) {
                     return false;
                 }

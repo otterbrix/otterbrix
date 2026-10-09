@@ -60,6 +60,12 @@ namespace components::expressions {
 
     compute::function_uid aggregate_expression_t::function_uid() const { return call()->function_uid(); }
 
+    void aggregate_expression_t::set_function(compute::function_ptr function) noexcept {
+        call()->set_function(std::move(function));
+    }
+
+    const compute::function* aggregate_expression_t::function() const noexcept { return call()->function(); }
+
     void aggregate_expression_t::set_pins(std::pmr::vector<compute::function_pin_t> pins) {
         call()->set_pins(std::move(pins));
     }

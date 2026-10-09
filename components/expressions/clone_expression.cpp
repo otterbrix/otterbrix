@@ -21,6 +21,10 @@ namespace components::expressions {
             }
             return param;
         }
+
+        compute::function_ptr copy_function(std::pmr::memory_resource* resource, const compute::function* function) {
+            return function == nullptr ? nullptr : function->get_copy(resource);
+        }
     } // namespace
 
     expression_ptr clone_expression(std::pmr::memory_resource* resource, const expression_ptr& expr) {
@@ -42,6 +46,7 @@ namespace components::expressions {
                 }
                 dst->set_regex_flags(src->regex_flags_param());
                 dst->add_function_uid(src->function_uid());
+                dst->set_function(copy_function(resource, src->function()));
                 for (const auto& child : src->children()) {
                     dst->append_child(clone_expression(resource, child));
                 }
@@ -63,6 +68,7 @@ namespace components::expressions {
                     make_aggregate_over(make_function_expression(resource, function_qualified_name_t{src->full_name()}),
                                         src->key());
                 dst->set_pin(src->pin());
+                dst->set_function(copy_function(resource, src->function()));
                 dst->set_pins({src->pins().begin(), src->pins().end(), resource});
                 dst->set_distinct(src->is_distinct());
                 dst->set_mergeable(src->is_mergeable());
@@ -92,6 +98,7 @@ namespace components::expressions {
                     make_function_expression(resource, function_qualified_name_t{src->full_name()}, std::move(args));
                 dst->set_key(src->key());
                 dst->set_pin(src->pin());
+                dst->set_function(copy_function(resource, src->function()));
                 dst->set_pins({src->pins().begin(), src->pins().end(), resource});
                 copy = std::move(dst);
                 break;

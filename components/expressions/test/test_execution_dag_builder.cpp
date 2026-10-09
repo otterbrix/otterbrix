@@ -32,15 +32,6 @@ namespace {
         return registry;
     }
 
-    const components::compute::function_registry_t& functions() {
-        static components::compute::function_registry_t registry{std::pmr::new_delete_resource()};
-        [[maybe_unused]] static const bool loaded = [] {
-            components::compute::register_default_functions(registry);
-            return true;
-        }();
-        return registry;
-    }
-
     std::pmr::vector<complex_logical_type> input_types(std::initializer_list<logical_type> types) {
         std::pmr::vector<complex_logical_type> column_types(resource());
         for (auto type : types) {
@@ -113,7 +104,7 @@ TEST_CASE("expressions::graph_builder::same-typed operands need no cast") {
                        logical_type::BIGINT,
                        logical_type::BIGINT,
                        logical_type::BIGINT);
-    auto result = build_expression(&graph, functions(), parameters, expr.get(), types);
+    auto result = build_expression(&graph, parameters, expr.get(), types);
     REQUIRE_FALSE(result.has_error());
 
     REQUIRE(graph.node_count() == 1);
@@ -148,7 +139,7 @@ TEST_CASE("expressions::graph_builder::a stamped operand type becomes a cast nod
                        logical_type::DOUBLE,
                        logical_type::DOUBLE,
                        cast_between(logical_type::INTEGER, logical_type::DOUBLE));
-    auto result = build_expression(&graph, functions(), parameters, expr.get(), types);
+    auto result = build_expression(&graph, parameters, expr.get(), types);
     REQUIRE_FALSE(result.has_error());
 
     REQUIRE(graph.node_count() == 2);
@@ -181,7 +172,7 @@ TEST_CASE("expressions::graph_builder::a column named twice binds one slot") {
                        logical_type::BIGINT,
                        logical_type::BIGINT,
                        logical_type::BIGINT);
-    auto result = build_expression(&graph, functions(), parameters, expr.get(), types);
+    auto result = build_expression(&graph, parameters, expr.get(), types);
     REQUIRE_FALSE(result.has_error());
 
     // one input slot, one result slot -- the column is not bound twice
@@ -221,7 +212,7 @@ TEST_CASE("expressions::graph_builder::a nested expression becomes an interior s
                         logical_type::BIGINT,
                         logical_type::BIGINT);
 
-    auto result = build_expression(&graph, functions(), parameters, outer.get(), types);
+    auto result = build_expression(&graph, parameters, outer.get(), types);
     REQUIRE_FALSE(result.has_error());
     REQUIRE(graph.node_count() == 2);
 
@@ -254,7 +245,7 @@ TEST_CASE("expressions::graph_builder::a parameter operand becomes a parameter n
                        logical_type::BIGINT,
                        logical_type::BIGINT,
                        logical_type::BIGINT);
-    auto result = build_expression(&graph, functions(), parameters, expr.get(), types);
+    auto result = build_expression(&graph, parameters, expr.get(), types);
     REQUIRE_FALSE(result.has_error());
     REQUIRE(graph.node_count() == 2);
 
@@ -281,7 +272,7 @@ TEST_CASE("expressions::graph_builder::unary minus builds a one-operand node") {
     expr->append_param(column(0));
     expr->set_result_type(complex_logical_type(logical_type::BIGINT));
 
-    auto result = build_expression(&graph, functions(), parameters, expr.get(), types);
+    auto result = build_expression(&graph, parameters, expr.get(), types);
     REQUIRE_FALSE(result.has_error());
     REQUIRE(graph.node_count() == 1);
     REQUIRE(graph.node_at(components::execution_dag::node_id_t{0}).input_indices().size() == 1);
@@ -309,7 +300,7 @@ TEST_CASE("expressions::graph_builder::a reference whose stamp differs is refuse
     expr->append_param(column(0));
     expr->set_result_type(complex_logical_type(logical_type::BIGINT));
 
-    REQUIRE(build_expression(&graph, functions(), parameters, expr.get(), types).has_error());
+    REQUIRE(build_expression(&graph, parameters, expr.get(), types).has_error());
 }
 
 TEST_CASE("expressions::graph_builder::a plain reference claims only its column slot") {
@@ -321,7 +312,7 @@ TEST_CASE("expressions::graph_builder::a plain reference claims only its column 
     expr->append_param(column(1));
     expr->set_result_type(complex_logical_type(logical_type::BIGINT));
 
-    auto result = build_expression(&graph, functions(), parameters, expr.get(), types);
+    auto result = build_expression(&graph, parameters, expr.get(), types);
     REQUIRE_FALSE(result.has_error());
     REQUIRE(graph.node_count() == 0);
     REQUIRE(graph.slot_count() == 1);
@@ -342,7 +333,7 @@ TEST_CASE("expressions::graph_builder::what it cannot express is refused, not ha
                            logical_type::BIGINT,
                            logical_type::BIGINT,
                            logical_type::BIGINT);
-        REQUIRE(build_expression(&graph, functions(), parameters, expr.get(), types).has_error());
+        REQUIRE(build_expression(&graph, parameters, expr.get(), types).has_error());
     }
 
     SECTION("an operator validation never stamped") {
@@ -350,7 +341,7 @@ TEST_CASE("expressions::graph_builder::what it cannot express is refused, not ha
         auto expr = make_scalar_expression(resource(), scalar_type::add, expr_key_t{resource()});
         expr->append_param(column(0));
         expr->append_param(column(1));
-        REQUIRE(build_expression(&graph, functions(), parameters, expr.get(), types).has_error());
+        REQUIRE(build_expression(&graph, parameters, expr.get(), types).has_error());
     }
 
     SECTION("a nested field path") {
@@ -363,7 +354,7 @@ TEST_CASE("expressions::graph_builder::what it cannot express is refused, not ha
                            logical_type::BIGINT,
                            logical_type::BIGINT,
                            logical_type::BIGINT);
-        REQUIRE(build_expression(&graph, functions(), parameters, expr.get(), types).has_error());
+        REQUIRE(build_expression(&graph, parameters, expr.get(), types).has_error());
     }
 
     SECTION("a column ordinal the input does not have") {
@@ -374,7 +365,7 @@ TEST_CASE("expressions::graph_builder::what it cannot express is refused, not ha
                            logical_type::BIGINT,
                            logical_type::BIGINT,
                            logical_type::BIGINT);
-        REQUIRE(build_expression(&graph, functions(), parameters, expr.get(), types).has_error());
+        REQUIRE(build_expression(&graph, parameters, expr.get(), types).has_error());
     }
 
     SECTION("an unstamped operator") {
@@ -385,6 +376,6 @@ TEST_CASE("expressions::graph_builder::what it cannot express is refused, not ha
         auto expr = make_scalar_expression(resource(), scalar_type::add, expr_key_t{resource()});
         expr->append_param(column(0));
         expr->append_param(column(1));
-        REQUIRE(build_expression(&graph, functions(), parameters, expr.get(), types).has_error());
+        REQUIRE(build_expression(&graph, parameters, expr.get(), types).has_error());
     }
 }

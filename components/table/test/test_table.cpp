@@ -432,9 +432,7 @@ TEST_CASE("components::table::data_table") {
             expr::make_compare_expression(&resource, expr::compare_type::gte, column_key(0), lo_id));
         predicate->append_child(expr::make_compare_expression(&resource, expr::compare_type::lt, column_key(1), hi_id));
 
-        components::compute::function_registry_t functions(&resource);
-        auto built =
-            expr::build_condition_graph(&resource, functions, parameters, predicate.get(), data_table->copy_types());
+        auto built = expr::build_condition_graph(&resource, parameters, predicate.get(), data_table->copy_types());
         REQUIRE_FALSE(built.has_error());
         table_filter_t filter{parameters,
                               components::graph_execution_context{},

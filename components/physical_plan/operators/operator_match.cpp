@@ -146,7 +146,6 @@ namespace components::operators {
             condition_ = expressions::classify_condition(expression_);
             if (condition_ == expressions::condition_kind::computed) {
                 auto built = expressions::build_condition_graph(stream_resource_,
-                                                                *ctx->function_registry,
                                                                 ctx->parameters.parameters,
                                                                 expression_.get(),
                                                                 stream_types_);

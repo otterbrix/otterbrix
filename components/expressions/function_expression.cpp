@@ -40,6 +40,12 @@ namespace components::expressions {
 
     compute::function_uid function_expression_t::function_uid() const { return pin_.uid; }
 
+    void function_expression_t::set_function(compute::function_ptr function) noexcept {
+        function_ = std::move(function);
+    }
+
+    const compute::function* function_expression_t::function() const noexcept { return function_.get(); }
+
     void function_expression_t::set_pins(std::pmr::vector<compute::function_pin_t> pins) { pins_ = std::move(pins); }
 
     const std::pmr::vector<compute::function_pin_t>& function_expression_t::pins() const noexcept { return pins_; }

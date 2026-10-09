@@ -7,11 +7,11 @@ namespace components::operators {
 
     operator_function_t::operator_function_t(std::pmr::memory_resource* resource,
                                              log_t log,
-                                             compute::function_uid uid,
+                                             compute::function_ptr function,
                                              std::pmr::vector<expressions::param_storage> args,
                                              std::string result_alias)
         : read_only_operator_t(resource, std::move(log), operator_type::function)
-        , uid_(uid)
+        , function_(std::move(function))
         , args_(std::move(args))
         , result_alias_(std::move(result_alias)) {}
 
@@ -22,11 +22,6 @@ namespace components::operators {
     }
 
     core::error_t operator_function_t::materialize_(pipeline::context_t* ctx) {
-        if (!ctx->function_registry) {
-            return core::error_t(core::error_code_t::create_physical_plan_error,
-                                 std::pmr::string{"table function: no function registry in context", resource_});
-        }
-
         // Resolve the argument values for the single (per-run) input row.
         std::pmr::vector<types::logical_value_t> arg_values(resource_);
         arg_values.reserve(args_.size());
@@ -55,12 +50,11 @@ namespace components::operators {
         }
         args.set_cardinality(1);
 
-        auto* function = ctx->function_registry->get_function(uid_);
-        if (!function) {
+        if (!function_) {
             return core::error_t(core::error_code_t::create_physical_plan_error,
-                                 std::pmr::string{"table function: uid not found in registry", resource_});
+                                 std::pmr::string{"table function: not resolved by validation", resource_});
         }
-        auto kernel_res = function->dispatch_exact(resource_, arg_types);
+        auto kernel_res = function_->dispatch_exact(resource_, arg_types);
         if (kernel_res.has_error()) {
             return kernel_res.error();
         }

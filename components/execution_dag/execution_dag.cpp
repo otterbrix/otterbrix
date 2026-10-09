@@ -451,13 +451,13 @@ namespace components::execution_dag {
     }
 
     function_node_t::function_node_t(std::pmr::memory_resource* resource,
-                                     const compute::function* function,
+                                     compute::function_ptr function,
                                      slot_list_t inputs,
                                      slot_list_t outputs,
                                      bool reduces,
                                      bool distinct)
         : execution_node_t(resource, std::move(inputs), std::move(outputs))
-        , function_(function)
+        , function_(std::move(function))
         , context_(resource)
         , distinct_(distinct)
         , reduces_(reduces)
@@ -588,11 +588,10 @@ namespace components::execution_dag {
         return slot_id_t{slots_.size() - 1};
     }
 
-    node_id_t
-    execution_dag_t::add_aggregate(const compute::function* function, const slot_list_t& inputs, bool distinct) {
+    node_id_t execution_dag_t::add_aggregate(compute::function_ptr function, const slot_list_t& inputs, bool distinct) {
         auto output = declare_slot();
         return append(new function_node_t(resource_,
-                                          function,
+                                          std::move(function),
                                           slot_list_t(inputs, resource_),
                                           slot_list_t({output}, resource_),
                                           /*reduces=*/true,
@@ -626,13 +625,14 @@ namespace components::execution_dag {
     }
 
     node_id_t
-    execution_dag_t::add_function(const compute::function* function, const slot_list_t& inputs, size_t output_count) {
+    execution_dag_t::add_function(compute::function_ptr function, const slot_list_t& inputs, size_t output_count) {
         slot_list_t outputs(resource_);
         outputs.reserve(output_count);
         for (size_t position = 0; position < output_count; position++) {
             outputs.push_back(declare_slot());
         }
-        return append(new function_node_t(resource_, function, slot_list_t(inputs, resource_), std::move(outputs)));
+        return append(
+            new function_node_t(resource_, std::move(function), slot_list_t(inputs, resource_), std::move(outputs)));
     }
 
     node_id_t execution_dag_t::add_parameter(core::parameter_id_t id) {

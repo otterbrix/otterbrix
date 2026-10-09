@@ -29,6 +29,9 @@ namespace components::expressions {
         void set_pin(compute::function_pin_t pin) noexcept;
         const compute::function_pin_t& pin() const noexcept;
         compute::function_uid function_uid() const;
+        // The pinned function itself, owned as a cast_expression_t owns its cast: graphs build without a registry.
+        void set_function(compute::function_ptr function) noexcept;
+        const compute::function* function() const noexcept;
         // A view read: the call resolves among these alone, not among every function of its name.
         void set_pins(std::pmr::vector<compute::function_pin_t> pins);
         const std::pmr::vector<compute::function_pin_t>& pins() const noexcept;
@@ -47,6 +50,7 @@ namespace components::expressions {
         bool distinct_{false};
         bool star_argument_{false};
         compute::function_pin_t pin_;
+        compute::function_ptr function_;
         std::pmr::vector<compute::function_pin_t> pins_;
 
         hash_t hash_impl() const override;

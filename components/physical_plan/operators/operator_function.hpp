@@ -10,8 +10,8 @@ namespace components::operators {
     // FROM-clause table (set-returning) function, e.g. generate_series(1, 10).
     //
     // A SOURCE that materializes its relation lazily on the first source_next (it
-    // needs the pipeline context for the parameter map + function registry, which
-    // are absent at construction). It resolves the argument values, invokes the
+    // needs the pipeline context for the parameter map, which is absent at
+    // construction). It resolves the argument values, invokes the
     // expand_kernel, and hands the produced chunks out one at a time by a cursor —
     // exactly like operator_raw_data_t, but generated rather than literal.
     //
@@ -21,7 +21,7 @@ namespace components::operators {
     public:
         operator_function_t(std::pmr::memory_resource* resource,
                             log_t log,
-                            compute::function_uid uid,
+                            compute::function_ptr function,
                             std::pmr::vector<expressions::param_storage> args,
                             std::string result_alias);
 
@@ -38,7 +38,7 @@ namespace components::operators {
         // into output_. Sets error state on failure.
         core::error_t materialize_(pipeline::context_t* ctx);
 
-        compute::function_uid uid_;
+        compute::function_ptr function_;
         std::pmr::vector<expressions::param_storage> args_;
         std::string result_alias_;
 

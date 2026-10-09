@@ -167,7 +167,6 @@ namespace components::operators {
             merged_types.insert(merged_types.end(), outer_schema_.begin(), outer_schema_.end());
             merged_types.insert(merged_types.end(), inner_schema_.begin(), inner_schema_.end());
             auto built = expressions::build_condition_graph(res,
-                                                            *ctx->function_registry,
                                                             ctx->parameters.parameters,
                                                             on_expression_.get(),
                                                             merged_types,

@@ -121,15 +121,12 @@ namespace services::planner::impl {
                 }
                 if (expr->group() == ce::expression_group::aggregate) {
                     const auto* a = static_cast<const ce::aggregate_expression_t*>(expr.get());
-                    // uid >= DEFAULT_FUNCTIONS.size() is the agent's own RESOLVABILITY gate, a DIFFERENT
-                    // concern from mergeability, which the optimizer's pushdown stamp already enforced.
-                    if (a->is_distinct() || a->function_uid() == components::compute::invalid_function_uid ||
-                        a->function_uid() >= components::compute::DEFAULT_FUNCTIONS.size()) {
+                    // The agent builds the reduction from the function the output carries.
+                    if (a->is_distinct() || a->function() == nullptr) {
                         return false;
                     }
                     ops::pushed_aggregate_t pa{resource};
                     pa.function_name.assign(a->function_name().data(), a->function_name().size());
-                    pa.func_uid = a->function_uid();
                     pa.distinct = false;
                     pa.result_type = a->result_type();
                     const auto alias = a->key().as_pmr_string();

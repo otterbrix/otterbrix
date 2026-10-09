@@ -29,7 +29,7 @@
 
 using namespace services::disk;
 using namespace pushdown_reduce_test;
-using pushdown_test::sum_uid;
+using pushdown_test::stamp_sum;
 namespace catalog = components::catalog;
 namespace ops = components::operators;
 namespace types = components::types;
@@ -88,14 +88,13 @@ namespace {
         }
         ops::pushed_aggregate_t pa{r};
         pa.function_name.assign("sum", 3);
-        pa.func_uid = sum_uid(r);
         pa.distinct = false;
         pa.alias.assign("sum_val", 7);
         pa.result_type = types::complex_logical_type{types::logical_type::BIGINT};
         pa.arg_col_path.push_back(static_cast<uint64_t>(val_col));
         components::expressions::key_t alias{r, std::string("sum_val")};
         auto reduction = components::expressions::make_aggregate_expression(r, "sum", alias);
-        reduction->set_pin(components::compute::function_pin_t{pa.func_uid});
+        stamp_sum(*reduction, r);
         reduction->set_result_type(pa.result_type);
         components::expressions::key_t argument{r};
         std::pmr::vector<size_t> argument_path{r};

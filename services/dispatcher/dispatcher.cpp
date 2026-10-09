@@ -694,7 +694,7 @@ namespace services::dispatcher {
         const auto overload = function_registry_.find_overload(function_name, inputs);
         const bool registered = overload != components::compute::invalid_function_uid;
         const bool builtin = registered && components::compute::is_builtin(overload);
-        // Every registry copy holds the builtins, the disk agents' included, and a filter pushed to disk runs them.
+        // A builtin is required by the system, as in PostgreSQL, which refuses to drop one.
         if (builtin) {
             core::error_t refused{core::error_code_t::invalid_parameter,
                                   std::pmr::string{"unregister_udf: '" + function_name +

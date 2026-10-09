@@ -1098,9 +1098,8 @@ TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
     }
 }
 
-TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
+TEST_CASE("optimizer::pushdown_aggregate::a_udf_reference_is_stamped_like_a_builtin") {
     auto resource = core::pmr::otterbrix_resource();
-    // A UDF-referencing aggregate arg is skipped: the owning agent rebuilds its pushed registry with builtins only.
     std::vector<expression_ptr> exprs;
     auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
     sum->set_mergeable(true);
@@ -1110,7 +1109,7 @@ TEST_CASE("optimizer::pushdown_aggregate::udf_reference_is_skipped") {
     exprs.push_back(expression_ptr(sum));
     auto group = make_node_group(&resource, exprs);
     auto agg = make_agg(&resource, group);
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
+    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
 }
 
 // Unqualified comma-join columns get merged with ambiguous side=left stamps that detect_equi_columns can't

@@ -6,8 +6,10 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr create_plan_function(const context_storage_t& context,
-                                                             const components::logical_plan::node_ptr& node) {
+    components::operators::operator_ptr
+    create_plan_function(const context_storage_t& context,
+                         const components::compute::function_registry_t& function_registry,
+                         const components::logical_plan::node_ptr& node) {
         const auto* function_node = static_cast<const components::logical_plan::node_function_t*>(node.get());
 
         auto* resource = context.resource;
@@ -28,11 +30,14 @@ namespace services::planner::impl {
         const std::string& alias =
             function_node->result_alias().empty() ? function_node->name() : function_node->result_alias();
 
-        return boost::intrusive_ptr(new components::operators::operator_function_t(resource,
-                                                                                   std::move(log),
-                                                                                   function_node->function_uid(),
-                                                                                   std::move(args),
-                                                                                   alias));
+        // Validation resolved the uid against this same registry, so the operator owns a copy and runs without one.
+        const auto* function = function_registry.get_function(function_node->function_uid());
+        return boost::intrusive_ptr(
+            new components::operators::operator_function_t(resource,
+                                                           std::move(log),
+                                                           function == nullptr ? nullptr : function->get_copy(resource),
+                                                           std::move(args),
+                                                           alias));
     }
 
 } // namespace services::planner::impl

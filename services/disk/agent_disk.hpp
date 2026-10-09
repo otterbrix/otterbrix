@@ -8,7 +8,6 @@
 #include "disk_contract.hpp" // fetch_batch_t reply payload for storage_fetch_next_batch_inner
 #include <atomic>
 #include <components/catalog/catalog_oids.hpp>
-#include <components/compute/function.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/log/log.hpp>
@@ -401,8 +400,8 @@ namespace services::disk {
 
         void drop_storage_one_local(components::catalog::oid_t oid);
 
-        // The agent's own filter: built on its resource, against its own function registry, for the
-        // column types of the storage it filters. No pushed filter builds none.
+        // The agent's own filter: built on its resource, for the column types of the storage it
+        // filters. No pushed filter builds none.
         core::result_wrapper_t<std::unique_ptr<components::table::table_filter_t>>
         build_filter_(const components::table::pushed_filter_t* filter,
                       const std::pmr::vector<components::types::complex_logical_type>& types);
@@ -413,9 +412,6 @@ namespace services::disk {
         path_t path_;
 
         std::size_t pool_idx_;
-
-        // Builtins only: a UDF never reaches a disk agent (pushdown_aggregate / subtree_references_udf).
-        components::compute::function_registry_t function_registry_;
 
         std::pmr::unordered_map<components::catalog::oid_t, std::unique_ptr<collection_storage_entry_t>> storages_;
 

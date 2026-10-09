@@ -29,6 +29,8 @@ namespace components::expressions {
         void set_pin(compute::function_pin_t pin) noexcept;
         const compute::function_pin_t& pin() const noexcept;
         compute::function_uid function_uid() const;
+        void set_function(compute::function_ptr function) noexcept;
+        const compute::function* function() const noexcept;
         void set_pins(std::pmr::vector<compute::function_pin_t> pins);
         const std::pmr::vector<compute::function_pin_t>& pins() const noexcept;
         std::pmr::vector<param_storage>& params();

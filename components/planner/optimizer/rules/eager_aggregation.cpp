@@ -281,6 +281,9 @@ namespace components::planner::optimizer {
                                                           aggs[i]->key(),
                                                           local_key(resource, ce::as_key(aggs[i]->params()[0]), local));
                 pagg->set_pin(components::compute::function_pin_t{aggs[i]->function_uid()});
+                if (const auto* function = aggs[i]->function(); function != nullptr) {
+                    pagg->set_function(function->get_copy(resource));
+                }
                 // This rule runs after validation, so nothing else stamps the expression's type and
                 // the graph builder rejects an unstamped aggregate; copying the final's result type
                 // is safe since MIN(MIN)=MIN/MAX(MAX)=MAX over the same column.

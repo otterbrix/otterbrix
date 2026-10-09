@@ -242,6 +242,11 @@ namespace services::dispatcher::validation {
                 return left == right ? left : cardinality_t::row;
             }
 
+            // resolve_function picked `pin` out of this very registry.
+            components::compute::function_ptr resolved_copy(const components::compute::function_pin_t& pin) const {
+                return context_.function_registry.get_function(pin.uid)->get_copy(context_.resource);
+            }
+
             // SQL LIKE / ILIKE / regexp all match through regexp_like(subject, pattern, flags).
             // TODO: should resolve like any other call -- there is nothing special about regex.
             void resolve_regex_uid(compare_expression_t* comparison,
@@ -264,6 +269,7 @@ namespace services::dispatcher::validation {
                     return;
                 }
                 comparison->add_function_uid(resolved.value().pin.uid);
+                comparison->set_function(resolved_copy(resolved.value().pin));
             }
 
             void resolve_compare(compare_expression_t* comparison, bool inside_aggregate) {
@@ -451,6 +457,7 @@ namespace services::dispatcher::validation {
                                 resolved.value().arguments[index].cast);
                 }
                 aggregate->set_pin(resolved.value().pin);
+                aggregate->set_function(resolved_copy(resolved.value().pin));
                 aggregate->set_mergeable(resolved.value().mergeable);
                 aggregate->set_result_type(resolved.value().result);
             }
@@ -515,6 +522,7 @@ namespace services::dispatcher::validation {
                 }
 
                 call->set_pin(resolved.value().pin);
+                call->set_function(resolved_copy(resolved.value().pin));
                 call->set_result_type(resolved.value().result);
                 if (!reduces) {
                     last_cardinality_ = combined;

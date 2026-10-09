@@ -58,7 +58,6 @@ namespace components::operators {
         computed_key_base_ = chunk->column_count();
         if (computed_keys_graph_ == nullptr) {
             if (auto error = build_projection_graph(resource_,
-                                                    *pipeline_context->function_registry,
                                                     computed_keys_,
                                                     pipeline_context->parameters,
                                                     *chunk,
@@ -119,7 +118,6 @@ namespace components::operators {
             auto expression =
                 expressions::make_scalar_expression(resource_, expressions::scalar_type::get_field, field);
             auto slot = expressions::build_expression(graph_.get(),
-                                                      *pipeline_context->function_registry,
                                                       pipeline_context->parameters.parameters,
                                                       expression.get(),
                                                       types);
@@ -134,7 +132,6 @@ namespace components::operators {
         outputs.reserve(outputs_.size());
         for (const auto& output : outputs_) {
             auto slot = expressions::build_expression(graph_.get(),
-                                                      *pipeline_context->function_registry,
                                                       pipeline_context->parameters.parameters,
                                                       output.get(),
                                                       types);

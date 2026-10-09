@@ -22,7 +22,6 @@ namespace components::operators {
     };
 
     core::error_t build_projection_graph(std::pmr::memory_resource* resource,
-                                         const compute::function_registry_t& registry,
                                          const std::pmr::vector<projected_column_t>& columns,
                                          const logical_plan::storage_parameters& parameters,
                                          const vector::data_chunk_t& input,
@@ -37,7 +36,6 @@ namespace components::operators {
     // Shared by operator_select_t and the DML operators' RETURNING path
     core::result_wrapper_t<vector::data_chunk_t>
     evaluate_projection(std::pmr::memory_resource* resource,
-                        const compute::function_registry_t& registry,
                         const std::pmr::vector<projected_column_t>& columns,
                         vector::data_chunk_t* left_input,
                         const logical_plan::storage_parameters& parameters,

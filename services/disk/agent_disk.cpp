@@ -75,7 +75,6 @@ namespace services::disk {
         , log_(log.clone())
         , path_(path_db)
         , pool_idx_(pool_idx)
-        , function_registry_(resource)
         , storages_(resource)
         , active_scans_(resource)
         , dropped_storages_(resource) {
@@ -83,7 +82,6 @@ namespace services::disk {
               "agent_disk::create (role={}, pool_idx={})",
               role == agent_role_t::CATALOG ? "CATALOG" : "USER_POOL",
               pool_idx);
-        components::compute::register_default_functions(function_registry_);
         // The engine factory creates the directory before it spawns the managers.
         assert([this] {
             std::error_code ec;
@@ -1037,7 +1035,7 @@ namespace services::disk {
         if (filter == nullptr) {
             return std::unique_ptr<components::table::table_filter_t>{};
         }
-        return components::table::build_table_filter(resource(), function_registry_, *filter, types);
+        return components::table::build_table_filter(resource(), *filter, types);
     }
 
     template<typename PerBatch>
@@ -1087,9 +1085,6 @@ namespace services::disk {
         namespace ops = components::operators;
         std::pmr::vector<components::vector::data_chunk_t> out{resource};
 
-        components::compute::function_registry_t reg{resource};
-        components::compute::register_default_functions(reg);
-
         // No HAVING / DISTINCT / computed columns — the optimizer never stamps those.
         ops::operator_hash_group_t group{resource, log.clone()};
         for (const auto& gk : spec.group_keys) {
@@ -1110,7 +1105,7 @@ namespace services::disk {
         components::pipeline::context_t ctx{session,
                                             self_address,
                                             actor_zeta::address_t::empty_address(),
-                                            &reg,
+                                            nullptr,
                                             params,
                                             components::pipeline::no_mailbox(),
                                             components::pipeline::no_mailbox(),
@@ -1784,7 +1779,6 @@ namespace services::disk {
             }
             auto key_built =
                 expr::build_condition_graph(resource(),
-                                            function_registry_,
                                             key_parameters,
                                             key_predicate.get(),
                                             entry->storage->types());
@@ -1805,7 +1799,6 @@ namespace services::disk {
         } else {
             auto all_built =
                 expr::build_condition_graph(resource(),
-                                            function_registry_,
                                             all_parameters,
                                             all_predicate.get(),
                                             entry->storage->types());

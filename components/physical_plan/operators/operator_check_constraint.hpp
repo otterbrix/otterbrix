@@ -42,7 +42,7 @@ namespace components::operators {
 
         // Resolves rows from the DML's constraint_input() snapshot (or the fallbacks) and stops at
         // the first NOT NULL / fixed-ARRAY / CHECK violation, setting the error there.
-        void validate_(const compute::function_registry_t& registry);
+        void validate_();
 
         struct compiled_check_t {
             expressions::condition_kind condition{expressions::condition_kind::always};

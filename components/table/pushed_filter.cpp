@@ -37,7 +37,6 @@ namespace components::table {
 
     core::result_wrapper_t<std::unique_ptr<table_filter_t>>
     build_table_filter(std::pmr::memory_resource* resource,
-                       const compute::function_registry_t& registry,
                        const pushed_filter_t& filter,
                        const std::pmr::vector<types::complex_logical_type>& types) {
         auto expression = filter.expression.attach(resource);
@@ -45,7 +44,7 @@ namespace components::table {
         std::unique_ptr<execution_dag::execution_dag_t> graph;
         auto parameters = copy_parameters(resource, filter.parameters);
         if (condition == expressions::condition_kind::computed) {
-            auto built = expressions::build_condition_graph(resource, registry, parameters, expression.get(), types);
+            auto built = expressions::build_condition_graph(resource, parameters, expression.get(), types);
             if (built.has_error()) {
                 return built.error();
             }

@@ -45,11 +45,11 @@ namespace components::operators {
         check_params_.insert(check_params.begin(), check_params.end());
     }
 
-    actor_zeta::unique_future<void> operator_check_constraint_t::await_async_and_resume(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<void> operator_check_constraint_t::await_async_and_resume(pipeline::context_t* /*ctx*/) {
         // SYNCHRONOUS validation routed through the async-finalize drive so it runs
         // AFTER the DML child's await (which snapshots the written rows into
         // constraint_input()). No cross-actor await — completes immediately.
-        validate_(*ctx->function_registry);
+        validate_();
         if (has_error()) {
             co_return;
         }
@@ -142,7 +142,7 @@ namespace components::operators {
         return bound;
     }
 
-    void operator_check_constraint_t::validate_(const compute::function_registry_t& registry) {
+    void operator_check_constraint_t::validate_() {
         if (!left_)
             return;
         written_ = left_->written();
@@ -185,7 +185,7 @@ namespace components::operators {
                 compiled.condition = expressions::classify_condition(bound);
                 if (compiled.condition == expressions::condition_kind::computed) {
                     auto types = schema_chunk->types();
-                    auto built = expressions::build_condition_graph(resource_, registry, check_params_, bound.get(), types);
+                    auto built = expressions::build_condition_graph(resource_, check_params_, bound.get(), types);
                     if (built.has_error()) {
                         set_error(built.error());
                         return;

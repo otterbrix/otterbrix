@@ -46,7 +46,8 @@ namespace services::index {
     uint64_t index_key_column_probes() noexcept;
     void reset_index_key_column_probes() noexcept;
 
-    // Never reset: an ever-climbing number names a pinned snapshot, not a leak.
+    // Never reset: an ever-climbing number names a pinned snapshot, not a leak. Zero means every committed
+    // erase has reached its agent's store (or is re-queued), not merely that the horizon sweep has sent it.
     uint64_t index_deferred_deletes() noexcept;
 
     uint64_t index_stage_insert_batches() noexcept;
@@ -317,6 +318,10 @@ namespace services::index {
 
         // Unbounded on purpose: evicting an entry would mean publishing an erase early.
         std::pmr::vector<deferred_delete_t> deferred_deletes_;
+#ifdef DEV_MODE
+        // Erases the sweep has sent and not yet heard back about; index_deferred_deletes() still counts them.
+        std::size_t erases_in_flight_{0};
+#endif
 
         // apply_wal_record_for_index returns void, so a refusal is recorded here and checked at commit_inserts.
         std::pmr::unordered_map<uint64_t, core::error_t> catchup_failures_;

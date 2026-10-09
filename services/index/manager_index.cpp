@@ -359,7 +359,7 @@ namespace services::index {
 
     manager_index_t::~manager_index_t() {
 #ifdef DEV_MODE
-        g_index_deferred_deletes.fetch_sub(deferred_deletes_.size(), std::memory_order_relaxed);
+        g_index_deferred_deletes.fetch_sub(deferred_deletes_.size() + erases_in_flight_, std::memory_order_relaxed);
 #endif
         stop_loop();
         in_flight_.clear();
@@ -1775,7 +1775,11 @@ namespace services::index {
             entry = deferred_deletes_.erase(entry);
         }
 #ifdef DEV_MODE
-        g_index_deferred_deletes.fetch_sub(queued_before_sweep - deferred_deletes_.size(), std::memory_order_relaxed);
+        // Still on the meter: zero means every held-back erase has reached its store (or is re-queued), not
+        // that the sweep has handed it over. The in-flight count lets the destructor settle a sweep the
+        // engine stopped under.
+        const auto swept = queued_before_sweep - deferred_deletes_.size();
+        erases_in_flight_ += swept;
 #endif
 
         auto drop_futures = send_drop_to_detached(dying, session_id_t{});
@@ -1805,7 +1809,8 @@ namespace services::index {
             }
         }
 #ifdef DEV_MODE
-        g_index_deferred_deletes.fetch_add(requeued, std::memory_order_relaxed);
+        erases_in_flight_ -= swept;
+        g_index_deferred_deletes.fetch_sub(swept - requeued, std::memory_order_relaxed);
 #endif
         if (requeued != 0 && subscriber_acked) {
             constexpr uint8_t INDEX_KIND = 2;

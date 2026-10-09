@@ -283,7 +283,7 @@ TEST_CASE("components::table::data_table") {
             REQUIRE(value.children()[0].value<bool>() == test_data[idx].flag);
             REQUIRE(value.children()[1].value<int32_t>() == test_data[idx].number);
             REQUIRE(*value.children()[2].value<std::string*>() == test_data[idx].name);
-            std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
+            std::vector arr(value.children()[3].children());
             REQUIRE(arr.size() == test_data[idx].array.size());
             for (size_t j = 0; j < arr.size(); j++) {
                 REQUIRE(arr[j].value<uint16_t>() == test_data[idx].array[j]);
@@ -449,8 +449,7 @@ TEST_CASE("components::table::data_table") {
         for (size_t i = 0; i < test_size; i += 2) {
             v.set_value(i / 2, int64_t(i));
         }
-        auto state = data_table->initialize_delete({});
-        auto deleted_count = deleted_or_fail(data_table->delete_rows(*state, v, test_size / 2, 0));
+        auto deleted_count = deleted_or_fail(data_table->delete_rows(v, test_size / 2, 0));
         REQUIRE(deleted_count == test_size / 2);
     }
     INFO("Scan after delete");

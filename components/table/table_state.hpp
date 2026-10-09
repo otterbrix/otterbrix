@@ -16,7 +16,8 @@ namespace components::vector {
 }
 
 namespace components::table {
-    class row_group_segment_tree_t;
+    template<class T>
+    class segment_tree_t;
     class collection_t;
     class data_table_t;
     class table_scan_state;
@@ -28,33 +29,6 @@ namespace components::table {
         LATEST_COMMITTED_ROWS = 4
     };
 
-    struct column_index_t {
-        column_index_t()
-            : index_(storage::INVALID_INDEX) {}
-        explicit column_index_t(uint64_t index)
-            : index_(index) {}
-        column_index_t(uint64_t index, std::vector<column_index_t> child_indexes)
-            : index_(index)
-            , child_indexes_(std::move(child_indexes)) {}
-
-        bool operator==(const column_index_t& rhs) const { return index_ == rhs.index_; }
-        bool operator!=(const column_index_t& rhs) const { return index_ != rhs.index_; }
-        bool operator<(const column_index_t& rhs) const { return index_ < rhs.index_; }
-        uint64_t primary_index() const { return index_; }
-        bool has_children() const { return !child_indexes_.empty(); }
-        uint64_t child_index_count() const { return child_indexes_.size(); }
-        const column_index_t& child_index(uint64_t idx) const { return child_indexes_[idx]; }
-        column_index_t& child_index(uint64_t idx) { return child_indexes_[idx]; }
-        const std::vector<column_index_t>& child_indexes() const { return child_indexes_; }
-        std::vector<column_index_t>& child_indexes() { return child_indexes_; }
-        void add_child_index(column_index_t new_index) { child_indexes_.push_back(std::move(new_index)); }
-        bool is_row_id_column() const { return index_ == storage::INVALID_INDEX; }
-
-    private:
-        uint64_t index_;
-        std::vector<column_index_t> child_indexes_;
-    };
-
     class collection_scan_state {
     public:
         explicit collection_scan_state(std::pmr::memory_resource* resource, table_scan_state& parent);
@@ -63,7 +37,7 @@ namespace components::table {
         uint64_t vector_index;
         int64_t max_row_group_row;
         std::vector<column_scan_state> column_scans;
-        row_group_segment_tree_t* row_groups;
+        segment_tree_t<row_group_t>* row_groups;
         int64_t max_row;
         uint64_t batch_index;
         vector::indexing_vector_t valid_indexing;
@@ -100,9 +74,11 @@ namespace components::table {
 
         [[nodiscard]] const std::vector<uint64_t>& visible_to_physical() const noexcept;
         [[nodiscard]] uint64_t physical_column(uint64_t visible) const noexcept;
+        [[nodiscard]] uint64_t result_width() const noexcept { return result_width_; }
 
     private:
         table_scan_state& parent_;
+        uint64_t result_width_ = 0;
     };
 
     class table_scan_state {
@@ -130,10 +106,6 @@ namespace components::table {
     public:
         create_index_scan_state(std::pmr::memory_resource* resource)
             : table_scan_state(resource) {}
-
-        // Segment-tree lock, NOT one of the per-table locks removed with the single-owner
-        // proof: it belongs to row_group_segment_tree_t and is out of that scope.
-        std::unique_lock<std::mutex> segment_lock;
     };
 
     struct table_append_state {
@@ -141,7 +113,9 @@ namespace components::table {
             : append_state(*this)
             , total_append_count(0)
             , start_row_group(nullptr)
-            , hashes(resource, types::logical_type::UBIGINT) {}
+            , hashes(resource, types::logical_type::UBIGINT)
+            , cut(resource)
+            , piece_cut(resource) {}
         ~table_append_state() = default;
 
         row_group_append_state append_state;
@@ -154,6 +128,12 @@ namespace components::table {
         uint64_t total_append_count;
         row_group_t* start_row_group;
         vector::vector_t hashes;
+        // The counts of the row group holding row_start, before the session's first row: what
+        // collection_t keeps for the transaction's revert of this session.
+        append_cut_t cut;
+        // The counts of the current row group before the chunk being appended: what its own unwind
+        // of a refused chunk cuts back to.
+        append_cut_t piece_cut;
     };
 
     class storage_commit_state {
@@ -165,52 +145,6 @@ namespace components::table {
 
         virtual void add_row_group_data(data_table_t& table, uint64_t start_index, uint64_t count) = 0;
         virtual bool has_row_group_data() { return false; }
-    };
-
-    enum class constraint_type : uint8_t
-    {
-        INVALID = 0,
-        NOT_NULL = 1,
-        CHECK = 2,
-        UNIQUE = 3,
-        FOREIGN_KEY = 4
-    };
-
-    class bound_constraint_t {
-    public:
-        explicit bound_constraint_t(constraint_type type)
-            : type(type){};
-        virtual ~bound_constraint_t() = default;
-
-        constraint_type type;
-
-        template<class TARGET>
-        TARGET& cast() {
-            return reinterpret_cast<TARGET&>(*this);
-        }
-
-        template<class TARGET>
-        const TARGET& cast() const {
-            return reinterpret_cast<const TARGET&>(*this);
-        }
-    };
-
-    struct constraint_state {
-        explicit constraint_state(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints)
-            : bound_constraints(bound_constraints) {}
-
-        const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints;
-    };
-
-    struct table_delete_state {
-        table_delete_state(std::pmr::memory_resource*) {}
-        std::unique_ptr<constraint_state> constraint;
-        bool has_delete_constraints = false;
-        std::vector<storage_index_t> col_ids;
-    };
-
-    struct table_update_state {
-        std::unique_ptr<constraint_state> constraint;
     };
 
 } // namespace components::table

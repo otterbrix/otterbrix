@@ -42,11 +42,11 @@ namespace {
                                                                  std::vector<std::string> cols,
                                                                  std::vector<components::catalog::oid_t> attoids) {
         auto* resource = d->resource();
-        auto node = components::logical_plan::make_node_create_constraint(resource,
-                                                                          db,
-                                                                          rel,
-                                                                          core::constraint_name_t{con_name},
-                                                                          kind);
+        auto node = components::logical_plan::make_node_create_constraint(
+            resource,
+            qualified_name_t{core::dbname_t{db}, core::relname_t{rel}},
+            core::constraint_name_t{con_name},
+            kind);
         node->set_local_col_names(std::move(cols));
         // Suppresses the attoid stamping in enrich, so the list handed in here reaches the catalog write.
         node->set_inline_with_table(true);
@@ -281,12 +281,10 @@ namespace {
         auto* resource = d->resource();
         auto node = components::logical_plan::make_node_create_constraint(
             resource,
-            db,
-            child_rel,
+            qualified_name_t{core::dbname_t{db}, core::relname_t{child_rel}},
             core::constraint_name_t{con_name},
             components::logical_plan::constraint_kind::foreign_key,
-            db);
-        node->set_ref_relname(parent_rel);
+            qualified_name_t{core::dbname_t{db}, core::relname_t{parent_rel}});
         node->set_local_col_names(std::move(child_cols));
         node->set_ref_col_names(std::move(parent_cols));
         node->set_inline_with_table(true);

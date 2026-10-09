@@ -1,10 +1,12 @@
 #include "create_plan_match.hpp"
 
+#include <cassert>
+#include <cstdlib>
+
 #include "index_selection_helpers.hpp"
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/expressions/compare_expression.hpp>
-#include <components/expressions/udf_references.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_having.hpp>
@@ -102,12 +104,9 @@ namespace services::planner::impl {
                                        t == compare_type::lte || t == compare_type::gt || t == compare_type::gte;
                 const bool col_op_col = no_expr && plain_cmp && is_key(comp_expr->left()) && is_key(comp_expr->right());
                 // The non-expression operand may be a column too: this filter resolves paths on both
-                // sides, not just the expression side. UDF-free only — the disk agent can't resolve a
-                // UDF (components/expressions/udf_references.hpp).
-                const bool expr_op_other = ((is_expr(comp_expr->left()) && !is_expr(comp_expr->right())) ||
-                                            (is_expr(comp_expr->right()) && !is_expr(comp_expr->left()))) &&
-                                           !expr::param_references_udf(comp_expr->left()) &&
-                                           !expr::param_references_udf(comp_expr->right());
+                // sides, not just the expression side.
+                const bool expr_op_other = (is_expr(comp_expr->left()) && !is_expr(comp_expr->right())) ||
+                                           (is_expr(comp_expr->right()) && !is_expr(comp_expr->left()));
                 if (!col_op_const && !col_op_col && !expr_op_other) {
                     return false;
                 }
@@ -135,11 +134,11 @@ namespace services::planner::impl {
             return -1;
         }
 
-        components::operators::operator_ptr create_plan_match_(const context_storage_t& context,
-                                                               components::catalog::oid_t table_oid,
-                                                               const components::expressions::expression_ptr& expr,
-                                                               components::logical_plan::limit_t limit,
-                                                               const std::vector<size_t>& projected_cols) {
+        plan_result_t create_plan_match_(const context_storage_t& context,
+                                         components::catalog::oid_t table_oid,
+                                         const components::expressions::expression_ptr& expr,
+                                         components::logical_plan::limit_t limit,
+                                         const std::vector<size_t>& projected_cols) {
             if (context.has_table_oid(table_oid)) {
                 // TODO: function_expr in scans
                 if (is_pure_compare(expr)) {
@@ -199,17 +198,17 @@ namespace services::planner::impl {
         }
     } // namespace
 
-    components::operators::operator_ptr create_plan_match(const context_storage_t& context,
-                                                          const components::logical_plan::node_ptr& node,
-                                                          components::logical_plan::limit_t limit) {
+    plan_result_t create_plan_match(const context_storage_t& context,
+                                    const components::logical_plan::node_ptr& node,
+                                    components::logical_plan::limit_t limit) {
         static const std::vector<size_t> empty_cols;
         return create_plan_match(context, node, limit, empty_cols);
     }
 
-    components::operators::operator_ptr create_plan_match(const context_storage_t& context,
-                                                          const components::logical_plan::node_ptr& node,
-                                                          components::logical_plan::limit_t limit,
-                                                          const std::vector<size_t>& projected_cols) {
+    plan_result_t create_plan_match(const context_storage_t& context,
+                                    const components::logical_plan::node_ptr& node,
+                                    components::logical_plan::limit_t limit,
+                                    const std::vector<size_t>& projected_cols) {
         if (node->expressions().empty()) {
             // relkind::computed ('g') columns are read live by chunk_position, resolved at resolve-table
             // time; relkind::regular ('r') tables use the caller's projected_cols (column_pruning output).
@@ -236,21 +235,23 @@ namespace services::planner::impl {
             // case this is. No default arm: a new match_source value must get a case here or the build stops.
             switch (static_cast<const components::logical_plan::node_match_t*>(node.get())->source()) {
                 case components::logical_plan::match_source::none:
-                    // Emits a synthetic 1-row placeholder batch (transfer_scan::source_next), so it needs a
-                    // valid resource — the node's own, as create_plan_aggregate's no-table fallback also
-                    // does — not nullptr.
-                    return boost::intrusive_ptr(new components::operators::transfer_scan(node->resource(),
+                    // Emits a synthetic 1-row placeholder batch (transfer_scan::source_next).
+                    return boost::intrusive_ptr(new components::operators::transfer_scan(context.resource,
                                                                                          node->table_oid(),
                                                                                          limit,
                                                                                          std::move(effective_cols)));
-                case components::logical_plan::match_source::table:
+                case components::logical_plan::match_source::table: {
                     // Validation should refuse a named table with an unresolved oid before plan generation;
-                    // returning nullptr here (not the `none` sentinel) stops a regression from silently
-                    // answering a synthetic row for a nonexistent table. A null root surfaces as
-                    // create_physical_plan_error downstream.
-                    return nullptr;
+                    // refusing here (not the `none` sentinel) stops a regression from silently answering a
+                    // synthetic row for a nonexistent table.
+                    const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
+                    return unresolved_table_refusal(context.resource,
+                                                    static_cast<const std::string&>(match_node->target().database),
+                                                    static_cast<const std::string&>(match_node->target().collection));
+                }
             }
-            return nullptr; // unreachable: the switch above covers every match_source
+            assert(false && "unknown source of a WHERE scan");
+            std::abort();
         } else {
             const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
             return create_plan_match_(context,
@@ -264,11 +265,8 @@ namespace services::planner::impl {
     // HAVING has no window of its own (the outer operator_limit is the sole window), so
     // create_plan_having takes no limit parameter. context.resource is always non-null and
     // outlives the operator, so there's no null-resource sentinel here.
-    components::operators::operator_ptr create_plan_having(const context_storage_t& context,
-                                                           const components::logical_plan::node_ptr& node) {
-        if (node->expressions().empty()) {
-            return nullptr;
-        }
+    plan_result_t create_plan_having(const context_storage_t& context, const components::logical_plan::node_ptr& node) {
+        assert(!node->expressions().empty() && "HAVING carries a predicate");
         return boost::intrusive_ptr(new components::operators::operator_having_t(context.resource,
                                                                                  context.log.clone(),
                                                                                  node->expressions()[0]));

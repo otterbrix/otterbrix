@@ -1,15 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <PropertyGroup>
-        <TargetFramework>net7.0</TargetFramework>
+        <TargetFramework>net10.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <!-- where the c_otterbrix target of a CMake preset build puts the C API library -->
+        <OtterbrixNativeDir Condition="'$(OtterbrixNativeDir)' == ''">$(MSBuildThisFileDirectory)../../../../build/release/integration/c/</OtterbrixNativeDir>
+        <OtterbrixNativeLibrary Condition="$([MSBuild]::IsOSPlatform('Linux'))">libotterbrix.so</OtterbrixNativeLibrary>
+        <OtterbrixNativeLibrary Condition="$([MSBuild]::IsOSPlatform('OSX'))">libotterbrix.dylib</OtterbrixNativeLibrary>
+        <OtterbrixNativeLibrary Condition="$([MSBuild]::IsOSPlatform('Windows'))">otterbrix.dll</OtterbrixNativeLibrary>
     </PropertyGroup>
 
-    <ItemGroup Condition="'$(RuntimeIdentifier)' == 'linux-x64' OR '$(RuntimeIdentifier)' == ''">
-        <Content Include="../../build/libotterbrix.so">
-            <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-        </Content>
+    <ItemGroup>
+        <Content Include="$(OtterbrixNativeDir)$(OtterbrixNativeLibrary)" Link="$(OtterbrixNativeLibrary)" CopyToOutputDirectory="PreserveNewest" />
     </ItemGroup>
+
+    <Target Name="RequireOtterbrixNativeLibrary" BeforeTargets="BeforeBuild">
+        <Error Condition="!Exists('$(OtterbrixNativeDir)$(OtterbrixNativeLibrary)')"
+               Text="$(OtterbrixNativeDir)$(OtterbrixNativeLibrary) does not exist: build the c_otterbrix target first, or point OtterbrixNativeDir at the directory holding the library" />
+    </Target>
 </Project>

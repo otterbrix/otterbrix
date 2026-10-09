@@ -13,6 +13,8 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <core/tests/skip_under_root.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -287,17 +289,14 @@ namespace {
              ++i) {
             churn_once(d, next_id);
         }
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
-        while (services::wal::auto_checkpoint_rounds() == 0 && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-        return services::wal::auto_checkpoint_rounds() > 0;
+        return test_helpers::wait_until([] { return services::wal::auto_checkpoint_rounds() > 0; });
     }
 
 } // namespace
 
 // Measured on the unfixed build: truncation still ran, unlinking twelve of thirteen captured segments.
 TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_may_not_cost_the_journal") {
+    test_helpers::skip_under_root();
     auto config = test_create_config(integration_fixture_path("test_auto_checkpoint_rebuild_refusal/db"));
     test_clear_directory(config);
     config.log.level = log_t::level::off;
@@ -334,20 +333,26 @@ TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_
     INFO("the index and the table agree BEFORE the armed round, so a disagreement after it is that round's");
     REQUIRE(index_disagreements_with_the_full_scan(d) == 0);
 
+    services::disk::reset_table_checkpoints();
+    services::wal::reset_auto_checkpoint_rounds();
+
     INFO("front-of-table deletes, so the armed round's compaction has a shift to hand out");
     REQUIRE(exec(d, "DELETE FROM adb.t WHERE id >= 1 AND id <= 10;")->is_success());
 
     // Must drain the deferred-delete queue before arming: its horizon sweep also lists the index
     // directory (bitcask_index_agent_t::pay_merge_debt), tripping the flush refusal instead of this rebuild.
+    // The DELETE's own publish is the horizon advance the sweep waits for; a commit per poll here (rejected)
+    // crossed the auto-checkpoint threshold under load, and that round compacted the deletes away first.
     {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        while (services::index::index_deferred_deletes() != 0 && std::chrono::steady_clock::now() < deadline) {
-            churn_once(d, churn_id);
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
         INFO("the deferred-erase queue has to be empty before the fault goes in");
-        REQUIRE(services::index::index_deferred_deletes() == 0);
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        REQUIRE(test_helpers::wait_until([] { return services::index::index_deferred_deletes() == 0; }));
+        INFO("no automatic round may run before the fault goes in: it would leave the armed round nothing to "
+             "renumber");
+        REQUIRE(services::disk::table_checkpoints() == 0);
+        REQUIRE(services::wal::auto_checkpoint_rounds() == 0);
+        // The meter reaches zero once the erases have run; the read checks their merge left the index
+        // and the table agreeing.
+        REQUIRE(index_disagreements_with_the_full_scan(d) == 0);
     }
 
     const auto bitcask_dir = find_bitcask_dir(config.disk.path);

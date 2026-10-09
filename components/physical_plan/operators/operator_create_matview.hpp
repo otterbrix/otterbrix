@@ -4,12 +4,14 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <iterator>
+#include <memory_resource>
 #include <vector>
 
 namespace components::operators {
 
     // Composite CREATE MATERIALIZED VIEW ... WITH NO DATA (relkind='m') operator: create storage, register
-    // with the index manager, and write pg_class/pg_attribute/pg_rewrite/pg_depend rows, atomically in one
+    // with the index manager, and write the catalog rows of a view with relkind 'm', atomically in one
     // coroutine. Does NOT populate the matview — a nested scan from inside this operator's own await hits
     // an actor_zeta nested-await failure, and sequence_t(create, insert) doesn't work either since the
     // insert's column bindings are stamped before the planner mints the matview's oid — so the implicit
@@ -22,7 +24,7 @@ namespace components::operators {
                                   log_t log,
                                   components::catalog::oid_t mv_oid,
                                   components::catalog::oid_t namespace_oid,
-                                  std::vector<table::column_definition_t> columns,
+                                  std::pmr::vector<table::column_definition_t> columns,
                                   std::vector<catalog_write_t> catalog_writes);
 
         // Sourceless SINK leaf (no left-chain data source): the executor admits it
@@ -36,7 +38,7 @@ namespace components::operators {
     private:
         components::catalog::oid_t mv_oid_;
         components::catalog::oid_t namespace_oid_;
-        std::vector<table::column_definition_t> columns_;
+        std::pmr::vector<table::column_definition_t> columns_;
         std::vector<catalog_write_t> catalog_writes_;
     };
 

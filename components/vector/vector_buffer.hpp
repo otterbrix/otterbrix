@@ -114,15 +114,11 @@ namespace components::vector {
         template<typename T>
         void* insert(T&& str_like);
         void* empty_string(size_t size);
-        void add_heap_reference(std::unique_ptr<vector_buffer_t> heap);
         void reset();
+        std::size_t upstream_allocations() const noexcept { return string_buffer_.upstream_allocations(); }
 
     private:
         core::string_buffer_t string_buffer_;
-        // used for overflow strings. Sole owner of each heap: add_heap_reference is
-        // the only writer and hands over a unique_ptr — a shared_ptr here
-        // would imply a sharing that does not exist.
-        std::pmr::vector<std::unique_ptr<vector_buffer_t>> refs_;
     };
 
     template<typename T>

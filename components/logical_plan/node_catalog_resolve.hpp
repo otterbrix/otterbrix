@@ -1,10 +1,12 @@
 #pragma once
 
 #include "node.hpp"
+#include "table_storage.hpp"
 
+#include <components/base/identifier_types.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/fk_info.hpp>
-#include <components/logical_plan/identifier_types.hpp>
+#include <components/catalog/view_binding.hpp>
 #include <components/types/types.hpp>
 
 #include <cstdint>
@@ -32,6 +34,8 @@ namespace components::logical_plan {
         std::string atttypspec;
     };
 
+    using components::catalog::view_binding_t;
+
     struct resolved_table_metadata_t {
         components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
@@ -40,6 +44,10 @@ namespace components::logical_plan {
         std::vector<resolved_column_metadata_t> columns;
         // pg_rewrite.ev_action SQL for relkind 'v'/'m'; consumed by dispatcher Phase 1.5 rewrite_views.
         std::string view_sql;
+        // relkind 'v': pg_rewrite_ref rows.
+        std::vector<view_binding_t> view_bindings;
+        // relkind 'f': the table's external storage for this statement, owned by its resolve entry.
+        table_storage_t* storage{nullptr};
     };
 
     // Stamped by operator_resolve_type_t.
@@ -69,6 +77,22 @@ namespace components::logical_plan {
         referencing
     };
 
+    // What CREATE VIEW bound a view body name to: a relation, read by its pg_class oid and never looked up by name,
+    // or a name the host resolved to an external storage, which the catalog never answers.
+    struct view_pin_t {
+        enum class kind_t : std::uint8_t
+        {
+            none,
+            relation,
+            storage
+        };
+        kind_t kind{kind_t::none};
+        // kind == relation.
+        components::catalog::oid_t oid{components::catalog::INVALID_OID};
+        // The view whose body carries the pin, for the stale refusal.
+        core::viewname_t view;
+    };
+
     // Request fields are filled in by the transformer; result fields are stamped by operator_resolve_*_t.
     struct resolve_entry_t {
         static constexpr std::size_t no_target = static_cast<std::size_t>(-1);
@@ -76,12 +100,24 @@ namespace components::logical_plan {
         std::string dbname;
         std::string relname;
         std::string type_name;
+        // Table entries: the uid and schema slots of uid.database.schema.name, as written, so the host gets the whole
+        // name. The catalog looks a table up by database.name only: a schema slot is refused once the database is
+        // known to exist, except in the uid form, which keeps its meaning database.name.
+        std::string uid;
+        std::string schema;
         resolve_direction direction{resolve_direction::outgoing};
         // Constraint entries only: indexes the TABLE node's entries_ for the table it constrains.
         std::size_t target{no_target};
+        // Table entries of an unqualified REFERENCES target: indexes the TABLE node's entries_ for the table that
+        // owns the key — the target is looked up in the database that table was found in.
+        std::size_t namespace_of{no_target};
         // Constraint entries only: gathers (conname, oid) without enforcement decode, so DROP
         // CONSTRAINT can repair an invalid catalog state (e.g. doubled PRIMARY KEY) instead of refusing it.
         bool names_only{false};
+        // A view body name: what CREATE VIEW bound it to. Not part of the request identity.
+        view_pin_t pin;
+        // The external storage the host's decide gave this name for the statement; its table_md is relkind 'f'.
+        table_storage_ptr storage{nullptr, core::pmr::polymorphic_deleter_t{nullptr, 0, 0}};
 
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t database_oid{components::catalog::INVALID_OID};
@@ -116,7 +152,10 @@ namespace components::logical_plan {
 
         // Appends `entry` unless an equivalent request is already present
         std::size_t add(resolve_entry_t entry);
-        std::size_t find(std::string_view dbname, std::string_view name) const noexcept;
+        std::size_t find(std::string_view uid,
+                         std::string_view dbname,
+                         std::string_view schema,
+                         std::string_view name) const noexcept;
 
     private:
         hash_t hash_impl() const override;
@@ -143,6 +182,8 @@ namespace components::logical_plan {
         node_catalog_resolve_ptr types;
         node_catalog_resolve_ptr constraints;
         std::vector<external_target_t> external_targets;
+        // Every REFERENCES target as written: a uid or schema segment on one is refused.
+        std::vector<qualified_name_t> referenced_tables;
 
         // Creates the slot for `kind` empty on first use; non-const so the transformer can register entries.
         node_catalog_resolve_t& ensure(std::pmr::memory_resource* resource, resolve_kind kind);
@@ -151,8 +192,7 @@ namespace components::logical_plan {
 
         // Entry naming this target, or nullptr; an empty name never matches, so nothing is bound.
         [[nodiscard]] const resolve_entry_t* namespace_entry(std::string_view dbname) const noexcept;
-        [[nodiscard]] const resolve_entry_t* table_entry(std::string_view dbname,
-                                                         std::string_view relname) const noexcept;
+        [[nodiscard]] const resolve_entry_t* table_entry(const qualified_name_t& written) const noexcept;
         [[nodiscard]] const resolve_entry_t* type_entry(std::string_view dbname,
                                                         std::string_view type_name) const noexcept;
 
@@ -166,7 +206,9 @@ namespace components::logical_plan {
         // than a duplicated oid; names_only entries are skipped since they would enforce nothing.
         [[nodiscard]] const resolve_entry_t* constraints_for(components::catalog::oid_t table_oid,
                                                              resolve_direction direction) const noexcept;
-        // Any outgoing entry (full or names_only); the DROP CONSTRAINT name->oid lookup
-        [[nodiscard]] const resolve_entry_t* constraint_names_for(components::catalog::oid_t table_oid) const noexcept;
+        // The oid of the constraint `name` of `table_oid` (any outgoing entry, full or names_only), INVALID_OID when the
+        // table has none of that name: DROP CONSTRAINT's lookup.
+        [[nodiscard]] components::catalog::oid_t constraint_oid(components::catalog::oid_t table_oid,
+                                                                std::string_view name) const noexcept;
     };
 } // namespace components::logical_plan

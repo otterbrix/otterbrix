@@ -4,6 +4,7 @@
 #include <components/table/storage/block_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <iterator>
 #include <queue>
 
 #include "column_data.hpp"
@@ -12,28 +13,22 @@
 
 namespace components::table {
 
-    row_group_segment_tree_t::row_group_segment_tree_t(collection_t& collection)
-        : collection_(collection)
-        , current_row_group_(0)
-        , max_row_group_(0) {}
-
-    // because of linking issues default has to be written here
-    row_group_segment_tree_t::~row_group_segment_tree_t() = default;
-
     collection_t::collection_t(std::pmr::memory_resource* resource,
                                storage::block_manager_t& block_manager,
                                std::pmr::vector<types::complex_logical_type> types,
                                int64_t row_start,
                                uint64_t total_rows,
                                uint64_t row_group_size)
-        : resource_(resource)
+        : session_cuts_(resource)
+        , resource_(resource)
         , block_manager_(block_manager)
+        , append_pbm_(storage::partial_block_manager_t::for_appends(block_manager))
         , row_group_size_(row_group_size)
         , total_rows_(total_rows)
         , types_(std::move(types))
         , row_start_(row_start)
         , allocation_size_(0) {
-        row_groups_ = std::make_unique<row_group_segment_tree_t>(*this);
+        row_groups_ = std::make_unique<segment_tree_t<row_group_t>>();
     }
 
     uint64_t collection_t::total_rows() const { return total_rows_.load(); }
@@ -65,17 +60,12 @@ namespace components::table {
         types_ = std::move(types);
     }
 
-    void collection_t::append_row_group(std::unique_lock<std::mutex>& l, int64_t start_row) {
+    row_group_t* collection_t::append_row_group(int64_t start_row) {
         assert(start_row >= row_start_);
         auto new_row_group = std::make_unique<row_group_t>(this, start_row, 0U);
         new_row_group->initialize_empty(types_);
-        row_groups_->append_segment(l, std::move(new_row_group));
-    }
-
-    row_group_t* collection_t::append_row_group(int64_t start_row) {
-        auto l = row_groups_->lock();
-        append_row_group(l, start_row);
-        return row_groups_->last_segment(l);
+        row_groups_->append_segment(std::move(new_row_group));
+        return row_groups_->last_segment();
     }
 
     collection_t::~collection_t() = default;
@@ -93,10 +83,6 @@ namespace components::table {
         while (row_group && !row_group->initialize_scan(state)) {
             row_group = row_groups_->next_segment(row_group);
         }
-    }
-
-    void collection_t::initialize_create_index_scan(create_index_scan_state& state) {
-        state.segment_lock = row_groups_->lock();
     }
 
     void collection_t::initialize_scan_with_offset(collection_scan_state& state,
@@ -160,16 +146,11 @@ namespace components::table {
 #endif
         for (uint64_t i = 0; i < fetch_count; i++) {
             auto row_id = row_ids[i];
-            row_group_t* row_group;
-            {
-                uint64_t segment_index;
-                auto l = row_groups_->lock();
-                if (!row_groups_->try_segment_index(l, row_id, segment_index)) {
-                    // Names no row group: dropped from the answer. Stamps below name only
-                    // gathered rows, so the drop is visible, not masked.
-                    continue;
-                }
-                row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
+            auto* row_group = row_groups_->get_segment(row_id);
+            if (!row_group) {
+                // Names no row group: dropped from the answer. Stamps below name only
+                // gathered rows, so the drop is visible, not masked.
+                continue;
             }
             // Asked before the gather so an invisible row costs no column read. row_id stays
             // collection-absolute; row_version_manager_t::fetch rebases internally.
@@ -192,10 +173,7 @@ namespace components::table {
 #endif
     }
 
-    bool collection_t::is_empty() const {
-        auto l = row_groups_->lock();
-        return is_empty(l);
-    }
+    bool collection_t::is_empty() const { return row_groups_->is_empty(); }
 
     uint64_t collection_t::calculate_size() {
         uint64_t res = 0;
@@ -217,8 +195,6 @@ namespace components::table {
         }
     }
 
-    bool collection_t::is_empty(std::unique_lock<std::mutex>& l) const { return row_groups_->is_empty(l); }
-
     core::result_wrapper_t<bool> collection_t::initialize_append(table_append_state& state) {
         // Type validated first: create_column's constructors cannot refuse a type they cannot
         // represent, or an unnamed struct throws inside struct_column_data_t's ctor and hangs the
@@ -232,14 +208,21 @@ namespace components::table {
         state.current_row = state.row_start;
         state.total_append_count = 0;
 
-        auto l = row_groups_->lock();
-        if (is_empty(l)) {
-            append_row_group(l, row_start_);
+        if (row_groups_->is_empty()) {
+            append_row_group(row_start_);
         }
-        state.start_row_group = row_groups_->last_segment(l);
+        state.start_row_group = row_groups_->last_segment();
         assert(row_start_ + static_cast<int64_t>(total_rows_.load()) ==
                state.start_row_group->start + static_cast<int64_t>(state.start_row_group->count));
-        return state.start_row_group->initialize_append(state.append_state); // out_of_memory
+        state.append_state.pbm = &append_pbm_;
+        auto init = state.start_row_group->initialize_append(state.append_state); // out_of_memory
+        if (init.has_error()) {
+            return init;
+        }
+        // The session's cut: the counts before its first row (re-taken if that row opens a row group).
+        state.cut.counts.clear();
+        state.start_row_group->snapshot_counts(state.cut);
+        return true;
     }
 
     core::result_wrapper_t<bool> collection_t::append(vector::data_chunk_t& chunk, table_append_state& state) {
@@ -250,6 +233,11 @@ namespace components::table {
         uint64_t total_append_count = chunk.size();
         uint64_t remaining = chunk.size();
         state.total_append_count += total_append_count;
+        auto* entry_row_group = state.append_state.row_group;
+        const uint64_t entry_offset = state.append_state.offset_in_row_group;
+        // The entry row group's counts before this chunk: what a refusal in a later row group cuts it back to.
+        append_cut_t entry_cut(resource_);
+        entry_row_group->snapshot_counts(entry_cut);
         while (true) {
             auto current_row_group = state.append_state.row_group;
             uint64_t append_count =
@@ -259,7 +247,15 @@ namespace components::table {
                 auto appended = current_row_group->append(state.append_state, chunk, append_count);
                 allocation_size_ += current_row_group->allocation_size() - previous_allocation_size;
                 if (appended.has_error()) {
-                    return appended; // out_of_memory
+                    if (current_row_group == entry_row_group) {
+                        return appended; // out_of_memory
+                    }
+                    return unwind_append(state,
+                                         entry_row_group,
+                                         entry_offset,
+                                         entry_cut,
+                                         total_append_count,
+                                         appended.error());
                 }
             }
             remaining -= append_count;
@@ -270,26 +266,99 @@ namespace components::table {
             if (remaining < chunk.size()) {
                 chunk.slice(resource_, append_count, remaining);
             }
+            // No row of this session has landed yet: the session's first row opens the new row group,
+            // so its cut is that row group's (empty) counts, not the full entry row group's.
+            const bool session_untouched =
+                remaining == total_append_count && state.total_append_count == total_append_count;
             new_row_group = true;
             auto next_start = current_row_group->start + static_cast<int64_t>(state.append_state.offset_in_row_group);
 
-            auto l = row_groups_->lock();
-            append_row_group(l, next_start);
-            auto last_row_group = row_groups_->last_segment(l);
+            // The segments filled inside the columns above were placed as they filled; this flush
+            // switches them before the close below walks the row group, or the walk would place them
+            // a second time (a transient placed twice names two blocks).
+            if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
+                return unwind_append(state,
+                                     entry_row_group,
+                                     entry_offset,
+                                     entry_cut,
+                                     total_append_count,
+                                     flushed.error());
+            }
+
+            auto last_row_group = append_row_group(next_start);
             auto init = last_row_group->initialize_append(state.append_state);
             if (init.has_error()) {
-                return init; // out_of_memory
+                return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count, init.error());
+            }
+            if (session_untouched) {
+                state.cut.counts.clear();
+                last_row_group->snapshot_counts(state.cut);
             }
             // Write-through: the row group we just closed is now complete (segments final, append state
             // moved on), so re-pointing it to disk lets the pool evict+reload it -> bounded memory at any
             // table size. A write/alloc failure surfaces as io_error/out_of_memory, never a throw.
-            auto transitioned = current_row_group->transition_to_disk();
+            auto transitioned = current_row_group->transition_to_disk(append_pbm_);
             if (transitioned.has_error()) {
-                return transitioned;
+                return unwind_append(state,
+                                     entry_row_group,
+                                     entry_offset,
+                                     entry_cut,
+                                     total_append_count,
+                                     transitioned.error());
             }
+        }
+        // Once per append, for every segment re-pointed above or filled inside a column: the packer
+        // writes the open tails and switches every placed segment whose block is on the file.
+        if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
+            // io_error: the segments of the tails not written stay transient; the unwind drops the rows
+            return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count, flushed.error());
         }
         state.current_row += int64_t(total_append_count);
         return new_row_group;
+    }
+
+    core::error_t collection_t::unwind_append(table_append_state& state,
+                                              row_group_t* entry_row_group,
+                                              uint64_t entry_offset,
+                                              const append_cut_t& entry_cut,
+                                              uint64_t append_count,
+                                              const core::error_t& cause) {
+        for (uint64_t c = 0; c < types_.size(); c++) {
+            state.append_state.states[c].release_pins();
+        }
+        std::pmr::vector<uint64_t> erased(resource_);
+        assert(row_groups_->has_segment(entry_row_group) && "the append started in a row group of this collection");
+        const auto& segments = row_groups_->reference_segments();
+        for (uint64_t later = entry_row_group->index + 1; later < segments.size(); later++) {
+            segments[later]->collect_disk_block_ids(erased);
+        }
+        row_groups_->erase_segments(entry_row_group->index + 1);
+        state.append_state.row_group = entry_row_group;
+        state.append_state.offset_in_row_group = entry_offset;
+        state.total_append_count -= append_count;
+        auto unwound = entry_row_group->unwind_append(entry_cut, types_.size());
+        if (unwound.contains_error()) {
+            return unwind_refused(cause, unwound, resource_);
+        }
+        if (auto settled = settle_unwind(std::move(erased)); settled.contains_error()) {
+            return unwind_refused(cause, settled, resource_);
+        }
+        return cause;
+    }
+
+    core::error_t collection_t::settle_unwind(std::pmr::vector<uint64_t> erased_blocks) {
+        if (erased_blocks.empty()) {
+            if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
+                return flushed.error();
+            }
+            return core::error_t::no_error();
+        }
+        // An open tail would take the next append's segments into a freed block.
+        if (auto sealed = append_pbm_.seal(); sealed.contains_error()) {
+            return sealed;
+        }
+        release_disk_blocks(block_manager_, std::move(erased_blocks));
+        return core::error_t::no_error();
     }
 
     void collection_t::finalize_append(table_append_state& state, transaction_data txn) {
@@ -303,11 +372,19 @@ namespace components::table {
         }
         total_rows_ += state.total_append_count;
 
+        // A committed session's cut outlives only the next session's end (see session_cuts_).
+        for (auto it = session_cuts_.begin(); it != session_cuts_.end();) {
+            it = it->second.transaction_id == DIRECT_WRITE_TXN_ID ? session_cuts_.erase(it) : std::next(it);
+        }
+        session_cuts_.insert_or_assign(state.row_start, session_cut_t{std::move(state.cut), txn.transaction_id});
+        state.cut.counts.clear();
+
         state.total_append_count = 0;
         state.start_row_group = nullptr;
     }
 
     void collection_t::commit_append(uint64_t commit_id, int64_t row_start, uint64_t count) {
+        session_cuts_.erase(row_start);
         for (auto& rg : row_groups_->segments()) {
             auto rg_end = rg.start + static_cast<int64_t>(rg.count.load());
             if (rg.start >= row_start + static_cast<int64_t>(count))
@@ -335,28 +412,23 @@ namespace components::table {
     }
 
     uint64_t collection_t::delete_stamp(int64_t row_id) {
-        row_group_t* row_group = nullptr;
-        {
-            uint64_t segment_index;
-            auto l = row_groups_->lock();
-            if (!row_groups_->try_segment_index(l, row_id, segment_index)) {
-                return NOT_DELETED_ID;
-            }
-            row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
+        auto* row_group = row_groups_->get_segment(row_id);
+        if (!row_group) {
+            return NOT_DELETED_ID;
         }
         return row_group->delete_stamp(row_id);
     }
 
+    // The one way a collection's blocks reach the free list. Every segment holds its block's handle
+    // (reload and write-through register it), so a live handle means a surviving segment, a successor
+    // sharing the column or a pinned reader still names the block: the manager then holds the free back
+    // until that handle is gone (freed_while_held_), never freeing under them. The caller drops the
+    // segments it no longer wants BEFORE calling (erase, reset) or their blocks wait for them.
     void release_disk_blocks(storage::block_manager_t& block_manager, std::pmr::vector<uint64_t> block_ids) {
         std::sort(block_ids.begin(), block_ids.end());
         block_ids.erase(std::unique(block_ids.begin(), block_ids.end()), block_ids.end());
         for (uint64_t block_id : block_ids) {
-            if (block_id >= block_manager.total_blocks()) {
-                block_manager.mark_as_free(block_id);
-                continue;
-            }
             block_manager.mark_as_free(block_id);
-            block_manager.unregister_block(block_id);
         }
     }
 
@@ -368,24 +440,49 @@ namespace components::table {
         if (count == 0) {
             return true;
         }
-        auto l = row_groups_->lock();
+        // A revert targets the first row of an append session; its cut is the only cut the columns
+        // take (a LIST element column's cut is not a row number, and reading it needs a pin).
+        auto cut_it = session_cuts_.find(row_start);
+        if (cut_it == session_cuts_.end()) {
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string("table revert: no append session started at the revert row", resource_));
+        }
         uint64_t segment_index;
-        if (!row_groups_->try_segment_index(l, row_start, segment_index)) {
+        if (!row_groups_->try_segment_index(row_start, segment_index)) {
             return core::error_t(core::error_code_t::data_corruption,
                                  std::pmr::string("table revert: no row group brackets the revert row", resource_));
         }
-        const auto& segments = row_groups_->reference_segments(l);
-        std::pmr::vector<uint64_t> released{resource_};
+        std::pmr::vector<uint64_t> erased{resource_};
+        const auto& segments = row_groups_->reference_segments();
         for (uint64_t later = segment_index + 1; later < segments.size(); ++later) {
-            segments[later].node->collect_disk_block_ids(released);
+            segments[later]->collect_disk_block_ids(erased);
         }
-        release_disk_blocks(block_manager_, std::move(released));
-        row_groups_->erase_segments(l, segment_index);
-
-        auto* row_group = row_groups_->segment_at(l, static_cast<int64_t>(segment_index));
-        row_group->next = nullptr;
+        row_groups_->erase_segments(segment_index + 1);
+        auto* row_group = row_groups_->segment_at(static_cast<int64_t>(segment_index));
         total_rows_ = static_cast<uint64_t>(row_start - row_start_);
-        return row_group->revert_append(static_cast<uint64_t>(row_start - row_group->start));
+        // The kept row group drops its segments past the row and truncates the one holding it; their blocks go
+        // with the later row groups' through settle_unwind, like a refused append's (unwind_append).
+        std::pmr::vector<uint64_t> before(resource_);
+        row_group->collect_disk_block_ids(before);
+        cut_cursor_t cursor(cut_it->second.cut);
+        auto reverted = row_group->revert_append(static_cast<uint64_t>(row_start - row_group->start), cursor);
+        // The reverted session and every later one are gone with their rows.
+        session_cuts_.erase(cut_it, session_cuts_.end());
+        std::pmr::vector<uint64_t> after(resource_);
+        row_group->collect_disk_block_ids(after);
+        std::sort(before.begin(), before.end());
+        before.erase(std::unique(before.begin(), before.end()), before.end());
+        std::sort(after.begin(), after.end());
+        std::set_difference(before.begin(), before.end(), after.begin(), after.end(), std::back_inserter(erased));
+        auto settled = settle_unwind(std::move(erased));
+        if (reverted.has_error()) {
+            return reverted;
+        }
+        if (settled.contains_error()) {
+            return settled;
+        }
+        return true;
     }
 
     void collection_t::merge_storage(collection_t& data) {
@@ -395,7 +492,7 @@ namespace components::table {
         auto segments = data.row_groups_->move_segments();
 
         for (auto& entry : segments) {
-            auto& row_group = entry.node;
+            auto& row_group = entry;
             row_group->move_to_collection(this, index);
 
             index += static_cast<int64_t>(row_group->count);
@@ -455,12 +552,20 @@ namespace components::table {
 
     core::result_wrapper_t<boost::intrusive_ptr<collection_t>>
     collection_t::add_column(column_definition_t& new_column) {
+        if (auto err = column_data_t::validate_column_type(new_column.type(), resource_); err.contains_error()) {
+            return err;
+        }
         // Named-resource copy: std::pmr::vector's plain copy ctor asks
         // select_on_container_copy_construction, which for polymorphic_allocator is
         // default-constructed — without this the successor's schema would land on the
         // process-wide default resource instead of this one.
         std::pmr::vector<types::complex_logical_type> new_types(types_, resource_);
         new_types.push_back(new_column.type());
+        // The successor shares this collection's row groups and columns; its first checkpoint may
+        // name any tail block still open here, so none may be grown after this point.
+        if (auto sealed = append_pbm_.seal(); sealed.contains_error()) {
+            return sealed; // io_error
+        }
         // Plain `new`, never the pmr resource: the intrusive ref count lives inside the
         // object, so `delete` is the matching deallocation (no shared_ptr ever taken here).
         auto result = boost::intrusive_ptr<collection_t>(new collection_t(resource_,
@@ -481,15 +586,43 @@ namespace components::table {
 
             result->row_groups_->append_segment(std::move(new_row_group.value()));
         }
+        // The added column's filled segments went into the successor's packer.
+        if (auto flushed = result->append_pbm_.flush_partial_blocks(); flushed.has_error()) {
+            return flushed.convert_error<boost::intrusive_ptr<collection_t>>(); // io_error
+        }
+        // A session begun before the ALTER may be reverted on the successor: its cut gets the added
+        // column's counts at the session's row. The back-fill wrote one value per row, so each of those
+        // counts grows linearly with the rows: at `kept` rows it is count * kept / rows.
+        for (const auto& [session_row, session] : session_cuts_) {
+            uint64_t index;
+            if (!result->row_groups_->try_segment_index(session_row, index)) {
+                continue; // a session of no rows: nothing to revert
+            }
+            auto* row_group = result->row_groups_->segment_at(static_cast<int64_t>(index));
+            const uint64_t rows = row_group->count;
+            const uint64_t kept = session.cut.counts.front();
+            append_cut_t added(resource_);
+            row_group->snapshot_counts(types_.size(), added);
+            session_cut_t inherited{append_cut_t(resource_), session.transaction_id};
+            inherited.cut.counts.assign(session.cut.counts.begin(), session.cut.counts.end());
+            for (uint64_t count : added.counts) {
+                inherited.cut.counts.push_back(rows == 0 ? 0 : count * kept / rows);
+            }
+            result->session_cuts_.emplace(session_row, std::move(inherited));
+        }
         return result;
     }
 
-    boost::intrusive_ptr<collection_t> collection_t::remove_column(uint64_t col_idx) {
+    core::result_wrapper_t<boost::intrusive_ptr<collection_t>> collection_t::remove_column(uint64_t col_idx) {
         assert(col_idx < types_.size());
         // Same allocator-extended copy as add_column above.
         std::pmr::vector<types::complex_logical_type> new_types(types_, resource_);
         new_types.erase(new_types.begin() + static_cast<int64_t>(col_idx));
 
+        // Same sharing as add_column: no tail of this collection may be grown once a successor exists.
+        if (auto sealed = append_pbm_.seal(); sealed.contains_error()) {
+            return sealed; // io_error
+        }
         // Same allocation note as add_column above.
         auto result = boost::intrusive_ptr<collection_t>(new collection_t(resource_,
                                                                           block_manager_,
@@ -502,6 +635,27 @@ namespace components::table {
             auto new_row_group = current_row_group.remove_column(result.get(), col_idx);
             result->row_groups_->append_segment(std::move(new_row_group));
         }
+        // A session begun before the ALTER may be reverted on the successor: its cut loses the removed
+        // column's span (its own count and its children's).
+        for (const auto& [session_row, session] : session_cuts_) {
+            uint64_t index;
+            if (!row_groups_->try_segment_index(session_row, index)) {
+                continue; // a session of no rows: nothing to revert
+            }
+            auto* row_group = row_groups_->segment_at(static_cast<int64_t>(index));
+            append_cut_t before(resource_);
+            for (uint64_t c = 0; c < col_idx; c++) {
+                row_group->snapshot_counts(c, before);
+            }
+            append_cut_t removed(resource_);
+            row_group->snapshot_counts(col_idx, removed);
+            assert(before.counts.size() + removed.counts.size() <= session.cut.counts.size());
+            session_cut_t inherited{append_cut_t(resource_), session.transaction_id};
+            inherited.cut.counts.assign(session.cut.counts.begin(), session.cut.counts.end());
+            const auto from = inherited.cut.counts.begin() + static_cast<int64_t>(before.counts.size());
+            inherited.cut.counts.erase(from, from + static_cast<int64_t>(removed.counts.size()));
+            result->session_cuts_.emplace(session_row, std::move(inherited));
+        }
         return result;
     }
 
@@ -509,10 +663,14 @@ namespace components::table {
     collection_t::checkpoint(storage::partial_block_manager_t& partial_block_manager) {
         std::vector<storage::row_group_pointer_t> pointers;
 
-        auto l = row_groups_->lock();
-        auto& segments = row_groups_->reference_segments(l);
+        // The root written below may name an open tail block; once named it must never be rewritten.
+        if (auto sealed = append_pbm_.seal(); sealed.contains_error()) {
+            return sealed; // io_error
+        }
+
+        auto& segments = row_groups_->reference_segments();
         for (const auto& segment : segments) {
-            auto pointer = segment.node->write_to_disk(partial_block_manager);
+            auto pointer = segment->write_to_disk(partial_block_manager);
             if (pointer.has_error()) {
                 return pointer.convert_error<std::vector<storage::row_group_pointer_t>>(); // out_of_memory
             }

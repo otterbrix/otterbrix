@@ -4,9 +4,10 @@
 #include "kernel_signature.hpp"
 
 #include <components/types/types.hpp>
+#include <core/pmr.hpp>
+#include <initializer_list>
 #include <memory>
 #include <memory_resource>
-#include <mutex>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -14,9 +15,16 @@
 #include <vector>
 
 namespace components::compute {
+    class function;
     class vector_function;
     class aggregate_function;
     class expand_function;
+
+    using function_ptr = core::pmr::polymorphic_unique_ptr<function>;
+
+    [[nodiscard]] inline function_ptr no_function() noexcept {
+        return {nullptr, core::pmr::polymorphic_deleter_t{nullptr, 0, 0}};
+    }
 
     struct arity {
         size_t num_args;
@@ -33,10 +41,24 @@ namespace components::compute {
     };
 
     struct function_doc {
-        std::string short_summary;
-        std::string description;
-        std::vector<std::string> arg_names;
-        bool options_required = false;
+        using allocator_type = std::pmr::polymorphic_allocator<>;
+
+        explicit function_doc(std::pmr::memory_resource* resource);
+        function_doc(std::pmr::memory_resource* resource,
+                     std::string_view short_summary,
+                     std::string_view description,
+                     std::initializer_list<std::string_view> arg_names,
+                     bool options_required);
+        function_doc(const function_doc& other, const allocator_type& allocator);
+        function_doc(const function_doc&) = delete;
+        function_doc(function_doc&&) = default;
+        function_doc& operator=(const function_doc&) = delete;
+        function_doc& operator=(function_doc&&) = delete;
+
+        std::pmr::string short_summary;
+        std::pmr::string description;
+        std::pmr::vector<std::pmr::string> arg_names;
+        bool options_required;
     };
 
     class function_options {
@@ -82,9 +104,11 @@ namespace components::compute {
 
     class function {
     public:
+        function(const function&) = delete;
+        function& operator=(const function&) = delete;
         virtual ~function() = default;
 
-        const std::string& name() const { return name_; }
+        std::string_view name() const noexcept { return name_; }
         const arity& fn_arity() const { return arity_; }
         const function_doc& doc() const { return doc_; }
 
@@ -129,29 +153,52 @@ namespace components::compute {
         // the false default, only algebraically-mergeable aggregates override it.
         [[nodiscard]] virtual bool is_mergeable() const { return false; }
 
-        [[nodiscard]] virtual std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const = 0;
+        [[nodiscard]] virtual function_ptr get_copy(std::pmr::memory_resource* resource) const = 0;
 
     protected:
-        function(std::string name, arity fn_arity, function_doc doc, const function_options* default_options = nullptr);
+        function(std::pmr::memory_resource* resource,
+                 std::string_view name,
+                 arity fn_arity,
+                 const function_doc& doc,
+                 const function_options* default_options);
+        function(std::pmr::memory_resource* resource, const function& other);
 
-        std::string name_;
+        std::pmr::string name_;
         arity arity_;
         function_doc doc_;
         const function_options* default_options_;
     };
 
-    using function_ptr = std::unique_ptr<function>;
     using function_uid = size_t;
     constexpr inline size_t invalid_function_uid = std::numeric_limits<size_t>::max();
+    // A function a view body was bound to: the function this process holds, and which of its kernel signatures.
+    struct function_pin_t {
+        function_uid uid{invalid_function_uid};
+        size_t signature{0};
+    };
     namespace detail {
         template<typename KernelType>
         class function_impl : public function {
         public:
-            function_impl(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots)
-                : function(std::move(name), fn_arity, std::move(doc))
+            function_impl(std::pmr::memory_resource* resource,
+                          std::string_view name,
+                          arity fn_arity,
+                          const function_doc& doc,
+                          size_t available_kernel_slots)
+                : function(resource, name, fn_arity, doc, nullptr)
                 , kernel_slots_(available_kernel_slots)
-                , kernels_() {
+                , kernels_(resource) {
                 kernels_.reserve(kernel_slots_);
+            }
+
+            function_impl(std::pmr::memory_resource* resource, const function_impl& other)
+                : function(resource, other)
+                , kernel_slots_(other.kernel_slots_)
+                , kernels_(resource) {
+                kernels_.reserve(kernel_slots_);
+                for (const auto& kernel : other.kernels_) {
+                    kernels_.emplace_back(kernel);
+                }
             }
 
             [[nodiscard]] std::vector<std::reference_wrapper<const KernelType>> kernels() const {
@@ -191,7 +238,7 @@ namespace components::compute {
 
         protected:
             size_t kernel_slots_;
-            std::vector<KernelType> kernels_;
+            std::pmr::vector<KernelType> kernels_;
         };
 
         template<typename KernelType>
@@ -237,24 +284,31 @@ namespace components::compute {
 
     class vector_function : public detail::function_impl<vector_kernel> {
     public:
-        vector_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
+        vector_function(std::pmr::memory_resource* resource,
+                        std::string_view name,
+                        arity fn_arity,
+                        const function_doc& doc,
+                        size_t available_kernel_slots);
+        vector_function(std::pmr::memory_resource* resource, const vector_function& other);
         void accept_visitor(function_visitor& visitor) const override;
 
-        [[nodiscard]] std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const override;
+        [[nodiscard]] function_ptr get_copy(std::pmr::memory_resource* resource) const override;
     };
 
     class aggregate_function : public detail::function_impl<aggregate_kernel> {
     public:
-        aggregate_function(std::string name,
+        aggregate_function(std::pmr::memory_resource* resource,
+                           std::string_view name,
                            arity fn_arity,
-                           function_doc doc,
+                           const function_doc& doc,
                            size_t available_kernel_slots,
-                           bool mergeable = false);
+                           bool mergeable);
+        aggregate_function(std::pmr::memory_resource* resource, const aggregate_function& other);
         void accept_visitor(function_visitor& visitor) const override;
 
         [[nodiscard]] bool is_mergeable() const override { return mergeable_; }
 
-        [[nodiscard]] std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const override;
+        [[nodiscard]] function_ptr get_copy(std::pmr::memory_resource* resource) const override;
 
     private:
         bool mergeable_;
@@ -262,28 +316,25 @@ namespace components::compute {
 
     class expand_function : public detail::function_impl<expand_kernel> {
     public:
-        expand_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots);
+        expand_function(std::pmr::memory_resource* resource,
+                        std::string_view name,
+                        arity fn_arity,
+                        const function_doc& doc,
+                        size_t available_kernel_slots);
+        expand_function(std::pmr::memory_resource* resource, const expand_function& other);
         void accept_visitor(function_visitor& visitor) const override;
 
-        [[nodiscard]] std::unique_ptr<function> get_copy(std::pmr::memory_resource* resource) const override;
+        [[nodiscard]] function_ptr get_copy(std::pmr::memory_resource* resource) const override;
     };
 
-    // WARNING: function_registry_t does not provide thread-safety guarantees, use mutex
+    // Owned by one actor: the dispatcher holds the engine's master, every executor its own copy.
     class function_registry_t {
     public:
         explicit function_registry_t(std::pmr::memory_resource* resource);
 
-        static function_registry_t* get_default();
-
-        // Replace the process-global default registry with a fresh one holding only the builtin
-        // functions, so a UDF registered by one test cannot leak into get_default() and corrupt the
-        // next. Not thread-safe -- call only when no queries are in flight.
-        static void reset_default();
-
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function(function_ptr function);
-        // Used when the canonical UID was chosen by another registry (e.g. the global default) and
-        // per-executor local registries must agree, so validate/predicate lookups stay cross-registry
-        // stable.
+        // Used when the canonical UID was chosen by the executors' copies, so the dispatcher's master
+        // names a function by the same uid they do.
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function_with_uid(function_uid uid,
                                                                                  function_ptr function);
         // Registration order must match the function's DEFAULT_FUNCTIONS row exactly: a
@@ -295,6 +346,9 @@ namespace components::compute {
         function* get_function(function_uid uid) const;
         [[nodiscard]] std::vector<std::pair<std::string, function_uid>> get_functions() const;
         [[nodiscard]] std::pmr::vector<function_uid> find_functions(std::string_view name) const;
+        // The function `name` with a signature these inputs match, invalid_function_uid when there is none.
+        [[nodiscard]] function_uid find_overload(std::string_view name,
+                                                 const std::pmr::vector<types::complex_logical_type>& inputs) const;
 
         // Remove a function by uid (DROP FUNCTION / unregister_udf path). No-op if uid not present.
         bool remove_function(function_uid uid);
@@ -306,13 +360,10 @@ namespace components::compute {
         std::pmr::memory_resource* resource() const noexcept;
 
     private:
-        void register_builtin_functions();
         // Record the first builtin-registration failure and drop every function
         // so a shifted table can never be served. See add_builtin.
         void poison_builtins_(core::error_t error);
 
-        static std::once_flag init_flag_;
-        static std::unique_ptr<function_registry_t> default_registry_;
         std::pmr::memory_resource* resource_;
         std::pmr::unordered_map<function_uid, function_ptr> functions_;
         function_uid current_uid_{0};

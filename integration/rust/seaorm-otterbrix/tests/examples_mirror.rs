@@ -18,8 +18,9 @@ async fn lib_rs_quick_start() {
     let tmp = tempdir().expect("tempdir");
 
     let db = Database::open(Config::new(tmp.path())).expect("open database");
-    db.create_database("app").expect("create database");
-    db.create_collection("app", "t").expect("create collection");
+    db.execute("CREATE DATABASE app;").expect("create database");
+    db.execute("CREATE TABLE app.t();")
+        .expect("create collection");
 
     let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(OtterbrixProxy::new(db)));
     let conn: DatabaseConnection = sea_orm::Database::connect_proxy(DbBackend::Sqlite, proxy)
@@ -39,8 +40,9 @@ async fn proxy_rs_otterbrix_proxy_example() {
     let tmp = tempdir().expect("tempdir");
 
     let db = Database::open(Config::new(tmp.path())).expect("open database");
-    db.create_database("app").expect("create database");
-    db.create_collection("app", "t").expect("create collection");
+    db.execute("CREATE DATABASE app;").expect("create database");
+    db.execute("CREATE TABLE app.t();")
+        .expect("create collection");
 
     let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(OtterbrixProxy::new(db)));
     let _conn: DatabaseConnection = sea_orm::Database::connect_proxy(DbBackend::Sqlite, proxy)

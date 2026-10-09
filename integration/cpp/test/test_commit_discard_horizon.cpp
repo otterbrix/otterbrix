@@ -8,6 +8,7 @@
 #include <services/wal/wal_page.hpp>
 
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <memory>
 #include <sstream>
@@ -60,11 +61,7 @@ namespace {
     }
 
     bool await_deferred_deletes_at(uint64_t target) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (services::index::index_deferred_deletes() > target && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::yield();
-        }
-        return services::index::index_deferred_deletes() <= target;
+        return test_helpers::wait_until([target] { return services::index::index_deferred_deletes() <= target; });
     }
 
 } // namespace

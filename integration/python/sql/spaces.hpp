@@ -15,13 +15,10 @@ namespace otterbrix {
     public:
         spaces(spaces& other) = delete;
         void operator=(const spaces&) = delete;
+        explicit spaces(host_ptr host);
 
-        static boost::intrusive_ptr<spaces> get_instance();
-        static boost::intrusive_ptr<spaces> get_instance(const std::filesystem::path& path);
-
-    protected:
-        spaces();
-        spaces(const std::filesystem::path& path);
+        static core::result_wrapper_t<boost::intrusive_ptr<spaces>> get_instance();
+        static core::result_wrapper_t<boost::intrusive_ptr<spaces>> get_instance(const std::filesystem::path& path);
     };
 
     using spaces_ptr = boost::intrusive_ptr<spaces>;

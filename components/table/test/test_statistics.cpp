@@ -6,6 +6,7 @@
 #include <components/table/column_segment.hpp>
 #include <components/table/column_state.hpp>
 #include <components/table/storage/buffer_pool.hpp>
+#include <components/table/storage/partial_block_manager.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/vector/vector.hpp>
@@ -303,7 +304,8 @@ TEST_CASE("per-segment statistics: populated during append") {
     auto col = column_data_t::create_column(&resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
 
     // Append data through column_data_t
-    column_append_state append_state;
+    auto append_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(block_manager);
+    column_append_state append_state{&append_pbm};
     REQUIRE_FALSE(col->initialize_append(append_state).has_error());
 
     vector_t vec(&resource, logical_type::BIGINT, 100);

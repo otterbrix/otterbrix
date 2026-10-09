@@ -78,12 +78,7 @@ namespace components::table {
 
         auto extended = parent.row_groups_->add_column(new_column);
         if (extended.has_error()) {
-            // A constructor can't return, so the backfill refusal latches: the parent stays root and
-            // shares its collection read-only.
-            construction_error_ = extended.error();
-            column_definitions_.pop_back();
-            this->row_groups_ = parent.row_groups_;
-            is_root_ = false;
+            latch_construction_error(parent, extended.error());
             return;
         }
         this->row_groups_ = std::move(extended.value());
@@ -109,9 +104,21 @@ namespace components::table {
             col.set_storage_oid(storage_idx++);
         }
 
-        this->row_groups_ = parent.row_groups_->remove_column(removed_column);
+        auto reduced = parent.row_groups_->remove_column(removed_column);
+        if (reduced.has_error()) {
+            latch_construction_error(parent, reduced.error());
+            return;
+        }
+        this->row_groups_ = std::move(reduced.value());
 
         parent.is_root_ = false;
+    }
+
+    void data_table_t::latch_construction_error(const data_table_t& parent, const core::error_t& error) {
+        construction_error_ = error;
+        column_definitions_ = parent.column_definitions_;
+        row_groups_ = parent.row_groups_;
+        is_root_ = false;
     }
 
     [[nodiscard]] std::pmr::vector<types::complex_logical_type> data_table_t::copy_types() const {
@@ -218,14 +225,10 @@ namespace components::table {
         std::vector<storage_index_t> physical_ids;
         physical_ids.reserve(column_ids.size());
         for (const auto& id : column_ids) {
-            storage_index_t physical = id;
-            if (!id.is_row_id_column()) {
-                const auto index = id.primary_index();
-                assert(index < visible.size() && "to_physical_columns: the id names a column this transaction "
-                                                 "cannot see");
-                physical.set_index(visible[index]);
-            }
-            physical_ids.push_back(std::move(physical));
+            const auto index = id.primary_index();
+            assert(index < visible.size() && "to_physical_columns: the id names a column this transaction "
+                                             "cannot see");
+            physical_ids.emplace_back(visible[index], id.child_indexes());
         }
         return physical_ids;
     }
@@ -343,7 +346,11 @@ namespace components::table {
         if (old_collection) {
             std::pmr::vector<uint64_t> reclaimable{resource_};
             old_collection->collect_disk_block_ids(reclaimable);
-            release_disk_blocks(old_collection->block_manager(), std::move(reclaimable));
+            // Dropped first: a block a handle still names is freed only once that handle is gone, and the
+            // outgoing segments hold theirs until the collection dies. A holder elsewhere keeps its blocks
+            // the same way, and gives them back with its last handle.
+            old_collection.reset();
+            release_disk_blocks(row_groups_->block_manager(), std::move(reclaimable));
         }
         // The swap may have renumbered row ids; every index answer stamped with the old epoch is refused from here on.
         ++compact_epoch_;
@@ -468,11 +475,6 @@ namespace components::table {
         row_groups_->fetch(result, physical_ids, row_identifiers, fetch_count, state, projected_cols, txn, visibility);
     }
 
-    std::unique_ptr<constraint_state> data_table_t::initialize_constraint_state(
-        const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints) {
-        return std::make_unique<constraint_state>(bound_constraints);
-    }
-
     core::result_wrapper_t<bool> data_table_t::append_lock(table_append_state& state) {
         state.append_locked = true;
         // write_conflict, not a throw: under -fno-exceptions an actor-zeta coroutine throw is swallowed silently.
@@ -536,24 +538,8 @@ namespace components::table {
         mark_modified();
     }
 
-    std::unique_ptr<table_delete_state>
-    data_table_t::initialize_delete(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints) {
-        std::pmr::vector<types::complex_logical_type> types(resource_);
-        auto result = std::make_unique<table_delete_state>(resource_);
-        if (result->has_delete_constraints) {
-            for (uint64_t i = 0; i < column_definitions_.size(); i++) {
-                result->col_ids.emplace_back(column_definitions_[i].storage_oid());
-                types.emplace_back(column_definitions_[i].type());
-            }
-            result->constraint = std::make_unique<constraint_state>(bound_constraints);
-        }
-        return result;
-    }
-
-    core::result_wrapper_t<uint64_t> data_table_t::delete_rows(table_delete_state&,
-                                                               vector::vector_t& row_identifiers,
-                                                               uint64_t count,
-                                                               uint64_t transaction_id) {
+    core::result_wrapper_t<uint64_t>
+    data_table_t::delete_rows(vector::vector_t& row_identifiers, uint64_t count, uint64_t transaction_id) {
         assert(row_identifiers.type().type() == types::logical_type::BIGINT);
         if (count == 0) {
             return core::result_wrapper_t<uint64_t>{uint64_t{0}};
@@ -592,7 +578,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> data_table_t::checkpoint(storage::metadata_writer_t& writer) {
-        storage::partial_block_manager_t partial_block_manager(row_groups_->block_manager());
+        auto partial_block_manager = storage::partial_block_manager_t::for_checkpoint(row_groups_->block_manager());
 
         auto row_group_pointers_res = row_groups_->checkpoint(partial_block_manager);
         if (row_group_pointers_res.has_error()) {

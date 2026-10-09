@@ -8,6 +8,14 @@
 
 namespace components::table {
 
+    void column_append_state::release_pins() {
+        handle.reset();
+        current = nullptr;
+        for (auto& child : child_appends) {
+            child.release_pins();
+        }
+    }
+
     void column_scan_state::initialize(const types::complex_logical_type& type,
                                        const std::vector<storage_index_t>& children) {
         if (type.type() == types::logical_type::VALIDITY) {

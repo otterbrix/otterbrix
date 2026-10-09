@@ -9,6 +9,7 @@
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/types/logical_value.hpp>
+#include <core/pmr.hpp>
 #include <core/regex/like_to_regex.hpp>
 
 using namespace components::expressions;
@@ -18,13 +19,13 @@ namespace components::sql::transform {
         // Matches qualifier and DISTINCT flag too: ignoring either would bind `HAVING d.count(x)` or
         // `HAVING count(DISTINCT x)` to a plain count(x).
         const expressions::expression_i* find_call(const expressions::expression_i* expr,
-                                                   const qualified_name_t& name,
+                                                   const function_qualified_name_t& name,
                                                    const std::pmr::vector<expressions::param_storage>& args,
                                                    bool args_comparable,
                                                    bool distinct);
 
         const expressions::expression_i* find_call_in(const expressions::param_storage& param,
-                                                      const qualified_name_t& name,
+                                                      const function_qualified_name_t& name,
                                                       const std::pmr::vector<expressions::param_storage>& args,
                                                       bool args_comparable,
                                                       bool distinct) {
@@ -36,7 +37,7 @@ namespace components::sql::transform {
         }
 
         const expressions::expression_i* find_call(const expressions::expression_i* expr,
-                                                   const qualified_name_t& name,
+                                                   const function_qualified_name_t& name,
                                                    const std::pmr::vector<expressions::param_storage>& args,
                                                    bool args_comparable,
                                                    bool distinct) {
@@ -180,7 +181,9 @@ namespace components::sql::transform {
             }
             return core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{spelling, resource_});
         }
-        auto call = make_function_expression(resource_, qualified_name_t{std::string{function.name}});
+        auto call =
+            make_function_expression(resource_,
+                                     function_qualified_name_t{core::function_name_t{std::string{function.name}}});
         if (has_left) {
             VALUE_OR_RETURN(auto lhs, transform_expression(node->lexpr, context));
             call->args().push_back(std::move(lhs));
@@ -252,7 +255,7 @@ namespace components::sql::transform {
                     VALUE_OR_RETURN(auto star_col, columnref_to_field(resource_, col_ref, names));
                     if (star_col.is_qualified()) {
                         std::pmr::vector<std::pmr::string> star_path{resource_};
-                        star_path.emplace_back(std::pmr::string{star_col.table.collection, resource_});
+                        star_path.emplace_back(std::pmr::string{star_col.table.collection.t, resource_});
                         star_path.emplace_back(std::pmr::string{"*", resource_});
                         return param_storage{
                             expression_ptr{make_scalar_expression(resource_,
@@ -424,12 +427,11 @@ namespace components::sql::transform {
                     return std::holds_alternative<expressions::expression_ptr>(arg);
                 });
                 for (const auto& expr : context.group->expressions()) {
-                    if (const auto* found =
-                            find_call(expr.get(), called, args, args_comparable, func->agg_distinct)) {
+                    if (const auto* found = find_call(expr.get(), called, args, args_comparable, func->agg_distinct)) {
                         return found->key();
                     }
                 }
-                std::string alias = "__having_" + called.collection + "_" + std::to_string(aggregate_counter_++);
+                std::string alias = "__having_" + called.function.t + "_" + std::to_string(aggregate_counter_++);
                 auto agg_expr = make_aggregate_over(make_function_expression(resource_, std::move(called)),
                                                     expressions::key_t{resource_, alias});
                 for (auto& arg : args) {
@@ -464,10 +466,11 @@ namespace components::sql::transform {
                     VALUE_OR_RETURN(auto resolved, recurse(pg_ptr_cast<Node>(arg.data)));
                     args.emplace_back(std::move(resolved));
                 }
-                return param_storage{expression_ptr{make_function_expression(
-                    resource_,
-                    qualified_name_t{expr->op == MinMaxOp::IS_GREATEST ? "greatest" : "least"},
-                    std::move(args))}};
+                return param_storage{expression_ptr{
+                    make_function_expression(resource_,
+                                             function_qualified_name_t{core::function_name_t{
+                                                 expr->op == MinMaxOp::IS_GREATEST ? "greatest" : "least"}},
+                                             std::move(args))}};
             }
             case T_SubLink: {
                 auto* sub = pg_ptr_cast<SubLink>(node);
@@ -815,7 +818,9 @@ namespace components::sql::transform {
                     args.emplace_back(key_left.field);
                     args.emplace_back(param_id);
                     args.emplace_back(plan->parameters->add_parameter(types::logical_value_t(resource_, flags)));
-                    return make_function_expression(resource_, qualified_name_t{"regexp_like"}, std::move(args));
+                    return make_function_expression(resource_,
+                                                    function_qualified_name_t{core::function_name_t{"regexp_like"}},
+                                                    std::move(args));
                 }
 
                 if (op_str == "?" || op_str == "?|" || op_str == "?&") {
@@ -1565,7 +1570,7 @@ namespace components::sql::transform {
 
         // SELECT wrapper, to reuse regular parsing mechanism
         const std::string statement = "SELECT 1 WHERE " + expr_text + ";";
-        std::pmr::monotonic_buffer_resource arena(resource_);
+        core::pmr::arena_resource_t arena(resource_);
         Node* predicate = nullptr;
         try {
             auto* parsed = raw_parser(&arena, statement.c_str());

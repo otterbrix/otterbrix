@@ -548,7 +548,6 @@ TEST_CASE("integration::cpp::test_explain::analyze_per_loop_rows_round") {
     INFO("5 rows / 3 loops rounds to 2 (truncation gave 1)");
     {
         services::collection::explain_plan_node node(mr);
-        node.type = components::operators::operator_type::full_scan; // renders "Seq Scan"
         node.rows = 5;
         node.loops = 3;
         node.time = std::chrono::nanoseconds(3'000'000);
@@ -560,7 +559,6 @@ TEST_CASE("integration::cpp::test_explain::analyze_per_loop_rows_round") {
     INFO("2 rows / 3 loops rounds to 1 (truncation gave 0)");
     {
         services::collection::explain_plan_node node(mr);
-        node.type = components::operators::operator_type::full_scan;
         node.rows = 2;
         node.loops = 3;
         node.time = std::chrono::nanoseconds(1'000'000);

@@ -15,9 +15,11 @@
 #include <components/expressions/key.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/physical_plan/operators/operator_empty.hpp>
 #include <components/physical_plan/operators/scan/pushed_reduce_scan.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <core/date/date_types.hpp>
@@ -45,7 +47,7 @@ namespace {
         auto grp_field =
             make_scalar_expression(r, scalar_type::group_field, components::expressions::key_t(r, "g", side_t::left));
         std::vector<expression_ptr> group_exprs{expression_ptr(grp_field)};
-        auto group = make_node_group(r, dbn(), reln(), group_exprs);
+        auto group = make_node_group(r, group_exprs);
         group->set_pushdown(pushdown);
         group->set_table_oid(components::catalog::oid_t{123});
 
@@ -60,8 +62,10 @@ TEST_CASE("create_plan: aggregate with pushdown group child lowers to merge over
     components::compute::function_registry_t registry(&resource);
 
     auto node = build_agg(&resource, /*pushdown=*/true);
-    auto plan =
+    auto plan_planned =
         services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
+    REQUIRE_FALSE(plan_planned.has_error());
+    auto plan = plan_planned.value();
 
     REQUIRE(plan != nullptr);
     // The plan keeps a truthful aggregate-shaped terminal (group_merge) whose child is
@@ -81,12 +85,57 @@ TEST_CASE("create_plan: aggregate WITHOUT pushdown lowers to the normal aggregat
     context.known_oids.insert(components::catalog::oid_t{123});
 
     auto node = build_agg(&resource, /*pushdown=*/false);
-    auto plan =
+    auto plan_planned =
         services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
+    REQUIRE_FALSE(plan_planned.has_error());
+    auto plan = plan_planned.value();
 
     REQUIRE(plan != nullptr);
     // The normal chain never produces the pushed pair; the group operator tags itself
     // operator_type::aggregate.
     REQUIRE(plan->type() != op::operator_type::group_merge);
+    REQUIRE(plan->type() == op::operator_type::aggregate);
+}
+
+namespace {
+
+    services::planner::plan_result_t host_source_operator(const services::context_storage_t& context,
+                                                          const components::compute::function_registry_t&,
+                                                          const node_extension_t&) {
+        std::pmr::vector<components::types::complex_logical_type> types(context.resource);
+        return {new op::operator_empty_t(context.resource, op::make_operator_data(context.resource, types, 0))};
+    }
+
+    bool contains_operator(const op::operator_t* root, op::operator_type type) {
+        if (root == nullptr) {
+            return false;
+        }
+        return root->type() == type || contains_operator(root->left().get(), type) ||
+               contains_operator(root->right().get(), type);
+    }
+
+} // namespace
+
+// A stamp that reaches physgen over an explicit source child (a later optimizer pass swapped the
+// implicit table scan for a host extension leaf) must not read the owning table on disk instead.
+TEST_CASE("create_plan: pushdown stamp over an extension source child does not lower to pushed_reduce_scan") {
+    core::pmr::otterbrix_resource resource;
+    services::context_storage_t context(&resource, log_t{}, components::catalog::session_catalog_t{});
+    context.known_oids.insert(components::catalog::oid_t{123});
+    components::compute::function_registry_t registry(&resource);
+
+    auto node = build_agg(&resource, /*pushdown=*/true);
+    node->append_child(
+        node_ptr{new node_extension_t(&resource,
+                                      "host_source",
+                                      std::pmr::vector<components::types::complex_logical_type>{&resource},
+                                      &host_source_operator)});
+    auto plan_planned =
+        services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
+    REQUIRE_FALSE(plan_planned.has_error());
+    auto plan = plan_planned.value();
+
+    REQUIRE(plan != nullptr);
+    REQUIRE_FALSE(contains_operator(plan.get(), op::operator_type::pushed_reduce_scan));
     REQUIRE(plan->type() == op::operator_type::aggregate);
 }

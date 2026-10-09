@@ -72,10 +72,11 @@ namespace services::dispatcher {
                                                components::logical_plan::node_t* node,
                                                const components::graph_execution_context& execution_context);
 
-    [[nodiscard]] core::error_t convert_column_defaults(std::pmr::memory_resource* resource,
-                                                        const components::casts::cast_registry_t* cast_registry,
-                                                        const components::graph_execution_context& execution_context,
-                                                        std::vector<components::table::column_definition_t>& columns);
+    // A column's DEFAULT cast to the column's type on assignment, and persistable.
+    [[nodiscard]] core::error_t convert_column_default(std::pmr::memory_resource* resource,
+                                                       const components::casts::cast_registry_t* cast_registry,
+                                                       const components::graph_execution_context& execution_context,
+                                                       components::table::column_definition_t& column);
 
     // Gates a TYPE the DDL is about to make durable, using the real encoder
     // (components::types::encode_type_spec) rather than a copy of its rules: a DECIMAL outside
@@ -86,6 +87,10 @@ namespace services::dispatcher {
     [[nodiscard]] core::error_t gate_persistable_type(std::pmr::memory_resource* resource,
                                                       const std::string& subject,
                                                       const components::types::complex_logical_type& type);
+
+    [[nodiscard]] core::error_t gate_storable_type(std::pmr::memory_resource* resource,
+                                                   const std::string& subject,
+                                                   const components::types::complex_logical_type& type);
 
     // Resolve every CHECK predicate the plan's DML nodes carry, against the table each one guards.
     // Called after enrich_plan, which is what parses the predicates out of the catalog.

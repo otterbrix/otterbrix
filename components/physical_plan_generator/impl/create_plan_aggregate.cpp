@@ -2,12 +2,14 @@
 #include "create_plan_match.hpp"
 #include "create_plan_select.hpp"
 #include "create_plan_sort.hpp"
+#include <components/expressions/clone_expression.hpp>
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/compute/function.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -113,21 +115,19 @@ namespace services::planner::impl {
                 const auto& expr = group->expressions()[i];
                 if (expr->group() == ce::expression_group::scalar) {
                     if (output_key_of[i] != SIZE_MAX) {
-                        out.outputs.push_back(expr); // the target list naming this key
+                        out.outputs.push_back(
+                            ce::detached_expression_t::detach(resource, expr)); // the target list naming this key
                     }
                     continue; // the key itself was added in pass 1
                 }
                 if (expr->group() == ce::expression_group::aggregate) {
                     const auto* a = static_cast<const ce::aggregate_expression_t*>(expr.get());
-                    // uid >= DEFAULT_FUNCTIONS.size() is the agent's own RESOLVABILITY gate, a DIFFERENT
-                    // concern from mergeability, which the optimizer's pushdown stamp already enforced.
-                    if (a->is_distinct() || a->function_uid() == components::compute::invalid_function_uid ||
-                        a->function_uid() >= components::compute::DEFAULT_FUNCTIONS.size()) {
+                    // The agent builds the reduction from the function the output carries.
+                    if (a->is_distinct() || a->function() == nullptr) {
                         return false;
                     }
                     ops::pushed_aggregate_t pa{resource};
                     pa.function_name.assign(a->function_name().data(), a->function_name().size());
-                    pa.func_uid = a->function_uid();
                     pa.distinct = false;
                     pa.result_type = a->result_type();
                     const auto alias = a->key().as_pmr_string();
@@ -140,7 +140,7 @@ namespace services::planner::impl {
                     } else {
                         return false;
                     }
-                    out.outputs.push_back(expr);
+                    out.outputs.push_back(ce::detached_expression_t::detach(resource, expr));
                     out.aggregates.push_back(std::move(pa));
                 } else {
                     return false;
@@ -178,6 +178,25 @@ namespace services::planner::impl {
             return projected_cols;
         }
 
+        // pushed_reduce_scan replaces the implicit table scan; an explicit source child (host extension,
+        // join, sub-aggregate, ...) means there is none to replace, whatever an optimizer pass stamped.
+        bool reads_implicit_table_scan(const lp::node_ptr& node) noexcept {
+            for (const auto& child : node->children()) {
+                switch (child->type()) {
+                    case node_type::limit_t:
+                    case node_type::match_t:
+                    case node_type::group_t:
+                    case node_type::sort_t:
+                    case node_type::select_t:
+                    case node_type::having_t:
+                        break;
+                    default:
+                        return false;
+                }
+            }
+            return true;
+        }
+
         // Returns nullptr unless the WHERE lowers to a plain full_scan via create_plan_match.
         // SINGLE-OWNER INVARIANT: correct only while ONE agent owns the whole table (pool_idx_for_oid
         // routing) — do not extend this lowering past that assumption.
@@ -185,8 +204,7 @@ namespace services::planner::impl {
                                               const lp::node_ptr& node,
                                               const lp::node_group_t* group,
                                               const std::vector<size_t>& base_projected_cols) {
-            const bool known = context.has_table_oid(node->table_oid());
-            auto* resource = known ? context.resource : node->resource();
+            auto* resource = context.resource;
 
             ops::pushed_aggregate_spec_t spec{resource};
             if (!build_pushed_spec(group, node, resource, spec)) {
@@ -205,10 +223,11 @@ namespace services::planner::impl {
             std::vector<size_t> projected_cols;
             if (match_child != nullptr) {
                 auto m = create_plan_match(context, *match_child, lp::limit_t::unlimit(), base_projected_cols);
-                if (!m || m->type() != ops::operator_type::full_scan) {
+                // A refused WHERE is reported by the coordinator chain, which lowers it again.
+                if (m.has_error() || m.value()->type() != ops::operator_type::full_scan) {
                     return nullptr; // index_scan / operator_match / transfer_scan — not pushable
                 }
-                const auto* fs = static_cast<const ops::full_scan*>(m.get());
+                const auto* fs = static_cast<const ops::full_scan*>(m.value().get());
                 where_expr = fs->expression();
                 projected_cols = fs->projected_cols();
             } else {
@@ -228,13 +247,13 @@ namespace services::planner::impl {
             }
 
             auto scan = boost::intrusive_ptr(new ops::pushed_reduce_scan(resource,
-                                                                         known ? context.log.clone() : log_t{},
+                                                                         context.log.clone(),
                                                                          node->table_oid(),
                                                                          where_expr,
                                                                          std::move(projected_cols),
                                                                          std::move(spec)));
             auto merge = boost::intrusive_ptr(new ops::operator_group_merge_t(resource,
-                                                                              known ? context.log.clone() : log_t{},
+                                                                              context.log.clone(),
                                                                               scalar,
                                                                               std::move(merge_types),
                                                                               std::move(merge_aggs)));
@@ -243,12 +262,11 @@ namespace services::planner::impl {
         }
     } // namespace
 
-    components::operators::operator_ptr
-    create_plan_aggregate(const context_storage_t& context,
-                          const components::compute::function_registry_t& function_registry,
-                          const components::logical_plan::node_ptr& node,
-                          components::logical_plan::limit_t limit,
-                          const components::logical_plan::storage_parameters* params) {
+    plan_result_t create_plan_aggregate(const context_storage_t& context,
+                                        const components::compute::function_registry_t& function_registry,
+                                        const components::logical_plan::node_ptr& node,
+                                        components::logical_plan::limit_t limit,
+                                        const components::logical_plan::storage_parameters* params) {
         for (const components::logical_plan::node_ptr& child : node->children()) {
             if (child->type() == node_type::limit_t) {
                 const auto* limit_node = static_cast<const components::logical_plan::node_limit_t*>(child.get());
@@ -257,7 +275,7 @@ namespace services::planner::impl {
             }
         }
 
-        auto* plan_resource = context.has_table_oid(node->table_oid()) ? context.resource : node->resource();
+        auto* plan_resource = context.resource;
 
         // Populated by the column_pruning optimizer rule; empty means read all columns.
         const auto* agg_node = static_cast<const components::logical_plan::node_aggregate_t*>(node.get());
@@ -271,12 +289,8 @@ namespace services::planner::impl {
             if (!limit_effective) {
                 return op;
             }
-            auto limit_op =
-                context.has_table_oid(node->table_oid())
-                    ? boost::intrusive_ptr(
-                          new components::operators::operator_limit_t(context.resource, context.log.clone(), limit))
-                    : boost::intrusive_ptr(
-                          new components::operators::operator_limit_t(node->resource(), log_t{}, limit));
+            auto limit_op = boost::intrusive_ptr(
+                new components::operators::operator_limit_t(context.resource, context.log.clone(), limit));
             limit_op->set_children(std::move(op));
             return limit_op;
         };
@@ -292,17 +306,19 @@ namespace services::planner::impl {
                 break;
             }
         }
-        if (pushdown_group != nullptr) {
+        if (pushdown_group != nullptr && reads_implicit_table_scan(node)) {
             if (auto pushdown_scan = build_pushdown_scan(context, node, pushdown_group, agg_node->projected_cols())) {
                 components::operators::operator_ptr executor = std::move(pushdown_scan);
                 components::operators::operator_ptr push_sort_op;
                 components::operators::operator_ptr push_select_op;
                 for (const components::logical_plan::node_ptr& child : node->children()) {
                     if (child->type() == node_type::sort_t) {
-                        push_sort_op = create_plan_sort(
-                            context,
-                            child,
-                            static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap());
+                        VALUE_OR_RETURN(
+                            push_sort_op,
+                            create_plan_sort(
+                                context,
+                                child,
+                                static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap()));
                     } else if (child->type() == node_type::select_t) {
                         push_select_op = create_plan_select(context, child);
                     }
@@ -316,12 +332,8 @@ namespace services::planner::impl {
                     executor = std::move(push_select_op);
                 }
                 if (agg_node->is_distinct()) {
-                    auto distinct_op =
-                        context.has_table_oid(node->table_oid())
-                            ? boost::intrusive_ptr(
-                                  new components::operators::operator_distinct_t(context.resource, context.log.clone()))
-                            : boost::intrusive_ptr(
-                                  new components::operators::operator_distinct_t(node->resource(), log_t{}));
+                    auto distinct_op = boost::intrusive_ptr(
+                        new components::operators::operator_distinct_t(context.resource, context.log.clone()));
                     distinct_op->set_children(std::move(executor));
                     executor = std::move(distinct_op);
                 }
@@ -340,54 +352,68 @@ namespace services::planner::impl {
             switch (child->type()) {
                 case node_type::limit_t:
                     break; // already handled above
-                case node_type::match_t:
-                    match_op = create_plan_match(
-                        context,
-                        child,
-                        static_cast<const components::logical_plan::node_match_t*>(child.get())->read_cap(),
-                        projected_cols);
-                    // Must refuse the aggregate: falling through would swap it for the no-table sentinel
-                    // transfer_scan below, which FABRICATES a synthetic row for a table that does not exist.
-                    if (!match_op) {
-                        return nullptr;
-                    }
+                case node_type::match_t: {
+                    // A refused WHERE refuses the aggregate: the no-table sentinel transfer_scan below would
+                    // FABRICATE a synthetic row for a table that does not exist.
+                    VALUE_OR_RETURN(
+                        match_op,
+                        create_plan_match(
+                            context,
+                            child,
+                            static_cast<const components::logical_plan::node_match_t*>(child.get())->read_cap(),
+                            projected_cols));
                     break;
-                case node_type::group_t:
-                    group_op = create_plan(context,
-                                           function_registry,
-                                           child,
-                                           components::logical_plan::limit_t::unlimit(),
-                                           params);
+                }
+                case node_type::group_t: {
+                    VALUE_OR_RETURN(group_op,
+                                    create_plan(context,
+                                                function_registry,
+                                                child,
+                                                components::logical_plan::limit_t::unlimit(),
+                                                params));
                     break;
-                case node_type::sort_t:
-                    sort_op = create_plan_sort(
-                        context,
-                        child,
-                        static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap());
+                }
+                case node_type::sort_t: {
+                    VALUE_OR_RETURN(
+                        sort_op,
+                        create_plan_sort(
+                            context,
+                            child,
+                            static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap()));
                     break;
-                case node_type::select_t:
+                }
+                case node_type::select_t: {
                     select_op = create_plan_select(context, child);
                     break;
-                case node_type::having_t:
+                }
+                case node_type::having_t: {
                     // Spliced between the group and the sort; operator_limit alone provides the window.
-                    having_op = create_plan_having(context, child);
+                    VALUE_OR_RETURN(having_op, create_plan_having(context, child));
                     break;
-                default:
-                    child_op = create_plan(context,
-                                           function_registry,
-                                           child,
-                                           components::logical_plan::limit_t::unlimit(),
-                                           params);
-                    if (!child_op) {
-                        return nullptr;
-                    }
+                }
+                default: {
+                    VALUE_OR_RETURN(child_op,
+                                    create_plan(context,
+                                                function_registry,
+                                                child,
+                                                components::logical_plan::limit_t::unlimit(),
+                                                params));
                     break;
+                }
             }
         }
 
         components::operators::operator_ptr executor;
         if (child_op) {
             executor = std::move(child_op);
+            if (match_op) {
+                match_op->set_children(std::move(executor));
+                executor = std::move(match_op);
+            }
+        } else if (const auto* table = node->table_metadata(); table != nullptr && table->storage != nullptr) {
+            // A table with external storage: its own scan, the WHERE filtered above it here.
+            VALUE_OR_RETURN(executor,
+                            storage_operator(context.resource, table->name, table->storage->make_scan(context)));
             if (match_op) {
                 match_op->set_children(std::move(executor));
                 executor = std::move(match_op);
@@ -400,7 +426,10 @@ namespace services::planner::impl {
                         break;
                     case components::logical_plan::match_source::table:
                         if (!context.has_table_oid(node->table_oid())) {
-                            return nullptr;
+                            return unresolved_table_refusal(
+                                context.resource,
+                                static_cast<const std::string&>(agg_node->target().database),
+                                static_cast<const std::string&>(agg_node->target().collection));
                         }
                         break;
                 }
@@ -432,11 +461,8 @@ namespace services::planner::impl {
         // DISTINCT ON dedups on the ON-key subset BELOW the projection, so ON columns that don't survive it
         // are still present; keep-first over sorted input gives "first row per ON key in ORDER BY order".
         if (agg_node->is_distinct() && !agg_node->distinct_on_keys().empty()) {
-            auto distinct_op =
-                context.has_table_oid(node->table_oid())
-                    ? boost::intrusive_ptr(
-                          new components::operators::operator_distinct_t(context.resource, context.log.clone()))
-                    : boost::intrusive_ptr(new components::operators::operator_distinct_t(node->resource(), log_t{}));
+            auto distinct_op = boost::intrusive_ptr(
+                new components::operators::operator_distinct_t(context.resource, context.log.clone()));
             std::pmr::vector<size_t> on_cols(node->resource());
             on_cols.reserve(agg_node->distinct_on_keys().size());
             for (const auto& key : agg_node->distinct_on_keys()) {
@@ -452,11 +478,8 @@ namespace services::planner::impl {
         }
 
         if (agg_node->is_distinct() && agg_node->distinct_on_keys().empty()) {
-            auto distinct_op =
-                context.has_table_oid(node->table_oid())
-                    ? boost::intrusive_ptr(
-                          new components::operators::operator_distinct_t(context.resource, context.log.clone()))
-                    : boost::intrusive_ptr(new components::operators::operator_distinct_t(node->resource(), log_t{}));
+            auto distinct_op = boost::intrusive_ptr(
+                new components::operators::operator_distinct_t(context.resource, context.log.clone()));
             distinct_op->set_children(std::move(executor));
             executor = std::move(distinct_op);
         }

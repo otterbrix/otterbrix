@@ -12,13 +12,14 @@ namespace otterbrix {
         : public base_otterbrix_t
         , public boost::intrusive_ref_counter<otterbrix_t> {
     public:
-        explicit otterbrix_t(const configuration::config& config)
-            : base_otterbrix_t(config) {}
+        explicit otterbrix_t(host_ptr host)
+            : base_otterbrix_t(std::move(host)) {}
     };
 
     using otterbrix_ptr = boost::intrusive_ptr<otterbrix_t>;
 
-    auto make_otterbrix() -> otterbrix_ptr;
-    auto make_otterbrix(configuration::config) -> otterbrix_ptr;
+    [[nodiscard]] auto make_otterbrix(const configuration::config& config) -> core::result_wrapper_t<otterbrix_ptr>;
+    // For benchmarks and tools: a refused start prints the reason and exits the process.
+    [[nodiscard]] auto make_otterbrix_or_exit(const configuration::config& config) -> otterbrix_ptr;
     auto execute_sql(const otterbrix_ptr& otterbrix, const std::string& query) -> components::cursor::cursor_t_ptr;
 } // namespace otterbrix

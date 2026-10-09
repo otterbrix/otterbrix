@@ -39,7 +39,7 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
         }
         auto cur = exec(dispatcher, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
 
     const unsigned kExpectedMatches = kRowCount / 2;
@@ -79,7 +79,7 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_with_limit_caps_across
         }
         auto cur = exec(dispatcher, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
 
     // kLimit > DEFAULT_VECTOR_CAPACITY forces multiple batches; a per-batch reset would over-emit.
@@ -159,7 +159,7 @@ TEST_CASE("integration::cpp::streaming_match::delete_where_in_group_subquery_lan
                         "(SELECT dept_id FROM SinkDb.emp GROUP BY dept_id HAVING COUNT(*) > 1);");
         INFO("DELETE IN group-subquery error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 5);
+        REQUIRE(cur->affected_rows() == 5);
     }
     {
         auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM SinkDb.emp;");
@@ -195,7 +195,7 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_large_build_side_does
                         "WHERE BigDb.target.k = BigDb.using_tbl.k;");
         INFO("DELETE USING large-build error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 1); // only the k=1 target row, deleted once (semi-join)
+        REQUIRE(cur->affected_rows() == 1); // only the k=1 target row, deleted once (semi-join)
     }
     {
         auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM BigDb.target;");
@@ -218,7 +218,7 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_with_nonpushdown_filt
                         "WHERE SinkDb.emp.dept_id = SinkDb.dept.id AND SinkDb.emp.name LIKE 'a%';");
         INFO("DELETE USING+LIKE error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->affected_rows() == 3);
     }
     {
         auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM SinkDb.emp;");
@@ -290,7 +290,7 @@ TEST_CASE("integration::cpp::streaming_match::late_mat_gather_selective_disk_val
         }
         auto cur = exec(dispatcher, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kGatherRows);
+        REQUIRE(cur->affected_rows() == kGatherRows);
     }
 
     {

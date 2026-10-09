@@ -98,9 +98,9 @@ pub async fn run(data_dir: &Path) -> Result<(), DbErr> {
 async fn open_catalogue(data_dir: &Path) -> Result<DatabaseConnection, DbErr> {
     let db = Database::open(Config::new(data_dir))
         .map_err(|e| DbErr::Conn(sea_orm::RuntimeErr::Internal(e.to_string())))?;
-    db.create_database("library")
+    db.execute("CREATE DATABASE library;")
         .map_err(|e| DbErr::Conn(sea_orm::RuntimeErr::Internal(e.to_string())))?;
-    db.create_collection("library", "books")
+    db.execute("CREATE TABLE library.books();")
         .map_err(|e| DbErr::Conn(sea_orm::RuntimeErr::Internal(e.to_string())))?;
 
     let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(OtterbrixProxy::new(db)));

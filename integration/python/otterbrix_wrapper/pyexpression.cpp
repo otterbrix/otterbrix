@@ -29,7 +29,7 @@ namespace otterbrix {
         }
     } // namespace
     // space_/env_ own their own copies (not borrowed from `conn`): the space's arena
-    // (base_otterbrix_t::resource) must outlive `expr`, even if Python drops `conn` first.
+    // (base_otterbrix_t::host_t::resource) must outlive `expr`, even if Python drops `conn` first.
     // See the member comments in pyexpression.hpp.
     py_expression_t::py_expression_t(expression_wrapper_t expr, py_connection_t& conn)
         : space_(conn.space_ptr())

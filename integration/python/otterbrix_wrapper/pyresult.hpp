@@ -41,8 +41,11 @@ namespace otterbrix {
 
         pandas_data_frame_t fetch_df();
 
-        // Rows the statement produced (SELECT) or wrote (INSERT/UPDATE/DELETE).
+        // Rows of the result: what a SELECT or a RETURNING clause produced.
         std::size_t size() const;
+
+        // DB-API rowcount: the rows an INSERT / UPDATE / DELETE wrote, else the rows of the result.
+        int64_t rowcount() const;
 
         void close();
 

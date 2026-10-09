@@ -7,14 +7,12 @@
 #include <components/compute/function.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/test/fault_injection_file.hpp>
-#include <services/disk/manager_disk.hpp>
 
 #include <algorithm>
 #include <filesystem>
 #include <limits>
 #include <memory>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -122,18 +120,6 @@ namespace {
         std::string marker_;
     };
 
-    // test_spaces doesn't expose the disk manager; this does, so pg_proc content can be read
-    // back directly instead of inferred from a status code.
-    class read_refusal_spaces_t final : public otterbrix::base_otterbrix_t {
-    public:
-        explicit read_refusal_spaces_t(const configuration::config& config)
-            : otterbrix::base_otterbrix_t(config) {
-            components::compute::function_registry_t::reset_default();
-        }
-
-        services::disk::manager_disk_t* disk() noexcept { return manager_disk_.get(); }
-    };
-
     core::error_t probe_exec_unary(compute::kernel_context&, const vector::data_chunk_t& in, vector::vector_t& out) {
         const auto* source = in.data[0].data<int64_t>();
         auto* destination = out.data<int64_t>();
@@ -154,8 +140,12 @@ namespace {
     }
 
     compute::function_ptr make_probe_unary(std::pmr::memory_resource* resource) {
-        compute::function_doc doc{"short_doc", "full_doc", {"arg"}, false};
-        auto fn = std::make_unique<compute::vector_function>(kFuncName, compute::arity::unary(), doc, 1);
+        compute::function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
+        auto fn = core::pmr::make_polymorphic_unique<compute::vector_function>(resource,
+                                                                               kFuncName,
+                                                                               compute::arity::unary(),
+                                                                               doc,
+                                                                               size_t{1});
         compute::kernel_signature_t sig(compute::function_type_t::vector,
                                         {compute::parameter_type::exact(types::logical_type::BIGINT)},
                                         {compute::output_type::fixed(types::logical_type::BIGINT)});
@@ -168,8 +158,12 @@ namespace {
     // Same name, different signature: manager_dispatcher_t::register_udf refuses an identical
     // signature in the per-executor registries first, so only a new overload reaches pg_proc.
     compute::function_ptr make_probe_binary(std::pmr::memory_resource* resource) {
-        compute::function_doc doc{"short_doc", "full_doc", {"arg1", "arg2"}, false};
-        auto fn = std::make_unique<compute::vector_function>(kFuncName, compute::arity::binary(), doc, 1);
+        compute::function_doc doc{resource, "short_doc", "full_doc", {"arg1", "arg2"}, false};
+        auto fn = core::pmr::make_polymorphic_unique<compute::vector_function>(resource,
+                                                                               kFuncName,
+                                                                               compute::arity::binary(),
+                                                                               doc,
+                                                                               size_t{1});
         compute::kernel_signature_t sig(compute::function_type_t::vector,
                                         {compute::parameter_type::exact(types::logical_type::BIGINT),
                                          compute::parameter_type::exact(types::logical_type::BIGINT)},
@@ -182,22 +176,13 @@ namespace {
 
     constexpr std::size_t kReadRefused = static_cast<std::size_t>(-1);
 
-    std::size_t pg_proc_rows_named(read_refusal_spaces_t& space, const std::string& name) {
-        auto td = table::transaction_data::committed();
-        execution_context_t exec_ctx{otterbrix::session_id_t{}, td, {}};
-        auto [_, fut] = actor_zeta::otterbrix::send(space.disk()->address(),
-                                                    &services::disk::manager_disk_t::resolve_function_by_name,
-                                                    exec_ctx,
-                                                    name);
-        for (int i = 0; i < 2000000 && !fut.is_ready(); ++i) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
-        auto matches = std::move(fut).take_ready();
-        if (matches.has_error()) {
+    std::size_t pg_proc_rows_named(test_spaces& space, const std::string& name) {
+        auto cur = test_helpers::exec(space.dispatcher(),
+                                      "SELECT proname FROM pg_catalog.pg_proc WHERE proname = '" + name + "';");
+        if (cur->is_error()) {
             return kReadRefused;
         }
-        return matches.value().size();
+        return cur->size();
     }
 
 } // namespace
@@ -209,7 +194,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     config.log.level = log_t::level::off;
 
     {
-        read_refusal_spaces_t space(config);
+        test_spaces space(config);
         auto* dispatcher = space.dispatcher();
         auto first = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));
         REQUIRE_FALSE(first.contains_error());
@@ -227,7 +212,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     std::vector<uint64_t> reads;
     {
         recording_scope_t recorder(reads, marker);
-        read_refusal_spaces_t probe(probe_config);
+        test_spaces probe(probe_config);
         REQUIRE(pg_proc_rows_named(probe, kFuncName) == 1);
     }
     REQUIRE_FALSE(reads.empty());
@@ -248,7 +233,7 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     plan.fail_reads_at_location = data_block;
     one_table_fault_scope_t fault(plan, marker);
 
-    read_refusal_spaces_t space(config);
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
     INFO("poisoned pg_proc block offset " << data_block);
     REQUIRE(plan.reads_failed > 0); // the poison landed, and the start survived it
@@ -269,23 +254,24 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     CHECK(rows == 1);
 }
 
-// Guard: with nothing injected, the same two registrations must be refused as `already_exists`.
-// Without it, the case above could pass vacuously if every second registration just started failing.
-TEST_CASE("integration::cpp::test_catalog_read_refusal::a_healthy_second_overload_is_already_exists") {
+// Guard: with nothing injected, the same two registrations succeed, the second as a pg_proc row of its own
+// (PostgreSQL 18 overloading). Without it, the case above could pass vacuously if every second registration just
+// started failing.
+TEST_CASE("integration::cpp::test_catalog_read_refusal::a_healthy_second_overload_is_a_row_of_its_own") {
     const std::filesystem::path dir = integration_fixture_path("test_catalog_read_refusal/duplicate");
     std::filesystem::remove_all(dir);
     auto config = test_helpers::make_test_config(dir);
     config.log.level = log_t::level::off;
 
-    read_refusal_spaces_t space(config);
+    test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     auto first = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));
     REQUIRE_FALSE(first.contains_error());
 
     auto second = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_binary(dispatcher->resource()));
-    REQUIRE(second.contains_error());
-    CHECK(second.type == core::error_code_t::already_exists);
+    INFO("second overload: " << second.what.c_str());
+    REQUIRE_FALSE(second.contains_error());
 
-    CHECK(pg_proc_rows_named(space, kFuncName) == 1);
+    CHECK(pg_proc_rows_named(space, kFuncName) == 2);
 }

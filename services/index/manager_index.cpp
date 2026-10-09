@@ -1,8 +1,10 @@
 #include "manager_index.hpp"
 #include "index_types.hpp"
+#include <services/dev_pump.hpp>
 
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
+#include <cassert>
 #include <components/vector/data_chunk.hpp>
 #include <core/executor.hpp>
 #include <core/file/local_file_system.hpp>
@@ -262,7 +264,8 @@ namespace services::index {
                                      std::filesystem::path path_db,
                                      uint64_t bitcask_flush_threshold,
                                      uint64_t bitcask_segment_record_limit,
-                                     uint64_t btree_flush_threshold)
+                                     uint64_t btree_flush_threshold,
+                                     configuration::pump_intervals_t pump)
         : actor_zeta::actor::actor_mixin<manager_index_t>()
         , resource_(resource)
         , scheduler_(scheduler)
@@ -279,17 +282,17 @@ namespace services::index {
         , bitcask_agents_owned_(resource)
         , btree_agents_owned_(resource)
         , parked_agents_(resource)
-        , pending_void_(resource) {
-        (void) bitcask_flush_threshold_;
-        (void) bitcask_segment_record_limit_;
-        (void) btree_flush_threshold_;
-        if (!path_db_.empty()) {
-            std::filesystem::create_directories(path_db_);
-        }
+        , pending_void_(resource)
+        , pump_(pump) {
+        // The engine factory creates the directory before it spawns the managers.
+        assert(path_db_.empty() || [this] {
+            std::error_code ec;
+            return std::filesystem::is_directory(path_db_, ec);
+        }());
 
         loop_thread_ = std::thread([this] {
             // pmr::list for iterator stability: behavior_t is move-only, and a resume can re-suspend in place.
-            std::pmr::list<in_flight_entry_t> in_flight(this->resource());
+            auto& in_flight = in_flight_;
 
             while (loop_running_.load(std::memory_order_acquire)) {
                 {
@@ -343,22 +346,34 @@ namespace services::index {
                     continue;
                 }
 
+#ifdef DEV_MODE
+                const dev_pump_wait_t pump_probe{in_flight.empty()};
+#endif
                 std::unique_lock<std::mutex> lk(mutex_);
+                pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
+                    return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
+                });
             }
         });
     }
 
     manager_index_t::~manager_index_t() {
 #ifdef DEV_MODE
-        g_index_deferred_deletes.fetch_sub(deferred_deletes_.size(), std::memory_order_relaxed);
+        g_index_deferred_deletes.fetch_sub(deferred_deletes_.size() + erases_in_flight_, std::memory_order_relaxed);
 #endif
-        loop_running_.store(false, std::memory_order_release);
-        if (loop_thread_.joinable()) {
-            loop_thread_.join();
-        }
+        stop_loop();
+        in_flight_.clear();
         actor_zeta::mailbox::message* raw = nullptr;
         while (inbox_.pop(raw)) {
             actor_zeta::mailbox::message_ptr reclaim{raw};
+        }
+    }
+
+    void manager_index_t::stop_loop() noexcept {
+        loop_running_.store(false, std::memory_order_release);
+        wake_loop_();
+        if (loop_thread_.joinable()) {
+            loop_thread_.join();
         }
     }
 
@@ -367,7 +382,15 @@ namespace services::index {
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_index_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
         inbox_.push(msg.release());
+        wake_loop_();
         return {false, actor_zeta::detail::enqueue_result::success};
+    }
+
+    // The mutex is taken between the push and the notify, so the loop either sees the message before
+    // it sleeps or is already waiting when the notify comes.
+    void manager_index_t::wake_loop_() noexcept {
+        { std::lock_guard<std::mutex> guard(mutex_); }
+        pump_cv_.notify_one();
     }
 
     actor_zeta::behavior_t manager_index_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -1750,7 +1773,11 @@ namespace services::index {
             entry = deferred_deletes_.erase(entry);
         }
 #ifdef DEV_MODE
-        g_index_deferred_deletes.fetch_sub(queued_before_sweep - deferred_deletes_.size(), std::memory_order_relaxed);
+        // Still on the meter: zero means every held-back erase has reached its store (or is re-queued), not
+        // that the sweep has handed it over. The in-flight count lets the destructor settle a sweep the
+        // engine stopped under.
+        const auto swept = queued_before_sweep - deferred_deletes_.size();
+        erases_in_flight_ += swept;
 #endif
 
         auto drop_futures = send_drop_to_detached(dying, session_id_t{});
@@ -1780,7 +1807,8 @@ namespace services::index {
             }
         }
 #ifdef DEV_MODE
-        g_index_deferred_deletes.fetch_add(requeued, std::memory_order_relaxed);
+        erases_in_flight_ -= swept;
+        g_index_deferred_deletes.fetch_sub(swept - requeued, std::memory_order_relaxed);
 #endif
         if (requeued != 0 && subscriber_acked) {
             constexpr uint8_t INDEX_KIND = 2;

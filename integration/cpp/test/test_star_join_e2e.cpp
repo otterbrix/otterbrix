@@ -164,7 +164,7 @@ namespace {
     node_ptr cross_chain(std::pmr::memory_resource* res, const std::vector<node_ptr>& leaves) {
         node_ptr acc = leaves.front();
         for (size_t i = 1; i < leaves.size(); ++i) {
-            auto j = make_node_join(res, core::dbname_t{}, core::relname_t{}, join_type::cross);
+            auto j = make_node_join(res, join_type::cross);
             j->append_child(acc);
             j->append_child(leaves[i]);
             j->append_expression(make_compare_expression(res, compare_type::all_true));
@@ -242,7 +242,7 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
     p_or->append_child(eq_key_param(res, "p_mfgr", p_m1));
     p_or->append_child(eq_key_param(res, "p_mfgr", p_m2));
     where->append_child(p_or);
-    auto match = make_node_match(res, core::dbname_t{}, core::relname_t{}, where);
+    auto match = make_node_match(res, qualified_name_t{}, where);
 
     std::vector<expression_ptr> group_exprs;
     group_exprs.emplace_back(make_scalar_expression(res, scalar_type::group_field, bare_key(res, "d_year")));
@@ -255,20 +255,20 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
     profit_arith->append_param(bare_key(res, "f_cost"));
     sum_profit->append_param(std::move(profit_arith));
     group_exprs.emplace_back(expression_ptr(sum_profit));
-    auto group = make_node_group(res, core::dbname_t{}, core::relname_t{}, group_exprs);
+    auto group = make_node_group(res, group_exprs);
 
     std::vector<expression_ptr> sort_exprs;
     sort_exprs.emplace_back(make_sort_expression(res, bare_key(res, "d_year"), sort_order::asc));
     sort_exprs.emplace_back(make_sort_expression(res, bare_key(res, "c_nation"), sort_order::asc));
-    auto sort = make_node_sort(res, core::dbname_t{}, core::relname_t{}, sort_exprs);
+    auto sort = make_node_sort(res, sort_exprs);
 
     // An EXPLICIT projection (present, not SELECT *) so the reorder does not bail.
-    auto select = make_node_select(res, core::dbname_t{}, core::relname_t{});
+    auto select = make_node_select(res);
     select->append_expression(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "d_year")));
     select->append_expression(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "c_nation")));
     select->append_expression(make_scalar_expression(res, scalar_type::get_field, bare_key(res, "profit")));
 
-    auto agg = make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+    auto agg = make_node_aggregate(res, qualified_name_t{});
     agg->append_child(source);
     agg->append_child(match);
     agg->append_child(group);

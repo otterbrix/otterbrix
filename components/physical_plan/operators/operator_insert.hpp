@@ -35,6 +35,16 @@ namespace components::operators {
         // Stamped by enrich; false skips the index mirror. Defaults to true for unstamped plans.
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
 
+        // A table with external storage: the full rows, in the declared column order, go to the storage's insert
+        // sink instead of the disk, the WAL and the index. `slots` holds each declared column's position in the chunk.
+        void set_storage_sink(operator_ptr sink,
+                              std::pmr::vector<types::complex_logical_type> columns,
+                              std::pmr::vector<uint64_t> slots) {
+            storage_sink_ = std::move(sink);
+            storage_columns_ = std::move(columns);
+            storage_slots_ = std::move(slots);
+        }
+
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         [[nodiscard]] core::error_t
@@ -50,15 +60,25 @@ namespace components::operators {
         }
 
     private:
+        // EXPLAIN labels a write into external storage the way its sink does, like postgres_fdw's "Foreign Insert on".
+        std::pmr::string explain_label_impl() const override {
+            return storage_sink_ ? storage_sink_->explain_label() : std::pmr::string{resource_};
+        }
+        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
+            return storage_sink_ ? storage_sink_->explain_details() : std::pmr::vector<std::pmr::string>{resource_};
+        }
+
         catalog::oid_t table_oid_;
         std::pmr::vector<projected_column_t> returning_;
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;
-        // Accumulates RETURNING rows (or tallies affected_rows_ without RETURNING) until the final drive.
+        // Accumulate the RETURNING rows and the appended-row count until the final drive.
         chunks_vector_t returning_accum_{resource_};
-        uint64_t affected_rows_{0};
         logical_plan::insert_column_bindings_t column_bindings_{resource_};
         logical_plan::insert_fill_list_t fill_list_{resource_};
         bool table_has_indexes_{true};
+        operator_ptr storage_sink_;
+        std::pmr::vector<types::complex_logical_type> storage_columns_{resource_};
+        std::pmr::vector<uint64_t> storage_slots_{resource_};
     };
 
 } // namespace components::operators

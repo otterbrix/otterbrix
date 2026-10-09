@@ -37,6 +37,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <memory>
 #include <thread>
@@ -190,7 +191,7 @@ TEST_CASE("per-batch fetch-next: N sequential cross-actor awaits in nested execu
 
     constexpr std::int64_t kBatchesPerQuery = 64; // 64 sequential cross-actor awaits per query
     constexpr int kQueries = 3000;                // hammer the park race many times
-    const auto kPerQueryTimeout = std::chrono::seconds(5);
+    const auto kPerQueryTimeout = test_helpers::reply_deadline;
 
     auto executor =
         spawn<query_executor_actor>(resource, source->address(), scheduler.get(), source.get(), kBatchesPerQuery);

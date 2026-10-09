@@ -9,9 +9,7 @@ namespace components::logical_plan {
                                                      core::relname_t relname,
                                                      std::vector<std::string> not_null_columns,
                                                      std::vector<std::pair<std::string, uint64_t>> array_size_reqs)
-        : node_t(resource, node_type::check_constraint_t)
-        , dbname_(std::move(static_cast<std::string&>(dbname)))
-        , relname_(std::move(static_cast<std::string&>(relname)))
+        : node_t(resource, node_type::check_constraint_t, qualified_name_t{std::move(dbname), std::move(relname)})
         , not_null_columns_(std::move(not_null_columns))
         , array_size_reqs_(std::move(array_size_reqs)) {}
 
@@ -19,7 +17,7 @@ namespace components::logical_plan {
 
     std::string node_check_constraint_t::to_string_impl() const {
         std::ostringstream s;
-        s << "$check_constraint: " << relname_ << " [nn=" << not_null_columns_.size() << "]";
+        s << "$check_constraint: " << target_.collection << " [nn=" << not_null_columns_.size() << "]";
         return s.str();
     }
 

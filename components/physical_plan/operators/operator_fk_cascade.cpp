@@ -21,14 +21,16 @@ namespace components::operators {
         , fk_(std::move(fk)) {}
 
     actor_zeta::unique_future<void> operator_fk_cascade_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // fk_cascade is the plan root; output_ is the DELETE's matched-parent-rows cursor (R6).
+        // fk_cascade is the plan root: its result is the DELETE's RETURNING rows; the matched parent rows
+        // only drive the cascade.
+        output_ = left_->output();
+        written_ = left_->written();
         const auto& source = constraint_detail::resolve_constraint_source(left_);
-        output_ = source;
         if (!source || source->size() == 0) {
             mark_executed();
             co_return;
         }
-        const auto& in_chunks = output_->chunks();
+        const auto& in_chunks = source->chunks();
         execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->execution_context.timezone_offset};
 
         const auto& par_indices = fk_.parent_col_indices;

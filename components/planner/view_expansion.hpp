@@ -3,6 +3,7 @@
 // SELECT-time view expansion splices the body in place (rather than swapping in the outer plan)
 // so everything built above the view (WHERE, projection, aggregate, join) survives.
 
+#include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
@@ -10,8 +11,8 @@
 #include <core/result_wrapper.hpp>
 
 #include <memory_resource>
-#include <optional>
 #include <string>
+#include <string_view>
 
 namespace components::planner {
 
@@ -30,14 +31,17 @@ namespace components::planner {
         logical_plan::node_ptr plan;
         logical_plan::parameter_node_ptr params;
         // The body's own catalog lookups; the caller must merge these and run another resolve round.
-        std::optional<logical_plan::catalog_resolves_t> resolves;
-        // Set when re-parse / re-transform failed; `plan` is then null.
-        core::error_t error{core::error_t::no_error()};
+        logical_plan::catalog_resolves_t resolves;
     };
 
     // Each reference gets its own body -- filter pushdown appends a match child into it, so two
     // references cannot share a subtree (same policy as CTE inlining in optimizer.cpp).
-    view_body_t expand_view_body(std::pmr::memory_resource* resource, const std::string& view_sql);
+    core::result_wrapper_t<view_body_t> expand_view_body(std::pmr::memory_resource* resource,
+                                                         const core::body_sql_t& view_sql);
+
+    // A stored body as CREATE bound it: parsed, and every table name pinned to its pg_rewrite_ref row.
+    core::result_wrapper_t<view_body_t> bind_view_body(std::pmr::memory_resource* resource,
+                                                       const logical_plan::resolved_table_metadata_t& view);
 
     // Spliced at position 0 (appending would silently disable filter pushdown, which reads
     // children()[0] as the source). Refuses a correlated (LATERAL) `body`: node_join_t::correlations()
@@ -53,6 +57,46 @@ namespace components::planner {
                                   logical_plan::node_t* body,
                                   const logical_plan::parameter_node_ptr& body_params,
                                   const logical_plan::parameter_node_ptr& out_params);
+
+    // "view \"v\" is stale: <why>": what the view was bound to at CREATE VIEW is not what the read finds.
+    core::error_t view_stale_error(std::pmr::memory_resource* resource, std::string_view view, std::string_view why);
+
+    // Every table name of a view body gets what CREATE VIEW bound it to (pg_rewrite_ref): a relation is read by its
+    // oid, a host name goes to the host only. A body name without a binding is refused.
+    core::error_t pin_view_body_names(std::pmr::memory_resource* resource,
+                                      logical_plan::catalog_resolves_t& body_resolves,
+                                      const logical_plan::resolved_table_metadata_t& view);
+
+    // Merges a pinned body's lookups into the statement's; the same name bound two different ways is refused.
+    core::error_t merge_view_body_resolves(std::pmr::memory_resource* resource,
+                                           logical_plan::catalog_resolves_t& dest,
+                                           logical_plan::catalog_resolves_t& body_resolves);
+
+    // A body with a star reads the columns its tables have now; the view keeps the columns it was created with
+    // (PostgreSQL 18 expands the star at CREATE VIEW).
+    logical_plan::node_ptr project_view_body(std::pmr::memory_resource* resource,
+                                             logical_plan::node_ptr body,
+                                             const logical_plan::resolved_table_metadata_t& view);
+
+    // REFRESH MATERIALIZED VIEW (PostgreSQL 18 matview.c runs the stored query; Trino 483 analyzes an INSERT into the
+    // storage table with the parsed body as its source): INSERT INTO dbname.matview <stored body>, the body's names
+    // pinned to what CREATE bound and the body spliced into `reference`, which the read checks against the matview as
+    // it checks an expanded view. The matview is the write target only; nothing reads it.
+    struct refresh_matview_plan_t {
+        logical_plan::execution_plan_t plan;
+        logical_plan::node_ptr reference;
+    };
+
+    core::result_wrapper_t<refresh_matview_plan_t>
+    refresh_matview_plan(std::pmr::memory_resource* resource,
+                         const logical_plan::resolved_table_metadata_t& matview,
+                         const core::dbname_t& dbname);
+
+    // REFRESH MATERIALIZED VIEW empties the matview first (PostgreSQL 18 matview.c): DELETE FROM dbname.matview,
+    // every row, no limit.
+    logical_plan::execution_plan_t refresh_matview_delete_plan(std::pmr::memory_resource* resource,
+                                                               const logical_plan::resolved_table_metadata_t& matview,
+                                                               const core::dbname_t& dbname);
 
     // A true cycle should be impossible, but this is the loud stop instead of an endless resolve loop.
     inline constexpr std::size_t max_view_expansion_depth = 16;

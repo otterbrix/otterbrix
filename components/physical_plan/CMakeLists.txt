@@ -2,6 +2,7 @@ project(physical_plan)
 
 
 set(${PROJECT_NAME}_SOURCES
+        table_storage.cpp
         operators/operator.cpp
         operators/operator_data.cpp
         operators/operator_write_data.cpp
@@ -14,6 +15,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/scan/pushed_reduce_scan.cpp
         operators/scan/index_scan.cpp
         operators/scan/transfer_scan.cpp
+        operators/scan/guard_chunk.cpp
 
         operators/sort/sort.cpp
 

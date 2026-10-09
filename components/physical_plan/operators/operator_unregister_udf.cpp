@@ -1,66 +1,60 @@
 #include "operator_unregister_udf.hpp"
 
 #include "catalog_util.hpp"
+#include "operator_dynamic_cascade_delete.hpp"
 
 #include <components/base/collection_full_name.hpp>
+#include <components/catalog/catalog_codes.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/context.hpp>
 #include <core/result_wrapper.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace components::operators {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<bool> g_unregister_udf_purge_refusal{false};
+    } // namespace
+
+    void dev_set_unregister_udf_purge_refusal(bool refuse) noexcept { g_unregister_udf_purge_refusal.store(refuse); }
+#endif
     operator_unregister_udf_t::operator_unregister_udf_t(std::pmr::memory_resource* resource,
                                                          log_t log,
                                                          std::string function_name,
-                                                         std::pmr::vector<types::complex_logical_type> inputs)
+                                                         std::pmr::vector<types::complex_logical_type> inputs,
+                                                         components::catalog::drop_behavior_t behavior)
         : read_only_operator_t(resource, std::move(log), operator_type::unregister_udf)
         , function_name_(std::move(function_name))
-        , inputs_(std::move(inputs)) {}
+        , inputs_(std::move(inputs))
+        , behavior_(behavior) {}
 
     actor_zeta::unique_future<void> operator_unregister_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
-        success_ = false;
+        // 1. The overload the master registry holds, if any: its pg_proc rows are the rows of its signatures. A
+        //    function a previous process registered has its rows only; they are the rows these inputs match.
+        const auto live_uid = ctx->function_registry->find_overload(function_name_, inputs_);
+        const components::compute::function* live = live_uid == components::compute::invalid_function_uid
+                                                        ? nullptr
+                                                        : ctx->function_registry->get_function(live_uid);
 
-        // 1. Existence check via the global default registry (V4 invariant:
-        //    UDFs registered through register_udf land both in per-executor
-        //    registries and in the default registry; the default one is the
-        //    authoritative "exists?" check at runtime).
-        auto* reg = components::compute::function_registry_t::get_default();
-        bool exists = false;
-        if (reg) {
-            for (auto& [n, uid] : reg->get_functions()) {
-                if (n != function_name_)
-                    continue;
-                auto* fn = reg->get_function(uid);
-                if (!fn)
-                    continue;
-                for (auto& sig : fn->get_signatures()) {
-                    if (sig.matches_inputs(inputs_)) {
-                        exists = true;
-                        break;
-                    }
-                }
-                if (exists)
-                    break;
-            }
-        }
-        if (!exists) {
-            set_error(core::error_t{core::error_code_t::unrecognized_function,
-                                    std::pmr::string{"unregister_udf: no overload of '" + function_name_ +
-                                                         "' matching this signature is registered",
-                                                     resource_}});
+#ifdef DEV_MODE
+        if (g_unregister_udf_purge_refusal.load()) {
+            set_error(core::error_t{
+                core::error_code_t::io_error,
+                std::pmr::string{"unregister_udf: the pg_proc purge was refused (test seam)", resource_}});
             mark_failed();
             co_return;
         }
-
-        // 2. Purge pg_proc + pg_depend rows for every namespace match, AHEAD of the registry removal below
-        //    (the operator's only mutation): the pg_proc read here can refuse, and refusing after the
-        //    removal would leave the function gone from the registry while its catalog rows still claim
-        //    it exists.
+#endif
+        // 2. Drop each of those rows the way any DROP takes its dependents.
+        bool found = live != nullptr;
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
             auto [_rfbn, rfbnf] = actor_zeta::otterbrix::send(ctx->disk_address,
@@ -75,55 +69,54 @@ namespace components::operators {
                 mark_failed();
                 co_return;
             }
-            std::pmr::vector<components::catalog::oid_t> function_oids(resource_);
+            const auto live_rows = live != nullptr ? proc_signatures(resource_, *live)
+                                                   : std::pmr::vector<components::catalog::proc_signature_t>{resource_};
+            std::pmr::vector<components::catalog::oid_t> rows{resource_};
             for (const auto& m : matches_r.value()) {
-                function_oids.push_back(m.oid);
+                bool drop = false;
+                if (live != nullptr) {
+                    drop = std::any_of(live_rows.begin(), live_rows.end(), [&m](const auto& row) {
+                        return row == m.signature;
+                    });
+                } else {
+                    auto parameters = components::catalog::decode_proargmatchers(resource_, m.signature.proargmatchers);
+                    if (parameters.has_error()) {
+                        set_error(parameters.error());
+                        mark_failed();
+                        co_return;
+                    }
+                    const components::compute::kernel_signature_t stored(
+                        components::compute::function_type_t::vector,
+                        std::move(parameters.value()),
+                        std::pmr::vector<components::compute::output_type>{resource_});
+                    drop = stored.matches_inputs(inputs_);
+                }
+                if (drop) {
+                    rows.push_back(m.oid);
+                }
             }
-            // pg_depend rows are optional (zero deleted is healthy); pg_proc rows are not. An EMPTY spec
-            // list is legitimate: a builtin or catalog-less mirror has nothing to scrub.
-            std::pmr::vector<std::size_t> pg_proc_specs(resource_);
-            auto specs = stage_function_deletes(resource_, ctx, function_oids, pg_proc_specs);
-            if (!specs.empty()) {
-                auto [_d, df] =
-                    actor_zeta::otterbrix::send(ctx->disk_address,
-                                                &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
-                                                exec_ctx,
-                                                std::move(specs));
-                auto deleted_r = co_await std::move(df);
-                // Still ahead of the registry removal: a refused scrub must be known before the only
-                // mutation runs.
-                if (deleted_r.has_error()) {
-                    set_error(deleted_r.error());
-                    mark_failed();
-                    co_return;
-                }
-                if (auto ec = confirm_function_deletes(resource_,
-                                                       deleted_r.value(),
-                                                       pg_proc_specs,
-                                                       "unregister_udf",
-                                                       function_name_);
-                    ec.contains_error()) {
-                    set_error(std::move(ec));
-                    mark_failed();
-                    co_return;
-                }
+            found = found || !rows.empty();
+            if (auto dropped = co_await drop_function_rows(resource_,
+                                                           ctx,
+                                                           rows,
+                                                           function_rows_drop_t::with_dependents,
+                                                           behavior_,
+                                                           function_name_);
+                dropped.contains_error()) {
+                set_error(dropped);
+                mark_failed();
+                co_return;
             }
         }
-
-        // 3. Drop the matching overload from the default registry — the operator's ONLY mutation, done
-        //    last. The answer IS checked: remove_function_by_signature returning false means the registry
-        //    changed between the pre-check and here, and reporting success would paper over that.
-        if (reg && !reg->remove_function_by_signature(function_name_, inputs_)) {
-            set_error(core::error_t{core::error_code_t::other_error,
-                                    std::pmr::string{"unregister_udf: the registry no longer holds the overload of '" +
-                                                         function_name_ +
-                                                         "' that the pre-check matched — nothing was removed",
+        if (!found) {
+            set_error(core::error_t{core::error_code_t::unrecognized_function,
+                                    std::pmr::string{"unregister_udf: no overload of '" + function_name_ +
+                                                         "' matching this signature is registered or in the catalog",
                                                      resource_}});
             mark_failed();
             co_return;
         }
 
-        success_ = true;
         output_ = nullptr;
         mark_executed();
     }

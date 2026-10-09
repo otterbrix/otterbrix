@@ -1,5 +1,7 @@
 #pragma once
 
+#include <components/physical_plan_generator/create_plan.hpp>
+
 #include <components/logical_plan/node.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <services/collection/context_storage.hpp>

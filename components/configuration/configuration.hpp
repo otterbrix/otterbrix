@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <components/log/log.hpp>
 #include <cstdint>
 #include <filesystem>
@@ -47,11 +48,23 @@ namespace configuration {
         uint64_t analyze_sample_size{1000};
     };
 
+    // How long a manager loop sleeps when nothing wakes it: a message pushed into its inbox wakes it at
+    // once, but a reply completed on another thread notifies nobody and is found only when the loop
+    // looks again. in_flight bounds that per-hop latency while replies are awaited; idle applies when
+    // the loop awaits nothing. Refused at startup unless 0 < in_flight < idle.
+    struct pump_intervals_t final {
+        std::chrono::microseconds in_flight{5};
+        std::chrono::microseconds idle{10'000};
+    };
+
     struct config_execution final {
         // Mid-pump flush threshold (rows) for streaming DML sinks. 0 = DISABLED:
         // single post-pump flush, unbounded accumulator.
         // A rollout gate — the executor guards `threshold != 0`.
         uint64_t dml_flush_row_threshold{0};
+        // 0 is refused at startup: the dispatcher routes every statement to one of these executors.
+        std::size_t executor_pool_size{4};
+        pump_intervals_t pump{};
     };
 
     struct config final {

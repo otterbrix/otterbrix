@@ -1,8 +1,9 @@
 #pragma once
 
-#include "identifier_types.hpp"
 #include "node.hpp"
+#include <components/base/identifier_types.hpp>
 
+#include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/table/column_definition.hpp>
@@ -31,19 +32,19 @@ namespace components::logical_plan {
         components::table::column_definition_t& column() noexcept { return column_; }
         void set_column(components::table::column_definition_t column) { column_ = std::move(column); }
 
-        const std::string& old_name() const noexcept { return old_name_; }
-        void set_old_name(core::columnname_t name) { old_name_ = std::move(static_cast<std::string&>(name)); }
-        const std::string& new_name() const noexcept { return new_name_; }
-        void set_new_name(core::columnname_t name) { new_name_ = std::move(static_cast<std::string&>(name)); }
+        const core::columnname_t& old_name() const noexcept { return old_name_; }
+        void set_old_name(core::columnname_t name) { old_name_ = std::move(name); }
+        const core::columnname_t& new_name() const noexcept { return new_name_; }
+        void set_new_name(core::columnname_t name) { new_name_ = std::move(name); }
 
         // column_name_ is shared with the computed-unregister route.
-        const std::string& column_name() const noexcept { return column_name_; }
-        void set_column_name(core::columnname_t name) { column_name_ = std::move(static_cast<std::string&>(name)); }
+        const core::columnname_t& column_name() const noexcept { return column_name_; }
+        void set_column_name(core::columnname_t name) { column_name_ = std::move(name); }
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
         void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
-        // DROP COLUMN IF EXISTS: carried for both drop routes so a missing column is a no-op, not an error.
-        bool missing_ok() const noexcept { return missing_ok_; }
-        void set_missing_ok(bool v) noexcept { missing_ok_ = v; }
+        // With target(), what a refusal names the column's owner by: "column c of materialized view db.mv".
+        char relkind() const noexcept { return relkind_; }
+        void set_relkind(char relkind) noexcept { relkind_ = relkind; }
 
         components::catalog::oid_t attoid() const noexcept { return attoid_; }
         void set_attoid(components::catalog::oid_t a) noexcept { attoid_ = a; }
@@ -63,12 +64,12 @@ namespace components::logical_plan {
 
         const alter_column_op op_;
         components::table::column_definition_t column_;
-        std::string old_name_;
-        std::string new_name_;
-        std::string column_name_;
+        core::columnname_t old_name_;
+        core::columnname_t new_name_;
+        core::columnname_t column_name_;
+        char relkind_{components::catalog::relkind::regular};
         // unwritten form defaults to RESTRICT (PostgreSQL parity); see node_alter_table.hpp
         components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::restrict_};
-        bool missing_ok_{false};
         components::catalog::oid_t attoid_{components::catalog::INVALID_OID};
         bool computed_{false};
         std::pmr::vector<components::table::column_definition_t> registered_cols_;

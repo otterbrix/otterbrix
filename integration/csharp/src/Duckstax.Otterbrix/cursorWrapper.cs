@@ -5,92 +5,100 @@ namespace Duckstax.Otterbrix
 
     public class CursorWrapper : IDisposable
     {
-        const string libotterbrix = "libotterbrix.so";
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct TransferErrorMessage {
-            public int type;
-            public IntPtr what;
-        }
-
-        [DllImport(libotterbrix, EntryPoint="release_cursor", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern void ReleaseCursor(IntPtr ptr);
+        const string libotterbrix = OtterbrixWrapper.libotterbrix;
 
         [DllImport(libotterbrix, EntryPoint="cursor_size", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern int CursorSize(IntPtr ptr);
+        private static extern int CursorSize(CursorHandle cursor);
+
+        [DllImport(libotterbrix, EntryPoint="cursor_affected_rows", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool CursorAffectedRows(CursorHandle cursor, out ulong rows);
 
         [DllImport(libotterbrix, EntryPoint="cursor_column_count", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern int CursorColumnCount(IntPtr ptr);
+        private static extern int CursorColumnCount(CursorHandle cursor);
 
         [DllImport(libotterbrix, EntryPoint="cursor_has_next", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern bool CursorHasNext(IntPtr ptr);
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool CursorHasNext(CursorHandle cursor);
 
         [DllImport(libotterbrix, EntryPoint="cursor_is_success", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern bool CursorIsSuccess(IntPtr ptr);
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool CursorIsSuccess(CursorHandle cursor);
 
         [DllImport(libotterbrix, EntryPoint="cursor_is_error", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern bool CursorIsError(IntPtr ptr);
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool CursorIsError(CursorHandle cursor);
 
         [DllImport(libotterbrix, EntryPoint="cursor_get_error", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern TransferErrorMessage CursorGetError(IntPtr ptr);
+        private static extern TransferErrorMessage CursorGetError(CursorHandle cursor);
 
         [DllImport(libotterbrix, EntryPoint="cursor_column_name", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern IntPtr CursorColumnName(IntPtr ptr, int columnIndex);
+        private static extern IntPtr CursorColumnName(CursorHandle cursor, int columnIndex);
 
         [DllImport(libotterbrix, EntryPoint="cursor_get_value", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern IntPtr CursorGetValue(IntPtr ptr, int rowIndex, int columnIndex);
+        private static extern ValueHandle CursorGetValue(CursorHandle cursor, int rowIndex, int columnIndex);
 
         [DllImport(libotterbrix, EntryPoint="cursor_get_value_by_name", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern IntPtr CursorGetValueByName(IntPtr ptr, int rowIndex, StringPasser columnName);
+        private static extern ValueHandle CursorGetValueByName(CursorHandle cursor, int rowIndex, StringPasser columnName);
 
-        public CursorWrapper(IntPtr cursorStoragePtr) { this.cursorStoragePtr = cursorStoragePtr; }
+        internal CursorWrapper(CursorHandle cursor) { this.cursor = cursor; }
 
-        ~CursorWrapper() { Dispose(false); }
+        public void Dispose() { cursor.Dispose(); }
 
-        public void Dispose() {
-            Dispose(true);
-            GC.SuppressFinalize(this);
+        public int Size() { return CursorSize(cursor); }
+        public ulong? AffectedRows() {
+            return CursorAffectedRows(cursor, out ulong rows) ? rows : null;
         }
+        public int ColumnCount() { return CursorColumnCount(cursor); }
+        public bool HasNext() { return CursorHasNext(cursor); }
+        public bool IsSuccess() { return CursorIsSuccess(cursor); }
+        public bool IsError() { return CursorIsError(cursor); }
 
-        private void Dispose(bool disposing) {
-            if (cursorStoragePtr != IntPtr.Zero) {
-                ReleaseCursor(cursorStoragePtr);
-                cursorStoragePtr = IntPtr.Zero;
-            }
-        }
-
-        public int Size() { return CursorSize(cursorStoragePtr); }
-        public int ColumnCount() { return CursorColumnCount(cursorStoragePtr); }
-        public bool HasNext() { return CursorHasNext(cursorStoragePtr); }
-        public bool IsSuccess() { return CursorIsSuccess(cursorStoragePtr); }
-        public bool IsError() { return CursorIsError(cursorStoragePtr); }
-
-        public ErrorMessage GetError() {
-            TransferErrorMessage transfer = CursorGetError(cursorStoragePtr);
-            ErrorMessage message = new ErrorMessage();
-            message.type = (ErrorCode)transfer.type;
-            string? str = Marshal.PtrToStringAnsi(transfer.what);
-            message.what = str ?? "";
-            Marshal.FreeHGlobal(transfer.what);
-            return message;
-        }
+        public ErrorMessage GetError() { return CursorGetError(cursor).Take(); }
 
         public string ColumnName(int columnIndex) {
-            IntPtr strPtr = CursorColumnName(cursorStoragePtr, columnIndex);
-            if (strPtr == IntPtr.Zero) return "";
-            string? result = Marshal.PtrToStringAnsi(strPtr);
-            Marshal.FreeHGlobal(strPtr);
-            return result ?? "";
+            return OtterbrixWrapper.TakeString(CursorColumnName(cursor, columnIndex)) ?? "";
         }
 
         public ValueWrapper GetValue(int rowIndex, int columnIndex) {
-            return new ValueWrapper(CursorGetValue(cursorStoragePtr, rowIndex, columnIndex));
+            ValueHandle value = CursorGetValue(cursor, rowIndex, columnIndex);
+            if (value.IsInvalid) {
+                ThrowIfRowOutOfRange(rowIndex);
+                throw new ArgumentOutOfRangeException(nameof(columnIndex), columnIndex,
+                    "column " + columnIndex + " is out of range: the cursor has " + ColumnCount() + " columns");
+            }
+            return new ValueWrapper(value);
         }
 
         public ValueWrapper GetValue(int rowIndex, string columnName) {
-            return new ValueWrapper(CursorGetValueByName(cursorStoragePtr, rowIndex, new StringPasser(ref columnName)));
+            ValueHandle value = CursorGetValueByName(cursor, rowIndex, new StringPasser(ref columnName));
+            if (value.IsInvalid) {
+                ThrowIfRowOutOfRange(rowIndex);
+                throw new ArgumentException("column \"" + columnName + "\" does not exist", nameof(columnName));
+            }
+            return new ValueWrapper(value);
         }
 
-        private IntPtr cursorStoragePtr;
+        private void ThrowIfRowOutOfRange(int rowIndex) {
+            int size = Size();
+            if (rowIndex < 0 || rowIndex >= size) {
+                throw new ArgumentOutOfRangeException(nameof(rowIndex), rowIndex,
+                    "row " + rowIndex + " is out of range: the cursor has " + size + " rows");
+            }
+        }
+
+        private readonly CursorHandle cursor;
+    }
+
+    internal sealed class CursorHandle : SafeHandle {
+        [DllImport(OtterbrixWrapper.libotterbrix, EntryPoint="release_cursor", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        private static extern void ReleaseCursor(IntPtr cursor);
+
+        public CursorHandle() : base(IntPtr.Zero, true) {}
+        public override bool IsInvalid => handle == IntPtr.Zero;
+        protected override bool ReleaseHandle() {
+            ReleaseCursor(handle);
+            return true;
+        }
     }
 }

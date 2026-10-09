@@ -4,8 +4,8 @@
 // file asserts:
 //   (a) DISJOINTNESS — the POD carries NO node_ptr / expression_ptr; each string/path is an
 //       independent std::pmr copy (mailbox-safe by construction), NOT an alias of the source.
-//   (b) FIELD FIDELITY — group keys (name + path), aggregates (function / uid / arg-path /
-//       alias / distinct) and output_types round-trip exactly.
+//   (b) FIELD FIDELITY — group keys (name + path), aggregates (function / arg-path / alias /
+//       distinct), the function the output carries, and output_types round-trip exactly.
 //   (c) COMPLETENESS — a non-representable shape (HAVING / coalesce key / distinct or multi-arg
 //       aggregate) is REJECTED (build returns false => the coordinator aggregate stands), never
 //       silently mis-encoded.
@@ -33,7 +33,7 @@ using namespace components::expressions;
 namespace types = components::types;
 namespace ops = components::operators;
 using key = components::expressions::key_t;
-using pushdown_test::sum_uid; // a real builtin "sum" uid so the aggregate uid gate passes
+using pushdown_test::stamp_sum;
 
 namespace {
 
@@ -59,13 +59,13 @@ namespace {
                       expression_ptr having,
                       std::pmr::vector<types::complex_logical_type> out_types,
                       bool agg_distinct = false) {
-        auto group = make_node_group(r, dbn(), reln(), group_exprs);
+        auto group = make_node_group(r, group_exprs);
         group->set_pushdown(true);
         group->set_table_oid(components::catalog::oid_t{123});
         auto agg =
             planner_test::make_agg(r, group, components::catalog::oid_t{123}, std::move(out_types), agg_distinct);
         if (having != nullptr) {
-            agg->append_child(make_node_having(r, dbn(), reln(), having));
+            agg->append_child(make_node_having(r, having));
         }
         return agg;
     }
@@ -86,7 +86,7 @@ TEST_CASE("pushed_spec::field_fidelity") {
     // GROUP BY g(col 1), SUM(v col 2) AS s_out (non-distinct); output types BIGINT, BIGINT.
     auto grp = make_scalar_expression(&node_res, scalar_type::group_field, col(&node_res, "g", 1));
     auto sum = make_aggregate_expression(&node_res, "sum", key(&node_res, "s_out", side_t::left));
-    sum->add_function_uid(sum_uid(&node_res));
+    stamp_sum(*sum, &node_res);
     sum->append_param(param_storage{col(&node_res, "v", 2)});
 
     std::pmr::vector<types::complex_logical_type> ot{&node_res};
@@ -109,7 +109,13 @@ TEST_CASE("pushed_spec::field_fidelity") {
     // aggregates.
     REQUIRE(spec.aggregates.size() == 1);
     REQUIRE(spec.aggregates[0].function_name == "sum");
-    REQUIRE(spec.aggregates[0].func_uid == sum_uid(&node_res));
+    {
+        const auto output = spec.outputs.back().attach(&spec_res);
+        REQUIRE(output->group() == expression_group::aggregate);
+        const auto* function = static_cast<const aggregate_expression_t*>(output.get())->function();
+        REQUIRE(function != nullptr);
+        REQUIRE(function->name() == "sum");
+    }
     REQUIRE_FALSE(spec.aggregates[0].distinct);
     REQUIRE(spec.aggregates[0].alias == "s_out");
     REQUIRE(spec.aggregates[0].arg_col_path.size() == 1);
@@ -172,8 +178,19 @@ TEST_CASE("pushed_spec::rejects_coalesce_key") {
 TEST_CASE("pushed_spec::rejects_distinct_aggregate") {
     std::pmr::monotonic_buffer_resource r;
     auto sum = make_aggregate_expression(&r, "sum", key(&r, "s", side_t::left));
-    sum->add_function_uid(sum_uid(&r));
+    stamp_sum(*sum, &r);
     sum->set_distinct(true);
+    sum->append_param(param_storage{col(&r, "v", 2)});
+    std::vector<expression_ptr> exprs{expression_ptr(sum)};
+    auto agg = make_agg(&r, exprs, nullptr, std::pmr::vector<types::complex_logical_type>{&r});
+
+    ops::pushed_aggregate_spec_t spec{&r};
+    REQUIRE_FALSE(services::planner::impl::build_pushed_spec(group_of(agg), agg, &r, spec));
+}
+
+TEST_CASE("pushed_spec::rejects_an_aggregate_validation_did_not_resolve") {
+    std::pmr::monotonic_buffer_resource r;
+    auto sum = make_aggregate_expression(&r, "sum", key(&r, "s", side_t::left));
     sum->append_param(param_storage{col(&r, "v", 2)});
     std::vector<expression_ptr> exprs{expression_ptr(sum)};
     auto agg = make_agg(&r, exprs, nullptr, std::pmr::vector<types::complex_logical_type>{&r});
@@ -185,7 +202,7 @@ TEST_CASE("pushed_spec::rejects_distinct_aggregate") {
 TEST_CASE("pushed_spec::rejects_multiarg_aggregate") {
     std::pmr::monotonic_buffer_resource r;
     auto sum = make_aggregate_expression(&r, "sum", key(&r, "s", side_t::left));
-    sum->add_function_uid(sum_uid(&r));
+    stamp_sum(*sum, &r);
     sum->append_param(param_storage{col(&r, "a", 1)});
     sum->append_param(param_storage{col(&r, "b", 2)}); // second arg => not POD-representable
     std::vector<expression_ptr> exprs{expression_ptr(sum)};

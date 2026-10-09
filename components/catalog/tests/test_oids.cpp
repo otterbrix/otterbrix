@@ -134,7 +134,7 @@ TEST_CASE("test_column_oid_assignment") {
 TEST_CASE("test_oid_immutability") {
     core::pmr::otterbrix_resource resource;
     SECTION("table_id::set_oid") {
-        qualified_name_t cfn("main", "users");
+        qualified_name_t cfn(core::dbname_t{"main"}, core::relname_t{"users"});
         table_id tid(&resource, cfn);
         tid.set_oid(20000);
         tid.set_oid(20000); // idempotent
@@ -154,7 +154,7 @@ TEST_CASE("test_oid_immutability") {
 TEST_CASE("test_table_oid_assignment") {
     core::pmr::otterbrix_resource resource;
 
-    qualified_name_t cfn("main", "users");
+    qualified_name_t cfn(core::dbname_t{"main"}, core::relname_t{"users"});
     table_id tid(&resource, cfn);
     REQUIRE(tid.oid() == INVALID_OID);
     tid.set_oid(20000);

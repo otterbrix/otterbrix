@@ -15,8 +15,6 @@ The crash cannot be asserted from inside the process it kills, so each case runs
 in a child and the parent reads its exit code.
 """
 
-import os
-import shutil
 import subprocess
 import sys
 
@@ -53,26 +51,23 @@ gc.collect()
 """
 
 
-def _run(release_order, dirname):
-    path = os.path.join(os.getcwd(), dirname)
-    if os.path.exists(path):
-        shutil.rmtree(path)
+def _run(release_order, database):
     return subprocess.run(
-        [sys.executable, "-c", _BODY % release_order, path],
+        [sys.executable, "-c", _BODY % release_order, str(database)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         universal_newlines=True,
     )
 
 
-def test_a_cursor_survives_its_client_being_released_first():
-    proc = _run(_DROP_CLIENT_FIRST, "test_cursor_lifetime_client_first")
+def test_a_cursor_survives_its_client_being_released_first(tmp_path):
+    proc = _run(_DROP_CLIENT_FIRST, tmp_path / "client_first_db")
     assert proc.returncode == 0, "process died with %s\n%s" % (proc.returncode, proc.stderr[-2000:])
     assert "SURVIVED" in proc.stdout, proc.stdout
 
 
-def test_a_cursor_released_before_its_client_still_works():
+def test_a_cursor_released_before_its_client_still_works(tmp_path):
     """The order that already worked -- kept so the fix cannot regress it."""
-    proc = _run(_DROP_CURSOR_FIRST, "test_cursor_lifetime_cursor_first")
+    proc = _run(_DROP_CURSOR_FIRST, tmp_path / "cursor_first_db")
     assert proc.returncode == 0, "process died with %s\n%s" % (proc.returncode, proc.stderr[-2000:])
     assert "SURVIVED" in proc.stdout, proc.stdout

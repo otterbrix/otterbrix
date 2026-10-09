@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -52,17 +53,6 @@ namespace {
         gate_guard_t& operator=(const gate_guard_t&) = delete;
     };
 
-    bool wait_flag(const std::atomic<bool>& flag, std::chrono::seconds timeout) {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (!flag.load(std::memory_order_acquire)) {
-            if (std::chrono::steady_clock::now() > deadline) {
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        return true;
-    }
-
     void run_sql(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, sql);
@@ -106,7 +96,7 @@ namespace {
         const auto reader_session = otterbrix::session_id_t();
         std::thread reader([&] { out.reader_cursor = dispatcher->execute_sql(reader_session, reader_sql); });
 
-        out.gate_reached = wait_flag(guard.gate.reached, std::chrono::seconds(30));
+        out.gate_reached = test_helpers::wait_until([&] { return guard.gate.reached.load(); });
         if (out.gate_reached) {
             const auto ddl_session = otterbrix::session_id_t();
             auto ddl_cur = dispatcher->execute_sql(ddl_session, ddl_sql);

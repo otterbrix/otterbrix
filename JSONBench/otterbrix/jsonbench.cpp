@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -6,15 +7,7 @@
 #include <string>
 #include <vector>
 
-#include <integration/cpp/base_spaces.hpp>
 #include <integration/cpp/otterbrix.hpp>
-
-// Thin subclass to expose the protected constructor
-class bench_spaces final : public otterbrix::base_otterbrix_t {
-public:
-    explicit bench_spaces(const configuration::config& config)
-        : otterbrix::base_otterbrix_t(config) {}
-};
 
 #ifndef JSONBENCH_DATA_FILE
 #define JSONBENCH_DATA_FILE "file_0001_filtered.json"
@@ -194,7 +187,7 @@ static void print_cursor(components::cursor::cursor_t_ptr& cur) {
 }
 
 // Run a query, print results, timing.
-static void run_query(otterbrix::base_otterbrix_t* space,
+static void run_query(const otterbrix::otterbrix_ptr& space,
                       const std::string& label,
                       const std::string& sql) {
     std::cout << "\n=== " << label << " ===\n";
@@ -222,8 +215,8 @@ int main() {
     auto cfg      = configuration::config::create_config("/tmp/jsonbench_otterbrix");
     cfg.log.level = log_t::level::warn; // suppress trace/info noise
 
-    bench_spaces space(cfg);
-    auto* dispatcher = space.dispatcher();
+    auto space = otterbrix::make_otterbrix_or_exit(cfg);
+    auto* dispatcher = space->dispatcher();
 
     // ---- Create DB and table ------------------------------------------------
     {
@@ -293,7 +286,7 @@ int main() {
     // ---- Queries ------------------------------------------------------------
 
     // Q1: Top event types by count
-    run_query(&space,
+    run_query(space,
               "Q1: Top event types",
               "SELECT collection, COUNT(did) as count "
               "FROM bench.events "
@@ -301,7 +294,7 @@ int main() {
               "ORDER BY count DESC;");
 
     // Q2: Unique users per event type (kind=commit, operation=create)
-    run_query(&space,
+    run_query(space,
               "Q2: Unique users per event type (kind=commit, op=create)",
               "SELECT collection, COUNT(did) as count, COUNT(DISTINCT did) as users "
               "FROM bench.events "
@@ -310,7 +303,7 @@ int main() {
               "ORDER BY count DESC;");
 
     // Q3: Post/repost/like counts (subset of event types)
-    run_query(&space,
+    run_query(space,
               "Q3: Post / repost / like counts",
               "SELECT collection, COUNT(did) as count "
               "FROM bench.events "
@@ -322,7 +315,7 @@ int main() {
               "ORDER BY count DESC;");
 
     // Q4: First 3 users to post
-    run_query(&space,
+    run_query(space,
               "Q4: First 3 users to post",
               "SELECT did, MIN(time_us) as first_post "
               "FROM bench.events "
@@ -333,7 +326,7 @@ int main() {
               "LIMIT 3;");
 
     // Q5: Top 3 users by activity span (latest - earliest post time)
-    run_query(&space,
+    run_query(space,
               "Q5: Top 3 users by activity span",
               "SELECT did, MIN(time_us) as first_ts, MAX(time_us) as last_ts "
               "FROM bench.events "

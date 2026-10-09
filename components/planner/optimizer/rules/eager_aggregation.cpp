@@ -217,8 +217,6 @@ namespace components::planner::optimizer {
             if (!is_bare_table_source(pushed)) {
                 return;
             }
-            auto* pushed_agg = static_cast<lp::node_aggregate_t*>(pushed.get());
-
             const size_t join_key_local = pushed_left ? join->left_col() : join->right_col();
             if (join_key_local >= pushed->output_types().size()) {
                 return; // defensive: unexpected stamp
@@ -237,7 +235,7 @@ namespace components::planner::optimizer {
             }
 
             // Partial output layout: [group keys, join key (if new), aggregates].
-            auto partial_group = lp::make_node_group(resource, pushed_agg->dbname(), pushed_agg->relname());
+            auto partial_group = lp::make_node_group(resource);
             std::vector<size_t> key_partial_pos(keys.size());
             size_t next_pos = 0;
             bool join_key_covered = false;
@@ -282,7 +280,10 @@ namespace components::planner::optimizer {
                                                           aggs[i]->function_name(),
                                                           aggs[i]->key(),
                                                           local_key(resource, ce::as_key(aggs[i]->params()[0]), local));
-                pagg->add_function_uid(aggs[i]->function_uid());
+                pagg->set_pin(components::compute::function_pin_t{aggs[i]->function_uid()});
+                if (const auto* function = aggs[i]->function(); function != nullptr) {
+                    pagg->set_function(function->get_copy(resource));
+                }
                 // This rule runs after validation, so nothing else stamps the expression's type and
                 // the graph builder rejects an unstamped aggregate; copying the final's result type
                 // is safe since MIN(MIN)=MIN/MAX(MAX)=MAX over the same column.

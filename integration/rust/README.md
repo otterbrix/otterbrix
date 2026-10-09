@@ -51,17 +51,14 @@ C++ build. From a clean checkout:
 ./integration/rust/scripts/check.sh
 ```
 
-Both `test.sh` and `check.sh` are pure wrappers over `cargo`; if you want
-to invoke `cargo` directly, set `RUSTFLAGS` and `RUSTDOCFLAGS` so the
-linker embeds an `rpath` for `libotterbrix.so`:
+Both `test.sh` and `check.sh` are pure wrappers over `cargo`, which can be
+invoked directly: every crate's build script embeds an `rpath` to the
+library directory in its unit tests, integration tests, doctests and
+examples, so neither `LD_LIBRARY_PATH` nor `DYLD_LIBRARY_PATH` is needed:
 
 ```bash
-LIB_DIR="$(pwd)/build/release/integration/c"
-export RUSTFLAGS="-C link-arg=-Wl,-rpath,$LIB_DIR"
-export RUSTDOCFLAGS="-C link-arg=-Wl,-rpath,$LIB_DIR"
-
 cd integration/rust
-cargo test --workspace
+OTTERBRIX_LIB_DIR="$(pwd)/../../build/release/integration/c" cargo test --workspace
 ```
 
 By default the build scripts resolve `libotterbrix.so` and `otterbrix.h`

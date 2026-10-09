@@ -1,4 +1,7 @@
 #include "manager_wal_replicate.hpp"
+#include <services/dev_pump.hpp>
+
+#include <core/file/list_dir.hpp>
 
 #include <algorithm>
 #include <cassert>
@@ -25,10 +28,34 @@ namespace services::wal {
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_auto_checkpoint_rounds{0};
+        std::atomic<auto_checkpoint_gate_fn> g_auto_checkpoint_gate{nullptr};
     } // namespace
 
     uint64_t auto_checkpoint_rounds() noexcept { return g_auto_checkpoint_rounds.load(std::memory_order_relaxed); }
     void reset_auto_checkpoint_rounds() noexcept { g_auto_checkpoint_rounds.store(0, std::memory_order_relaxed); }
+    void dev_set_auto_checkpoint_gate(auto_checkpoint_gate_fn gate) { g_auto_checkpoint_gate.store(gate); }
+
+    manager_wal_replicate_t::unique_future<void>
+    manager_wal_replicate_t::dev_park_round_(session_id_t session, auto_checkpoint_point_t point) {
+        while (true) {
+            const auto gate = g_auto_checkpoint_gate.load();
+            const auto park = gate == nullptr ? auto_checkpoint_park_t::go : gate(point, round_end_waiter_.has_value());
+            if (park == auto_checkpoint_park_t::on_index && manager_index_ != actor_zeta::address_t::empty_address()) {
+                auto [_ping, ping] = actor_zeta::otterbrix::send(manager_index_,
+                                                                 &services::index::manager_index_t::all_indexed_oids,
+                                                                 session);
+                [[maybe_unused]] const auto oids = co_await std::move(ping);
+            } else if (park == auto_checkpoint_park_t::on_dispatcher &&
+                       manager_dispatcher_ != actor_zeta::address_t::empty_address()) {
+                auto [_ping, ping] =
+                    actor_zeta::otterbrix::send(manager_dispatcher_,
+                                                &services::dispatcher::manager_dispatcher_t::txn_compact_watermark_msg);
+                [[maybe_unused]] const auto watermark = co_await std::move(ping);
+            } else {
+                co_return;
+            }
+        }
+    }
 #endif
 
     namespace {
@@ -46,7 +73,8 @@ namespace services::wal {
                                                      configuration::config_wal config,
                                                      log_t& log,
                                                      actor_zeta::address_t disk_address,
-                                                     actor_zeta::address_t index_address)
+                                                     actor_zeta::address_t index_address,
+                                                     configuration::pump_intervals_t pump)
         : actor_zeta::actor::actor_mixin<manager_wal_replicate_t>()
         , resource_(resource)
         , scheduler_(scheduler)
@@ -55,16 +83,35 @@ namespace services::wal {
         , manager_disk_(std::move(disk_address))
         , manager_dispatcher_(actor_zeta::address_t::empty_address())
         , manager_index_(std::move(index_address))
-        , recovery_error_(core::error_t::no_error()) {
+        , recovery_error_(core::error_t::no_error())
+        , pump_(pump) {
         trace(log_, "manager_wal_replicate start");
+        std::error_code root_ec;
         if (!config_.path.empty()) {
-            std::filesystem::create_directories(config_.path);
+            std::filesystem::create_directories(config_.path, root_ec);
+        }
+        if (root_ec) {
+            // Unscanned, the next wal_id would reissue ids already on disk, so the refusal latches every write.
+            recovery_error_ =
+                core::error_t(core::error_code_t::io_error,
+                              std::pmr::string{"manager_wal_replicate: the WAL root " + config_.path.string() +
+                                                   " could not be created: " + root_ec.message(),
+                                               resource_});
+            error(log_, "{}", recovery_error_.what);
+        } else if (!config_.path.empty()) {
             wal::id_t max_recovered_id = 0;
-            for (const auto& entry : std::filesystem::directory_iterator(config_.path)) {
-                if (!entry.is_directory()) {
+            auto listed = core::filesystem::list_dir(resource_, config_.path);
+            if (listed.has_error()) {
+                recovery_error_ = listed.error();
+                error(log_, "manager_wal_replicate: {}", recovery_error_.what);
+            }
+            const auto entries = listed.has_error() ? std::pmr::vector<core::filesystem::dir_entry_t>(resource_)
+                                                    : std::move(listed.value());
+            for (const auto& entry : entries) {
+                if (entry.kind != std::filesystem::file_type::directory) {
                     continue;
                 }
-                auto db_dir_name = entry.path().filename().string();
+                auto db_dir_name = entry.path.filename().string();
                 // parse_database_dir_name, not std::stoul+catch (half-parses "9zz"->9), matches wal_reader_t's walk.
                 components::catalog::oid_t db_oid;
                 if (!parse_database_dir_name(db_dir_name, db_oid)) {
@@ -76,21 +123,17 @@ namespace services::wal {
                 }
                 trace(log_, "manager_wal_replicate: recovering database_oid={}", static_cast<unsigned>(db_oid));
 
-                bool has_wal_segment = false;
+                // Same wal_ prefix as wal_reader_t, else a stray file could poison the allocator.
+                auto segments = find_wal_segments(resource_, entry.path, "wal_");
+                if (segments.has_error()) {
+                    recovery_error_ = segments.error();
+                    error(log_, "manager_wal_replicate: {}", recovery_error_.what);
+                    break;
+                }
+                const bool has_wal_segment = !segments.value().empty();
 
-                for (const auto& seg : std::filesystem::directory_iterator(entry.path())) {
-                    if (!seg.is_regular_file()) {
-                        continue;
-                    }
-                    // Same wal_ prefix as wal_worker_t::discover_segments/wal_reader_t, else a stray file could
-                    // poison the allocator.
-                    const auto seg_name = seg.path().filename().string();
-                    if (seg_name.size() < 4 || seg_name.compare(0, 4, "wal_") != 0) {
-                        continue;
-                    }
-                    has_wal_segment = true;
-
-                    wal_page_reader_t reader(resource_, seg.path());
+                for (const auto& seg_path : segments.value()) {
+                    wal_page_reader_t reader(resource_, seg_path);
                     if (!reader.is_open()) {
                         // This scan sets global_id_; an unread segment's ids get reissued, so the refusal
                         // latches every write/commit/truncate below.
@@ -98,7 +141,7 @@ namespace services::wal {
                         error(log_,
                               "manager_wal_replicate: segment '{}' could not be read at startup , the WAL "
                               "REFUSES every write until it can be: {}",
-                              seg.path().filename().string(),
+                              seg_path.filename().string(),
                               recovery_error_.what);
                         break;
                     }
@@ -131,7 +174,7 @@ namespace services::wal {
         // The loop starts only after recovery above finishes, so it never races the single-threaded scan.
         loop_thread_ = std::thread([this] {
             // this->resource() is qualified since the ctor param `resource` shadows the member function.
-            std::pmr::list<in_flight_entry_t> in_flight(this->resource());
+            auto& in_flight = in_flight_;
 
             while (loop_running_.load(std::memory_order_acquire)) {
                 actor_zeta::mailbox::message* raw = nullptr;
@@ -187,21 +230,32 @@ namespace services::wal {
 
                 poll_auto_checkpoint_();
 
+#ifdef DEV_MODE
+                const dev_pump_wait_t pump_probe{in_flight.empty()};
+#endif
                 std::unique_lock<std::mutex> lock(mutex_);
+                pump_cv_.wait_for(lock, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
+                    return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
+                });
             }
-            // in_flight (and its message_ptr/behavior_t) is destroyed here, on the loop thread, never a sender thread.
         });
     }
 
     manager_wal_replicate_t::~manager_wal_replicate_t() {
         trace(log_, "delete manager_wal_replicate_t");
-        loop_running_.store(false, std::memory_order_release);
-        if (loop_thread_.joinable()) {
-            loop_thread_.join();
-        }
+        stop_loop();
+        in_flight_.clear();
         actor_zeta::mailbox::message* raw = nullptr;
         while (inbox_.pop(raw)) {
             actor_zeta::mailbox::message_ptr drained(raw);
+        }
+    }
+
+    void manager_wal_replicate_t::stop_loop() noexcept {
+        loop_running_.store(false, std::memory_order_release);
+        wake_loop_();
+        if (loop_thread_.joinable()) {
+            loop_thread_.join();
         }
     }
 
@@ -212,7 +266,15 @@ namespace services::wal {
     std::pair<bool, actor_zeta::detail::enqueue_result>
     manager_wal_replicate_t::enqueue_impl(actor_zeta::mailbox::message_ptr msg) {
         inbox_.push(msg.release());
+        wake_loop_();
         return {false, actor_zeta::detail::enqueue_result::success};
+    }
+
+    // The mutex is taken between the push and the notify, so the loop either sees the message before
+    // it sleeps or is already waiting when the notify comes.
+    void manager_wal_replicate_t::wake_loop_() noexcept {
+        { std::lock_guard<std::mutex> guard(mutex_); }
+        pump_cv_.notify_one();
     }
 
     actor_zeta::behavior_t manager_wal_replicate_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -235,6 +297,10 @@ namespace services::wal {
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::run_auto_checkpoint>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::run_auto_checkpoint, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::stop_auto_checkpoint>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::stop_auto_checkpoint, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::write_physical_insert>: {
@@ -362,7 +428,7 @@ namespace services::wal {
         // (operator_commit_transaction sends commit_txn and awaits it), so the refusal is logged
         // and the round abandoned instead of travelling back up.
         auto trigger_auto_checkpoint = [&] {
-            if (needs_auto_checkpoint() && !auto_checkpoint_in_flight_) {
+            if (!auto_checkpoint_stopped_ && needs_auto_checkpoint() && !auto_checkpoint_in_flight_) {
                 auto_checkpoint_in_flight_ = true;
                 reset_auto_checkpoint_bytes();
                 auto [_ac, ac_fut] =
@@ -379,30 +445,33 @@ namespace services::wal {
     std::uintmax_t manager_wal_replicate_t::total_wal_bytes() const noexcept {
         if (config_.path.empty())
             return 0;
+        // A measure for the auto-checkpoint threshold: what cannot be listed or sized adds nothing, and the
+        // listing failure is logged.
         std::uintmax_t total = 0;
-        std::error_code ec;
-        for (const auto& db_entry : std::filesystem::directory_iterator(config_.path, ec)) {
-            if (ec || !db_entry.is_directory(ec)) {
-                ec.clear();
+        auto listed = core::filesystem::list_dir(resource_, config_.path);
+        if (listed.has_error()) {
+            auto log = log_.clone();
+            error(log, "manager_wal_replicate::total_wal_bytes: the WAL size is undercounted: {}", listed.error().what);
+            return total;
+        }
+        for (const auto& db_entry : listed.value()) {
+            if (db_entry.kind != std::filesystem::file_type::directory) {
                 continue;
             }
-            for (const auto& seg : std::filesystem::directory_iterator(db_entry.path(), ec)) {
-                if (ec) {
-                    ec.clear();
-                    continue;
+            auto segments = find_wal_segments(resource_, db_entry.path, "wal_");
+            if (segments.has_error()) {
+                auto log = log_.clone();
+                error(log,
+                      "manager_wal_replicate::total_wal_bytes: the WAL size is undercounted: {}",
+                      segments.error().what);
+                continue;
+            }
+            for (const auto& seg_path : segments.value()) {
+                std::error_code ec;
+                const auto size = std::filesystem::file_size(seg_path, ec);
+                if (!ec) {
+                    total += size;
                 }
-                if (!seg.is_regular_file(ec)) {
-                    ec.clear();
-                    continue;
-                }
-                const auto seg_name = seg.path().filename().string();
-                if (seg_name.size() < 4 || seg_name.compare(0, 4, "wal_") != 0) {
-                    continue;
-                }
-                auto sz = std::filesystem::file_size(seg.path(), ec);
-                if (!ec)
-                    total += sz;
-                ec.clear();
             }
         }
         return total;
@@ -435,6 +504,9 @@ namespace services::wal {
     // gate reads. No second trigger: no statement above has an error channel, and compaction renumbers row ids.
     manager_wal_replicate_t::unique_future<void> manager_wal_replicate_t::run_auto_checkpoint(session_id_t session) {
         // Every exit below must call end_auto_checkpoint_round(); skipping it would suppress every later round.
+#ifdef DEV_MODE
+        co_await dev_park_round_(session, auto_checkpoint_point_t::round_start);
+#endif
 
         // flush_all_indexes arms the durable rebuild_marker_path_ guard, the only pre-rebuild report on index state.
         if (manager_index_ != actor_zeta::address_t::empty_address()) {
@@ -451,6 +523,9 @@ namespace services::wal {
                 end_auto_checkpoint_round();
                 co_return;
             }
+#ifdef DEV_MODE
+            co_await dev_park_round_(session, auto_checkpoint_point_t::after_index_flush);
+#endif
         }
 
         // No disk manager means the no-disk topology, not a fallback: no safe truncation boundary, so the round stops.
@@ -520,9 +595,25 @@ namespace services::wal {
         co_return;
     }
 
+    manager_wal_replicate_t::unique_future<void> manager_wal_replicate_t::stop_auto_checkpoint(session_id_t) {
+        auto_checkpoint_stopped_ = true;
+        if (!auto_checkpoint_in_flight_) {
+            co_return;
+        }
+        assert(!round_end_waiter_ && "stop_auto_checkpoint is called once, by engine shutdown");
+        actor_zeta::promise<void> ended(resource());
+        auto round_ended = ended.get_future();
+        round_end_waiter_.emplace(std::move(ended));
+        co_await std::move(round_ended);
+    }
+
     void manager_wal_replicate_t::end_auto_checkpoint_round() noexcept {
         rebase_auto_checkpoint_window();
         auto_checkpoint_in_flight_ = false;
+        if (round_end_waiter_) {
+            round_end_waiter_->set_value();
+            round_end_waiter_.reset();
+        }
 #ifdef DEV_MODE
         g_auto_checkpoint_rounds.fetch_add(1, std::memory_order_relaxed);
 #endif

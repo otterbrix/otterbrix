@@ -9,8 +9,10 @@
 
 #include <core/result_wrapper.hpp>
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <thread>
 
 namespace actor_zeta {
 
@@ -46,6 +48,16 @@ namespace actor_zeta {
             return runtime_dispatch_helper<Actor, Method, methods>::dispatch(method,
                                                                              actor,
                                                                              std::forward<Args>(args)...);
+        }
+
+        // Blocks a thread outside the actors until the reply lands. The managers never notify a waiting
+        // host thread, so the 100 us tick bounds the hand-off latency.
+        template<typename T>
+        T wait_ready(unique_future<T>& future) {
+            while (!future.is_ready()) {
+                std::this_thread::sleep_for(std::chrono::microseconds(100));
+            }
+            return std::move(future).take_ready();
         }
 
         // Checks by identity: find_method_index returns 0 (a valid index) for "not found", risking silent misdispatch.

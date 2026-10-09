@@ -26,6 +26,8 @@
 #include <limits>
 #include <list>
 #include <mutex>
+
+#include <components/configuration/configuration.hpp>
 #include <set>
 #include <thread>
 #include <unordered_map>
@@ -44,7 +46,8 @@ namespace services::index {
     uint64_t index_key_column_probes() noexcept;
     void reset_index_key_column_probes() noexcept;
 
-    // Never reset: an ever-climbing number names a pinned snapshot, not a leak.
+    // Never reset: an ever-climbing number names a pinned snapshot, not a leak. Zero means every committed
+    // erase has reached its agent's store (or is re-queued), not merely that the horizon sweep has sent it.
     uint64_t index_deferred_deletes() noexcept;
 
     uint64_t index_stage_insert_batches() noexcept;
@@ -98,11 +101,15 @@ namespace services::index {
         manager_index_t(std::pmr::memory_resource* resource,
                         actor_zeta::scheduler_raw scheduler,
                         log_t& log,
-                        std::filesystem::path path_db = {},
-                        uint64_t bitcask_flush_threshold = 1000,
-                        uint64_t bitcask_segment_record_limit = 100,
-                        uint64_t btree_flush_threshold = 1000);
+                        std::filesystem::path path_db,
+                        uint64_t bitcask_flush_threshold,
+                        uint64_t bitcask_segment_record_limit,
+                        uint64_t btree_flush_threshold,
+                        configuration::pump_intervals_t pump);
         ~manager_index_t();
+        // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
+        // resume against them while they are torn down. Idempotent; the destructor calls it too.
+        void stop_loop() noexcept;
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char*;
@@ -311,6 +318,10 @@ namespace services::index {
 
         // Unbounded on purpose: evicting an entry would mean publishing an erase early.
         std::pmr::vector<deferred_delete_t> deferred_deletes_;
+#ifdef DEV_MODE
+        // Erases the sweep has sent and not yet heard back about; index_deferred_deletes() still counts them.
+        std::size_t erases_in_flight_{0};
+#endif
 
         // apply_wal_record_for_index returns void, so a refusal is recorded here and checked at commit_inserts.
         std::pmr::unordered_map<uint64_t, core::error_t> catchup_failures_;
@@ -398,6 +409,10 @@ namespace services::index {
 
         // mutex_ guards only the cv idle-wait, so the DML/DDL path stays lock-free.
         std::mutex mutex_;
+        std::condition_variable pump_cv_;
+        configuration::pump_intervals_t pump_;
+        void wake_loop_() noexcept;
+        std::pmr::list<in_flight_entry_t> in_flight_{resource_};
         std::thread loop_thread_;
         std::atomic<bool> loop_running_{true};
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};

@@ -1,5 +1,7 @@
 #include "manager_disk_impl.hpp"
 
+#include <components/catalog/helpers.hpp>
+
 namespace services::disk {
 
     using namespace core::filesystem;
@@ -14,7 +16,6 @@ namespace services::disk {
     // what "no matching rows" looks like (same rule as read_chunks_by_key below).
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     manager_disk_t::scan_table(components::catalog::oid_t table_oid,
-                               std::unique_ptr<components::table::table_filter_t> filter,
                                std::vector<std::size_t> projected_cols,
                                components::table::transaction_data txn) {
         if (agents_.empty()) {
@@ -30,7 +31,7 @@ namespace services::disk {
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                               &agent_disk_t::storage_scan_inner,
                                                               table_oid,
-                                                              std::move(filter),
+                                                              std::unique_ptr<components::table::pushed_filter_t>{},
                                                               int64_t{-1},
                                                               std::move(projected_cols),
                                                               txn);
@@ -49,10 +50,7 @@ namespace services::disk {
     manager_disk_t::resolve_namespace(execution_context_t ctx, std::string name) {
         resolve_namespace_result_t out(resource());
 
-        auto batches_r = co_await scan_table(pg_namespace_oid_tbl,
-                                             std::unique_ptr<components::table::table_filter_t>{},
-                                             std::vector<std::size_t>{0, 1},
-                                             ctx.txn);
+        auto batches_r = co_await scan_table(pg_namespace_oid_tbl, std::vector<std::size_t>{0, 1}, ctx.txn);
         if (batches_r.has_error()) {
             co_return batches_r.convert_error<resolve_namespace_result_t>();
         }
@@ -82,10 +80,7 @@ namespace services::disk {
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
     manager_disk_t::resolve_function_by_name(execution_context_t ctx, std::string name) {
         std::pmr::vector<resolve_function_result_t> out(resource());
-        auto batches_r = co_await scan_table(pg_proc_oid,
-                                             std::unique_ptr<components::table::table_filter_t>{},
-                                             std::vector<std::size_t>{0, 1, 2, 3, 4, 5, 6},
-                                             ctx.txn);
+        auto batches_r = co_await scan_table(pg_proc_oid, std::vector<std::size_t>{0, 1, 2, 3, 4, 5, 6}, ctx.txn);
         if (batches_r.has_error()) {
             co_return batches_r.convert_error<std::pmr::vector<resolve_function_result_t>>();
         }
@@ -93,21 +88,7 @@ namespace services::disk {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (!str_equals(chunk.value(1, i), name))
                     continue;
-                resolve_function_result_t r(resource());
-                r.found = true;
-                r.name = name;
-                r.oid = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                if (!chunk.is_null(2, i))
-                    r.namespace_oid = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(2, i));
-                if (!chunk.is_null(3, i))
-                    r.pronargs = chunk.get_value<std::int32_t>(3, i);
-                if (!chunk.is_null(4, i))
-                    r.prouid = chunk.get_value<std::uint64_t>(4, i);
-                if (!chunk.is_null(5, i))
-                    r.proargmatchers = std::string(chunk.get_value<std::string_view>(5, i));
-                if (!chunk.is_null(6, i))
-                    r.prorettype = std::string(chunk.get_value<std::string_view>(6, i));
-                out.push_back(std::move(r));
+                out.push_back(components::catalog::decode_pg_proc_row(chunk, i));
             }
         }
         co_return out;
@@ -124,10 +105,7 @@ namespace services::disk {
     manager_disk_t::find_cast_oid(execution_context_t ctx,
                                   components::catalog::oid_t source_oid,
                                   components::catalog::oid_t target_oid) {
-        auto batches_r = co_await scan_table(pg_cast_oid,
-                                             std::unique_ptr<components::table::table_filter_t>{},
-                                             std::vector<std::size_t>{0, 1, 2},
-                                             ctx.txn);
+        auto batches_r = co_await scan_table(pg_cast_oid, std::vector<std::size_t>{0, 1, 2}, ctx.txn);
         if (batches_r.has_error()) {
             co_return batches_r.convert_error<components::catalog::oid_t>();
         }
@@ -151,10 +129,7 @@ namespace services::disk {
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>>
     manager_disk_t::list_namespaces(execution_context_t ctx) {
         std::pmr::vector<std::string> out(resource());
-        auto batches_r = co_await scan_table(pg_namespace_oid_tbl,
-                                             std::unique_ptr<components::table::table_filter_t>{},
-                                             std::vector<std::size_t>{0, 1},
-                                             ctx.txn);
+        auto batches_r = co_await scan_table(pg_namespace_oid_tbl, std::vector<std::size_t>{0, 1}, ctx.txn);
         if (batches_r.has_error()) {
             co_return batches_r.convert_error<std::pmr::vector<std::string>>();
         }

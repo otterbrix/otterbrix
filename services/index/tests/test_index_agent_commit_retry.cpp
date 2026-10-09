@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "index_fixture_path.hpp"
+#include <components/log/test/test_log.hpp>
 
 using components::expressions::compare_type;
 using components::session::session_id_t;
@@ -142,7 +143,7 @@ namespace {
 
 TEST_CASE("services::index::bitcask_index_agent_t keeps the staged bucket across a refused commit") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_commit_retry");
 
     auto agent_result = bitcask_index_agent_t::create(&resource,
@@ -219,7 +220,7 @@ TEST_CASE("services::index::bitcask_index_agent_t keeps the staged bucket across
 
 TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucket until the flush verdict") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_publish_retry");
 
     auto agent_result = bitcask_index_agent_t::create(&resource,
@@ -300,7 +301,7 @@ TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucke
 // let recover_txn_log gate replay on a commit marker for a transaction that never staged those rows.
 TEST_CASE("services::index::bitcask_index_agent_t a foreign commit does not journal the rebuild's bucket") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("otterbrix_test_index_agent_foreign_commit_bucket_zero");
 
     auto agent_result = bitcask_index_agent_t::create(&resource,

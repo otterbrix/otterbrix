@@ -81,13 +81,15 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
                                                          cmp,
                                                          expressions::param_storage{make_key(res, "l", ls, 0)},
                                                          expressions::param_storage{make_key(res, "r", rs, 0)});
-        auto join = logical_plan::make_node_join(res, core::dbname_t{}, core::relname_t{}, jt);
+        auto join = logical_plan::make_node_join(res, jt);
         join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
         join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
         join->append_expression(cond);
         auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
-        auto plan =
+        auto plan_planned =
             services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::unlimit(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
         REQUIRE(plan);
         return plan->type();
     };
@@ -129,13 +131,15 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
                                                          compare_type::eq,
                                                          expressions::param_storage{std::move(lk)},
                                                          expressions::param_storage{std::move(rk)});
-        auto join = logical_plan::make_node_join(res, core::dbname_t{}, core::relname_t{}, join_type::inner);
+        auto join = logical_plan::make_node_join(res, join_type::inner);
         join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
         join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
         join->append_expression(cond);
         auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
-        auto plan =
+        auto plan_planned =
             services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::unlimit(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
         REQUIRE(plan);
         CHECK(plan->type() == operator_type::join);
     }
@@ -311,7 +315,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
                                                  compare_type::eq,
                                                  expressions::param_storage{make_key(res, "lk", side_t::left, 0)},
                                                  expressions::param_storage{make_key(res, "rk", side_t::right, 0)});
-        auto join = logical_plan::make_node_join(res, core::dbname_t{}, core::relname_t{}, jt);
+        auto join = logical_plan::make_node_join(res, jt);
         auto left_child = logical_plan::make_node_raw_data(res, build_named_chunk(res, "lk", "lv", left_rows));
         auto right_child = logical_plan::make_node_raw_data(res, build_named_chunk(res, "rk", "rv", right_rows));
         left_child->set_table_oid(l);
@@ -321,8 +325,10 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
         join->append_expression(cond);
 
         auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
-        auto plan =
+        auto plan_planned =
             services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::unlimit(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
         REQUIRE(plan);
         REQUIRE(plan->type() == operator_type::hash_join);
         REQUIRE(plan->right()); // physical build side
@@ -506,9 +512,9 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
                                                  compare_type::gt,
                                                  expressions::param_storage{make_key(res, "bv", side_t::left, 1)},
                                                  expressions::param_storage{make_key(res, "bk", side_t::left, 0)});
-        auto wrapper = logical_plan::make_node_aggregate(res, core::dbname_t{}, core::relname_t{});
+        auto wrapper = logical_plan::make_node_aggregate(res, qualified_name_t{});
         wrapper->append_child(big_table);
-        wrapper->append_child(logical_plan::make_node_match(res, core::dbname_t{}, core::relname_t{}, where));
+        wrapper->append_child(logical_plan::make_node_match(res, qualified_name_t{}, where));
 
         auto tiny = logical_plan::make_node_raw_data(res, build_named_chunk(res, "rk", "rv", 2));
         tiny->set_table_oid(tiny_oid);
@@ -518,13 +524,16 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
                                                  compare_type::eq,
                                                  expressions::param_storage{make_key(res, "bk", side_t::left, 0)},
                                                  expressions::param_storage{make_key(res, "rk", side_t::right, 0)});
-        auto join = logical_plan::make_node_join(res, core::dbname_t{}, core::relname_t{}, join_type::inner);
+        auto join = logical_plan::make_node_join(res, join_type::inner);
         join->append_child(wrapper);
         join->append_child(tiny);
         join->append_expression(cond);
         join->set_equi_columns(0, 0); // post-rewrite_hash_joins state: algo -> hash
 
-        auto plan = services::planner::create_plan(context, registry, join, logical_plan::limit_t::unlimit(), nullptr);
+        auto plan_planned =
+            services::planner::create_plan(context, registry, join, logical_plan::limit_t::unlimit(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
         REQUIRE(plan);
         REQUIRE(plan->type() == operator_type::hash_join);
         REQUIRE(plan->right()); // physical build side

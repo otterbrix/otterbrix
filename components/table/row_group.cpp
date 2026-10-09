@@ -7,6 +7,7 @@
 #include <components/table/storage/buffer_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
 #include <cstdlib>
+#include <iterator>
 #include <limits>
 #include <unordered_map>
 #include <vector/data_chunk.hpp>
@@ -130,13 +131,8 @@ namespace components::table {
         }
         state.max_row_group_row = std::min(start + group_count, state.max_row);
         for (uint64_t i = 0; i < column_ids.size(); i++) {
-            const auto& column = column_ids[i];
-            if (!column.is_row_id_column()) {
-                auto& column_data = get_column(state.physical_column(column.primary_index()));
-                column_data.initialize_scan_with_offset(state.column_scans[i], row_number);
-            } else {
-                state.column_scans[i].current = nullptr;
-            }
+            auto& column_data = get_column(state.physical_column(column_ids[i].primary_index()));
+            column_data.initialize_scan_with_offset(state.column_scans[i], row_number);
         }
         return true;
     }
@@ -150,13 +146,8 @@ namespace components::table {
             return false;
         }
         for (uint64_t i = 0; i < column_ids.size(); i++) {
-            auto column = column_ids[i];
-            if (!column.is_row_id_column()) {
-                auto& column_data = get_column(state.physical_column(column.primary_index()));
-                column_data.initialize_scan(state.column_scans[i]);
-            } else {
-                state.column_scans[i].current = nullptr;
-            }
+            auto& column_data = get_column(state.physical_column(column_ids[i].primary_index()));
+            column_data.initialize_scan(state.column_scans[i]);
         }
         return true;
     }
@@ -174,18 +165,19 @@ namespace components::table {
 
         uint64_t rows_to_write = count;
         if (rows_to_write > 0) {
-            const types::logical_value_t fill_value =
-                default_value.has_value() ? *default_value
-                                          : types::logical_value_t{collection_->resource(), new_column.type()};
-            column_append_state state;
+            // The materialized column belongs to the successor, so its filled segments pack into the
+            // successor's tails (sealed by the successor's first checkpoint like any other append).
+            column_append_state state{&new_collection->append_packer()};
             auto init = added_column->initialize_append(state);
             if (init.has_error()) {
                 return init.convert_error<std::unique_ptr<row_group_t>>();
             }
             for (uint64_t i = 0; i < rows_to_write; i += vector::DEFAULT_VECTOR_CAPACITY) {
                 uint64_t rows_in_this_vector = std::min<uint64_t>(rows_to_write - i, vector::DEFAULT_VECTOR_CAPACITY);
-                result.reference(fill_value);
-                if (!default_value.has_value()) {
+                if (default_value.has_value() && !default_value->is_null()) {
+                    result.reference(*default_value);
+                } else {
+                    result.set_vector_type(vector::vector_type::CONSTANT);
                     result.set_null(true);
                 }
                 auto appended = added_column->append(state, result, rows_in_this_vector);
@@ -224,11 +216,7 @@ namespace components::table {
         state.vector_index++;
         const auto& column_ids = state.column_ids();
         for (uint64_t i = 0; i < column_ids.size(); i++) {
-            const auto& column = column_ids[i];
-            if (column.is_row_id_column()) {
-                continue;
-            }
-            get_column(state.physical_column(column.primary_index())).skip(state.column_scans[i]);
+            get_column(state.physical_column(column_ids[i].primary_index())).skip(state.column_scans[i]);
         }
     }
 
@@ -321,6 +309,7 @@ namespace components::table {
 
     template<table_scan_type TYPE>
     void row_group_t::templated_scan(collection_scan_state& state, vector::data_chunk_t& result) {
+        assert(result.column_count() >= state.result_width() && "a scan chunk narrower than its scanned ordinals");
         const auto& column_ids = state.column_ids();
         auto* filter = state.filter();
         for (auto& column_state : state.column_scans) {
@@ -354,17 +343,12 @@ namespace components::table {
             if (count == max_count && !filter) {
                 for (uint64_t i = 0; i < column_ids.size(); i++) {
                     const auto& column = column_ids[i];
-                    size_t out_idx = column.is_row_id_column() ? i : column.primary_index();
-                    if (column.is_row_id_column()) {
-                        assert(result.data[out_idx].type().type() == types::logical_type::BIGINT);
-                        result.data[out_idx].sequence(static_cast<int64_t>(start + current_row), 1, count);
+                    const size_t out_idx = column.primary_index();
+                    auto& col_data = get_column(state.physical_column(column.primary_index()));
+                    if (TYPE == table_scan_type::REGULAR) {
+                        col_data.scan(state.vector_index, state.column_scans[i], result.data[out_idx]);
                     } else {
-                        auto& col_data = get_column(state.physical_column(column.primary_index()));
-                        if (TYPE == table_scan_type::REGULAR) {
-                            col_data.scan(state.vector_index, state.column_scans[i], result.data[out_idx]);
-                        } else {
-                            col_data.scan_committed(state.vector_index, state.column_scans[i], result.data[out_idx]);
-                        }
+                        col_data.scan_committed(state.vector_index, state.column_scans[i], result.data[out_idx]);
                     }
                 }
                 state.valid_indexing = vector::indexing_vector_t(result.resource(), 0, result.capacity());
@@ -398,9 +382,6 @@ namespace components::table {
                 if (approved_tuple_count == 0) {
                     for (uint64_t i = 0; i < column_ids.size(); i++) {
                         auto& col_idx = column_ids[i];
-                        if (col_idx.is_row_id_column()) {
-                            continue;
-                        }
                         auto& col_data = get_column(col_idx);
                         col_data.skip(state.column_scans[i]);
                     }
@@ -409,74 +390,61 @@ namespace components::table {
                 }
                 for (uint64_t i = 0; i < column_ids.size(); i++) {
                     auto& column = column_ids[i];
-                    size_t out_idx = column.is_row_id_column() ? i : column.primary_index();
-                    if (column.is_row_id_column()) {
-                        assert(result.data[out_idx].type().type() == types::logical_type::BIGINT);
-                        result.data[out_idx].set_vector_type(vector::vector_type::FLAT);
-                        auto result_data = result.data[out_idx].data<int64_t>();
-                        for (size_t indexing_idx = 0; indexing_idx < approved_tuple_count; indexing_idx++) {
-                            result_data[indexing_idx] =
-                                start + current_row + static_cast<int64_t>(indexing.get_index(indexing_idx));
+                    const size_t out_idx = column.primary_index();
+                    auto& col_data = get_column(state.physical_column(column.primary_index()));
+                    if (TYPE == table_scan_type::REGULAR) {
+                        // Selective filter: gather only surviving rows via fetch_row instead of scanning+slicing
+                        // (measured ~7x fewer decompressed rows at 0.2% survival; per-row gather wins below ~20%
+                        // survival). No set_vector_type(FLAT): forcing it would reset an already-FLAT constant-size
+                        // STRUCT buffer (e.g. INTERVAL) and crash fetch_row.
+                        const bool late_materialize =
+                            filter != nullptr && approved_tuple_count * uint64_t{5} < max_count;
+                        if (late_materialize) {
+                            const uint64_t base = state.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
+                            const uint64_t off = state.column_scans[i].result_offset;
+                            column_fetch_state fetch_state;
+                            // Chunk outlives our pins: strings must be copied, not borrowed from a released block.
+                            fetch_state.result_outlives_pins = true;
+#ifdef DEV_MODE
+                            if (!fetch_state.result_outlives_pins &&
+                                result.data[out_idx].type().to_physical_type() == types::physical_type::STRING) {
+                                g_gathered_borrowed_strings.fetch_add(approved_tuple_count, std::memory_order_relaxed);
+                            }
+#endif
+                            for (uint64_t k = 0; k < approved_tuple_count; k++) {
+                                col_data.fetch_row(fetch_state,
+                                                   static_cast<int64_t>(base + indexing.get_index(k)),
+                                                   result.data[out_idx],
+                                                   off + k);
+                                // A pin OOM leaves the cell unwritten; abort via scan_error, not garbage.
+                                if (fetch_state.fetch_error.contains_error()) {
+                                    state.scan_error = fetch_state.fetch_error;
+                                    return;
+                                }
+                            }
+                            col_data.skip(state.column_scans[i], max_count);
+                        } else {
+                            vector::vector_t select_vector(result.resource(), result.data[out_idx].type(), max_count);
+                            auto prev_offset = state.column_scans[i].result_offset;
+                            state.column_scans[i].result_offset = 0;
+                            col_data.select(state.vector_index,
+                                            state.column_scans[i],
+                                            select_vector,
+                                            indexing,
+                                            approved_tuple_count);
+                            state.column_scans[i].result_offset = prev_offset;
+                            vector::vector_ops::copy(select_vector,
+                                                     result.data[out_idx],
+                                                     approved_tuple_count,
+                                                     0,
+                                                     state.column_scans[i].result_offset);
                         }
                     } else {
-                        auto& col_data = get_column(state.physical_column(column.primary_index()));
-                        if (TYPE == table_scan_type::REGULAR) {
-                            // Selective filter: gather only surviving rows via fetch_row instead of scanning+slicing
-                            // (measured ~7x fewer decompressed rows at 0.2% survival; per-row gather wins below ~20%
-                            // survival). No set_vector_type(FLAT): forcing it would reset an already-FLAT constant-size
-                            // STRUCT buffer (e.g. INTERVAL) and crash fetch_row.
-                            const bool late_materialize =
-                                filter != nullptr && approved_tuple_count * uint64_t{5} < max_count;
-                            if (late_materialize) {
-                                const uint64_t base = state.vector_index * vector::DEFAULT_VECTOR_CAPACITY;
-                                const uint64_t off = state.column_scans[i].result_offset;
-                                column_fetch_state fetch_state;
-                                // Chunk outlives our pins: strings must be copied, not borrowed from a released block.
-                                fetch_state.result_outlives_pins = true;
-#ifdef DEV_MODE
-                                if (!fetch_state.result_outlives_pins &&
-                                    result.data[out_idx].type().to_physical_type() == types::physical_type::STRING) {
-                                    g_gathered_borrowed_strings.fetch_add(approved_tuple_count,
-                                                                          std::memory_order_relaxed);
-                                }
-#endif
-                                for (uint64_t k = 0; k < approved_tuple_count; k++) {
-                                    col_data.fetch_row(fetch_state,
-                                                       static_cast<int64_t>(base + indexing.get_index(k)),
-                                                       result.data[out_idx],
-                                                       off + k);
-                                    // A pin OOM leaves the cell unwritten; abort via scan_error, not garbage.
-                                    if (fetch_state.fetch_error.contains_error()) {
-                                        state.scan_error = fetch_state.fetch_error;
-                                        return;
-                                    }
-                                }
-                                col_data.skip(state.column_scans[i], max_count);
-                            } else {
-                                vector::vector_t select_vector(result.resource(),
-                                                               result.data[out_idx].type(),
-                                                               max_count);
-                                auto prev_offset = state.column_scans[i].result_offset;
-                                state.column_scans[i].result_offset = 0;
-                                col_data.select(state.vector_index,
-                                                state.column_scans[i],
-                                                select_vector,
-                                                indexing,
-                                                approved_tuple_count);
-                                state.column_scans[i].result_offset = prev_offset;
-                                vector::vector_ops::copy(select_vector,
-                                                         result.data[out_idx],
-                                                         approved_tuple_count,
-                                                         0,
-                                                         state.column_scans[i].result_offset);
-                            }
-                        } else {
-                            col_data.select_committed(state.vector_index,
-                                                      state.column_scans[i],
-                                                      result.data[out_idx],
-                                                      indexing,
-                                                      approved_tuple_count);
-                        }
+                        col_data.select_committed(state.vector_index,
+                                                  state.column_scans[i],
+                                                  result.data[out_idx],
+                                                  indexing,
+                                                  approved_tuple_count);
                     }
                 }
 
@@ -537,22 +505,14 @@ namespace components::table {
                     projected_cols.end()) {
                 continue;
             }
-            auto& column = column_ids[col_idx];
             auto& result_vector = result.data[col_idx];
             assert(result_vector.get_vector_type() == vector::vector_type::FLAT);
             assert(!result_vector.is_null(result_idx));
-            if (column.is_row_id_column()) {
-                assert(result_vector.type().to_physical_type() == types::physical_type::INT64);
-                result_vector.set_vector_type(vector::vector_type::FLAT);
-                auto data = result_vector.data<int64_t>();
-                data[result_idx] = row_id;
-            } else {
-                auto& col_data = get_column(column);
-                auto& column_state = state.child(col_idx);
-                col_data.fetch_row(column_state, row_id, result_vector, result_idx);
-                if (state.absorb_error(column_state)) {
-                    return;
-                }
+            auto& col_data = get_column(column_ids[col_idx]);
+            auto& column_state = state.child(col_idx);
+            col_data.fetch_row(column_state, row_id, result_vector, result_idx);
+            if (state.absorb_error(column_state)) {
+                return;
             }
         }
     }
@@ -598,16 +558,24 @@ namespace components::table {
         }
     }
 
-    core::result_wrapper_t<bool> row_group_t::revert_append(uint64_t row_group_start) {
+    void row_group_t::snapshot_counts(append_cut_t& cut) {
+        for (uint64_t c = 0; c < get_column_count(); c++) {
+            get_column(c).snapshot_counts(cut);
+        }
+    }
+
+    void row_group_t::snapshot_counts(uint64_t column, append_cut_t& cut) { get_column(column).snapshot_counts(cut); }
+
+    core::result_wrapper_t<bool> row_group_t::revert_append(uint64_t row_group_start, cut_cursor_t& cut) {
         auto vinfo = version_info();
         if (vinfo) {
             vinfo->revert_append(row_group_start);
         }
-        // row_group_start is row-group-local; a column's start_ is absolute, so truncate at start + local, or
-        // stale tails let a later scan overrun the result vector. Best-effort: first refusal wins, count still shrinks.
+        // Each column cuts back to the count the snapshot recorded for it (a LIST element column's is not
+        // a row number). Best-effort: first refusal wins, count still shrinks.
         core::error_t first_error = core::error_t::no_error();
         for (uint64_t c = 0; c < get_column_count(); c++) {
-            auto reverted = get_column(c).revert_append(this->start + static_cast<int64_t>(row_group_start));
+            auto reverted = get_column(c).revert_append(cut);
             if (reverted.has_error() && !first_error.contains_error()) {
                 first_error = reverted.error();
             }
@@ -627,6 +595,7 @@ namespace components::table {
         append_state.states = std::make_unique<column_append_state[]>(get_column_count());
         for (uint64_t i = 0; i < get_column_count(); i++) {
             auto& col_data = get_column(i);
+            append_state.states[i] = column_append_state{append_state.pbm};
             auto init = col_data.initialize_append(append_state.states[i]);
             if (init.has_error()) {
                 return init; // out_of_memory
@@ -638,17 +607,62 @@ namespace components::table {
     core::result_wrapper_t<bool>
     row_group_t::append(row_group_append_state& state, vector::data_chunk_t& chunk, uint64_t append_count) {
         assert(chunk.column_count() == get_column_count());
+        // The counts before this chunk: what a refused column cuts the row group back to.
+        auto& piece_cut = state.parent.piece_cut;
+        piece_cut.counts.clear();
+        snapshot_counts(piece_cut);
         for (uint64_t i = 0; i < get_column_count(); i++) {
             auto& col_data = get_column(i);
             auto prev_allocation_size = col_data.allocation_size();
             auto appended = col_data.append(state.states[i], chunk.data[i], append_count);
             allocation_size_ += col_data.allocation_size() - prev_allocation_size;
             if (appended.has_error()) {
+                for (uint64_t c = 0; c <= i; c++) {
+                    state.states[c].release_pins();
+                }
+                auto unwound = unwind_append(piece_cut, i + 1);
+                if (unwound.contains_error()) {
+                    return unwind_refused(appended.error(), unwound, collection_->resource());
+                }
                 return appended; // out_of_memory
             }
         }
         state.offset_in_row_group += append_count;
         return true;
+    }
+
+    core::error_t row_group_t::unwind_append(const append_cut_t& cut, uint64_t column_count) {
+        auto* resource = collection_->resource();
+        std::pmr::vector<uint64_t> before(resource);
+        collect_disk_block_ids(before);
+        core::error_t first_error = core::error_t::no_error();
+        cut_cursor_t cursor(cut);
+        for (uint64_t c = 0; c < column_count; c++) {
+            auto reverted = get_column(c).revert_append(cursor);
+            if (reverted.has_error() && !first_error.contains_error()) {
+                first_error = reverted.error();
+            }
+        }
+        std::pmr::vector<uint64_t> after(resource);
+        collect_disk_block_ids(after);
+        std::sort(before.begin(), before.end());
+        before.erase(std::unique(before.begin(), before.end()), before.end());
+        std::sort(after.begin(), after.end());
+        std::pmr::vector<uint64_t> erased(resource);
+        std::set_difference(before.begin(), before.end(), after.begin(), after.end(), std::back_inserter(erased));
+        auto settled = collection_->settle_unwind(std::move(erased));
+        if (first_error.contains_error()) {
+            return first_error;
+        }
+        return settled;
+    }
+
+    core::error_t
+    unwind_refused(const core::error_t& cause, const core::error_t& unwind, std::pmr::memory_resource* resource) {
+        std::pmr::string what(cause.what, resource);
+        what.append("; its unwind was refused: ");
+        what.append(unwind.what);
+        return core::error_t(core::error_code_t::data_corruption, std::move(what));
     }
 
     uint64_t row_group_t::committed_row_count() {
@@ -882,10 +896,7 @@ namespace components::table {
         return pointer;
     }
 
-    core::result_wrapper_t<bool> row_group_t::transition_to_disk() {
-        // One partial_block_manager per closed row group: all its columns' segments pack into shared
-        // blocks instead of one block per segment (avoids a ~127x over-allocation for narrow columns).
-        storage::partial_block_manager_t pbm(block_manager());
+    core::result_wrapper_t<bool> row_group_t::transition_to_disk(storage::partial_block_manager_t& pbm) {
         for (uint64_t i = 0; i < columns_.size(); i++) {
             if (!columns_[i]) {
                 continue;
@@ -894,10 +905,6 @@ namespace components::table {
             if (transitioned.has_error()) {
                 return transitioned; // io_error / out_of_memory
             }
-        }
-        // Flush before returning (synchronous, like checkpoint): the flush-before-evict point compact also reuses.
-        if (auto flushed = pbm.flush_partial_blocks(); flushed.has_error()) {
-            return flushed; // io_error: the re-pointed segments' blocks are not on disk
         }
         return true;
     }

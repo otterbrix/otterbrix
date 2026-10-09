@@ -109,7 +109,7 @@ TEST_CASE("components::sql::update_bind") {
         f.emplace_back(set_const(components::expressions::key_t{&resource, "count"}, core::parameter_id_t{0}));
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET count = $1 WHERE id = $2;)_",
-                           R"_($update: <oid:0> {$upsert: 0, $match: {"id": {$eq: #1}}, $limit: -1})_",
+                           R"_($update: <oid:0> {$match: {"id": {$eq: #1}}, $limit: -1})_",
                            vec({v(&resource, 999l), v(&resource, 1l)}),
                            f);
     }
@@ -120,7 +120,7 @@ TEST_CASE("components::sql::update_bind") {
         f.emplace_back(set_const(components::expressions::key_t{&resource, "flag"}, core::parameter_id_t{1}));
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET name = $1, flag = $2 WHERE "count" > $3;)_",
-                           R"_($update: <oid:0> {$upsert: 0, $match: {"count": {$gt: #2}}, $limit: -1})_",
+                           R"_($update: <oid:0> {$match: {"count": {$gt: #2}}, $limit: -1})_",
                            vec({v(&resource, std::string("ok")), v(&resource, true), v(&resource, 100l)}),
                            f);
     }
@@ -134,7 +134,7 @@ TEST_CASE("components::sql::update_bind") {
         f.emplace_back(expression_ptr{rating});
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET rating = rating + $1 WHERE flag = $2;)_",
-                           R"_($update: <oid:0> {$upsert: 0, $match: {"flag": {$eq: #1}}, $limit: -1})_",
+                           R"_($update: <oid:0> {$match: {"flag": {$eq: #1}}, $limit: -1})_",
                            vec({v(&resource, 5l), v(&resource, true)}),
                            f);
     }

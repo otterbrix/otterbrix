@@ -200,16 +200,19 @@ namespace {
         return core::error_t::no_error();
     }
 
-    std::unique_ptr<vector_function> make_fixed_type_func(std::pmr::memory_resource* resource,
-                                                          const std::string& name,
-                                                          const std::string& short_doc,
-                                                          const std::string& full_doc,
-                                                          logical_type type,
-                                                          size_t num_args,
-                                                          vector_exec_fn kernel) {
-        function_doc doc{short_doc, full_doc, {"arg"}, false};
-        auto fn =
-            std::make_unique<vector_function>(name, arity::fixed_num(num_args), doc, /*available_kernel_slots=*/1);
+    core::pmr::polymorphic_unique_ptr<vector_function> make_fixed_type_func(std::pmr::memory_resource* resource,
+                                                                            const std::string& name,
+                                                                            const std::string& short_doc,
+                                                                            const std::string& full_doc,
+                                                                            logical_type type,
+                                                                            size_t num_args,
+                                                                            vector_exec_fn kernel) {
+        function_doc doc{resource, short_doc, full_doc, {"arg"}, false};
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                      name,
+                                                                      arity::fixed_num(num_args),
+                                                                      doc,
+                                                                      /*available_kernel_slots=*/size_t{1});
 
         std::pmr::vector<parameter_type> parameters(resource);
         for (size_t i = 0; i < num_args; i++) {
@@ -227,13 +230,17 @@ namespace {
         return fn;
     }
 
-    std::unique_ptr<vector_function> make_abs_func(std::pmr::memory_resource* resource,
-                                                   const std::string& name,
-                                                   const std::string& short_doc,
-                                                   const std::string& full_doc) {
-        function_doc doc{short_doc, full_doc, {"arg"}, false};
+    core::pmr::polymorphic_unique_ptr<vector_function> make_abs_func(std::pmr::memory_resource* resource,
+                                                                     const std::string& name,
+                                                                     const std::string& short_doc,
+                                                                     const std::string& full_doc) {
+        function_doc doc{resource, short_doc, full_doc, {"arg"}, false};
 
-        auto fn = std::make_unique<vector_function>(name, arity::unary(), doc, /*available_kernel_slots=*/1);
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                      name,
+                                                                      arity::unary(),
+                                                                      doc,
+                                                                      /*available_kernel_slots=*/size_t{1});
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::variable(0, absolute_parameters(resource))},

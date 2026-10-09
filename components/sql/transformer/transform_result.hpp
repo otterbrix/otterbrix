@@ -44,10 +44,6 @@ namespace components::sql::transform {
 
         transform_result& bind(size_t id, types::logical_value_t value);
 
-        logical_plan::node_ptr node_ptr() const;
-
-        logical_plan::parameter_node_ptr params_ptr() const;
-
         size_t parameter_count() const;
 
         bool all_bound() const;

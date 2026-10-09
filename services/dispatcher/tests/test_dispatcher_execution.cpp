@@ -23,6 +23,7 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/context.hpp>
+#include <components/log/test/test_log.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/session/session.hpp>
@@ -33,7 +34,9 @@
 #include <components/types/types.hpp>
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <services/disk/manager_disk.hpp>
+#include <services/disk/tests/test_directory.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
@@ -83,11 +86,10 @@ namespace {
         return core::error_t::no_error();
     }
 
-    std::unique_ptr<components::compute::vector_function> make_probe_func(std::pmr::memory_resource* resource,
-                                                                          const std::string& name) {
+    components::compute::function_ptr make_probe_func(std::pmr::memory_resource* resource, const std::string& name) {
         using namespace components::compute;
-        function_doc doc{"short_doc", "full_doc", {"arg"}, false};
-        auto fn = std::make_unique<vector_function>(name, arity::unary(), doc, 1);
+        function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource, name, arity::unary(), doc, size_t{1});
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::BIGINT)},
                                {output_type::fixed(logical_type::BIGINT)});
@@ -102,22 +104,28 @@ namespace {
 struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
     dispatcher_fixture(std::pmr::memory_resource* resource,
                        const std::string& disk_path,
-                       components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass,
+                       std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
                        bool wire_index = true)
         : actor_zeta::actor::actor_mixin<dispatcher_fixture>()
         , resource_(resource)
         , disk_path_(scrubbed(disk_path))
-        , log_(initialization_logger("python", "/tmp/docker_logs/"))
+        , log_(make_test_log())
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
-        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
+        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource,
+                                                          scheduler_,
+                                                          scheduler_,
+                                                          test_directory::created(disk_config_),
+                                                          log_,
+                                                          configuration::pump_intervals_t{}))
         , manager_index_(actor_zeta::spawn<services::index::manager_index_t>(resource,
                                                                              scheduler_,
                                                                              log_,
-                                                                             disk_config_.path,
+                                                                             test_directory::created(disk_config_.path),
                                                                              disk_config_.bitcask_flush_threshold,
                                                                              disk_config_.bitcask_segment_record_limit,
-                                                                             disk_config_.btree_flush_threshold))
+                                                                             disk_config_.btree_flush_threshold,
+                                                                             configuration::pump_intervals_t{}))
         , wal_config_(disk_path)
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
                                                                   scheduler_,
@@ -125,21 +133,21 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
                                                                   log_,
                                                                   manager_disk_->address(),
                                                                   wire_index ? manager_index_->address()
-                                                                             : components::pipeline::no_mailbox()))
-        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
-                                                                      scheduler_,
-                                                                      log_,
-                                                                      manager_wal_->address(),
-                                                                      manager_disk_->address(),
-                                                                      wire_index ? manager_index_->address()
-                                                                                 : components::pipeline::no_mailbox(),
-                                                                      0,
-                                                                      &services::planner::no_custom_lowering,
-                                                                      optimizer_pass)) {
+                                                                             : components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{}))
+        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(
+              resource,
+              scheduler_,
+              log_,
+              manager_wal_->address(),
+              manager_disk_->address(),
+              wire_index ? manager_index_->address() : components::pipeline::no_mailbox(),
+              configuration::config_execution{},
+              components::planner::primitives_t{optimizer_rules, {}})) {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
         manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
-        manager_disk_->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
     }
 
     ~dispatcher_fixture() {
@@ -157,12 +165,7 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
 
     template<typename T>
     T pump(actor_zeta::unique_future<T>&& fut) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            scheduler_->run(1000);
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut, scheduler_));
         auto out = std::move(fut).take_ready();
         // Drain the post-result DDL/DML tail (catalog writes, commit pipeline).
         scheduler_->run(10000);
@@ -309,11 +312,13 @@ TEST_CASE("services::dispatcher::array_equality_subquery_unstamped_schema_is_ref
     REQUIRE(cur->is_error());
 }
 
-// Storing optimizer_pass_ without forwarding it into optimize() would silently ignore it.
-TEST_CASE("services::dispatcher::host_optimizer_pass_reaches_optimize") {
+// Storing the host rules without forwarding them into optimize() would silently ignore them.
+TEST_CASE("services::dispatcher::host_optimizer_rules_reach_optimize") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     g_host_pass_calls.store(0, std::memory_order_relaxed);
-    dispatcher_fixture test(mr.get(), dispatcher_dir("host_pass"), &counting_host_pass);
+    const components::planner::optimizer_rule_t rules[] = {
+        {components::planner::optimizer_stage::last, &counting_host_pass}};
+    dispatcher_fixture test(mr.get(), dispatcher_dir("host_pass"), rules);
 
     REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
@@ -354,7 +359,6 @@ TEST_CASE("services::dispatcher::cross_db_foreign_key_binds") {
 
 // register_udf fans out to every per-executor registry BEFORE the operator's catalog work.
 TEST_CASE("services::dispatcher::register_udf_operator_refusal_unwinds_executors") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("udf_unwind"));
 
@@ -376,7 +380,6 @@ TEST_CASE("services::dispatcher::register_udf_operator_refusal_unwinds_executors
         REQUIRE(mentions(err, "already exists in the catalog"));
         REQUIRE(err.type == core::error_code_t::already_exists);
     }
-    components::compute::function_registry_t::reset_default();
 }
 
 // SQL can't spell a too-deep type (CREATE TYPE gates its own depth), so this hands a hand-built plan.
@@ -395,8 +398,7 @@ TEST_CASE("services::dispatcher::alter_add_column_gates_persistable_type") {
     auto node = components::logical_plan::make_node_alter_table_add_column(
         mr.get(),
         components::table::column_definition_t{"too_deep", deep});
-    node->set_dbname("db");
-    node->set_relname("t");
+    node->set_target(qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
     components::logical_plan::execution_plan_t plan{mr.get(),
                                                     components::logical_plan::node_ptr{node},
                                                     components::logical_plan::make_parameter_node(mr.get())};
@@ -496,7 +498,7 @@ TEST_CASE("services::dispatcher::create_index_refuses_without_an_index_manager")
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(),
                             dispatcher_dir("create_index_no_index_manager"),
-                            &components::planner::no_op_pass,
+                            {},
                             /*wire_index=*/false);
 
     REQUIRE(test.execute_sql("CREATE DATABASE cim;")->is_success());
@@ -523,7 +525,7 @@ TEST_CASE("services::dispatcher::alter_add_column_default_is_coerced_like_create
         REQUIRE(cur->size() == 1);
         const auto v = cur->value(0, 0);
         REQUIRE_FALSE(v.is_null());
-        // INTEGER, not the BIGINT the literal started as: convert_column_defaults ran.
+        // INTEGER, not the BIGINT the literal started as: convert_column_default ran.
         CHECK(v.type().type() == logical_type::INTEGER);
         CHECK(v.value<int32_t>() == 7);
     }

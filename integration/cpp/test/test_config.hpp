@@ -7,6 +7,7 @@
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <integration/cpp/base_spaces.hpp>
+#include <integration/cpp/otterbrix.hpp>
 
 #include "integration_fixture_path.hpp"
 
@@ -54,31 +55,14 @@ inline void test_clear_directory(const configuration::config& config) {
 }
 
 // Names a DML target as the transformer would, so register_plan_targets resolves it like a transformed plan.
-inline components::logical_plan::node_ptr
-test_dml_target(components::logical_plan::node_ptr node, const std::string& database, const std::string& collection) {
-    using namespace components::logical_plan;
-    switch (node->type()) {
-        case node_type::insert_t: {
-            auto* n = static_cast<node_insert_t*>(node.get());
-            n->set_dbname(database);
-            n->set_relname(collection);
-            break;
-        }
-        case node_type::update_t: {
-            auto* n = static_cast<node_update_t*>(node.get());
-            n->set_dbname(database);
-            n->set_relname(collection);
-            break;
-        }
-        case node_type::delete_t: {
-            auto* n = static_cast<node_delete_t*>(node.get());
-            n->set_dbname(database);
-            n->set_relname(collection);
-            break;
-        }
-        default:
-            // Everything else (aggregate/match/...) already carries its own names.
-            break;
+inline components::logical_plan::node_ptr test_dml_target(components::logical_plan::node_ptr node,
+                                                          const core::dbname_t& database,
+                                                          const core::relname_t& collection) {
+    using components::logical_plan::node_type;
+    // Everything else (aggregate/match/...) already carries its own names.
+    if (node->type() == node_type::insert_t || node->type() == node_type::update_t ||
+        node->type() == node_type::delete_t) {
+        node->set_target(qualified_name_t{database, collection});
     }
     return node;
 }
@@ -87,33 +71,50 @@ test_dml_target(components::logical_plan::node_ptr node, const std::string& data
 inline components::cursor::cursor_t_ptr
 test_create_collection(otterbrix::wrapper_dispatcher_t* dispatcher,
                        const otterbrix::session_id_t& session,
-                       const database_name_t& database,
-                       const collection_name_t& collection,
+                       const core::dbname_t& database,
+                       const core::relname_t& collection,
                        std::vector<components::table::column_definition_t> column_definitions = {},
                        std::vector<components::table::table_constraint_t> constraints = {}) {
     auto* resource = dispatcher->resource();
     auto node = components::logical_plan::make_node_create_collection(resource,
-                                                                      core::relname_t{collection},
+                                                                      collection,
                                                                       std::move(column_definitions),
                                                                       std::move(constraints));
-    node->set_dbname(database);
+    node->set_target(qualified_name_t{database, collection});
     components::logical_plan::execution_plan_t plan{resource,
                                                     node,
                                                     components::logical_plan::make_parameter_node(resource)};
-    components::sql::transform::register_catalog_resolve_namespace(resource, &plan.catalog_resolves, database);
+    components::sql::transform::register_catalog_resolve_namespace(resource, &plan.catalog_resolves, database.t);
     return dispatcher->execute_plan(session, std::move(plan));
+}
+
+// Fatal to the case when the engine refuses to start; a test that expects a refusal calls open() itself.
+inline otterbrix::base_otterbrix_t::host_ptr test_open_engine(const configuration::config& config,
+                                                              components::planner::primitives_t primitives = {}) {
+    auto host = otterbrix::base_otterbrix_t::open(config, primitives);
+    if (host.has_error()) {
+        FAIL("the engine refused to start at '" << config.main_path.string() << "': " << host.error().what);
+    }
+    return std::move(host.value());
+}
+
+inline otterbrix::otterbrix_ptr test_make_otterbrix(const configuration::config& config) {
+    return otterbrix::otterbrix_ptr{new otterbrix::otterbrix_t(test_open_engine(config))};
 }
 
 class test_spaces final : public otterbrix::base_otterbrix_t {
 public:
-    // Host customization hooks forwarded to the engine ctor chain; Null Objects here for non-federation tests.
-    test_spaces(const configuration::config& config,
-                services::planner::create_plan_rule_t create_plan_rule = &services::planner::no_custom_lowering,
-                components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass)
-        : otterbrix::base_otterbrix_t(config, create_plan_rule, optimizer_pass) {
-        // Resets the UDF registry per test — a stale one once crashed test_batch_join after test_batch_where.
-        components::compute::function_registry_t::reset_default();
-    }
+    explicit test_spaces(const configuration::config& config, components::planner::primitives_t primitives = {})
+        : otterbrix::base_otterbrix_t(test_open_engine(config, primitives)) {}
+};
+
+// A test reads the catalog through SQL; only one that corrupts it on purpose writes through the disk actor.
+class catalog_forging_spaces_t final : public otterbrix::base_otterbrix_t {
+public:
+    explicit catalog_forging_spaces_t(const configuration::config& config)
+        : otterbrix::base_otterbrix_t(test_open_engine(config)) {}
+
+    actor_zeta::address_t disk_address() const noexcept { return engine().disk_address(); }
 };
 
 // Named, not global, so it can't collide with anonymous-namespace exec/seed helpers other test files define.
@@ -121,6 +122,25 @@ namespace test_helpers {
 
     inline components::cursor::cursor_t_ptr exec(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
         return dispatcher->execute_sql(otterbrix::session_id_t(), sql);
+    }
+
+    inline bool ok(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
+        return exec(dispatcher, sql)->is_success();
+    }
+
+    // A crash image: the live directory copied as it lies on disk.
+    inline void copy_crash_image(const std::filesystem::path& from, const std::filesystem::path& to) {
+        std::error_code ec;
+        std::filesystem::remove_all(to, ec);
+        if (!ec) {
+            std::filesystem::create_directories(to.parent_path(), ec);
+        }
+        if (!ec) {
+            std::filesystem::copy(from, to, std::filesystem::copy_options::recursive, ec);
+        }
+        if (ec) {
+            FAIL("copy_crash_image: '" << from.string() << "' -> '" << to.string() << "': " << ec.message());
+        }
     }
 
     // No disk flag and no wal flag: every table is disk-backed and every write is journalled,

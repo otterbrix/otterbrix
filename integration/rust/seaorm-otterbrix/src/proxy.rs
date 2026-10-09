@@ -49,8 +49,8 @@ use crate::convert::{
 ///
 /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// let db = Database::open(Config::new("./data"))?;
-/// db.create_database("app")?;
-/// db.create_collection("app", "t")?;
+/// db.execute("CREATE DATABASE app;")?;
+/// db.execute("CREATE TABLE app.t();")?;
 ///
 /// let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(OtterbrixProxy::new(db)));
 /// let conn: DatabaseConnection =
@@ -133,12 +133,9 @@ impl ProxyDatabaseTrait for OtterbrixProxy {
     }
 
     async fn execute(&self, statement: Statement) -> Result<ProxyExecResult, DbErr> {
-        run_blocking_with_cursor(&self.db, statement, |cursor| {
-            let affected = cursor.size().max(0) as u64;
-            ProxyExecResult {
-                last_insert_id: 0,
-                rows_affected: affected,
-            }
+        run_blocking_with_cursor(&self.db, statement, |cursor| ProxyExecResult {
+            last_insert_id: 0,
+            rows_affected: cursor.row_count(),
         })
         .await
     }

@@ -33,6 +33,9 @@ namespace components::table {
     class column_definition_t;
     class collection_t;
 
+    [[nodiscard]] core::error_t
+    unwind_refused(const core::error_t& cause, const core::error_t& unwind, std::pmr::memory_resource* resource);
+
     class row_group_t : public segment_base_t<row_group_t> {
     public:
         friend class column_data_t;
@@ -97,7 +100,12 @@ namespace components::table {
 
         void commit_append(uint64_t commit_id, uint64_t row_group_start, uint64_t count);
         // The count shrinks even on a column refusal: an untruncated count over a truncated column would over-read.
-        [[nodiscard]] core::result_wrapper_t<bool> revert_append(uint64_t row_group_start);
+        // The cut was taken by snapshot_counts when the reverted append began (collection_t keeps one per session).
+        [[nodiscard]] core::result_wrapper_t<bool> revert_append(uint64_t row_group_start, cut_cursor_t& cut);
+        // Every column's row count, own first then its children, in the order revert_append takes them back.
+        void snapshot_counts(append_cut_t& cut);
+        // The same for one column only.
+        void snapshot_counts(uint64_t column, append_cut_t& cut);
 
         uint64_t delete_rows(data_table_t& table, int64_t* row_ids, uint64_t count, uint64_t transaction_id);
         void commit_delete(uint64_t commit_id, uint64_t vector_idx, const delete_info& info);
@@ -110,6 +118,7 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(row_group_append_state& append_state);
         [[nodiscard]] core::result_wrapper_t<bool>
         append(row_group_append_state& append_state, vector::data_chunk_t& chunk, uint64_t append_count);
+        [[nodiscard]] core::error_t unwind_append(const append_cut_t& cut, uint64_t column_count);
 
         void get_column_segment_info(uint64_t row_group_index, std::vector<column_segment_info>& result);
 
@@ -123,8 +132,9 @@ namespace components::table {
         // A malformed pointer is data_corruption; the load fails loudly instead of returning a half-valid table.
         [[nodiscard]] core::result_wrapper_t<bool> create_from_pointer(const storage::row_group_pointer_t& pointer);
 
-        // Flushes every re-pointed segment's block before returning, so a later scan/eviction can safely load() it.
-        [[nodiscard]] core::result_wrapper_t<bool> transition_to_disk();
+        // Re-points every column's segments to disk through the caller's packer; the caller flushes
+        // it before a later scan/eviction can load() them.
+        [[nodiscard]] core::result_wrapper_t<bool> transition_to_disk(storage::partial_block_manager_t& pbm);
 
         uint64_t allocation_size() const { return allocation_size_; }
 

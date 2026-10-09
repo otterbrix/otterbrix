@@ -16,6 +16,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/context.hpp>
+#include <components/log/test/test_log.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -24,9 +25,11 @@
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <core/result_wrapper.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <services/collection/executor.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/catalog_probe.hpp>
+#include <services/disk/tests/test_directory.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 // operator_register_udf_t (pg_proc), operator_register_cast_t (pg_cast) and
@@ -114,11 +117,10 @@ namespace {
         return core::error_t::no_error();
     }
 
-    std::unique_ptr<components::compute::vector_function> make_probe_func(std::pmr::memory_resource* resource,
-                                                                          const std::string& name) {
+    components::compute::function_ptr make_probe_func(std::pmr::memory_resource* resource, const std::string& name) {
         using namespace components::compute;
-        function_doc doc{"short_doc", "full_doc", {"arg"}, false};
-        auto fn = std::make_unique<vector_function>(name, arity::unary(), doc, 1);
+        function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource, name, arity::unary(), doc, size_t{1});
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::BIGINT)},
                                {output_type::fixed(logical_type::BIGINT)});
@@ -139,26 +141,34 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
         : actor_zeta::actor::actor_mixin<oid_round_fixture>()
         , resource_(resource)
         , disk_path_(scrubbed(disk_path))
-        , log_(initialization_logger("python", "/tmp/docker_logs/"))
+        , log_(make_test_log())
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
-        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
+        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource,
+                                                          scheduler_,
+                                                          scheduler_,
+                                                          test_directory::created(disk_config_),
+                                                          log_,
+                                                          configuration::pump_intervals_t{}))
         , wal_config_(disk_path)
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
                                                                   scheduler_,
                                                                   wal_config_,
                                                                   log_,
                                                                   manager_disk_->address(),
-                                                                  components::pipeline::no_mailbox()))
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{}))
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
                                                                       scheduler_,
                                                                       log_,
                                                                       manager_wal_->address(),
                                                                       manager_disk_->address(),
-                                                                      components::pipeline::no_mailbox())) {
+                                                                      components::pipeline::no_mailbox(),
+                                                                      configuration::config_execution{},
+                                                                      components::planner::primitives_t{})) {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
-        manager_disk_->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
     }
 
     ~oid_round_fixture() {
@@ -176,12 +186,7 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
 
     template<typename T>
     T pump(actor_zeta::unique_future<T>&& fut) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            scheduler_->run(1000);
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut, scheduler_));
         return std::move(fut).take_ready();
     }
 
@@ -231,13 +236,8 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
 
     components::cursor::cursor_t_ptr take_result() {
         REQUIRE(pending_future_);
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-        while (!pending_future_->is_ready() && std::chrono::steady_clock::now() < deadline) {
-            scheduler_->run(1000);
-            std::this_thread::yield();
-        }
         REQUIRE(pending_future_->valid());
-        REQUIRE(pending_future_->is_ready());
+        REQUIRE(test_helpers::wait_ready(*pending_future_, scheduler_));
         auto result = std::move(*pending_future_).take_ready();
         pending_future_.reset();
         step();
@@ -332,7 +332,6 @@ namespace {
 } // namespace
 
 TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_udf_refuses_when_the_round_delivers_nothing") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     oid_round_fixture test(mr.get(), oid_alloc_dir("register_udf"));
 
@@ -381,12 +380,9 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_udf_refuse
         REQUIRE(oids.size() == 1);
         REQUIRE(oids.front() != catalog::INVALID_OID);
     }
-
-    components::compute::function_registry_t::reset_default();
 }
 
 TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_cast_refuses_when_the_round_delivers_nothing") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     oid_round_fixture test(mr.get(), oid_alloc_dir("register_cast"));
 
@@ -443,14 +439,11 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_cast_refus
         REQUIRE(oids.size() == 1);
         REQUIRE(oids.front() != catalog::INVALID_OID);
     }
-
-    components::compute::function_registry_t::reset_default();
 }
 
 // ALTER TABLE ADD COLUMN is the one of the three reachable from plain SQL: success, with no identity.
 TEST_CASE(
     "services::dispatcher::oid_alloc_operator_refusal::alter_add_column_refuses_when_the_round_delivers_nothing") {
-    components::compute::function_registry_t::reset_default();
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     oid_round_fixture test(mr.get(), oid_alloc_dir("alter_add_column"));
 
@@ -497,6 +490,4 @@ TEST_CASE(
 
     REQUIRE(fault.rounds_seen == 2);
     REQUIRE(fault.rounds_failed == 1);
-
-    components::compute::function_registry_t::reset_default();
 }

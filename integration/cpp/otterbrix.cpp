@@ -1,30 +1,31 @@
 #include "otterbrix.hpp"
 
-namespace {
-
-    auto base_make_otterbrix(configuration::config cfg = configuration::config::default_config())
-        -> otterbrix::otterbrix_ptr {
-        auto* ptr = new otterbrix::otterbrix_t(cfg);
-        return ptr;
-    }
-
-    auto base_execute_sql(otterbrix::base_otterbrix_t* ptr, const std::string& query)
-        -> components::cursor::cursor_t_ptr {
-        assert(ptr != nullptr);
-        assert(!query.empty());
-        auto session = otterbrix::session_id_t();
-        return ptr->dispatcher()->execute_sql(session, query);
-    }
-
-} // namespace
+#include <cstdlib>
+#include <iostream>
 
 namespace otterbrix {
 
-    auto make_otterbrix() -> otterbrix_ptr { return base_make_otterbrix(configuration::config::default_config()); }
+    auto make_otterbrix(const configuration::config& config) -> core::result_wrapper_t<otterbrix_ptr> {
+        auto host = base_otterbrix_t::open(config);
+        if (host.has_error()) {
+            return host.error();
+        }
+        return otterbrix_ptr{new otterbrix_t(std::move(host.value()))};
+    }
 
-    auto make_otterbrix(configuration::config cfg) -> otterbrix_ptr { return base_make_otterbrix(std::move(cfg)); }
+    auto make_otterbrix_or_exit(const configuration::config& config) -> otterbrix_ptr {
+        auto made = make_otterbrix(config);
+        if (made.has_error()) {
+            std::cerr << "otterbrix refused to start: " << made.error().what << '\n';
+            std::exit(EXIT_FAILURE);
+        }
+        return std::move(made.value());
+    }
 
     auto execute_sql(const otterbrix_ptr& ptr, const std::string& query) -> components::cursor::cursor_t_ptr {
-        return base_execute_sql(ptr.get(), query);
+        assert(ptr.get() != nullptr);
+        assert(!query.empty());
+        return ptr->dispatcher()->execute_sql(session_id_t(), query);
     }
+
 } // namespace otterbrix

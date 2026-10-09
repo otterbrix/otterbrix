@@ -165,7 +165,8 @@ namespace services::dispatcher::validation {
             }
 
             complex_logical_type column(components::expressions::key_t& key, bool inside_aggregate) {
-                auto resolved = validate_key(context_.resource, key, &context_.schema, context_.schema_right);
+                auto resolved =
+                    validate_key(context_.resource, key, &context_.schema, context_.schema_right, context_.column_uses);
                 if (resolved.has_error()) {
                     // error_on, not a plain copy: error_t's copy constructor leaves the message on
                     // the default resource, and this resolver's own refusals (fail() above) are
@@ -241,6 +242,11 @@ namespace services::dispatcher::validation {
                 return left == right ? left : cardinality_t::row;
             }
 
+            // resolve_function picked `pin` out of this very registry.
+            components::compute::function_ptr resolved_copy(const components::compute::function_pin_t& pin) const {
+                return context_.function_registry.get_function(pin.uid)->get_copy(context_.resource);
+            }
+
             // SQL LIKE / ILIKE / regexp all match through regexp_like(subject, pattern, flags).
             // TODO: should resolve like any other call -- there is nothing special about regex.
             void resolve_regex_uid(compare_expression_t* comparison,
@@ -254,14 +260,16 @@ namespace services::dispatcher::validation {
                                                  context_.cast_registry,
                                                  context_.execution_context,
                                                  context_.function_registry,
-                                                 qualified_name_t{"regexp_like"},
+                                                 function_qualified_name_t{core::function_name_t{"regexp_like"}},
                                                  arguments,
-                                                 context_.allowed_functions);
+                                                 context_.allowed_functions,
+                                                 {});
                 if (resolved.has_error()) {
                     error_ = core::error_on(context_.resource, resolved.error());
                     return;
                 }
-                comparison->add_function_uid(resolved.value().uid);
+                comparison->add_function_uid(resolved.value().pin.uid);
+                comparison->set_function(resolved_copy(resolved.value().pin));
             }
 
             void resolve_compare(compare_expression_t* comparison, bool inside_aggregate) {
@@ -395,6 +403,16 @@ namespace services::dispatcher::validation {
                 if (conversion->cast()) {
                     return;
                 }
+                if (complex_logical_type::contains(conversion->result_type(), [](const complex_logical_type& part) {
+                        return part.to_physical_type() == components::types::physical_type::INVALID;
+                    })) {
+                    fail(core::error_code_t::schema_error,
+                         message(context_.resource,
+                                 "type ",
+                                 describe_type(conversion->result_type()),
+                                 " is not supported"));
+                    return;
+                }
                 auto resolved = context_.cast_registry.resolve(source,
                                                                conversion->result_type(),
                                                                components::casts::cast_type::explicit_only);
@@ -435,7 +453,8 @@ namespace services::dispatcher::validation {
                                      context_.function_registry,
                                      aggregate->full_name(),
                                      argument_types,
-                                     components::compute::create_mask(components::compute::function_type_t::aggregate));
+                                     components::compute::create_mask(components::compute::function_type_t::aggregate),
+                                     aggregate->pins());
                 if (resolved.has_error()) {
                     error_ = core::error_on(context_.resource, resolved.error());
                     return;
@@ -447,7 +466,8 @@ namespace services::dispatcher::validation {
                                 resolved.value().arguments[index].target,
                                 resolved.value().arguments[index].cast);
                 }
-                aggregate->add_function_uid(resolved.value().uid);
+                aggregate->set_pin(resolved.value().pin);
+                aggregate->set_function(resolved_copy(resolved.value().pin));
                 aggregate->set_mergeable(resolved.value().mergeable);
                 aggregate->set_result_type(resolved.value().result);
             }
@@ -481,7 +501,8 @@ namespace services::dispatcher::validation {
                                                  context_.function_registry,
                                                  call->full_name(),
                                                  argument_types,
-                                                 allowed_functions);
+                                                 allowed_functions,
+                                                 call->pins());
                 if (resolved.has_error()) {
                     error_ = core::error_on(context_.resource, resolved.error());
                     return;
@@ -510,7 +531,8 @@ namespace services::dispatcher::validation {
                                 resolved.value().arguments[index].cast);
                 }
 
-                call->add_function_uid(resolved.value().uid);
+                call->set_pin(resolved.value().pin);
+                call->set_function(resolved_copy(resolved.value().pin));
                 call->set_result_type(resolved.value().result);
                 if (!reduces) {
                     last_cardinality_ = combined;

@@ -3,8 +3,8 @@ mod common;
 #[test]
 fn insert_and_select_single_row() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, age) VALUES ('Alice', 30);")
         .unwrap();
@@ -17,8 +17,8 @@ fn insert_and_select_single_row() {
 #[test]
 fn insert_multiple_rows() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, age) VALUES ('Alice', 30), ('Bob', 25), ('Charlie', 35);")
         .unwrap();
@@ -30,8 +30,8 @@ fn insert_multiple_rows() {
 #[test]
 fn select_with_where() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, count) VALUES ('a', 10), ('b', 20), ('c', 30);")
         .unwrap();
@@ -43,8 +43,8 @@ fn select_with_where() {
 #[test]
 fn update_rows() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, score) VALUES ('a', 10), ('b', 20), ('c', 30);")
         .unwrap();
@@ -61,8 +61,8 @@ fn update_rows() {
 #[test]
 fn delete_rows() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, score) VALUES ('a', 10), ('b', 20), ('c', 30);")
         .unwrap();

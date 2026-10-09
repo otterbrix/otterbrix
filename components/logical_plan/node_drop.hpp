@@ -16,6 +16,7 @@ namespace components::logical_plan {
         type,
         sequence,
         view,
+        materialized_view,
         macro,
         index
     };
@@ -27,13 +28,8 @@ namespace components::logical_plan {
 
         drop_target_kind kind() const noexcept { return kind_; }
 
-        // Kept as written so enrich binds by name, not positional coupling to another node.
-        const std::string& dbname() const noexcept { return dbname_; }
-        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
-        const std::string& relname() const noexcept { return relname_; }
-        void set_relname(std::string relname) { relname_ = std::move(relname); }
-        const std::string& index_name() const noexcept { return index_name_; }
-        void set_index_name(std::string name) { index_name_ = std::move(name); }
+        const core::indexname_t& index_name() const noexcept { return index_name_; }
+        void set_index_name(core::indexname_t name) { index_name_ = std::move(name); }
 
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
@@ -49,23 +45,22 @@ namespace components::logical_plan {
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
         void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
 
-        // Unresolved target refuses the statement unless set; defaults false so a programmatic plan gets the refusal.
-        bool missing_ok() const noexcept { return missing_ok_; }
-        void set_missing_ok(bool v) noexcept { missing_ok_ = v; }
+        // DROP ... IF EXISTS (DropStmt / DropdbStmt missing_ok): the executor turns the refusal "its target does not
+        // exist" — and only that one — into an empty success. The operators themselves always refuse a missing target.
+        bool if_exists() const noexcept { return if_exists_; }
+        void set_if_exists(bool v) noexcept { if_exists_ = v; }
 
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         const drop_target_kind kind_;
-        std::string dbname_;
-        std::string relname_;
-        std::string index_name_;
+        core::indexname_t index_name_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t index_oid_{components::catalog::INVALID_OID};
         components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::restrict_};
-        bool missing_ok_{false};
+        bool if_exists_{false};
     };
 
     using node_drop_ptr = boost::intrusive_ptr<node_drop_t>;

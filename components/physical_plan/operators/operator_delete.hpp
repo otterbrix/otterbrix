@@ -41,6 +41,13 @@ namespace components::operators {
         // Defaults to true: an unstamped plan must not guess "no index" and skip a real one.
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
 
+        // A table with external storage: the matched rows, numbered by its scan in row_ids, go to the storage's
+        // delete sink instead of the disk, the WAL, the index and the MVCC marker.
+        void set_storage_sink(operator_ptr sink, std::pmr::vector<types::complex_logical_type> columns) {
+            storage_sink_ = std::move(sink);
+            storage_columns_ = std::move(columns);
+        }
+
         // The catalog form is a SOURCELESS sink (no children, no scan input): its entire effect is
         // the WAL-first commit in await_async_and_resume, driven directly by needs_async_finalize.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
@@ -55,6 +62,14 @@ namespace components::operators {
         [[nodiscard]] uint64_t buffered_rows() const noexcept override { return modified_ ? modified_->size() : 0; }
 
     private:
+        // EXPLAIN labels a write into external storage the way its sink does, like postgres_fdw's "Foreign Delete on".
+        std::pmr::string explain_label_impl() const override {
+            return storage_sink_ ? storage_sink_->explain_label() : std::pmr::string{resource_};
+        }
+        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
+            return storage_sink_ ? storage_sink_->explain_details() : std::pmr::vector<std::pmr::string>{resource_};
+        }
+
         // Matches expression_ over one scan chunk, staging matched rows/ids for RETURNING and the index mirror.
         core::error_t consume_batch_(pipeline::context_t* ctx, const vector::data_chunk_t& chunk);
         // Same staging as consume_batch_, but as a semi-join probe against the materialized RIGHT (USING) side.
@@ -77,7 +92,6 @@ namespace components::operators {
         std::pmr::vector<int64_t> index_old_row_ids_{resource_};
         bool simple_init_done_{false};
         // delete_marker_recorded_ guards ctx->dml_deletes so repeated mid-flushes push it only once.
-        uint64_t affected_rows_{0};
         bool delete_marker_recorded_{false};
         // matched_total_ persists across mid-pump flushes, since modified_ clears on every flush.
         std::int64_t affected_bound_{-1};
@@ -85,6 +99,8 @@ namespace components::operators {
         // < 0 marks "not a catalog delete" — the predicate-scan path runs instead.
         std::int64_t oid_col_idx_{-1};
         components::catalog::oid_t target_oid_{components::catalog::INVALID_OID};
+        operator_ptr storage_sink_;
+        std::pmr::vector<types::complex_logical_type> storage_columns_{resource_};
     };
 
 } // namespace components::operators

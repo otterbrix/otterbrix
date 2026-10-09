@@ -137,7 +137,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool> struct_column_data_t::initialize_append(column_append_state& state) {
-        column_append_state validity_append;
+        column_append_state validity_append{state.pbm};
         auto v = validity.initialize_append(validity_append);
         if (v.has_error()) {
             return v; // out_of_memory: no exceptions across actors
@@ -145,7 +145,7 @@ namespace components::table {
         state.child_appends.push_back(std::move(validity_append));
 
         for (auto& sub_column : sub_columns) {
-            column_append_state child_append;
+            column_append_state child_append{state.pbm};
             auto child = sub_column->initialize_append(child_append);
             if (child.has_error()) {
                 return child;
@@ -179,20 +179,32 @@ namespace components::table {
         return true;
     }
 
-    core::result_wrapper_t<bool> struct_column_data_t::revert_append(int64_t start_row) {
-        // start_row is COLLECTION-ABSOLUTE (see column_data_t::revert_append); struct children
-        // are row-aligned with the parent, so it passes through unchanged (unlike LIST/ARRAY).
-        auto v = validity.revert_append(start_row);
+    void struct_column_data_t::snapshot_counts(append_cut_t& cut) const {
+        cut.counts.push_back(count_);
+        validity.snapshot_counts(cut);
+        for (const auto& sub_column : sub_columns) {
+            sub_column->snapshot_counts(cut);
+        }
+    }
+
+    core::result_wrapper_t<bool> struct_column_data_t::revert_append(cut_cursor_t& cut) {
+        if (cut.exhausted()) {
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("struct revert: the cut names fewer columns than the table holds", resource_));
+        }
+        const uint64_t kept = cut.take();
+        auto v = validity.revert_append(cut);
         if (v.has_error()) {
             return v;
         }
         for (auto& sub_column : sub_columns) {
-            auto sub = sub_column->revert_append(start_row);
+            auto sub = sub_column->revert_append(cut);
             if (sub.has_error()) {
                 return sub;
             }
         }
-        count_ = static_cast<uint64_t>(start_row - start_);
+        count_ = kept;
         return true;
     }
 

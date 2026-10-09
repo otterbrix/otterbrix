@@ -1,7 +1,7 @@
 #pragma once
 
-#include "identifier_types.hpp"
 #include "node.hpp"
+#include <components/base/identifier_types.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/key.hpp>
 
@@ -29,11 +29,8 @@ namespace components::logical_plan {
 
     class node_create_index_t final : public node_t {
     public:
-        explicit node_create_index_t(std::pmr::memory_resource* resource,
-                                     core::indexname_t indexname = core::indexname_t{std::string{"unnamed"}},
-                                     index_type type = index_type::single);
+        node_create_index_t(std::pmr::memory_resource* resource, core::indexname_t indexname, index_type type);
 
-        const std::string& name() const noexcept;
         index_type type() const noexcept;
         keys_base_storage_t& keys() noexcept;
         const keys_base_storage_t& keys() const noexcept { return keys_; }
@@ -57,22 +54,13 @@ namespace components::logical_plan {
         const std::string& indkey() const noexcept { return indkey_; }
         void set_indkey(std::string s) noexcept { indkey_ = std::move(s); }
 
-        const std::string& indexname() const noexcept { return indexname_; }
-
-        // The indexed table, as written. Kept on the node so enrich binds it to a
-        // resolved entry by name.
-        const std::string& dbname() const noexcept { return dbname_; }
-        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
-        const std::string& relname() const noexcept { return relname_; }
-        void set_relname(std::string relname) { relname_ = std::move(relname); }
+        const core::indexname_t& indexname() const noexcept { return indexname_; }
 
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::string indexname_;
-        std::string dbname_;
-        std::string relname_;
+        core::indexname_t indexname_;
         keys_base_storage_t keys_;
         index_type index_type_;
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
@@ -85,8 +73,6 @@ namespace components::logical_plan {
     using node_create_index_ptr = boost::intrusive_ptr<node_create_index_t>;
 
     node_create_index_ptr
-    make_node_create_index(std::pmr::memory_resource* resource,
-                           core::indexname_t indexname = core::indexname_t{std::string{"unnamed"}},
-                           index_type type = index_type::single);
+    make_node_create_index(std::pmr::memory_resource* resource, core::indexname_t indexname, index_type type);
 
 } // namespace components::logical_plan

@@ -7,15 +7,14 @@ namespace components::logical_plan {
     node_create_database_t::node_create_database_t(std::pmr::memory_resource* resource,
                                                    core::dbname_t dbname,
                                                    bool if_not_exists)
-        : node_t(resource, node_type::create_database_t)
-        , dbname_(std::move(static_cast<std::string&>(dbname)))
+        : node_t(resource, node_type::create_database_t, qualified_name_t{std::move(dbname), core::relname_t{}})
         , if_not_exists_(if_not_exists) {}
 
     hash_t node_create_database_t::hash_impl() const { return 0; }
 
     std::string node_create_database_t::to_string_impl() const {
         std::stringstream stream;
-        stream << "$create_database" << (if_not_exists_ ? "_if_not_exists" : "") << ": " << dbname_;
+        stream << "$create_database" << (if_not_exists_ ? "_if_not_exists" : "") << ": " << target_.database;
         return stream.str();
     }
 

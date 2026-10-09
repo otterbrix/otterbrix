@@ -43,6 +43,7 @@ namespace components::operators {
                 out.push_back({pg_index_table, 1});           // pg_index.indrelid
                 out.push_back({pg_sequence_table, 0});        // pg_sequence.seqrelid
                 out.push_back({pg_rewrite_table, 2});         // pg_rewrite.ev_class
+                out.push_back({pg_rewrite_ref_table, 0});     // pg_rewrite_ref.ev_class
                 out.push_back({pg_attribute_table, 1});       // pg_attribute.attrelid
                 out.push_back({pg_computed_column_table, 0}); // pg_computed_column.relid (relkind='g' tables)
                 out.push_back({pg_constraint_table, 2});      // pg_constraint.conrelid
@@ -70,33 +71,63 @@ namespace components::operators {
             return out;
         }
 
+        std::string described(catalog::oid_t classid,
+                              char relkind,
+                              const qualified_name_t& target,
+                              const core::columnname_t& column) {
+            using namespace catalog::well_known_oid;
+            const auto relation = [relkind, &target] {
+                switch (relkind) {
+                    case catalog::relkind::sequence:
+                        return "sequence " + target.to_string();
+                    case catalog::relkind::view:
+                        return "view " + target.to_string();
+                    case catalog::relkind::materialized_view:
+                        return "materialized view " + target.to_string();
+                    case catalog::relkind::macro:
+                        return "function " + target.to_string();
+                    default:
+                        return "table " + target.to_string();
+                }
+            };
+            switch (classid) {
+                case pg_namespace_table:
+                    return "database " + target.to_string();
+                case pg_type_table:
+                    return "type " + target.to_string();
+                case pg_constraint_table:
+                    return "constraint " + target.to_string();
+                case pg_proc_table:
+                    return "function " + target.to_string();
+                case pg_attribute_table:
+                    return "column " + column.t + " of " + relation();
+                default:
+                    return relation();
+            }
+        }
+
     } // namespace
 
-    operator_dynamic_cascade_delete_t::operator_dynamic_cascade_delete_t(std::pmr::memory_resource* resource,
-                                                                         log_t log,
-                                                                         catalog::oid_t seed_classid,
-                                                                         catalog::oid_t seed_objid,
-                                                                         catalog::drop_behavior_t behavior)
-        : read_write_operator_t(resource, std::move(log), operator_type::dynamic_cascade_delete)
-        , seed_classid_(seed_classid)
-        , seed_objid_(seed_objid)
-        , behavior_(behavior) {}
-
-    actor_zeta::unique_future<void>
-    operator_dynamic_cascade_delete_t::await_async_and_resume(pipeline::context_t* ctx) {
+    actor_zeta::unique_future<core::error_t> drop_with_dependents(std::pmr::memory_resource* resource,
+                                                                  pipeline::context_t* ctx,
+                                                                  catalog::oid_t seed_classid,
+                                                                  catalog::oid_t seed_objid,
+                                                                  catalog::drop_behavior_t behavior,
+                                                                  const qualified_name_t& target,
+                                                                  char relkind,
+                                                                  const core::columnname_t& column) {
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
-        if (seed_objid_ == catalog::INVALID_OID) {
-            mark_executed();
-            co_return;
+        if (seed_objid == catalog::INVALID_OID) {
+            co_return core::error_t::no_error();
         }
 
         constexpr catalog::oid_t kPgDepend = catalog::well_known_oid::pg_depend_table;
 
         // dep_graph doubles as the visited set (present key = already expanded).
-        std::pmr::unordered_map<std::uint64_t, std::pmr::vector<catalog::dependency_t>> dep_graph(resource_);
-        std::pmr::vector<std::uint64_t> stack(resource_);
-        stack.push_back(encode_key(seed_classid_, seed_objid_));
+        std::pmr::unordered_map<std::uint64_t, std::pmr::vector<catalog::dependency_t>> dep_graph(resource);
+        std::pmr::vector<std::uint64_t> stack(resource);
+        stack.push_back(encode_key(seed_classid, seed_objid));
 
         while (!stack.empty()) {
             const auto k = stack.back();
@@ -107,7 +138,7 @@ namespace components::operators {
             const auto ref_cls = static_cast<catalog::oid_t>(k >> 32);
             const auto ref_oid = static_cast<catalog::oid_t>(k & 0xFFFFFFFFu);
 
-            std::pmr::vector<std::uint64_t> rd_keys(resource_);
+            std::pmr::vector<std::uint64_t> rd_keys(resource);
             rd_keys.emplace_back(catalog::pg_depend_col::refclassid);
             rd_keys.emplace_back(catalog::pg_depend_col::refobjid);
             auto [_rd, rdf] =
@@ -116,16 +147,15 @@ namespace components::operators {
                                             exec_ctx,
                                             kPgDepend,
                                             std::move(rd_keys),
-                                            components::operators::make_key_chunk(resource_, ref_cls, ref_oid),
-                                            std::pmr::vector<std::uint64_t>{resource_});
+                                            components::operators::make_key_chunk(resource, ref_cls, ref_oid),
+                                            std::pmr::vector<std::uint64_t>{resource});
             auto dep_batches_r = co_await std::move(rdf);
             if (dep_batches_r.has_error()) {
-                set_error(dep_batches_r.error());
-                co_return;
+                co_return dep_batches_r.error();
             }
             auto& dep_batches = dep_batches_r.value();
 
-            std::pmr::vector<catalog::dependency_t> deps(resource_);
+            std::pmr::vector<catalog::dependency_t> deps(resource);
             for (auto& chunk : dep_batches) {
                 if (chunk.column_count() < 5)
                     continue;
@@ -133,9 +163,11 @@ namespace components::operators {
                     catalog::dependency_t d;
                     d.classid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                     d.objid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
-                    const auto dv =
-                        chunk.is_null(4, i) ? std::string_view{"n"} : chunk.get_value<std::string_view>(4, i);
-                    d.deptype = dv.empty() ? 'n' : dv[0];
+                    auto deptype = catalog::deptype_of(chunk, i);
+                    if (deptype.has_error()) {
+                        co_return core::error_on(resource, deptype.error());
+                    }
+                    d.deptype = deptype.value();
                     deps.push_back(d);
                     stack.push_back(encode_key(d.classid, d.objid));
                 }
@@ -143,12 +175,13 @@ namespace components::operators {
             dep_graph.insert_or_assign(k, std::move(deps));
         }
 
-        // RESTRICT is a gate, not a smaller drop: refuses on the first 'n' dependency, else plans CASCADE.
+        // RESTRICT is a gate, not a smaller drop: refuses on a normal dependent anywhere in the closure, else plans
+        // CASCADE.
         const auto plan = catalog::plan_drop(
-            resource_,
-            seed_classid_,
-            seed_objid_,
-            behavior_,
+            resource,
+            seed_classid,
+            seed_objid,
+            behavior,
             [&dep_graph](std::pmr::memory_resource* mr,
                          catalog::oid_t cls,
                          catalog::oid_t oid) -> std::pmr::vector<catalog::dependency_t> {
@@ -161,18 +194,14 @@ namespace components::operators {
         dep_graph.clear();
 
         if (plan.status == catalog::ddl_status::restrict_blocked) {
-            std::string msg = "DROP RESTRICT: object has dependents (blocking oid ";
-            msg += std::to_string(plan.blocking_oid) + ")";
-            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
-            mark_executed();
-            co_return;
+            co_return catalog::dependent_objects_error(resource,
+                                                       described(seed_classid, relkind, target, column),
+                                                       plan.blocking_oid);
         }
         if (plan.status == catalog::ddl_status::cycle_detected) {
             std::string msg = "DROP: pg_depend cycle detected at oid ";
             msg += std::to_string(plan.blocking_oid);
-            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
-            mark_executed();
-            co_return;
+            co_return core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource}};
         }
 
         // topological_drop_order already emits each object once, so a caller-side dedup is deliberately
@@ -182,30 +211,29 @@ namespace components::operators {
         struct pending_storage_drop_t {
             catalog::oid_t table_oid{catalog::INVALID_OID};
         };
-        std::pmr::vector<pending_storage_drop_t> pending_storage_drops(resource_);
+        std::pmr::vector<pending_storage_drop_t> pending_storage_drops(resource);
 
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
-        std::pmr::vector<catalog::oid_t> probe_oids(resource_);
+        std::pmr::vector<catalog::oid_t> probe_oids(resource);
         for (const auto& step : steps) {
             if (step.classid != catalog::well_known_oid::pg_class_table)
                 continue;
             probe_oids.push_back(step.objid);
         }
         if (!probe_oids.empty()) {
-            std::pmr::vector<std::uint64_t> pc_keys(resource_);
+            std::pmr::vector<std::uint64_t> pc_keys(resource);
             pc_keys.emplace_back(catalog::pg_class_col::oid);
             auto [_pc, pcf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                           &services::disk::manager_disk_t::read_chunks_by_keys,
                                                           exec_ctx,
                                                           kPgClass,
                                                           std::move(pc_keys),
-                                                          components::operators::make_keys_chunk(resource_, probe_oids),
-                                                          std::pmr::vector<std::uint64_t>{resource_});
+                                                          components::operators::make_keys_chunk(resource, probe_oids),
+                                                          std::pmr::vector<std::uint64_t>{resource});
             auto pc_results_r = co_await std::move(pcf);
             if (pc_results_r.has_error()) {
-                set_error(pc_results_r.error());
-                co_return;
+                co_return pc_results_r.error();
             }
             auto& pc_results = pc_results_r.value();
 
@@ -218,7 +246,8 @@ namespace components::operators {
                                                              : pc_batches[0].get_value<std::string_view>(3, 0);
                 const char relkind = rkv.empty() ? catalog::relkind::regular : rkv[0];
 
-                if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed)
+                if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed &&
+                    relkind != catalog::relkind::materialized_view)
                     continue;
 
                 pending_storage_drops.push_back({probe_oids[k]});
@@ -230,10 +259,10 @@ namespace components::operators {
             catalog::oid_t classid;
             catalog::oid_t objid;
         };
-        std::pmr::vector<own_row_spec_t> own_rows(resource_);
-        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> catalog_specs(resource_);
+        std::pmr::vector<own_row_spec_t> own_rows(resource);
+        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> catalog_specs(resource);
         for (const auto& step : steps) {
-            for (auto& d : deletes_for_classid(resource_, step.classid)) {
+            for (auto& d : deletes_for_classid(resource, step.classid)) {
                 if (d.catalog_table_oid == step.classid && d.oid_col_idx == 0) {
                     own_rows.push_back({catalog_specs.size(), step.classid, step.objid});
                 }
@@ -252,8 +281,7 @@ namespace components::operators {
             // Only the own-row count is meaningful; checked before COMMIT turns the marks below into
             // an irreversible teardown.
             if (deleted_r.has_error()) {
-                set_error(deleted_r.error());
-                co_return;
+                co_return deleted_r.error();
             }
             const auto& deleted_counts = deleted_r.value();
             if (deleted_counts.size() != spec_count) {
@@ -262,8 +290,7 @@ namespace components::operators {
                 msg += " count(s) for ";
                 msg += std::to_string(spec_count);
                 msg += " spec(s) — the reply cannot be matched to the plan";
-                set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
-                co_return;
+                co_return core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource}};
             }
             for (const auto& own : own_rows) {
                 if (deleted_counts[own.spec_idx] != 0) {
@@ -275,8 +302,7 @@ namespace components::operators {
                 msg += std::to_string(static_cast<unsigned>(own.objid));
                 msg += ") has no catalog row to delete — the pg_depend graph names an object "
                        "the catalog does not hold";
-                set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
-                co_return;
+                co_return core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource}};
             }
         }
 
@@ -285,9 +311,9 @@ namespace components::operators {
         // for the GC horizon predicate, since the commit_id isn't known yet.
         const uint64_t dropped_at = ctx->txn.transaction_id;
         bool any_storage_drop = false;
-        std::pmr::vector<actor_zeta::unique_future<void>> drop_futures(resource_);
+        std::pmr::vector<actor_zeta::unique_future<void>> drop_futures(resource);
         drop_futures.reserve(pending_storage_drops.size() + 1);
-        std::pmr::vector<catalog::oid_t> dropped_storage_oids(resource_);
+        std::pmr::vector<catalog::oid_t> dropped_storage_oids(resource);
         dropped_storage_oids.reserve(pending_storage_drops.size());
         for (auto& sd : pending_storage_drops) {
             any_storage_drop = true;
@@ -329,6 +355,93 @@ namespace components::operators {
                                             INDEX_KIND);
         }
 
+        co_return core::error_t::no_error();
+    }
+
+    actor_zeta::unique_future<core::error_t> drop_function_rows(std::pmr::memory_resource* resource,
+                                                                pipeline::context_t* ctx,
+                                                                const std::pmr::vector<catalog::oid_t>& function_oids,
+                                                                function_rows_drop_t mode,
+                                                                catalog::drop_behavior_t behavior,
+                                                                const std::string& function_name) {
+        constexpr catalog::oid_t pg_proc_coll = catalog::well_known_oid::pg_proc_table;
+        if (mode == function_rows_drop_t::with_dependents) {
+            for (const auto oid : function_oids) {
+                auto dropped = co_await drop_with_dependents(resource,
+                                                             ctx,
+                                                             pg_proc_coll,
+                                                             oid,
+                                                             behavior,
+                                                             qualified_name_t{core::relname_t{function_name}},
+                                                             catalog::relkind::regular,
+                                                             core::columnname_t{});
+                if (dropped.contains_error()) {
+                    co_return dropped;
+                }
+            }
+            co_return core::error_t::no_error();
+        }
+
+        constexpr catalog::oid_t pg_depend_coll = catalog::well_known_oid::pg_depend_table;
+        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs(resource);
+        specs.reserve(function_oids.size() * 2);
+        for (const auto oid : function_oids) {
+            specs.push_back({pg_proc_coll, std::int64_t{0}, oid});
+            specs.push_back({pg_depend_coll, std::int64_t{1}, oid});
+        }
+        if (ctx->txn.transaction_id != 0) {
+            ctx->pg_catalog_delete_tables.insert(pg_proc_coll);
+            ctx->pg_catalog_delete_tables.insert(pg_depend_coll);
+        }
+        execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+        auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                    exec_ctx,
+                                                    std::move(specs));
+        auto deleted = co_await std::move(df);
+        if (deleted.has_error()) {
+            co_return core::error_on(resource, deleted.error());
+        }
+        // Every pg_proc spec is at an even index, its own edges right after it.
+        for (std::size_t i = 0; i < deleted.value().size(); i += 2) {
+            if (deleted.value()[i] == 0) {
+                co_return core::error_t{core::error_code_t::other_error,
+                                        std::pmr::string{"register_udf: no pg_proc row was deleted for '" +
+                                                             function_name + "' — the function is still in the catalog",
+                                                         resource}};
+            }
+        }
+        co_return core::error_t::no_error();
+    }
+
+    operator_dynamic_cascade_delete_t::operator_dynamic_cascade_delete_t(std::pmr::memory_resource* resource,
+                                                                         log_t log,
+                                                                         catalog::oid_t seed_classid,
+                                                                         catalog::oid_t seed_objid,
+                                                                         catalog::drop_behavior_t behavior,
+                                                                         qualified_name_t target,
+                                                                         char relkind)
+        : read_write_operator_t(resource, std::move(log), operator_type::dynamic_cascade_delete)
+        , seed_classid_(seed_classid)
+        , seed_objid_(seed_objid)
+        , behavior_(behavior)
+        , target_(std::move(target))
+        , relkind_(relkind) {}
+
+    actor_zeta::unique_future<void>
+    operator_dynamic_cascade_delete_t::await_async_and_resume(pipeline::context_t* ctx) {
+        auto dropped = co_await drop_with_dependents(resource_,
+                                                     ctx,
+                                                     seed_classid_,
+                                                     seed_objid_,
+                                                     behavior_,
+                                                     target_,
+                                                     relkind_,
+                                                     core::columnname_t{});
+        if (dropped.contains_error()) {
+            set_error(dropped);
+            co_return;
+        }
         output_ = nullptr;
         mark_executed();
     }

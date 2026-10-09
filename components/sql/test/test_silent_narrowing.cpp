@@ -247,7 +247,7 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
 
 // `numeric(38,20) DEFAULT 0.12345678901234567890` landed on ...567168 via numeric_literal_value's
 // double tail -- short by 722 at the 20th decimal place. Scoped to DECIMAL only: widening it would
-// flip the ALTER-vs-CREATE divergence services/collection/executor.cpp's convert_column_defaults
+// flip the ALTER-vs-CREATE divergence services/collection/executor.cpp's prepare_column_
 // already performs for both spellings (see "alter_add_column_default_is_coerced_like_create_table").
 TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
     auto resource = core::pmr::otterbrix_resource();

@@ -1,5 +1,8 @@
 #include "create_plan.hpp"
 
+#include <cassert>
+#include <cstdlib>
+
 #include "impl/create_plan_abort_transaction.hpp"
 #include "impl/create_plan_aggregate.hpp"
 #include "impl/create_plan_allocate_oids.hpp"
@@ -41,27 +44,44 @@
 
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
+#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_transaction.hpp>
 
 namespace services::planner {
 
     using components::logical_plan::node_type;
 
-    // Null-Object default for context_storage_t::create_plan_rule (see
-    // context_storage.hpp): no host lowering registered -> a node_extension leaf
-    // has no host operator, so its plan errors downstream. Defined here (operator_t
-    // complete) so the returned intrusive_ptr<operator_t> temporary is destructible.
-    components::operators::operator_ptr no_custom_lowering(const context_storage_t&,
-                                                           const components::compute::function_registry_t&,
-                                                           const components::logical_plan::node_ptr&) {
-        return {};
+    core::error_t plan_refusal(std::pmr::memory_resource* resource, std::string_view what) {
+        return core::error_t{core::error_code_t::create_physical_plan_error, std::pmr::string{what, resource}};
     }
 
-    components::operators::operator_ptr create_plan(const context_storage_t& context,
-                                                    const components::compute::function_registry_t& function_registry,
-                                                    const components::logical_plan::node_ptr& node,
-                                                    components::logical_plan::limit_t limit,
-                                                    const components::logical_plan::storage_parameters* params) {
+    core::error_t
+    unresolved_table_refusal(std::pmr::memory_resource* resource, std::string_view dbname, std::string_view relname) {
+        std::pmr::string what{"relation \"", resource};
+        if (!dbname.empty()) {
+            what += dbname;
+            what += '.';
+        }
+        what += relname;
+        what += "\" has no resolved table in this plan";
+        return plan_refusal(resource, what);
+    }
+
+    plan_result_t storage_operator(std::pmr::memory_resource* resource, std::string_view relname, plan_result_t built) {
+        if (built.has_error() || built.value()) {
+            return built;
+        }
+        std::pmr::string what{"the storage of \"", resource};
+        what += relname;
+        what += "\" built no operator";
+        return plan_refusal(resource, what);
+    }
+
+    plan_result_t create_plan(const context_storage_t& context,
+                              const components::compute::function_registry_t& function_registry,
+                              const components::logical_plan::node_ptr& node,
+                              components::logical_plan::limit_t limit,
+                              const components::logical_plan::storage_parameters* params) {
         switch (node->type()) {
             case node_type::aggregate_t:
                 // Aggregate-pushdown is lowered INSIDE create_plan_aggregate: when the group
@@ -115,12 +135,12 @@ namespace services::planner {
                         case components::logical_plan::alter_column_op::drop:
                             return impl::create_plan_computed_field_unregister(context, node);
                         case components::logical_plan::alter_column_op::rename:
-                            // computed rename is never emitted: rewrite_alter_table never sets computed_
-                            // on a rename clause, since a document table's RENAME is answered by
-                            // operator_alter_column_rename_t itself.
-                            return nullptr;
+                            // rewrite_alter_table never sets computed_ on a rename clause: a document table's
+                            // RENAME is answered by operator_alter_column_rename_t itself.
+                            break;
                     }
-                    return nullptr;
+                    assert(false && "a computed column is never renamed by ALTER");
+                    std::abort();
                 }
                 switch (ac->op()) {
                     case components::logical_plan::alter_column_op::add:
@@ -130,7 +150,8 @@ namespace services::planner {
                     case components::logical_plan::alter_column_op::drop:
                         return impl::create_plan_alter_column_drop(context, node);
                 }
-                return nullptr;
+                assert(false && "unknown ALTER COLUMN operation");
+                std::abort();
             }
             case node_type::dynamic_cascade_delete_t:
                 return impl::create_plan_dynamic_cascade_delete(context, node);
@@ -141,7 +162,7 @@ namespace services::planner {
             case node_type::vacuum_t:
                 return impl::create_plan_vacuum(context, node);
             case node_type::create_matview_t:
-                return impl::create_plan_create_matview(context, function_registry, node, params);
+                return impl::create_plan_create_matview(context, node);
             case node_type::unregister_udf_t:
                 return impl::create_plan_unregister_udf(context, node);
             case node_type::transaction_t: {
@@ -154,7 +175,8 @@ namespace services::planner {
                     case components::logical_plan::transaction_op::abort:
                         return impl::create_plan_abort_transaction(context, node);
                 }
-                return nullptr;
+                assert(false && "unknown transaction operation");
+                std::abort();
             }
             case node_type::catalog_resolve_t: {
                 const auto* rn = static_cast<const components::logical_plan::node_catalog_resolve_t*>(node.get());
@@ -170,34 +192,39 @@ namespace services::planner {
                     case components::logical_plan::resolve_kind::constraint:
                         return impl::create_plan_resolve_constraint(context, node);
                 }
-                return nullptr;
+                assert(false && "unknown catalog resolve kind");
+                std::abort();
             }
             case node_type::allocate_oids_t:
                 return impl::create_plan_allocate_oids(context, node);
             case node_type::function_t:
-                return impl::create_plan_function(context, node);
+                return impl::create_plan_function(context, function_registry, node);
             case node_type::extension_t: {
-                // Host-custom node (node_extension): the engine cannot lower it — the
-                // host-injected create_plan rule (stamped on context_storage, see
-                // context_storage.hpp) builds the host operator. A SOURCE is a childless
-                // leaf; a SINK is a node WITH a child (e.g. INSERT..SELECT into a
-                // backend) whose child sub-plan the engine wires. The rule is never null
-                // (Null Object default); the operator it RETURNS may be null ("no host
-                // lowering"), and the plan then errors downstream (create_physical_plan_error).
-                auto op = context.create_plan_rule(context, function_registry, node);
-                if (op && !node->children().empty()) {
-                    op->set_children(create_plan(context,
-                                                 function_registry,
-                                                 node->children().front(),
-                                                 components::logical_plan::limit_t::unlimit(),
-                                                 params));
+                const auto& ext = static_cast<const components::logical_plan::node_extension_t&>(*node);
+                VALUE_OR_RETURN(auto op, ext.operator_fn()(context, function_registry, ext));
+                // A host rule's function, unlike the engine's generators, may build nothing.
+                if (!op) {
+                    std::pmr::string what{"the physical plan generator built no operator for ", context.resource};
+                    what += node->to_string();
+                    return plan_refusal(context.resource, what);
+                }
+                if (!node->children().empty()) {
+                    VALUE_OR_RETURN(auto child,
+                                    create_plan(context,
+                                                function_registry,
+                                                node->children().front(),
+                                                components::logical_plan::limit_t::unlimit(),
+                                                params));
+                    op->set_children(std::move(child));
                 }
                 return op;
             }
             default:
                 break;
         }
-        return nullptr;
+        std::pmr::string what{"no physical plan for a logical node of this kind: ", context.resource};
+        what += node->to_string();
+        return plan_refusal(context.resource, what);
     }
 
 } // namespace services::planner

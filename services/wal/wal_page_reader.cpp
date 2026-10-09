@@ -130,6 +130,21 @@ namespace services::wal {
     // second place for the two to disagree.
     bool wal_page_reader_t::verify_chain() { return scan_pages().chain_intact; }
 
+    core::error_t wal_page_reader_t::malformed(size_t page_index, const char* what) const {
+        std::pmr::string message{resource_};
+        message.append("wal segment ");
+        message.append(path_.string());
+        message.append(", data page ");
+        message.append(std::to_string(page_index));
+        message.append(" verifies its checksum but ");
+        message.append(what);
+        return core::error_t(core::error_code_t::data_corruption, std::move(message));
+    }
+
+    // The data areas of consecutive pages form one stream of [size:4][body][crc:4] records; a record that does not
+    // fit spills into the next page. PARTIAL_CONT alone cannot say whether a page starts with a spill or ends with
+    // one, so a page continues the previous one exactly when that page spills and this page's page_lsn names the
+    // spilled record (ids are unique, and a page appended after a restart starts past every id already written).
     core::result_wrapper_t<std::vector<record_t>> wal_page_reader_t::read_all_records(id_t after_id) {
         // AN UNREADABLE SEGMENT IS NOT AN EMPTY ONE. Returning {} here is what made every
         // committed transaction living in this segment disappear from startup replay in
@@ -139,145 +154,120 @@ namespace services::wal {
         }
 
         std::vector<record_t> records;
-        size_t count = page_count();
-        if (count == 0) {
-            return records;
-        }
+        const size_t count = page_count();
 
-        auto* resource = resource_;
-
-        // Buffer for accumulating spanning records.
-        std::vector<char> span_buffer;
-        bool in_span = false;
+        std::pmr::vector<char> span(resource_);
+        bool prev_spills = false;
+        id_t prev_end_lsn = 0;
 
         alignas(4096) char page_buf[PAGE_SIZE];
 
         for (size_t pi = 1; pi <= count; ++pi) {
+            // Every page below page_count() lies inside the file: a failed read is an I/O error, and the
+            // records on and after this page are not a shorter journal.
             if (!read_page(pi, page_buf)) {
-                break; // read error -- stop
+                std::pmr::string message{resource_};
+                message.append("wal segment ");
+                message.append(path_.string());
+                message.append(", data page ");
+                message.append(std::to_string(pi));
+                message.append(" could not be read");
+                return core::error_t(core::error_code_t::io_error, std::move(message));
             }
-
-            // Verify checksum. Stop at corruption (STOP-A).
             wal_page_header_t hdr;
             std::memcpy(&hdr, page_buf, PAGE_HEADER_SIZE);
             if (!hdr.verify_checksum(page_buf)) {
-                break;
+                break; // STOP-A
+            }
+            if (hdr.data_size > PAGE_DATA_SIZE || (hdr.flags & ~(PAGE_PARTIAL_CONT | PAGE_PARTIAL_END)) != 0) {
+                return malformed(pi, "its header is out of range");
             }
 
             const char* data = page_buf + PAGE_HEADER_SIZE;
-            uint32_t data_size = hdr.data_size;
+            const size_t data_size = hdr.data_size;
+            const bool spills = (hdr.flags & PAGE_PARTIAL_CONT) != 0;
+            const bool ends_span = (hdr.flags & PAGE_PARTIAL_END) != 0;
+            const bool continues = prev_spills && hdr.page_lsn == prev_end_lsn;
 
-            bool is_cont = (hdr.flags & PAGE_PARTIAL_CONT) != 0;
-            bool is_end = (hdr.flags & PAGE_PARTIAL_END) != 0;
-
-            // ---- Spanning record: middle page (continuation, not the end) ----
-            if (in_span && is_cont && !is_end) {
-                span_buffer.insert(span_buffer.end(), data, data + data_size);
-                continue;
-            }
-
-            // ---- Spanning record: continuation/last page ----
-            if (in_span && (is_cont || is_end)) {
-                // Determine how many bytes we still need.
-                uint32_t needed = data_size;
-                if (span_buffer.size() >= 4) {
-                    uint32_t body_size = 0;
-                    std::memcpy(&body_size, span_buffer.data(), sizeof(uint32_t));
-                    uint32_t total_record = body_size + 8; // size(4) + body + crc(4)
-                    if (total_record > span_buffer.size()) {
-                        needed = static_cast<uint32_t>(total_record - span_buffer.size());
-                    } else {
-                        needed = 0;
-                    }
+            auto take = [&](const char* rec, size_t size) -> core::error_t {
+                auto r = decode_record(rec, size, resource_);
+                if (!r.is_valid()) {
+                    return malformed(pi, "holds a record that does not decode");
                 }
-
-                uint32_t to_take = std::min(needed, data_size);
-                span_buffer.insert(span_buffer.end(), data, data + to_take);
-
-                // Check if we have the complete record now.
-                if (span_buffer.size() >= 4) {
-                    uint32_t body_size = 0;
-                    std::memcpy(&body_size, span_buffer.data(), sizeof(uint32_t));
-                    uint32_t total_record = body_size + 8;
-                    if (span_buffer.size() >= total_record) {
-                        auto rec = decode_record(span_buffer.data(), total_record, resource);
-                        if (rec.is_valid() && rec.id > after_id) {
-                            records.push_back(std::move(rec));
-                        }
-                        span_buffer.clear();
-                        in_span = false;
-
-                        // Parse remaining complete records after the spanning data.
-                        size_t offset = to_take;
-                        while (offset < data_size) {
-                            if (offset + sizeof(uint32_t) > data_size) {
-                                break;
-                            }
-                            uint32_t rec_size = 0;
-                            std::memcpy(&rec_size, data + offset, sizeof(uint32_t));
-                            if (rec_size == 0) {
-                                break;
-                            }
-                            uint32_t total_rec_bytes = rec_size + 8;
-                            if (offset + total_rec_bytes > data_size) {
-                                break;
-                            }
-                            auto r = decode_record(data + offset, total_rec_bytes, resource);
-                            if (r.is_valid() && r.id > after_id) {
-                                records.push_back(std::move(r));
-                            }
-                            offset += total_rec_bytes;
-                        }
-                    }
+                if (r.id > after_id) {
+                    records.push_back(std::move(r));
                 }
-                continue;
-            }
+                return core::error_t::no_error();
+            };
 
-            // ---- Not currently in a span ----
-            if (in_span) {
-                // Unexpected: we were accumulating but this page doesn't continue.
-                span_buffer.clear();
-                in_span = false;
-            }
-
-            // Parse individual complete records from this page.
-            // Each record is: [size:4][payload:size][crc:4], total = size + 8 bytes.
             size_t offset = 0;
-            while (offset < data_size) {
-                if (offset + sizeof(uint32_t) > data_size) {
-                    break;
+            if (!continues) {
+                if (ends_span) {
+                    return malformed(pi, "ends a record no earlier page started");
                 }
-
-                uint32_t rec_size = 0;
-                std::memcpy(&rec_size, data + offset, sizeof(uint32_t));
-
-                if (rec_size == 0) {
-                    break; // zero-length: end of valid data in this page
+                // A crash cut the spilled record short and this page was appended after the restart.
+                span.clear();
+            } else {
+                if (span.size() < sizeof(uint32_t)) {
+                    offset = std::min(sizeof(uint32_t) - span.size(), data_size);
+                    span.insert(span.end(), data, data + offset);
                 }
-
-                uint32_t total_record_bytes = rec_size + 8;
-
-                if (offset + total_record_bytes > data_size) {
-                    // This record doesn't fit -- it's the start of a spanning record.
-                    break;
+                if (span.size() >= sizeof(uint32_t)) {
+                    uint32_t body = 0;
+                    std::memcpy(&body, span.data(), sizeof(uint32_t));
+                    const size_t total = size_t{body} + 8;
+                    const size_t n = std::min(total - span.size(), data_size - offset);
+                    span.insert(span.end(), data + offset, data + offset + n);
+                    offset += n;
+                    if (span.size() == total) {
+                        if (!ends_span) {
+                            return malformed(pi, "completes a spilled record without PARTIAL_END");
+                        }
+                        if (auto err = take(span.data(), total); err.contains_error()) {
+                            return err;
+                        }
+                        span.clear();
+                    }
                 }
-
-                auto rec = decode_record(data + offset, total_record_bytes, resource);
-                if (rec.is_valid() && rec.id > after_id) {
-                    records.push_back(std::move(rec));
+                if (!span.empty() || offset == 0) {
+                    if (offset != PAGE_DATA_SIZE || data_size != PAGE_DATA_SIZE || ends_span || !spills ||
+                        hdr.num_records != 0) {
+                        return malformed(pi, "neither ends the spilled record nor is wholly its middle");
+                    }
+                    prev_spills = true;
+                    prev_end_lsn = hdr.page_end_lsn;
+                    continue;
                 }
-                // Even if invalid/filtered, advance past this record.
-                offset += total_record_bytes;
             }
 
-            // If this page has PAGE_PARTIAL_CONT, the data from offset onward
-            // is the start of a spanning record that continues to the next page(s).
-            if (is_cont) {
-                if (offset < data_size) {
-                    span_buffer.assign(data + offset, data + data_size);
+            uint32_t whole = 0;
+            while (data_size - offset >= sizeof(uint32_t)) {
+                uint32_t body = 0;
+                std::memcpy(&body, data + offset, sizeof(uint32_t));
+                if (body == 0) {
+                    return malformed(pi, "holds a zero-length record");
                 }
-                in_span = true;
+                const size_t total = size_t{body} + 8;
+                if (total > data_size - offset) {
+                    break;
+                }
+                if (auto err = take(data + offset, total); err.contains_error()) {
+                    return err;
+                }
+                ++whole;
+                offset += total;
             }
+            if (whole != hdr.num_records) {
+                return malformed(pi, "holds a different number of whole records than its header counts");
+            }
+            if (offset < data_size) {
+                if (!spills) {
+                    return malformed(pi, "has bytes after its last whole record and does not spill");
+                }
+                span.assign(data + offset, data + data_size);
+            }
+            prev_spills = spills;
+            prev_end_lsn = hdr.page_end_lsn;
         }
 
         return records;

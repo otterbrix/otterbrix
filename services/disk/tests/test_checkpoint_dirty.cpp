@@ -17,10 +17,13 @@
 #include "disk_test_helpers.hpp"
 
 #include <algorithm>
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <services/disk/tests/test_directory.hpp>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -46,14 +49,19 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit fresh_disk(const std::filesystem::path& path)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
                 c.path = path;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {}
         ~fresh_disk() {
             // Destroy the manager first: its dtor joins the loop thread, which may still enqueue onto the scheduler.
             manager.reset();
@@ -64,11 +72,7 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(future.is_ready());
+            REQUIRE(test_helpers::wait_ready(future, scheduler));
             return std::move(future).take_ready();
         }
 
@@ -184,7 +188,7 @@ TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_tab
 
     {
         fresh_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "dirty_ns");
 
         tables.reserve(kTables);
@@ -226,9 +230,9 @@ TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_tab
     // A fresh manager over the same dir catches a skip that never wrote the table, not just one left untouched.
     {
         fresh_disk fd2(dir);
-        fd2.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
         fd2.manager->restore_oid_generator_sync();
-        fd2.manager->load_user_table_storages_sync();
+        REQUIRE_FALSE(fd2.manager->load_user_table_storages_sync().contains_error());
 
         REQUIRE(disk_test_helpers::read_ok(
                     fd2.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, tables[0])) == 2 * kRows);
@@ -250,7 +254,7 @@ TEST_CASE("services::disk::checkpoint_dirty::clean_table_still_reports_its_wal_f
 
     {
         fresh_disk fd(dir);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "floor_ns");
         auto table_oid = make_table(fd, ns_oid, "floored", 100);
 
@@ -274,7 +278,7 @@ TEST_CASE("services::disk::checkpoint_dirty::a_round_that_defers_everything_is_c
     std::filesystem::create_directories(root);
     {
         fresh_disk fd(root);
-        fd.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "ns_defer");
         auto table_oid = make_table(fd, ns_oid, "t_defer", 8);
 

@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <string>
 #include <thread>
 
@@ -30,14 +31,7 @@ namespace {
             return;
         }
         g_paused.store(true);
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
-        while (!g_release.load()) {
-            if (std::chrono::steady_clock::now() > deadline) {
-                g_pause_timed_out.store(true);
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
+        g_pause_timed_out.store(!test_helpers::wait_until([] { return g_release.load(); }));
     }
 
 } // namespace
@@ -171,11 +165,7 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::stale_planned_insert_rea
     components::cursor::cursor_t_ptr ins_cur;
     std::thread ins([&] { ins_cur = d->execute_sql(ins_session, "INSERT INTO db.late (id, v) VALUES (424242, 7);"); });
 
-    const auto pause_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!g_paused.load() && std::chrono::steady_clock::now() < pause_deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    REQUIRE(g_paused.load());
+    REQUIRE(test_helpers::wait_until([] { return g_paused.load(); }));
 
     REQUIRE(d->execute_sql(ddl_session, "CREATE INDEX late_id ON db.late (id);")->is_success());
 

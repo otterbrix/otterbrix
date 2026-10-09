@@ -11,9 +11,9 @@
 #include <thread>
 #include <vector>
 
-static const database_name_t lifecycle_database_name = "lifecycledb";
-static const collection_name_t lifecycle_collection_one = "lifecycle_col_one";
-static const collection_name_t lifecycle_collection_two = "lifecycle_col_two";
+static const core::dbname_t lifecycle_database_name{"lifecycledb"};
+static const core::relname_t lifecycle_collection_one{"lifecycle_col_one"};
+static const core::relname_t lifecycle_collection_two{"lifecycle_col_two"};
 
 namespace {
 
@@ -38,17 +38,17 @@ namespace {
             return engine_->dispatcher()->execute_sql(otterbrix::session_id_t(), query);
         }
 
-        components::cursor::cursor_t_ptr create_collection(const database_name_t& database,
-                                                           const collection_name_t& collection,
+        components::cursor::cursor_t_ptr create_collection(const core::dbname_t& database,
+                                                           const core::relname_t& collection,
                                                            components::catalog::oid_t& out_oid) {
             out_oid = components::catalog::INVALID_OID;
             auto* resource = engine_->dispatcher()->resource();
             auto create = components::logical_plan::make_node_create_collection(resource,
-                                                                                core::relname_t{collection},
+                                                                                collection,
                                                                                 lifecycle_columns(resource),
                                                                                 {});
             components::logical_plan::node_ptr node =
-                components::sql::transform::name_catalog_target(database, {}, create);
+                components::sql::transform::name_catalog_target(database, collection, create);
             auto cursor = engine_->dispatcher()->execute_plan(
                 otterbrix::session_id_t(),
                 components::logical_plan::execution_plan_t{resource,
@@ -71,9 +71,8 @@ namespace {
 TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engine-lifecycle]") {
     auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/refcount"));
     test_clear_directory(config);
-    components::compute::function_registry_t::reset_default();
 
-    auto inst = otterbrix::make_otterbrix(config);
+    auto inst = test_make_otterbrix(config);
     REQUIRE(inst->use_count() == 1u);
     otterbrix::otterbrix_ptr copy = inst;
     REQUIRE(inst->use_count() == 2u);
@@ -84,7 +83,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
     INFO("create database via execute_sql");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "CREATE DATABASE " + lifecycle_database_name + ";");
+        auto cur = dispatcher->execute_sql(session, "CREATE DATABASE " + lifecycle_database_name.t + ";");
         REQUIRE(cur->is_success());
         REQUIRE(inst->use_count() == 2u);
     }
@@ -105,11 +104,11 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
     {
         // Keep the create node: execute_plan stamps table_oid() onto it.
         auto create = components::logical_plan::make_node_create_collection(resource,
-                                                                            core::relname_t{lifecycle_collection_two},
+                                                                            lifecycle_collection_two,
                                                                             lifecycle_columns(resource),
                                                                             {});
         components::logical_plan::node_ptr node =
-            components::sql::transform::name_catalog_target(lifecycle_database_name, {}, create);
+            components::sql::transform::name_catalog_target(lifecycle_database_name, lifecycle_collection_two, create);
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_plan(
             session,
@@ -124,7 +123,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
     INFO("insert via execute_sql");
     {
         std::stringstream query;
-        query << "INSERT INTO " << lifecycle_database_name << "." << lifecycle_collection_one
+        query << "INSERT INTO " << lifecycle_database_name.t << "." << lifecycle_collection_one.t
               << " (name, count) VALUES ";
         for (int num = 0; num < 10; ++num) {
             query << "('name_" << num << "', " << num << ")" << (num == 9 ? ";" : ", ");
@@ -132,16 +131,16 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount", "[engin
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, query.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 10);
+        REQUIRE(cur->affected_rows() == 10);
         REQUIRE(inst->use_count() == 2u);
     }
 
     INFO("select via execute_sql");
     {
         auto session = otterbrix::session_id_t();
-        auto cur =
-            dispatcher->execute_sql(session,
-                                    "SELECT * FROM " + lifecycle_database_name + "." + lifecycle_collection_one + ";");
+        auto cur = dispatcher->execute_sql(session,
+                                           "SELECT * FROM " + lifecycle_database_name.t + "." +
+                                               lifecycle_collection_one.t + ";");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
         REQUIRE(inst->use_count() == 2u);
@@ -158,9 +157,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
     // Catch2 REQUIRE is unsafe off the main thread, so results are snapshotted and checked after join.
     auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/refcount_thread"));
     test_clear_directory(config);
-    components::compute::function_registry_t::reset_default();
 
-    auto inst = otterbrix::make_otterbrix(config);
+    auto inst = test_make_otterbrix(config);
     otterbrix::otterbrix_ptr copy = inst;
     REQUIRE(inst->use_count() == 2u);
 
@@ -175,7 +173,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE " + lifecycle_database_name + ";");
+            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE " + lifecycle_database_name.t + ";");
             ok[op] = cur->is_success();
             counts[op] = inst->use_count();
             ++op;
@@ -192,13 +190,14 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
             ++op;
         }
         {
-            auto create =
-                components::logical_plan::make_node_create_collection(resource,
-                                                                      core::relname_t{lifecycle_collection_two},
-                                                                      lifecycle_columns(resource),
-                                                                      {});
+            auto create = components::logical_plan::make_node_create_collection(resource,
+                                                                                lifecycle_collection_two,
+                                                                                lifecycle_columns(resource),
+                                                                                {});
             components::logical_plan::node_ptr node =
-                components::sql::transform::name_catalog_target(lifecycle_database_name, {}, create);
+                components::sql::transform::name_catalog_target(lifecycle_database_name,
+                                                                lifecycle_collection_two,
+                                                                create);
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_plan(
                 session,
@@ -211,22 +210,22 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
         }
         {
             std::stringstream query;
-            query << "INSERT INTO " << lifecycle_database_name << "." << lifecycle_collection_two
+            query << "INSERT INTO " << lifecycle_database_name.t << "." << lifecycle_collection_two.t
                   << " (name, count) VALUES ";
             for (int num = 0; num < 10; ++num) {
                 query << "('name_" << num << "', " << num << ")" << (num == 9 ? ";" : ", ");
             }
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, query.str());
-            ok[op] = cur->is_success() && cur->size() == 10;
+            ok[op] = cur->is_success() && cur->affected_rows() == 10u;
             counts[op] = inst->use_count();
             ++op;
         }
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
-                                               "SELECT * FROM " + lifecycle_database_name + "." +
-                                                   lifecycle_collection_two + ";");
+                                               "SELECT * FROM " + lifecycle_database_name.t + "." +
+                                                   lifecycle_collection_two.t + ";");
             ok[op] = cur->is_success() && cur->size() == 10;
             counts[op] = inst->use_count();
             ++op;
@@ -244,9 +243,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_client_th
 TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_style", "[engine-lifecycle]") {
     auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/refcount_wrapper"));
     test_clear_directory(config);
-    components::compute::function_registry_t::reset_default();
 
-    auto inst = otterbrix::make_otterbrix(config);
+    auto inst = test_make_otterbrix(config);
     otterbrix::otterbrix_ptr copy = inst;
     REQUIRE(inst->use_count() == 2u);
 
@@ -261,7 +259,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_s
         std::thread client([&]() {
             size_t op = 0;
             {
-                auto cur = wrapper.execute_sql("CREATE DATABASE " + lifecycle_database_name + ";");
+                auto cur = wrapper.execute_sql("CREATE DATABASE " + lifecycle_database_name.t + ";");
                 ok[op] = cur->is_success();
                 counts[op] = wrapper.engine_use_count();
                 ++op;
@@ -281,34 +279,34 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::two_owner_refcount_wrapper_s
                 ++op;
             }
             {
-                auto cur = wrapper.execute_sql("SELECT * FROM " + lifecycle_database_name + "." +
-                                               lifecycle_collection_one + " LIMIT 0;");
+                auto cur = wrapper.execute_sql("SELECT * FROM " + lifecycle_database_name.t + "." +
+                                               lifecycle_collection_one.t + " LIMIT 0;");
                 ok[op] = cur->is_success();
                 counts[op] = wrapper.engine_use_count();
                 ++op;
             }
             {
-                auto cur = wrapper.execute_sql("SELECT * FROM " + lifecycle_database_name + "." +
-                                               lifecycle_collection_two + " LIMIT 0;");
+                auto cur = wrapper.execute_sql("SELECT * FROM " + lifecycle_database_name.t + "." +
+                                               lifecycle_collection_two.t + " LIMIT 0;");
                 ok[op] = cur->is_success();
                 counts[op] = wrapper.engine_use_count();
                 ++op;
             }
             {
                 std::stringstream query;
-                query << "INSERT INTO " << lifecycle_database_name << "." << lifecycle_collection_one
+                query << "INSERT INTO " << lifecycle_database_name.t << "." << lifecycle_collection_one.t
                       << " (name, count) VALUES ";
                 for (int num = 0; num < 10; ++num) {
                     query << "('name_" << num << "', " << num << ")" << (num == 9 ? ";" : ", ");
                 }
                 auto cur = wrapper.execute_sql(query.str());
-                ok[op] = cur->is_success() && cur->size() == 10;
+                ok[op] = cur->is_success() && cur->affected_rows() == 10u;
                 counts[op] = wrapper.engine_use_count();
                 ++op;
             }
             {
-                auto cur = wrapper.execute_sql("SELECT * FROM " + lifecycle_database_name + "." +
-                                               lifecycle_collection_one + ";");
+                auto cur = wrapper.execute_sql("SELECT * FROM " + lifecycle_database_name.t + "." +
+                                               lifecycle_collection_one.t + ";");
                 ok[op] = cur->is_success() && cur->size() == 10;
                 counts[op] = wrapper.engine_use_count();
                 ++op;
@@ -343,7 +341,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
     constexpr int num_iterations = 25;
     constexpr int preload_batches = 20;
     constexpr int batch_size = 100;
-    static const database_name_t eviction_database_name = "evictiondb";
+    static const core::dbname_t eviction_database_name{"evictiondb"};
 
     // Serializes only session construction: duplicate ids would collide because begin_transaction is
     // idempotent per session.
@@ -374,14 +372,14 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
     {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE " + eviction_database_name + ";");
+            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE " + eviction_database_name.t + ";");
             REQUIRE(cur->is_success());
         }
         for (size_t id = 0; id < num_collections; ++id) {
             // Extra columns add a segment per row group, so a scan bursts pin/unpin calls per agent.
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
-                                               "CREATE TABLE " + eviction_database_name + ".eviction_col_" +
+                                               "CREATE TABLE " + eviction_database_name.t + ".eviction_col_" +
                                                    std::to_string(id) +
                                                    " (name string, count bigint, c0 bigint, c1 bigint, c2 bigint,"
                                                    " c3 bigint, c4 bigint, c5 bigint);");
@@ -392,7 +390,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
     // Returns an empty string on success, the failure description otherwise.
     auto insert_batch = [&](size_t collection, int iter) -> std::string {
         std::stringstream query;
-        query << "INSERT INTO " << eviction_database_name << ".eviction_col_" << collection
+        query << "INSERT INTO " << eviction_database_name.t << ".eviction_col_" << collection
               << " (name, count, c0, c1, c2, c3, c4, c5) VALUES ";
         for (int row = 0; row < batch_size; ++row) {
             int num = iter * batch_size + row;
@@ -401,9 +399,10 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
         }
         auto session = make_session();
         auto cur = dispatcher->execute_sql(session, query.str());
-        auto failure = describe_failure(cur, static_cast<size_t>(batch_size));
-        if (failure.empty() && cur->size() != static_cast<size_t>(batch_size)) {
-            failure = "insert size mismatch: got " + std::to_string(cur->size());
+        auto failure = describe_failure(cur, 0);
+        if (failure.empty() && cur->affected_rows() != static_cast<std::uint64_t>(batch_size)) {
+            failure = "insert count mismatch: got " +
+                      (cur->is_write() ? std::to_string(cur->affected_rows()) : std::string{"none"});
         }
         return failure;
     };
@@ -442,7 +441,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
 
         auto work = [&](size_t id) {
             const size_t collection = id % num_collections;
-            const std::string table = eviction_database_name + ".eviction_col_" + std::to_string(collection);
+            const std::string table = eviction_database_name.t + ".eviction_col_" + std::to_string(collection);
             for (int iter = 0; iter < num_iterations; ++iter) {
                 if (id < num_collections && iter % 10 == 0) {
                     auto failure = insert_batch(collection, preload_batches + iter / 10);
@@ -482,7 +481,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
         for (size_t id = 0; id < num_collections; ++id) {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session,
-                                               "SELECT * FROM " + eviction_database_name + ".eviction_col_" +
+                                               "SELECT * FROM " + eviction_database_name.t + ".eviction_col_" +
                                                    std::to_string(id) + ";");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == expected);
@@ -496,10 +495,9 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::construct_destroy_clean_tear
           "[engine-lifecycle][leak-repro]") {
     auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/teardown_leak"));
     test_clear_directory(config);
-    components::compute::function_registry_t::reset_default();
 
     {
-        auto inst = otterbrix::make_otterbrix(config);
+        auto inst = test_make_otterbrix(config);
         auto* dispatcher = inst->dispatcher();
 
         REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE leakreprodb;")->is_success());
@@ -522,9 +520,8 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::repeated_construct_destroy_n
     for (int i = 0; i < kCycles; ++i) {
         auto config = test_create_config(integration_fixture_path("test_engine_lifecycle/stress_" + std::to_string(i)));
         test_clear_directory(config);
-        components::compute::function_registry_t::reset_default();
 
-        auto inst = otterbrix::make_otterbrix(config);
+        auto inst = test_make_otterbrix(config);
         auto* dispatcher = inst->dispatcher();
         REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE stressdb;")->is_success());
         REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE stressdb.t (g bigint, v bigint);")

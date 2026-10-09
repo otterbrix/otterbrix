@@ -58,5 +58,5 @@ TEST_CASE("integration::cpp::wal_address_always_wired::an empty wal path is refu
     // auto-checkpoint threshold would never fire and nothing would say why.
     config.wal.path.clear();
 
-    REQUIRE_THROWS_AS(test_spaces{config}, std::runtime_error);
+    REQUIRE(otterbrix::base_otterbrix_t::open(config).has_error());
 }

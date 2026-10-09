@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <memory_resource>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -38,6 +39,23 @@ namespace components::table::storage {
         read_blocks(file_buffer_t& buffer, uint64_t start_block, uint64_t block_count) = 0;
         [[nodiscard]] virtual core::result_wrapper_t<bool> write(file_buffer_t& block, uint64_t block_id) = 0;
         [[nodiscard]] core::result_wrapper_t<bool> write(block_t& block) { return write(block, block.id); }
+        // Rewrites the checksum slot and payload bytes [offset, offset+length) of a block whose
+        // other bytes are already on disk unchanged. A manager without positional writes writes
+        // the whole block, which is the same bytes. `covered_crc` is the caller's CRC32C of payload
+        // [0, offset+length), kept incrementally; without it the manager computes it.
+        [[nodiscard]] core::error_t write_range(file_buffer_t& block,
+                                                uint64_t block_id,
+                                                uint64_t offset,
+                                                uint64_t length,
+                                                std::optional<uint32_t> covered_crc = std::nullopt) {
+            return write_range_impl(block, block_id, offset, length, covered_crc);
+        }
+        // First write of a block whose payload beyond `length` is zero: a block past the end of the
+        // file is written as the prefix over a sparse extension; a reused id (old bytes on disk
+        // past the prefix) is written whole.
+        [[nodiscard]] core::error_t write_prefix(file_buffer_t& block, uint64_t block_id, uint64_t length) {
+            return write_prefix_impl(block, block_id, length);
+        }
 
         virtual void adopt_durable_root_data_blocks(const std::pmr::vector<uint64_t>& /*block_ids*/) {}
         // Frees root N once root N+1 is fully written; otherwise checkpointing an unchanged table grows the file.
@@ -56,11 +74,9 @@ namespace components::table::storage {
         [[nodiscard]] virtual core::result_wrapper_t<bool> file_sync() = 0;
         [[nodiscard]] virtual core::result_wrapper_t<bool> truncate();
 
+        // One handle per block: a live slot is handed back, an expired one is overwritten. A dead handle
+        // writes nothing here; its expired slot stays until prune_expired_slots or the id's next registration.
         std::shared_ptr<block_handle_t> register_block(uint64_t block_id);
-
-        // Identity-checked: a stale handle destroyed after re-registration can't drop the fresh slot.
-        void unregister_block(block_handle_t& block);
-        void unregister_block(uint64_t id);
 
         bool registry_alive(uint64_t id);
 
@@ -68,6 +84,7 @@ namespace components::table::storage {
 
 #ifdef DEV_MODE
         std::pmr::vector<uint64_t> dev_live_registry_ids() { return live_registry_ids(); }
+        uint64_t dev_registry_slots() const { return blocks_.size(); }
 #endif
 
         uint64_t block_allocation_size() const { return block_alloc_size_; }
@@ -76,8 +93,20 @@ namespace components::table::storage {
         // DISK-FED: an unvalidated too-small header size would wrap block_size()'s subtraction to ~1.8e19.
         [[nodiscard]] core::result_wrapper_t<bool> set_block_allocation_size(uint64_t block_alloc_size);
 
+    protected:
+        // The registry's only erase, on the manager's own thread (serialize_free_list).
+        void prune_expired_slots();
+
     private:
-        // NO LOCK: exactly one block manager is reachable from exactly one disk agent thread, by construction.
+        virtual core::error_t write_range_impl(file_buffer_t& block,
+                                               uint64_t block_id,
+                                               uint64_t offset,
+                                               uint64_t length,
+                                               std::optional<uint32_t> covered_crc);
+        virtual core::error_t write_prefix_impl(file_buffer_t& block, uint64_t block_id, uint64_t length);
+
+        // NO LOCK: exactly one block manager is reachable from exactly one disk agent thread, by construction;
+        // the handles' destructors never write here, so a handle may die anywhere, even after this manager.
         std::pmr::unordered_map<uint64_t, std::weak_ptr<block_handle_t>> blocks_;
         uint64_t block_alloc_size_;
     };

@@ -25,8 +25,10 @@
 
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/results/ddl_result.hpp>
 #include <components/catalog/session_catalog.hpp>
 #include <components/compute/function.hpp>
+#include <components/configuration/configuration.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/execution_plan.hpp>
@@ -42,6 +44,11 @@ namespace services::disk {
 
 namespace services::dispatcher {
 
+#ifdef DEV_MODE
+    // Test seam: how many statements had to wait for their session's turn.
+    std::uint64_t dev_statements_waited_turn() noexcept;
+#endif
+
     // Thin router + txn-state mailbox service + executor-pool admin: per-query work lives entirely
     // in executor_t; the dispatcher owns only state that must stay global — txn_manager_ (reachable
     // solely through the txn_*_msg handlers below), default_settings_, the executor pool, DROP-GC flags.
@@ -56,17 +63,19 @@ namespace services::dispatcher {
             bool waiting{false};
         };
 
-        // The two host-customization hooks default to Null Objects, never null.
+        // Host customization: every executor copies the primitives at spawn.
         manager_dispatcher_t(std::pmr::memory_resource*,
                              actor_zeta::scheduler_raw,
                              log_t& log,
                              actor_zeta::address_t wal_address,
                              actor_zeta::address_t disk_address,
                              actor_zeta::address_t index_address,
-                             uint64_t dml_flush_row_threshold = 0,
-                             planner::create_plan_rule_t create_plan_rule = &planner::no_custom_lowering,
-                             components::planner::optimizer_pass_t optimizer_pass = &components::planner::no_op_pass);
+                             const configuration::config_execution& execution,
+                             components::planner::primitives_t primitives);
         ~manager_dispatcher_t();
+        // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
+        // resume against them while they are torn down. Idempotent; the destructor calls it too.
+        void stop_loop() noexcept;
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
         auto make_type() const noexcept -> const char*;
@@ -94,7 +103,8 @@ namespace services::dispatcher {
                                                   components::compute::function_ptr function);
         unique_future<core::error_t> unregister_udf(components::session::session_id_t session,
                                                     std::string function_name,
-                                                    std::pmr::vector<components::types::complex_logical_type> inputs);
+                                                    std::pmr::vector<components::types::complex_logical_type> inputs,
+                                                    components::catalog::drop_behavior_t behavior);
         // pg_cast is written/deleted only after every executor confirms, so none applies a stale cast.
         unique_future<core::error_t> register_cast(components::session::session_id_t session,
                                                    components::types::complex_logical_type source,
@@ -133,6 +143,9 @@ namespace services::dispatcher {
         unique_future<void> on_drop_resource_marked(uint8_t subscriber_kind);
         unique_future<void> on_subscriber_empty(uint8_t subscriber_kind);
 
+        // Shutdown: every statement arriving after this is refused, except CHECKPOINT.
+        unique_future<void> begin_shutdown();
+
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
                                                             &manager_dispatcher_t::refuse_statement,
                                                             &manager_dispatcher_t::register_udf,
@@ -149,13 +162,20 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::txn_discard_msg,
                                                             &manager_dispatcher_t::txn_compact_watermark_msg,
                                                             &manager_dispatcher_t::on_drop_resource_marked,
-                                                            &manager_dispatcher_t::on_subscriber_empty>;
+                                                            &manager_dispatcher_t::on_subscriber_empty,
+                                                            &manager_dispatcher_t::begin_shutdown>;
 
     private:
         // Member coroutine, not a lambda, so `this` supplies the frame memory_resource.
         unique_future<void>
         unwind_udf_fanout_(components::session::session_id_t session,
                            std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered);
+
+        // Runs a catalog write operator (UDF / cast register and unregister) to completion in the committed snapshot;
+        // its error, logged under `what`, is the answer.
+        unique_future<core::error_t> run_catalog_op_(components::session::session_id_t session,
+                                                     components::operators::operator_ptr op,
+                                                     std::string_view what);
 
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
@@ -218,11 +238,6 @@ namespace services::dispatcher {
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
 
-        planner::create_plan_rule_t create_plan_rule_{&planner::no_custom_lowering};
-        components::planner::optimizer_pass_t optimizer_pass_{&components::planner::no_op_pass};
-
-        static constexpr std::size_t executor_pool_size_ = 4;
-
         std::pmr::vector<services::collection::executor::executor_ptr> executors_;
         std::pmr::vector<actor_zeta::address_t> executor_addresses_;
         std::size_t next_executor_{0};
@@ -233,17 +248,22 @@ namespace services::dispatcher {
         actor_zeta::address_t disk_address_;
         actor_zeta::address_t index_address_;
 
+        bool shutting_down_{false};
         bool disk_has_dropped_{false};
         bool index_has_dropped_{false};
         // A long-running concurrent txn can pin lowest_active, so this skips redundant re-broadcasts.
         uint64_t last_broadcast_horizon_{0};
 
         // mutex_/pump_cv_ guard only the loop's idle sleep, woken early by enqueue.
+        std::pmr::list<in_flight_entry_t> in_flight_{resource_};
         std::thread loop_thread_;
         std::atomic<bool> loop_running_{true};
         // Raw message* since boost::lockfree requires trivially-copyable; re-wrapped by the loop.
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
         std::mutex mutex_;
+        std::condition_variable pump_cv_;
+        configuration::pump_intervals_t pump_;
+        void wake_loop_() noexcept;
 
         components::table::transaction_manager_t txn_manager_;
         std::pmr::unordered_map<components::session::session_id_t, session_order_t> session_order_{resource_};
@@ -251,6 +271,8 @@ namespace services::dispatcher {
         std::pmr::unordered_set<components::session::session_id_t> failed_sessions_{resource_};
         in_flight_entry_t* current_entry_{nullptr};
         components::casts::cast_registry_t cast_registry_;
+        // The engine's master: builtins plus host UDFs. Executors hold copies, updated by fan-out.
+        components::compute::function_registry_t function_registry_;
         // global cached settings. updated on every set.
         // TODO: settings for the session
         components::catalog::session_catalog_t default_settings_;

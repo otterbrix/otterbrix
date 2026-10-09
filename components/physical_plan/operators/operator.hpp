@@ -12,7 +12,10 @@
 
 #include <chrono>
 #include <memory_resource>
+#include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace components::expressions {
@@ -111,14 +114,22 @@ namespace components::operators {
         sink
     };
 
+    // One operator as EXPLAIN sees it; the views live until the sink returns.
+    struct explain_entry_t {
+        catalog::oid_t oid;
+        uint64_t rows;
+        std::chrono::nanoseconds time;
+        uint64_t loops;
+        std::string_view label;
+        std::span<const std::pmr::string> details;
+    };
+
     // Raw fn-pointers + void* ctx, not std::function: no IR type crosses into components.
     struct explain_sink {
-        void (*on_node)(void*, operator_type, catalog::oid_t, uint64_t, std::chrono::nanoseconds, uint64_t);
+        void (*on_node)(void*, const explain_entry_t&);
         void (*on_end)(void*);
         void* ctx;
-        void begin(operator_type t, catalog::oid_t o, uint64_t r, std::chrono::nanoseconds ti, uint64_t l) const {
-            on_node(ctx, t, o, r, ti, l);
-        }
+        void begin(const explain_entry_t& entry) const { on_node(ctx, entry); }
         void end() const { on_end(ctx); }
     };
 
@@ -138,6 +149,9 @@ namespace components::operators {
 
         void prepare();
 
+        // The executor opens every source of a plan before pumping any, so backend fetches overlap.
+        [[nodiscard]] actor_zeta::unique_future<core::error_t> open(pipeline::context_t* ctx) { return open_impl(ctx); }
+
         virtual actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx);
 
         // Default is `sink`; only a SOURCE or a STREAMING operator needs to override this.
@@ -145,8 +159,8 @@ namespace components::operators {
 
         [[nodiscard]] virtual bool produces_query_rows() const noexcept { return false; }
 
-        // A drained source returns an EMPTY chunk (cardinality 0), never a throw.
-        [[nodiscard]] virtual actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        // std::nullopt ends the stream. Every chunk is data, an empty one or one without columns included.
+        [[nodiscard]] virtual actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         source_next(pipeline::context_t* ctx);
 
         [[nodiscard]] virtual bool holds_open_cursor() const noexcept { return false; }
@@ -165,6 +179,9 @@ namespace components::operators {
 
         // Catalog-mode DML returns 0 too: its single-shot path must not be mid-flushed.
         [[nodiscard]] virtual uint64_t buffered_rows() const noexcept { return 0; }
+
+        // The rows a write changed; the executor reads it from the plan root of an INSERT / UPDATE / DELETE.
+        [[nodiscard]] uint64_t written() const noexcept { return written_; }
 
         // Covers per-run streaming state reset_for_reuse() doesn't reach (a source's cursor, a
         // sink's built accumulator); the recursive-CTE driver calls both on every node per pass.
@@ -217,10 +234,13 @@ namespace components::operators {
         // Scans override to add their table oid; lateral/recursive override to recurse into private sub-plans.
         void explain(const explain_sink& s) const { explain_impl(s); }
 
+        // What EXPLAIN prints for this operator: its line, and the lines printed under it.
+        [[nodiscard]] std::pmr::string explain_label() const;
+        [[nodiscard]] std::pmr::vector<std::pmr::string> explain_details() const { return explain_details_impl(); }
+
     protected:
-        void explain_begin(const explain_sink& s, catalog::oid_t oid) const {
-            s.begin(type(), oid, analyze_rows_, analyze_time_, analyze_loops_);
-        }
+        // Allocates nothing for an operator that overrides neither explain_*_impl.
+        void explain_begin(const explain_sink& s, catalog::oid_t oid) const;
 
         // Prevents constant creation of empty chunks just to pass its schema
         void note_emitted() noexcept { emitted_ = true; }
@@ -234,8 +254,17 @@ namespace components::operators {
         operator_data_ptr output_{nullptr};
         operator_write_data_ptr modified_{nullptr};
         operator_data_ptr constraint_input_{nullptr};
+        uint64_t written_ = 0;
 
     private:
+        virtual actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx);
+
+        // Empty: the engine's name for type(), e.g. "Seq Scan", "Hash Join", "Extension Scan".
+        virtual std::pmr::string explain_label_impl() const { return std::pmr::string{resource_}; }
+        virtual std::pmr::vector<std::pmr::string> explain_details_impl() const {
+            return std::pmr::vector<std::pmr::string>{resource_};
+        }
+
         // Non-pure: operator_t has concrete leaf subclasses that don't override it.
         virtual void explain_impl(const explain_sink& s) const {
             explain_begin(s, catalog::INVALID_OID);

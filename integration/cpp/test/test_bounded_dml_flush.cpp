@@ -27,7 +27,7 @@ namespace {
         });
         INFO("seed error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
 } // namespace
 
@@ -47,7 +47,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_select_mid_flushes") {
         auto cur = exec(dispatcher, "INSERT INTO FlushDb.dst (id, grp, val) SELECT id, grp, val FROM FlushDb.src;");
         INFO("INSERT...SELECT error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
     const auto flushes_after = services::collection::executor::dml_flush_count();
 
@@ -87,7 +87,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::update_mid_flushes") {
         auto cur = exec(dispatcher, "UPDATE FlushDb.t SET val = val + 1;");
         INFO("UPDATE error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
     const auto flushes_after = services::collection::executor::dml_flush_count();
     REQUIRE(flushes_after - flushes_before > 1);
@@ -204,7 +204,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_from_recursive_cte_mid_fl
                         "SELECT n FROM seq;");
         INFO("INSERT from recursive CTE error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kCteRows);
+        REQUIRE(cur->affected_rows() == kCteRows);
     }
     const auto flushes_after = services::collection::executor::dml_flush_count();
 
@@ -238,7 +238,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::delete_using_limit_spans_flushes
         });
         INFO("seed tgt error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
     REQUIRE(
         exec(dispatcher, "INSERT INTO FlushDb.src (k) VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);")->is_success());

@@ -37,8 +37,8 @@ using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
 using namespace components::types;
 
-static const database_name_t database_name = "testdatabase";
-static const collection_name_t collection_name = "testcollection";
+static const core::dbname_t database_name{"testdatabase"};
+static const core::relname_t collection_name{"testcollection"};
 
 constexpr int kDocuments = 100;
 
@@ -73,7 +73,7 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
     do {                                                                                                               \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");                                \
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");                              \
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
@@ -148,9 +148,8 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
         /* names two pg_class rows: the parent table and the index itself */                                           \
         auto node = components::logical_plan::make_node_drop(dispatcher->resource(),                                   \
                                                              components::logical_plan::drop_target_kind::index);       \
-        node->set_dbname(database_name);                                                                               \
-        node->set_relname(collection_name);                                                                            \
-        node->set_index_name(std::string{INDEX_NAME});                                                                 \
+        node->set_target(qualified_name_t{database_name, collection_name});                                            \
+        node->set_index_name(core::indexname_t{INDEX_NAME});                                                           \
         dispatcher->execute_plan(session,                                                                              \
                                  components::logical_plan::execution_plan_t{dispatcher->resource(), node, nullptr});   \
     } while (false)
@@ -159,8 +158,7 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
         auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),                              \
-                                                                  core::dbname_t{database_name},                       \
-                                                                  core::relname_t{collection_name});                   \
+                                                                  qualified_name_t{database_name, collection_name});   \
         auto c = dispatcher->execute_plan(session,                                                                     \
                                           components::logical_plan::execution_plan_t{                                  \
                                               dispatcher->resource(),                                                  \
@@ -173,15 +171,13 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
         auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),                              \
-                                                                  core::dbname_t{database_name},                       \
-                                                                  core::relname_t{collection_name});                   \
+                                                                  qualified_name_t{database_name, collection_name});   \
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
                                                                      key{dispatcher->resource(), KEY, SIDE},           \
                                                                      id_par{1});                                       \
         plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),                           \
-                                                                     core::dbname_t{database_name},                    \
-                                                                     core::relname_t{collection_name},                 \
+                                                                     qualified_name_t{database_name, collection_name}, \
                                                                      std::move(expr)));                                \
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
         params->add_parameter(id_par{1}, VALUE);                                                                       \
@@ -231,17 +227,16 @@ TEST_CASE("integration::cpp::test_index::base") {
             auto session = otterbrix::session_id_t();
 
             auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),
-                                                                      core::dbname_t{database_name},
-                                                                      core::relname_t{collection_name});
+                                                                      qualified_name_t{database_name, collection_name});
             auto expr =
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
                                                                  key{dispatcher->resource(), "count", side_t::left},
                                                                  id_par{1});
-            plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),
-                                                                         core::dbname_t{database_name},
-                                                                         core::relname_t{collection_name},
-                                                                         std::move(expr)));
+            plan->append_child(
+                components::logical_plan::make_node_match(dispatcher->resource(),
+                                                          qualified_name_t{database_name, collection_name},
+                                                          std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 10));
             auto c = dispatcher->execute_plan(
@@ -411,16 +406,13 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                 components::logical_plan::make_node_delete(
                     dispatcher->resource(),
                     components::logical_plan::make_node_match(dispatcher->resource(),
-                                                              core::dbname_t{database_name},
-                                                              core::relname_t{collection_name},
+                                                              qualified_name_t{database_name, collection_name},
                                                               components::expressions::make_compare_expression(
                                                                   dispatcher->resource(),
                                                                   compare_type::gt,
                                                                   key{dispatcher->resource(), "count", side_t::left},
                                                                   id_par{1})),
                     components::logical_plan::make_node_limit(dispatcher->resource(),
-                                                              {},
-                                                              {},
                                                               components::logical_plan::limit_t::unlimit())));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
             params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 90));
@@ -428,7 +420,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), del, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 10);
+            REQUIRE(cur->affected_rows() == 10);
         }
     }
 
@@ -441,8 +433,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
             auto session = otterbrix::session_id_t();
             auto match = components::logical_plan::make_node_match(
                 dispatcher->resource(),
-                core::dbname_t{database_name},
-                core::relname_t{collection_name},
+                qualified_name_t{database_name, collection_name},
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
                                                                  key{dispatcher->resource(), "count", side_t::left},
@@ -459,8 +450,6 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                     dispatcher->resource(),
                     match,
                     components::logical_plan::make_node_limit(dispatcher->resource(),
-                                                              {},
-                                                              {},
                                                               components::logical_plan::limit_t::unlimit()),
                     {update_expr}));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
@@ -470,7 +459,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
     }
 
@@ -490,7 +479,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -514,14 +503,14 @@ TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session
         }
         auto cur = dispatcher->execute_sql(session, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 50);
+        REQUIRE(cur->affected_rows() == 50);
     }
 
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 25;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 25);
+        REQUIRE(cur->affected_rows() == 25);
     }
 
     {
@@ -588,7 +577,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -614,7 +603,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
             }
             auto cur = dispatcher->execute_sql(session, q.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == static_cast<std::size_t>(kRows));
+            REQUIRE(cur->affected_rows() == static_cast<std::size_t>(kRows));
         }
 
         {
@@ -657,7 +646,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -681,14 +670,14 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
         }
         auto cur = dispatcher->execute_sql(session, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 50);
+        REQUIRE(cur->affected_rows() == 50);
     }
 
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count % 3 = 0;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 17);
+        REQUIRE(cur->affected_rows() == 17);
     }
 
     {
@@ -719,7 +708,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -746,7 +735,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row
             }
             auto cur = dispatcher->execute_sql(session, q.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == static_cast<std::size_t>(batch));
+            REQUIRE(cur->affected_rows() == static_cast<std::size_t>(batch));
             inserted += batch;
         }
     }
@@ -756,7 +745,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 500;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == static_cast<std::size_t>(kDeleted));
+        REQUIRE(cur->affected_rows() == static_cast<std::size_t>(kDeleted));
     }
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.TestCollection;", kRows - kDeleted);
 
@@ -800,7 +789,7 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -824,7 +813,7 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
             }
             auto cur = dispatcher->execute_sql(session, q.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == static_cast<std::size_t>(batch));
+            REQUIRE(cur->affected_rows() == static_cast<std::size_t>(batch));
             inserted += batch;
         }
     }
@@ -908,7 +897,9 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
         di->set_index_oid(index_oid);
         seq->append_child(di);
 
-        auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+        auto plan_planned = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
         REQUIRE(plan);
 
         CHECK(plan->type() == ops::operator_type::create_collection);
@@ -923,7 +914,9 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
         auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
         append_delete_leaves(seq);
 
-        auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+        auto plan_planned = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
         REQUIRE(plan);
         CHECK(count_ops_of_type(plan, ops::operator_type::remove) == delete_specs.size());
     }

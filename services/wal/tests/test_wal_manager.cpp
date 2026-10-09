@@ -13,7 +13,6 @@
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/tests/generaty.hpp>
-#include <core/config.hpp>
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
 #include <filesystem>
@@ -24,6 +23,8 @@
 #include <services/wal/wal_sync_mode.hpp>
 #include <thread>
 #include <unistd.h>
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 
 using namespace services::wal;
 using namespace components::session;
@@ -39,32 +40,11 @@ inline std::pmr::vector<data_chunk_t> to_batch(std::unique_ptr<data_chunk_t> chu
     return batch;
 }
 
-#if defined(OTTERBRIX_TSAN_ENABLED)
-// TSAN false-positives on synchronized_pool_resource's cross-thread reuse (manager loop vs
-// scheduler workers); delegate to new_delete_resource instead (same workaround as base_spaces.hpp).
-struct test_pool_resource_t final : std::pmr::memory_resource {
-protected:
-    void* do_allocate(size_t bytes, size_t align) override {
-        return std::pmr::new_delete_resource()->allocate(bytes, align);
-    }
-    void do_deallocate(void* p, size_t bytes, size_t align) override {
-        std::pmr::new_delete_resource()->deallocate(p, bytes, align);
-    }
-    bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
-};
-#else
-using test_pool_resource_t = core::pmr::otterbrix_resource;
-#endif
-
 // The manager runs its own loop thread, so send() futures become ready asynchronously; poll
 // with a wall-clock deadline (survives TSAN/ctest -j oversubscription) before take_ready.
 template<typename F>
 static decltype(auto) await_ready(F& fut) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::yield();
-    }
-    REQUIRE(fut.is_ready());
+    REQUIRE(test_helpers::wait_ready(fut));
     return std::move(fut).take_ready();
 }
 
@@ -89,7 +69,7 @@ struct test_wal_manager {
     test_wal_manager(const std::filesystem::path& path, std::uintmax_t auto_checkpoint_threshold_bytes = 0)
         : path_(path)
         , resource_()
-        , log_(initialization_logger("python", "/tmp/docker_logs/"))
+        , log_(make_test_log())
         , scheduler_(new actor_zeta::shared_work(3, 1000))
         , config_([&]() {
             configuration::config_wal c(path);
@@ -103,7 +83,8 @@ struct test_wal_manager {
                                                               config_,
                                                               log_,
                                                               components::pipeline::no_mailbox(),
-                                                              components::pipeline::no_mailbox())) {
+                                                              components::pipeline::no_mailbox(),
+                                                              configuration::pump_intervals_t{})) {
         std::filesystem::remove_all(path_);
         std::filesystem::create_directories(path_);
         scheduler_->start();
@@ -181,7 +162,7 @@ struct test_wal_manager {
     }
 
     std::filesystem::path path_;
-    test_pool_resource_t resource_;
+    core::pmr::otterbrix_resource resource_;
     log_t log_;
     actor_zeta::scheduler_ptr scheduler_;
     configuration::config_wal config_;

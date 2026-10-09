@@ -1,4 +1,5 @@
 #include "transfer_scan.hpp"
+#include "guard_chunk.hpp"
 
 #include <services/disk/manager_disk.hpp>
 
@@ -15,19 +16,6 @@ namespace components::operators {
         , table_oid_(table_oid)
         , limit_(limit)
         , projected_cols_(std::move(projected_cols)) {}
-
-    vector::data_chunk_t transfer_scan::make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types) {
-        if (projected_cols_.empty()) {
-            return vector::data_chunk_t{resource_, types, 0};
-        }
-        // Pruned-scan contract (PR #477): pruned scans emit FULL-WIDTH chunks whose
-        // non-projected columns are buffer-less placeholders, so column ordinals stay
-        // stable plan-wide (expression key paths are never remapped after prune_columns).
-        // The schema'd 0-row empty-guard must honor the same shape as real batches —
-        // operators above index it by table ordinal. An empty `types` (the 0-column
-        // drain sentinel) still degrades to a 0-column chunk here.
-        return vector::data_chunk_t{resource_, types, projected_cols_, 0};
-    }
 
     // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---
     // FIRST call OPENs a position-only cursor (no filter); subsequent calls ADVANCE it, one batch
@@ -49,15 +37,14 @@ namespace components::operators {
         co_return;
     }
 
-    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+    actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
     transfer_scan::source_next(pipeline::context_t* ctx) {
         if (drained_) {
-            co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+            co_return std::nullopt;
         }
 
         // No-table sentinel (no-FROM SELECT): emit ONE synthetic single-row batch that
-        // carries one placeholder column (so it is not the 0-column drain sentinel),
-        // then drain. operator_select_t projects its constant/arithmetic columns over
+        // carries one placeholder column, then drain. operator_select_t projects its constant/arithmetic columns over
         // this one row to produce the single constants row (the placeholder is ignored),
         // matching the legacy virtual-row path. No disk round-trip.
         if (table_oid_ == components::catalog::INVALID_OID) {
@@ -66,7 +53,7 @@ namespace components::operators {
             types.emplace_back(types::logical_type::BOOLEAN);
             vector::data_chunk_t row{resource_, types, 1};
             row.set_cardinality(1);
-            co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(row));
+            co_return std::move(row);
         }
 
         if (!opened_) {
@@ -80,7 +67,7 @@ namespace components::operators {
                                                         ctx->session,
                                                         table_oid_,
                                                         cursor_id_, // 0 == OPEN
-                                                        std::unique_ptr<table::table_filter_t>(nullptr),
+                                                        std::unique_ptr<table::pushed_filter_t>(nullptr),
                                                         scan_limit,
                                                         projected_cols_,
                                                         ctx->txn);
@@ -88,7 +75,7 @@ namespace components::operators {
             if (fetch_result.has_error()) {
                 set_error(fetch_result.error());
                 mark_failed();
-                co_return fetch_result.convert_error<vector::data_chunk_t>();
+                co_return fetch_result.convert_error<std::optional<vector::data_chunk_t>>();
             }
             auto reply = std::move(fetch_result.value());
             cursor_id_ = reply.cursor_id;
@@ -122,7 +109,7 @@ namespace components::operators {
                                                     ctx->session,
                                                     table_oid_,
                                                     cursor_id_,
-                                                    std::unique_ptr<table::table_filter_t>(nullptr),
+                                                    std::unique_ptr<table::pushed_filter_t>(nullptr),
                                                     int64_t{-1},
                                                     projected_cols_,
                                                     ctx->txn);
@@ -130,7 +117,7 @@ namespace components::operators {
         if (fetch_result.has_error()) {
             set_error(fetch_result.error());
             mark_failed();
-            co_return fetch_result.convert_error<vector::data_chunk_t>();
+            co_return fetch_result.convert_error<std::optional<vector::data_chunk_t>>();
         }
         auto reply = std::move(fetch_result.value());
         co_return co_await emit_or_skip(ctx, std::move(reply.batch));
@@ -139,7 +126,7 @@ namespace components::operators {
     // The drained empty-guard for one fetched batch. transfer_scan fetches the guard schema lazily
     // (storage_types) only on the drained-with-zero-rows path (it has no upfront filter to type).
     // (OFFSET is applied by operator_limit above; every scan receives offset()==0, so no skip.)
-    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+    actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
     transfer_scan::emit_or_skip(pipeline::context_t* ctx, std::unique_ptr<vector::data_chunk_t> batch) {
         const uint64_t sz = batch ? batch->size() : 0;
 
@@ -159,17 +146,17 @@ namespace components::operators {
                         // silently pass a 0-column chunk off as this table's shape.
                         set_error(types_result.error());
                         mark_failed();
-                        co_return types_result.convert_error<vector::data_chunk_t>();
+                        co_return types_result.convert_error<std::optional<vector::data_chunk_t>>();
                     }
                     guard_types_ = std::move(types_result.value());
                 }
-                co_return make_drain_chunk(guard_types_);
+                co_return make_guard_chunk(resource_, guard_types_, projected_cols_);
             }
-            co_return make_drain_chunk(std::pmr::vector<types::complex_logical_type>{resource_});
+            co_return std::nullopt;
         }
 
         emitted_any_ = true;
-        co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(*batch));
+        co_return std::move(*batch);
     }
 
 } // namespace components::operators

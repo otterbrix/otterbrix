@@ -13,7 +13,7 @@ namespace components::operators {
                                                          log_t log,
                                                          components::catalog::oid_t mv_oid,
                                                          components::catalog::oid_t namespace_oid,
-                                                         std::vector<table::column_definition_t> columns,
+                                                         std::pmr::vector<table::column_definition_t> columns,
                                                          std::vector<catalog_write_t> catalog_writes)
         : read_write_operator_t(resource, std::move(log), operator_type::create_collection)
         , mv_oid_(mv_oid)
@@ -27,13 +27,15 @@ namespace components::operators {
         // Always disk-backed (plan-gen guarantees non-empty inferred columns). is_computed
         // explicitly false — a matview is relkind='m', never a dynamic-schema table.
         {
-            auto [_, f] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                      &services::disk::manager_disk_t::create_storage_disk,
-                                                      ctx->session,
-                                                      mv_oid_,
-                                                      namespace_oid_,
-                                                      std::move(columns_),
-                                                      /*is_computed=*/false);
+            auto [_, f] = actor_zeta::otterbrix::send(
+                ctx->disk_address,
+                &services::disk::manager_disk_t::create_storage_disk,
+                ctx->session,
+                mv_oid_,
+                namespace_oid_,
+                std::vector<table::column_definition_t>(std::make_move_iterator(columns_.begin()),
+                                                        std::make_move_iterator(columns_.end())),
+                /*is_computed=*/false);
             co_await std::move(f);
         }
 
@@ -52,7 +54,7 @@ namespace components::operators {
             co_await std::move(f);
         }
 
-        // Write pg_catalog rows (pg_class + pg_attribute + pg_rewrite + pg_depend).
+        // Write pg_catalog rows (pg_class + pg_attribute + pg_rewrite + pg_rewrite_ref + pg_depend).
         // Two-phase: every append is independent (no iteration consumes the
         // previous result), so send all rows first then await in order.
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};

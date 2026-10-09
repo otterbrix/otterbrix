@@ -130,6 +130,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <memory>
 #include <thread>
@@ -432,7 +433,7 @@ TEST_CASE("real-path fetch-next: N per-batch awaits, each a 2-hop cross-schedule
 
     constexpr std::int64_t kBatchesPerQuery = 64; // 64 sequential 2-hop awaits per query
     constexpr int kQueries = 3000;                // hammer the chained-park race
-    const auto kPerQueryTimeout = std::chrono::seconds(5);
+    const auto kPerQueryTimeout = test_helpers::reply_deadline;
 
     auto executor =
         spawn<query_executor_actor>(resource, relay->address(), exec_scheduler.get(), relay.get(), kBatchesPerQuery);

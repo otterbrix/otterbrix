@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/compute/function.hpp>
 #include <components/execution_dag/execution_dag.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>

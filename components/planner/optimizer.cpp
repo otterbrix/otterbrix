@@ -12,17 +12,30 @@
 
 namespace components::planner {
 
+    namespace {
+        logical_plan::node_ptr run_stage(std::pmr::memory_resource* resource,
+                                         logical_plan::node_ptr node,
+                                         std::span<const optimizer_rule_t> rules,
+                                         optimizer_stage stage) {
+            for (const auto& rule : rules) {
+                if (rule.stage == stage) {
+                    node = rule.apply(resource, std::move(node));
+                }
+            }
+            return node;
+        }
+    } // namespace
+
     logical_plan::node_ptr optimize(std::pmr::memory_resource* resource,
                                     logical_plan::node_ptr node,
                                     logical_plan::parameter_node_t* parameters,
                                     const logical_plan::catalog_resolves_t* resolves,
                                     bool can_push_to_agent,
-                                    optimizer_pass_t host_pass,
+                                    std::span<const optimizer_rule_t> host_rules,
                                     const std::pmr::set<core::parameter_id_t>* deferred_parameters) {
         if (!node) {
             return nullptr;
         }
-
         // Single post-planner pass. Order matters: fold constants on parameter
         // expressions, push filters down, then select hash joins. Hash-join
         // selection reads key.side()/key.path() stamped by validate_schema,
@@ -45,6 +58,7 @@ namespace components::planner {
         // promote rule's left_width to 0. fold_constants (above) never restructures
         // joins, so the children stay stamped for the range classification.
         node = optimizer::promote_cross_joins(resource, std::move(node));
+        node = run_stage(resource, std::move(node), host_rules, optimizer_stage::after_simplify);
         // Push the outer WHERE INTO an inlined single-table CTE / FROM-subquery body so the
         // filter reaches the base scan (disk pushdown + column pruning) instead of a Filter
         // above the body's Project. Runs BEFORE pushdown_filter and on a DISJOINT source
@@ -58,6 +72,7 @@ namespace components::planner {
         node = optimizer::pushdown_cte_filter(resource, std::move(node));
         node = optimizer::pushdown_filter(resource, std::move(node));
         node = optimizer::rewrite_hash_joins(resource, std::move(node));
+        node = run_stage(resource, std::move(node), host_rules, optimizer_stage::after_filters_and_joins);
 
         // Eager (partial) aggregation pushdown through an INNER equi-join: push a
         // MIN/MAX partial reduce onto the single join side that owns every group key
@@ -77,6 +92,7 @@ namespace components::planner {
         // even where there is none. AFTER pushdown_filter/rewrite_hash_joins so it sees the
         // settled match/join shape.
         node = optimizer::pushdown_limit(resource, std::move(node));
+        node = run_stage(resource, std::move(node), host_rules, optimizer_stage::after_limit);
 
         // Annotate pushable single-owned-table aggregates. Runs LAST — it only
         // reads node types + table_oid() + the group child, so ordering vs. the
@@ -89,6 +105,7 @@ namespace components::planner {
         if (can_push_to_agent) {
             node = optimizer::pushdown_aggregate(resource, std::move(node));
         }
+        node = run_stage(resource, std::move(node), host_rules, optimizer_stage::after_aggregate_pushdown);
 
         // Column pruning runs LAST — after pushdown_filter has relocalized any
         // single-table filters below the join and rewrite_hash_joins has settled the
@@ -101,10 +118,7 @@ namespace components::planner {
         // no owning agent, only the resolved paths.
         optimizer::prune_columns(node, resolves);
 
-        // Host-injected final pass on the fully-optimized tree (Null Object = no-op).
-        node = host_pass(resource, std::move(node));
-
-        return node;
+        return run_stage(resource, std::move(node), host_rules, optimizer_stage::last);
     }
 
 } // namespace components::planner

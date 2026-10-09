@@ -81,7 +81,7 @@ namespace components::table {
         if (base.has_error()) {
             return base; // out_of_memory: no exceptions across actors
         }
-        column_append_state child_append;
+        column_append_state child_append{state.pbm};
         auto child = validity.initialize_append(child_append);
         if (child.has_error()) {
             return child;
@@ -100,21 +100,20 @@ namespace components::table {
         return validity.append_data(state.child_appends[0], uvf, count);
     }
 
-    core::result_wrapper_t<bool> standard_column_data_t::revert_append(int64_t start_row) {
-        auto own = column_data_t::revert_append(start_row);
+    void standard_column_data_t::snapshot_counts(append_cut_t& cut) const {
+        column_data_t::snapshot_counts(cut);
+        validity.snapshot_counts(cut);
+    }
+
+    core::result_wrapper_t<bool> standard_column_data_t::revert_append(cut_cursor_t& cut) {
+        auto own = column_data_t::revert_append(cut);
         if (own.has_error()) {
             return own;
         }
-        return validity.revert_append(start_row);
+        return validity.revert_append(cut);
     }
 
-    core::result_wrapper_t<bool> standard_column_data_t::transition_to_disk(storage::partial_block_manager_t& pbm) {
-        // Pack BOTH the main data segments and the validity child's segments through the SAME `pbm`, so a
-        // narrow column and its validity bitmap can share blocks. The caller flushes `pbm` once.
-        auto base = column_data_t::transition_to_disk(pbm);
-        if (base.has_error()) {
-            return base; // io_error / out_of_memory: no exceptions across actors
-        }
+    core::result_wrapper_t<bool> standard_column_data_t::transition_children(storage::partial_block_manager_t& pbm) {
         return validity.transition_to_disk(pbm);
     }
 

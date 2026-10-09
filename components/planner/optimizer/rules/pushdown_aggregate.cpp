@@ -9,7 +9,6 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
-#include <components/expressions/udf_references.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 
@@ -22,9 +21,11 @@ namespace components::planner::optimizer {
         // Children whose presence means the aggregate does NOT sit over a single
         // owned base table (join = multi-table; nested aggregate = a sub-aggregate
         // reduce; data = client-injected raw chunk with no owning agent; cte_scan /
-        // union / intersect / recursive_cte = multi-source). Any of these => skip (a).
+        // union / intersect / recursive_cte = multi-source; extension = host source replacing the scan).
+        // Any of these => skip (a).
         bool is_shape_breaking_child(const lp::node_ptr& child) noexcept {
             switch (child->type()) {
+                case lp::node_type::extension_t:
                 case lp::node_type::join_t:
                 case lp::node_type::aggregate_t:
                 case lp::node_type::data_t:
@@ -52,28 +53,6 @@ namespace components::planner::optimizer {
                 }
                 const auto* agg = static_cast<const ce::aggregate_expression_t*>(expr.get());
                 if (agg->is_distinct() || !agg->is_mergeable()) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        // Walk the whole aggregate fragment sub-tree (WHERE filter, group/aggregate
-        // exprs, projections, group keys — every node carries its exprs in
-        // expressions()) checking for any UDF reference. The UDF boundary rule
-        // (is_udf_uid) and the per-expression walker are shared with the disk-filter
-        // lowering — see components/expressions/udf_references.hpp.
-        bool subtree_references_udf(const lp::node_ptr& node) {
-            if (!node) {
-                return false;
-            }
-            for (const auto& expr : node->expressions()) {
-                if (ce::expr_references_udf(expr)) {
-                    return true;
-                }
-            }
-            for (const auto& child : node->children()) {
-                if (subtree_references_udf(child)) {
                     return true;
                 }
             }
@@ -129,15 +108,6 @@ namespace components::planner::optimizer {
             }
             // Skip (b): a distinct or non-mergeable aggregate stays coordinator-side.
             if (has_unmergeable_aggregate(group)) {
-                return;
-            }
-            // Skip (e): a UDF anywhere in the fragment (WHERE filter, aggregate
-            // argument, projection, group key) is NOT pushable — the owning agent
-            // rebuilds its function registry with register_default_functions ONLY, so
-            // a user-defined function_uid resolves to null there and the
-            // predicate/kernel would deref it. A "computed" shape in the R6 sense:
-            // the coordinator (which HOLDS the UDF) must run it.
-            if (subtree_references_udf(node)) {
                 return;
             }
             // Scalar (0 group keys -> empty-keys single group) and grouped (>0 keys)

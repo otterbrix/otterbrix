@@ -9,6 +9,8 @@
 #include <services/index/manager_index.hpp>
 
 #include <chrono>
+#include <core/tests/skip_under_root.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -194,6 +196,7 @@ namespace {
 // Nothing durable recorded the renumbering, so the restart wired the stale bitcask store as
 // current and 34 of 34 probes disagreed with the table's own full scan, permanently.
 TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an_index_left_naming_precompact_rows") {
+    test_helpers::skip_under_root();
     auto config = test_create_config(fixture_root() + "/orig");
     test_clear_directory(config);
     config.log.level = log_t::level::off;
@@ -219,15 +222,10 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
                     ->is_success());
 
         {
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-            while (services::index::index_deferred_deletes() != 0 && std::chrono::steady_clock::now() < deadline) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            }
             INFO("the deferred-erase queue has to be empty before the fault goes in");
-            REQUIRE(services::index::index_deferred_deletes() == 0);
+            REQUIRE(test_helpers::wait_until([] { return services::index::index_deferred_deletes() == 0; }));
 
-            // AND LANDED: a zero meter only proves the erase reached the mailbox, not that it finished.
-            // MEASURED: shortening this wait to zero did not fail in 8 runs (5 idle, 3 under 24-way load).
+            // A zero meter means the erase has reached the store; the read is the index's own word on it.
             INFO("a read through the index orders the injection after the erase write");
             REQUIRE(disagreements_with_the_full_scan(d) == 0);
         }

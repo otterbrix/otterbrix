@@ -21,6 +21,7 @@ namespace core {
         template<typename T>
         void* insert(T&& str_like);
         void* empty_string(size_t size);
+        std::size_t upstream_allocations() const noexcept { return buffer_.upstream_allocations(); }
 
     private:
         object_buffer_t<char> buffer_;

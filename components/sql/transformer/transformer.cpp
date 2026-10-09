@@ -9,24 +9,6 @@
 
 namespace components::sql::transform {
     namespace {
-        // At the SELECT top-level we know the read dependency is the FROM-clause
-        // table. transform_select returns a node_aggregate_t (single-table FROM)
-        // or one whose first child is a join_t — same shape, so pulling
-        // dbname/relname off the root aggregate is sufficient for the primary
-        // table. TODO: emit one resolve per joined table (depth walk over the
-        // SELECT plan).
-        std::pair<std::string, std::string> select_primary_table_identity(const logical_plan::node_ptr& sel) {
-            if (!sel)
-                return {};
-            using namespace logical_plan;
-            if (sel->type() == node_type::aggregate_t) {
-                const auto* agg = static_cast<const node_aggregate_t*>(sel.get());
-                return {static_cast<const std::string&>(agg->dbname()),
-                        static_cast<const std::string&>(agg->relname())};
-            }
-            return {};
-        }
-
         // --- SORT ELIMINATION for a provably-unobservable sub-query ORDER BY ---------------
         //
         // A flattened sub-query root IS its consumer node (catalog lookups live on the
@@ -126,7 +108,7 @@ namespace components::sql::transform {
         switch (node.type) {
             case T_CreatedbStmt: {
                 auto& n = pg_cast<CreatedbStmt>(node);
-                const std::string dbname = n.dbname ? std::string(n.dbname) : std::string{};
+                const std::string dbname = construct(n.dbname);
                 auto created = transform_create_database(n);
                 if (created.has_error()) {
                     log_node = created.error();
@@ -134,21 +116,21 @@ namespace components::sql::transform {
                 }
                 // Resolve the namespace name so a later patch can use the
                 // resolve node to detect duplicates through the pipeline.
-                register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
+                register_namespace(dbname);
                 log_node = std::move(created.value());
                 break;
             }
             case T_DropdbStmt: {
                 auto& n = pg_cast<DropdbStmt>(node);
-                const std::string dbname = n.dbname ? std::string(n.dbname) : std::string{};
+                const std::string dbname = construct(n.dbname);
                 auto dropped = transform_drop_database(n);
                 if (dropped.has_error()) {
                     log_node = dropped.error();
                     break;
                 }
                 auto drop_node = std::move(dropped.value());
-                static_cast<logical_plan::node_drop_t*>(drop_node.get())->set_dbname(dbname);
-                register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
+                drop_node->set_target(qualified_name_t{core::dbname_t{dbname}, core::relname_t{}});
+                register_namespace(dbname);
                 log_node = std::move(drop_node);
                 break;
             }
@@ -179,11 +161,11 @@ namespace components::sql::transform {
                 // The transformer's aggregate wrapper at the root carries the
                 // (dbname, relname); a future patch can walk joins to add
                 // additional resolves.
-                auto [db, rel] = select_primary_table_identity(selected);
-                if (!rel.empty()) {
-                    register_catalog_resolve_table(resource_, &catalog_resolves_, db, rel);
+                if (selected->type() == logical_plan::node_type::aggregate_t) {
+                    const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(selected.get());
+                    register_written_table(*agg);
                 }
-                register_catalog_resolve_types(resource_, &catalog_resolves_, cast_type_names_);
+                register_types(cast_type_names_);
                 log_node = std::move(selected);
                 break;
             }
@@ -214,17 +196,22 @@ namespace components::sql::transform {
                 log_node = transform_create_sequence(pg_cast<CreateSeqStmt>(node));
                 break;
             case T_ViewStmt:
-                log_node = transform_create_view(pg_cast<ViewStmt>(node));
+                log_node = transform_create_view(pg_cast<ViewStmt>(node), plan);
+                break;
+            case T_TruncateStmt:
+                log_node = core::error_t(core::error_code_t::unimplemented_yet,
+                                         std::pmr::string{"TRUNCATE is not supported: delete the rows with DELETE; "
+                                                          "nothing was truncated",
+                                                          resource_});
                 break;
             case T_CreateTableAsStmt: {
                 auto& cs = pg_cast<CreateTableAsStmt>(node);
                 if (cs.relkind == OBJECT_MATVIEW) {
                     log_node = transform_create_matview(cs, plan);
                 } else {
-                    log_node = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"CREATE TABLE AS without MATERIALIZED — see docs/pr496-followups.md #4",
-                                         resource_});
+                    log_node =
+                        core::error_t(core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"CREATE TABLE AS is not supported yet (#675)", resource_});
                 }
                 break;
             }

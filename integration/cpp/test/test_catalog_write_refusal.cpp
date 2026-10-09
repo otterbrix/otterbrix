@@ -62,7 +62,7 @@ TEST_CASE("integration::cpp::test_catalog_write_refusal::create_table_fails_when
         one_table_fault_scope_t fault(plan, marker);
 
         INFO("an engine whose pg_depend could not be created must not open at all");
-        REQUIRE_THROWS_AS(test_spaces(config), std::runtime_error);
+        REQUIRE(otterbrix::base_otterbrix_t::open(config).has_error());
     }
 
     {

@@ -5,6 +5,8 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/results/ddl_result.hpp>
 
+#include <string>
+
 namespace components::logical_plan {
 
     // Planner-emitted DDL leaf: drives a CASCADE/RESTRICT walk over pg_depend
@@ -14,17 +16,21 @@ namespace components::logical_plan {
     // The classid identifies which catalog owns the seed object — pg_namespace
     // for DROP DATABASE, pg_class for DROP TABLE/SEQUENCE/VIEW/MACRO, pg_type
     // for DROP TYPE, etc. The behavior selects RESTRICT vs CASCADE semantics
-    // (see catalog::drop_behavior_t and cascade_planner.cpp).
+    // (see catalog::drop_behavior_t and cascade_planner.cpp). target() names the
+    // seed as the statement wrote it; with the classid and relkind it is what the RESTRICT refusal says.
     class node_dynamic_cascade_delete_t final : public node_t {
     public:
         node_dynamic_cascade_delete_t(std::pmr::memory_resource* resource,
                                       components::catalog::oid_t seed_classid,
                                       components::catalog::oid_t seed_objid,
-                                      components::catalog::drop_behavior_t behavior);
+                                      components::catalog::drop_behavior_t behavior,
+                                      qualified_name_t target,
+                                      char relkind);
 
         components::catalog::oid_t seed_classid() const noexcept { return seed_classid_; }
         components::catalog::oid_t seed_objid() const noexcept { return seed_objid_; }
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
+        char relkind() const noexcept { return relkind_; }
 
     private:
         hash_t hash_impl() const override;
@@ -33,6 +39,7 @@ namespace components::logical_plan {
         components::catalog::oid_t seed_classid_;
         components::catalog::oid_t seed_objid_;
         components::catalog::drop_behavior_t behavior_;
+        char relkind_;
     };
 
     using node_dynamic_cascade_delete_ptr = boost::intrusive_ptr<node_dynamic_cascade_delete_t>;

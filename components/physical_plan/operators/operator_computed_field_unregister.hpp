@@ -16,8 +16,7 @@ namespace components::operators {
                                              log_t log,
                                              components::catalog::oid_t table_oid,
                                              components::catalog::oid_t attoid,
-                                             std::string column_name,
-                                             bool missing_ok);
+                                             std::string column_name);
 
         // The executor admits this sourceless sink leaf as a streaming sink-root, driving
         // await_async_and_resume via the bottom-up needs_async_finalize pass.
@@ -29,8 +28,6 @@ namespace components::operators {
         components::catalog::oid_t table_oid_;
         components::catalog::oid_t attoid_;
         std::string column_name_;
-        // Same node field the regular pg_attribute drop reads -- only IF EXISTS accepts a missing column.
-        bool missing_ok_;
     };
 
 } // namespace components::operators

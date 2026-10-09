@@ -89,15 +89,16 @@ TEST_CASE("integration::cpp::statement_shape::view_body_reparse_checks_statement
     auto resource = core::pmr::otterbrix_resource();
 
     SECTION("a body with no statement in it is refused by name") {
-        auto body = planner::expand_view_body(&resource, ";");
-        REQUIRE(body.error.type != core::error_code_t::none);
-        CHECK(std::string{body.error.what}.find("no statement") != std::string::npos);
+        auto body = planner::expand_view_body(&resource, core::body_sql_t{";"});
+        REQUIRE(body.has_error());
+        CHECK(std::string{body.error().what}.find("no statement") != std::string::npos);
     }
 
     SECTION("a body with two statements is refused, not silently halved") {
         // BEFORE: the second statement was dropped and the first came back as the whole body -- success.
-        auto body = planner::expand_view_body(&resource, "SELECT id FROM vdb.vt; SELECT id FROM vdb.vt");
-        REQUIRE(body.error.type != core::error_code_t::none);
-        CHECK(std::string{body.error.what}.find("2 statements") != std::string::npos);
+        auto body =
+            planner::expand_view_body(&resource, core::body_sql_t{"SELECT id FROM vdb.vt; SELECT id FROM vdb.vt"});
+        REQUIRE(body.has_error());
+        CHECK(std::string{body.error().what}.find("2 statements") != std::string::npos);
     }
 }

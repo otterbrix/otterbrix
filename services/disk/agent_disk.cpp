@@ -82,7 +82,11 @@ namespace services::disk {
               "agent_disk::create (role={}, pool_idx={})",
               role == agent_role_t::CATALOG ? "CATALOG" : "USER_POOL",
               pool_idx);
-        create_directories(path_);
+        // The engine factory creates the directory before it spawns the managers.
+        assert([this] {
+            std::error_code ec;
+            return std::filesystem::is_directory(path_, ec);
+        }());
     }
 
     agent_disk_t::~agent_disk_t() { trace(log_, "delete agent_disk_t"); }
@@ -1003,12 +1007,35 @@ namespace services::disk {
 
     agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     agent_disk_t::storage_scan_inner(components::catalog::oid_t table_oid,
-                                     std::unique_ptr<components::table::table_filter_t> filter,
+                                     std::unique_ptr<components::table::pushed_filter_t> filter,
                                      int64_t limit,
                                      std::vector<size_t> projected_cols,
                                      components::table::transaction_data txn) {
+        std::unique_ptr<components::table::table_filter_t> built_filter;
+        if (filter != nullptr) {
+            auto it = storages_.find(table_oid);
+            if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
+                co_return core::error_t{
+                    core::error_code_t::missing_table,
+                    std::pmr::string{"scan filter: storage is not owned by this agent", resource()}};
+            }
+            auto built = build_filter_(filter.get(), it->second->storage->types());
+            if (built.has_error()) {
+                co_return built.error();
+            }
+            built_filter = std::move(built.value());
+        }
         const std::vector<size_t>* projected_ptr = projected_cols.empty() ? nullptr : &projected_cols;
-        co_return scan_local(table_oid, filter.get(), limit, projected_ptr, txn);
+        co_return scan_local(table_oid, built_filter.get(), limit, projected_ptr, txn);
+    }
+
+    core::result_wrapper_t<std::unique_ptr<components::table::table_filter_t>>
+    agent_disk_t::build_filter_(const components::table::pushed_filter_t* filter,
+                                const std::pmr::vector<components::types::complex_logical_type>& types) {
+        if (filter == nullptr) {
+            return std::unique_ptr<components::table::table_filter_t>{};
+        }
+        return components::table::build_table_filter(resource(), *filter, types);
     }
 
     template<typename PerBatch>
@@ -1058,9 +1085,6 @@ namespace services::disk {
         namespace ops = components::operators;
         std::pmr::vector<components::vector::data_chunk_t> out{resource};
 
-        components::compute::function_registry_t reg{resource};
-        components::compute::register_default_functions(reg);
-
         // No HAVING / DISTINCT / computed columns — the optimizer never stamps those.
         ops::operator_hash_group_t group{resource, log.clone()};
         for (const auto& gk : spec.group_keys) {
@@ -1072,7 +1096,7 @@ namespace services::disk {
             group.add_value(agg.alias, agg.result_type);
         }
         for (const auto& output : spec.outputs) {
-            group.add_output(output);
+            group.add_output(output.attach(resource));
         }
         group.set_input_types(spec.input_types);
         group.set_output_types(spec.output_types);
@@ -1081,7 +1105,7 @@ namespace services::disk {
         components::pipeline::context_t ctx{session,
                                             self_address,
                                             actor_zeta::address_t::empty_address(),
-                                            &reg,
+                                            nullptr,
                                             params,
                                             components::pipeline::no_mailbox(),
                                             components::pipeline::no_mailbox(),
@@ -1116,7 +1140,7 @@ namespace services::disk {
     agent_disk_t::storage_fetch_next_batch_inner(session_id_t session,
                                                  components::catalog::oid_t table_oid,
                                                  uint64_t cursor_id,
-                                                 std::unique_ptr<components::table::table_filter_t> filter,
+                                                 std::unique_ptr<components::table::pushed_filter_t> filter,
                                                  int64_t limit,
                                                  std::vector<size_t> projected_cols,
                                                  components::table::transaction_data txn) {
@@ -1146,11 +1170,15 @@ namespace services::disk {
                 what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
                 co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
             }
+            auto built = build_filter_(filter.get(), it->second->storage->types());
+            if (built.has_error()) {
+                co_return built.error();
+            }
             active_scan_t scan{};
             scan.table_oid = table_oid;
             scan.pos.next_row = 0;
             scan.pos.max_row = static_cast<int64_t>(it->second->storage->total_rows());
-            scan.filter = std::move(filter);
+            scan.filter = std::move(built.value());
             scan.projected_cols = std::move(projected_cols);
             scan.txn = txn;
             scan.matched_limit = limit;
@@ -1383,7 +1411,7 @@ namespace services::disk {
     agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     agent_disk_t::storage_reduce_inner(session_id_t session,
                                        components::catalog::oid_t table_oid,
-                                       std::unique_ptr<components::table::table_filter_t> filter,
+                                       std::unique_ptr<components::table::pushed_filter_t> filter,
                                        std::vector<size_t> projected_cols,
                                        components::table::transaction_data txn,
                                        components::operators::pushed_aggregate_spec_t spec) {
@@ -1393,12 +1421,16 @@ namespace services::disk {
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
+        auto built = build_filter_(filter.get(), it->second->storage->types());
+        if (built.has_error()) {
+            co_return built.error();
+        }
         auto reduced_r = reduce_pushed_aggregate(resource(),
                                                  log_.clone(),
                                                  it->second->storage.get(),
                                                  session,
                                                  address(),
-                                                 filter.get(),
+                                                 built.value().get(),
                                                  projected_cols,
                                                  txn,
                                                  spec);
@@ -2850,12 +2882,12 @@ namespace services::disk {
 
     // SUBTRACTIVE: drops every column not in live_attnames — a gap in the caller's derivation
     // drops a surviving column.
-    agent_disk_t::unique_future<std::uint64_t>
+    agent_disk_t::unique_future<core::result_wrapper_t<std::uint64_t>>
     agent_disk_t::compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
                                                   std::set<std::string> live_attnames) {
         auto it = storages_.find(table_oid);
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-            co_return 0;
+            co_return core::result_wrapper_t<std::uint64_t>(std::uint64_t{0});
         }
         auto& entry = it->second;
 
@@ -2872,7 +2904,13 @@ namespace services::disk {
 
         std::uint64_t dropped = 0;
         for (const auto& attname : to_drop) {
-            if (entry->drop_column(attname, resource())) {
+            auto dropped_r = entry->drop_column(attname, resource());
+            if (dropped_r.has_error()) {
+                // The storage is untouched by a refused drop, but the columns already dropped stay dropped;
+                // the statement must hear about the refusal rather than count them.
+                co_return core::result_wrapper_t<std::uint64_t>(dropped_r.error());
+            }
+            if (dropped_r.value()) {
                 ++dropped;
             } else {
                 trace(log_,
@@ -2882,7 +2920,7 @@ namespace services::disk {
                       attname);
             }
         }
-        co_return dropped;
+        co_return core::result_wrapper_t<std::uint64_t>(dropped);
     }
 
     // Runs only after the WAL commit marker + ProcArray barrier — the rebuild is irreversible.
@@ -2894,14 +2932,17 @@ namespace services::disk {
             msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
             co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::missing_table, std::move(msg)});
         }
-        const bool dropped = it->second->drop_column(attname, resource());
+        auto dropped = it->second->drop_column(attname, resource());
+        if (dropped.has_error()) {
+            co_return dropped;
+        }
         trace(log_,
               "agent_disk[{}]::drop_storage_column_inner: oid={} column='{}' {}",
               pool_idx_,
               static_cast<unsigned>(table_oid),
               attname,
-              dropped ? "dropped" : "absent from the storage schema — nothing physical to release");
-        co_return core::result_wrapper_t<bool>(dropped);
+              dropped.value() ? "dropped" : "absent from the storage schema — nothing physical to release");
+        co_return dropped;
     }
 
     // Bootstrap reconciliation reads a storage-only name as a DROP: a RENAME that stopped at

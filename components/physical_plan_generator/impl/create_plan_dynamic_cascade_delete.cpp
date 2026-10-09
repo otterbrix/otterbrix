@@ -13,7 +13,9 @@ namespace services::planner::impl {
                                                                                                  context.log.clone(),
                                                                                                  n->seed_classid(),
                                                                                                  n->seed_objid(),
-                                                                                                 n->behavior()));
+                                                                                                 n->behavior(),
+                                                                                                 n->target(),
+                                                                                                 n->relkind()));
     }
 
 } // namespace services::planner::impl

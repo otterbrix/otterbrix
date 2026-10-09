@@ -15,6 +15,7 @@
 #include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/context/context.hpp>
+#include <components/log/test/test_log.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -22,8 +23,10 @@
 #include <components/types/types.hpp>
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/catalog_probe.hpp>
+#include <services/disk/tests/test_directory.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 using namespace services;
@@ -55,27 +58,35 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         : actor_zeta::actor::actor_mixin<test_dispatcher>()
         , resource_(resource)
         , disk_path_(scrubbed(disk_path))
-        , log_(initialization_logger("python", "/tmp/docker_logs/"))
+        , log_(make_test_log())
         , scheduler_(new core::non_thread_scheduler::scheduler_test_t(1, 1))
         , disk_config_(disk_path)
-        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource, scheduler_, scheduler_, disk_config_, log_))
+        , manager_disk_(actor_zeta::spawn<manager_disk_t>(resource,
+                                                          scheduler_,
+                                                          scheduler_,
+                                                          test_directory::created(disk_config_),
+                                                          log_,
+                                                          configuration::pump_intervals_t{}))
         , wal_config_(disk_path)
         , manager_wal_(actor_zeta::spawn<manager_wal_replicate_t>(resource,
                                                                   scheduler_,
                                                                   wal_config_,
                                                                   log_,
                                                                   manager_disk_->address(),
-                                                                  components::pipeline::no_mailbox()))
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{}))
         , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
                                                                       scheduler_,
                                                                       log_,
                                                                       manager_wal_->address(),
                                                                       manager_disk_->address(),
-                                                                      components::pipeline::no_mailbox())) {
+                                                                      components::pipeline::no_mailbox(),
+                                                                      configuration::config_execution{},
+                                                                      components::planner::primitives_t{})) {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
 
-        manager_disk_->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
     }
 
     ~test_dispatcher() {
@@ -95,12 +106,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     template<typename Fn, typename... Args>
     auto disk_invoke(Fn fn, Args&&... args) {
         auto [_, fut] = actor_zeta::otterbrix::send(manager_disk_->address(), fn, std::forward<Args>(args)...);
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            scheduler_->run(1000);
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut, scheduler_));
         return std::move(fut).take_ready();
     }
 
@@ -117,13 +123,8 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
     cursor_t_ptr take_result() {
         // The future becomes ready asynchronously; pump the scheduler until ready, bounded by a 5s deadline.
         REQUIRE(pending_future_);
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (!pending_future_->is_ready() && std::chrono::steady_clock::now() < deadline) {
-            scheduler_->run(1000);
-            std::this_thread::yield();
-        }
         REQUIRE(pending_future_->valid());
-        REQUIRE(pending_future_->is_ready());
+        REQUIRE(test_helpers::wait_ready(*pending_future_, scheduler_));
         auto result = std::move(*pending_future_).take_ready();
         pending_future_.reset();
         // Drain again so the executor's post-result DDL pipeline finishes before returning.
@@ -137,12 +138,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                             {}};
         auto [_, fut] =
             actor_zeta::otterbrix::send(manager_disk_->address(), &manager_disk_t::resolve_namespace, ctx, name);
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            scheduler_->run(1000);
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut, scheduler_));
         // A failed read isn't {found=false}; no case here expects one, avoiding that conflation.
         auto r = std::move(fut).take_ready();
         REQUIRE_FALSE(r.has_error());

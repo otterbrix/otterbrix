@@ -667,7 +667,8 @@ TEST_CASE("disk_backed_scan: multi-row-group revert leaves surviving row intact"
             REQUIRE_FALSE(table->append_lock(state).has_error());
             REQUIRE_FALSE(table->initialize_append(state).has_error());
             REQUIRE_FALSE(table->append(chunk, state).has_error());
-            table->finalize_append(state, transaction_data::committed());
+            // One transaction's sessions: a revert targets the first row of an uncommitted session.
+            table->finalize_append(state, transaction_data{5, 5});
             offset += batch;
         }
     }

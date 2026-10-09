@@ -256,7 +256,7 @@ components::logical_plan::node_group_ptr parse_group(std::pmr::memory_resource* 
         expressions.emplace_back(
             parse_group_expr(resource, py::str(it).cast<std::string>(), condition[it], aggregate, params));
     }
-    return components::logical_plan::make_node_group(resource, aggregate->dbname(), aggregate->relname(), expressions);
+    return components::logical_plan::make_node_group(resource, expressions);
 }
 
 components::logical_plan::node_sort_ptr parse_sort(std::pmr::memory_resource* resource, const py::handle& condition) {
@@ -266,7 +266,7 @@ components::logical_plan::node_sort_ptr parse_sort(std::pmr::memory_resource* re
                                                       ex_key_t(resource, py::str(it).cast<std::string>()),
                                                       sort_order(condition[it].cast<int>())));
     }
-    return components::logical_plan::make_node_sort(resource, core::dbname_t{}, core::relname_t{}, expressions);
+    return components::logical_plan::make_node_sort(resource, expressions);
 }
 
 auto to_statement(std::pmr::memory_resource* resource,
@@ -312,8 +312,7 @@ auto to_statement(std::pmr::memory_resource* resource,
                 case operator_type::match: {
                     aggregate->append_child(components::logical_plan::make_node_match(
                         resource,
-                        aggregate->dbname(),
-                        aggregate->relname(),
+                        qualified_name_t{aggregate->target().database, aggregate->target().collection},
                         parse_find_condition_(resource, obj[key], aggregate, params)));
                     break;
                 }
@@ -349,9 +348,9 @@ auto to_statement(std::pmr::memory_resource* resource,
 
 auto test_to_statement(const py::handle& source) -> py::str {
     auto resource = core::pmr::otterbrix_resource();
-    node_aggregate_t aggregate(&resource,
-                               core::dbname_t{std::string{"database"}},
-                               core::relname_t{std::string{"collection"}});
+    node_aggregate_t aggregate(
+        &resource,
+        qualified_name_t{core::dbname_t{std::string{"database"}}, core::relname_t{std::string{"collection"}}});
     parameter_node_t params(&resource);
     to_statement(&resource, source, &aggregate, &params);
     std::stringstream stream;

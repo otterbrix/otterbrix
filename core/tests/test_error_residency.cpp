@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <memory_resource>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -130,11 +131,11 @@ TEST_CASE("core::moving_a_result_wrapper_hands_the_message_over") {
 
 namespace {
 
-    // libc++'s std::pmr::string keeps up to 22 chars in-object, so the allocator is never asked
-    // below that boundary and always asked above it.
-    constexpr std::string_view short_refusal = "table t: not found";
-    static_assert(short_refusal.size() <= 22, "the control message must fit the small-string buffer");
-    static_assert(refusal.size() > 22, "the subject message must be too long for the small-string buffer");
+    // The small-string buffer is the library's own (libc++ 22 chars, libstdc++ 15): below it the
+    // allocator is never asked, above it always.
+    constexpr std::string_view short_refusal = "t: not found";
+
+    std::size_t small_string_capacity() { return std::string{}.capacity(); }
 
     template<typename body_t>
     int child_status(body_t&& body) {
@@ -156,6 +157,7 @@ namespace {
 } // namespace
 
 TEST_CASE("core::a_short_message_copied_onto_a_null_resource_is_refused") {
+    REQUIRE(short_refusal.size() <= small_string_capacity());
     resource_tracer_t producer;
     core::error_t error{core::error_code_t::schema_error,
                         std::pmr::string{short_refusal.begin(), short_refusal.end(), &producer}};
@@ -172,6 +174,7 @@ TEST_CASE("core::a_short_message_copied_onto_a_null_resource_is_refused") {
 
 // Subject: same copy with an allocating message; must abort, not null-dereference.
 TEST_CASE("core::a_long_message_copied_onto_a_null_resource_is_refused") {
+    REQUIRE(refusal.size() > small_string_capacity());
     resource_tracer_t producer;
     core::error_t error = produced_on(&producer);
     REQUIRE(producer.live_allocations() >= 1);

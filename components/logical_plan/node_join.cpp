@@ -26,20 +26,13 @@ namespace components::logical_plan {
         }
     }
 
-    node_join_t::node_join_t(std::pmr::memory_resource* resource,
-                             core::dbname_t dbname,
-                             core::relname_t relname,
-                             join_type type)
+    node_join_t::node_join_t(std::pmr::memory_resource* resource, join_type type)
         : node_t(resource, node_type::join_t)
-        , dbname_(std::move(static_cast<std::string&>(dbname)))
-        , relname_(std::move(static_cast<std::string&>(relname)))
         , type_(type) {}
 
     join_type node_join_t::type() const { return type_; }
 
     node_join_t::join_algo node_join_t::algo() const noexcept { return algo_; }
-
-    void node_join_t::set_algo(join_algo algo) noexcept { algo_ = algo; }
 
     std::size_t node_join_t::left_col() const noexcept { return left_col_; }
 
@@ -79,11 +72,8 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_join_ptr make_node_join(std::pmr::memory_resource* resource,
-                                 core::dbname_t dbname,
-                                 core::relname_t relname,
-                                 join_type type) {
-        return {new node_join_t{resource, std::move(dbname), std::move(relname), type}};
+    node_join_ptr make_node_join(std::pmr::memory_resource* resource, join_type type) {
+        return {new node_join_t{resource, type}};
     }
 
 } // namespace components::logical_plan

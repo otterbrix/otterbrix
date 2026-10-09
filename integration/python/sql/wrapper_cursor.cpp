@@ -1,5 +1,6 @@
 #include "wrapper_cursor.hpp"
 #include <components/types/logical_value.hpp>
+#include <util/util.hpp>
 
 // The bug related to the use of RTTI by the pybind11 library has been fixed: a
 // declaration should be in each translation unit.
@@ -257,4 +258,4 @@ py::object wrapper_cursor::description() const {
     return desc;
 }
 
-int64_t wrapper_cursor::rowcount() const { return static_cast<int64_t>(ptr_->size()); }
+int64_t wrapper_cursor::rowcount() const { return otterbrix::util::rowcount_of(*ptr_); }

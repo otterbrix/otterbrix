@@ -23,6 +23,7 @@ namespace components::table {
         // A failed backfill can't be returned from a constructor, so it LATCHES: has_construction_error()
         // answers true, and the parent stays root with writes to the new column refused.
         data_table_t(data_table_t& parent, column_definition_t& new_column);
+        // Same latch when the parent's append packer cannot be sealed (io_error): the parent stays root.
         data_table_t(data_table_t& parent, uint64_t removed_column);
 
         bool has_construction_error() const noexcept { return construction_error_.contains_error(); }
@@ -76,10 +77,8 @@ namespace components::table {
                    const transaction_data& txn,
                    fetch_visibility_t visibility);
 
-        std::unique_ptr<table_delete_state>
-        initialize_delete(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
         [[nodiscard]] core::result_wrapper_t<uint64_t>
-        delete_rows(table_delete_state& state, vector::vector_t& row_ids, uint64_t count, uint64_t transaction_id);
+        delete_rows(vector::vector_t& row_ids, uint64_t count, uint64_t transaction_id);
 
         // write_conflict when concurrent DDL altered the table (no longer root); true on success.
         [[nodiscard]] core::result_wrapper_t<bool> append_lock(table_append_state& state);
@@ -98,8 +97,6 @@ namespace components::table {
         std::vector<column_segment_info> get_column_segment_info();
         bool create_index_scan(table_scan_state& state, vector::data_chunk_t& result, table_scan_type type);
 
-        std::unique_ptr<constraint_state>
-        initialize_constraint_state(const std::vector<std::unique_ptr<bound_constraint_t>>& bound_constraints);
         std::string table_name() const;
         void set_table_name(std::string new_name);
 
@@ -151,6 +148,9 @@ namespace components::table {
     private:
         // Plain bool, not atomic: same single-actor ownership as row_groups_ below.
         void mark_modified() noexcept { modified_since_checkpoint_ = true; }
+
+        // The parent stays root; this table lists the parent's columns and shares its collection read-only.
+        void latch_construction_error(const data_table_t& parent, const core::error_t& error);
 
         void initialize_scan_with_offset(table_scan_state& state,
                                          const std::vector<storage_index_t>& column_ids,

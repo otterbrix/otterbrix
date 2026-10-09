@@ -9,6 +9,7 @@
 #include <services/index/manager_index.hpp>
 
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -235,24 +236,13 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
         REQUIRE(exec(sql)->is_success());
         REQUIRE(exec("DELETE FROM adb.t WHERE id = " + std::to_string(doomed) + ";")->is_success());
         ++doomed;
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    // Poll, don't sleep-then-check: MEASURED index_repopulations() lands 41-69 ms after
-    // table_checkpoints() becomes non-zero, so a bare sleep_for(500ms) here failed 3/3 runs
-    // on `0 > 0`. 30 s deadline matches test_index_stale_marker_crash.cpp.
-    const auto wait_started = std::chrono::steady_clock::now();
-    {
-        const auto deadline = wait_started + std::chrono::seconds(30);
-        while ((services::disk::table_checkpoints() == 0 || services::index::index_repopulations() == 0) &&
-               std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-    }
-    INFO("waited " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() -
-                                                                            wait_started)
-                          .count()
-                   << " ms for the automatic round: table_checkpoints=" << services::disk::table_checkpoints()
-                   << " index_repopulations=" << services::index::index_repopulations());
+    // MEASURED: index_repopulations() lands 41-69 ms after table_checkpoints() becomes non-zero.
+    const bool round_rebuilt = test_helpers::wait_until(
+        [] { return services::disk::table_checkpoints() != 0 && services::index::index_repopulations() != 0; });
+    INFO("the automatic round: table_checkpoints=" << services::disk::table_checkpoints()
+                                                   << " index_repopulations=" << services::index::index_repopulations()
+                                                   << (round_rebuilt ? "" : " when the wait ran out"));
 
     INFO("NOT VACUOUS: without an automatic checkpoint round this case tests nothing");
     REQUIRE(services::disk::table_checkpoints() > 0);
@@ -275,15 +265,10 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
         // land in that window, so retry the documented remedy ("retry the statement") until a
         // round has settled — then the answer must be the survivor, NEVER a stranger.
         components::cursor::cursor_t_ptr cur;
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        do {
+        REQUIRE(test_helpers::wait_until([&] {
             cur = exec(auto_indexed_query());
-            if (cur->is_success()) {
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        } while (std::chrono::steady_clock::now() < deadline);
-        REQUIRE(cur->is_success());
+            return cur->is_success();
+        }));
         REQUIRE(cur->size() == 1);
         CHECK(cur->value(0, 0).value<int64_t>() == kSurvivorId);
     }

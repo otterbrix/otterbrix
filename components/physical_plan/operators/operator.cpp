@@ -1,6 +1,121 @@
 #include "operator.hpp"
 
+#include <string_view>
+
 namespace components::operators {
+
+    namespace {
+        // PostgreSQL-style names. EXHAUSTIVE over operator_type with NO `default`: -Wswitch then forces any new
+        // operator to be named. The ops that never sit on an EXPLAINed SELECT/DML spine (DDL/txn/utility statements
+        // are refused by transform_explain; resolve_* run in separate resolve sub-plans; sequence is flattened;
+        // empty/batch/unused are never rendered) share one "?".
+        std::string_view default_explain_label(operator_type type) {
+            switch (type) {
+                case operator_type::full_scan:
+                case operator_type::transfer_scan:
+                    return "Seq Scan";
+                case operator_type::index_scan:
+                    return "Index Scan";
+                case operator_type::pushed_reduce_scan:
+                    return "Pushed Aggregate Scan";
+                case operator_type::hash_join:
+                    return "Hash Join";
+                case operator_type::join:
+                    return "Nested Loop";
+                case operator_type::aggregate:
+                    return "Aggregate";
+                case operator_type::group_merge:
+                    return "Finalize Aggregate";
+                case operator_type::sort:
+                    return "Sort";
+                case operator_type::match:
+                    return "Filter";
+                case operator_type::having:
+                    return "Having";
+                case operator_type::select:
+                    return "Project";
+                case operator_type::distinct:
+                    return "Unique";
+                case operator_type::limit:
+                    return "Limit";
+                case operator_type::insert:
+                    return "Insert";
+                case operator_type::remove:
+                    return "Delete";
+                case operator_type::update:
+                    return "Update";
+                case operator_type::union_op:
+                    return "Append";
+                case operator_type::recursive_cte:
+                    return "Recursive Union";
+                case operator_type::cte_scan:
+                    return "CTE Scan";
+                case operator_type::raw_data:
+                    return "Values Scan";
+                case operator_type::function:
+                    return "Function Scan";
+                case operator_type::check_constraint:
+                    return "Check Constraint";
+                case operator_type::unique_constraint:
+                    return "Unique Check";
+                case operator_type::fk_check:
+                    return "FK Check";
+                case operator_type::fk_cascade:
+                    return "FK Cascade";
+                case operator_type::computed_field_register:
+                    return "Computed Fields";
+                case operator_type::extension:
+                    return "Extension Scan";
+                case operator_type::unused:
+                case operator_type::empty:
+                case operator_type::sequence:
+                case operator_type::create_collection:
+                case operator_type::alter_column_add:
+                case operator_type::alter_column_rename:
+                case operator_type::alter_column_drop:
+                case operator_type::dynamic_cascade_delete:
+                case operator_type::checkpoint:
+                case operator_type::set_setting:
+                case operator_type::vacuum:
+                case operator_type::register_udf:
+                case operator_type::unregister_udf:
+                case operator_type::register_cast:
+                case operator_type::unregister_cast:
+                case operator_type::commit_transaction:
+                case operator_type::abort_transaction:
+                case operator_type::begin_transaction:
+                case operator_type::computed_field_unregister:
+                case operator_type::resolve_table:
+                case operator_type::resolve_namespace:
+                case operator_type::resolve_database:
+                case operator_type::resolve_type:
+                case operator_type::resolve_constraint:
+                case operator_type::allocate_oids:
+                case operator_type::batch:
+                    break;
+            }
+            return "?";
+        }
+    } // namespace
+
+    std::pmr::string operator_t::explain_label() const {
+        auto label = explain_label_impl();
+        if (label.empty()) {
+            label = default_explain_label(type());
+        }
+        return label;
+    }
+
+    void operator_t::explain_begin(const explain_sink& s, catalog::oid_t oid) const {
+        const auto label = explain_label_impl();
+        const auto details = explain_details_impl();
+        s.begin(explain_entry_t{oid,
+                                analyze_rows_,
+                                analyze_time_,
+                                analyze_loops_,
+                                label.empty() ? default_explain_label(type()) : std::string_view{label},
+                                details});
+    }
 
     operator_t::operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
         : resource_(resource)
@@ -65,7 +180,11 @@ namespace components::operators {
 
     actor_zeta::unique_future<void> operator_t::await_async_and_resume(pipeline::context_t* /*ctx*/) { co_return; }
 
-    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+    actor_zeta::unique_future<core::error_t> operator_t::open_impl(pipeline::context_t* /*ctx*/) {
+        co_return core::error_t::no_error();
+    }
+
+    actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
     operator_t::source_next(pipeline::context_t* /*ctx*/) {
         co_return core::error_t(core::error_code_t::physical_plan_error,
                                 std::pmr::string{"operator is not a pipeline source", resource_});

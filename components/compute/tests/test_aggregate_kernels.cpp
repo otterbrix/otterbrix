@@ -63,6 +63,28 @@ namespace {
             return chunk;
         }
 
+        template<typename T>
+        data_chunk_t typed_chunk(logical_type type, std::initializer_list<T> values) {
+            std::pmr::vector<complex_logical_type> types(&resource);
+            types.emplace_back(type);
+            data_chunk_t chunk(&resource, types, values.size());
+            uint64_t row = 0;
+            for (T value : values) {
+                chunk.data[0].data<T>()[row++] = value;
+            }
+            chunk.set_cardinality(values.size());
+            return chunk;
+        }
+
+        core::result_wrapper_t<complex_logical_type> result_type(const std::string& name,
+                                                                 std::initializer_list<logical_type> inputs) {
+            std::pmr::vector<complex_logical_type> types(&resource);
+            for (auto type : inputs) {
+                types.emplace_back(type);
+            }
+            return get(name)->get_signatures().front().output_types.front().resolve(&resource, types);
+        }
+
         // Drives an aggregate the way the execution graph does: reserve the accumulators, fold
         // every chunk with its rows' group ids, then emit all groups into one vector.
         core::result_wrapper_t<vector_t> run(const function& fn,
@@ -308,3 +330,77 @@ TEST_CASE("components::compute::aggregate::nulls_are_skipped") {
     REQUIRE_FALSE(count.has_error());
     REQUIRE(count.value().data<uint64_t>()[0] == 2);
 }
+
+TEST_CASE("components::compute::aggregate::unsigned_integers_widen_like_signed_ones") {
+    aggregate_registry_fixture fx;
+
+    for (auto type :
+         {logical_type::UTINYINT, logical_type::USMALLINT, logical_type::UINTEGER, logical_type::UBIGINT}) {
+        CAPTURE(type);
+        auto sum = fx.result_type("sum", {type});
+        REQUIRE_FALSE(sum.has_error());
+        CHECK(sum.value().type() == logical_type::UBIGINT);
+
+        auto avg = fx.result_type("avg", {type});
+        REQUIRE_FALSE(avg.has_error());
+        CHECK(avg.value().type() == logical_type::DOUBLE);
+    }
+}
+
+TEST_CASE("components::compute::aggregate::sum_of_uinteger_leaves_32_bits") {
+    aggregate_registry_fixture fx;
+
+    auto sum = fx.run_one_group(*fx.get("sum"),
+                                fx.typed_chunk<uint32_t>(logical_type::UINTEGER, {4000000000u, 4000000000u}),
+                                logical_type::UBIGINT);
+    REQUIRE_FALSE(sum.has_error());
+    REQUIRE(sum.value().data<uint64_t>()[0] == 8000000000ull);
+
+    auto avg = fx.run_one_group(*fx.get("avg"),
+                                fx.typed_chunk<uint32_t>(logical_type::UINTEGER, {4000000000u, 4000000001u}),
+                                logical_type::DOUBLE);
+    REQUIRE_FALSE(avg.has_error());
+    REQUIRE(avg.value().data<double>()[0] == Catch::Approx(4000000000.5));
+}
+
+TEST_CASE("components::compute::aggregate::sum_of_ubigint_refuses_to_wrap") {
+    aggregate_registry_fixture fx;
+
+    auto sum = fx.run_one_group(*fx.get("sum"),
+                                fx.typed_chunk<uint64_t>(logical_type::UBIGINT, {UINT64_MAX, uint64_t{1}}),
+                                logical_type::UBIGINT);
+    REQUIRE(sum.has_error());
+    REQUIRE(sum.error().type == core::error_code_t::arithmetics_failure);
+}
+
+#if not defined(NDEBUG)
+TEST_CASE("components::compute::aggregate::errors_name_the_function_that_refused") {
+    aggregate_registry_fixture fx;
+
+    auto origin_of = [](const core::error_t& error) {
+        return std::pair<std::string, std::string>{error.error_origin.file_name(),
+                                                   error.error_origin.function_name()};
+    };
+
+    auto sum_type = fx.result_type("sum", {logical_type::INTEGER, logical_type::INTEGER});
+    REQUIRE(sum_type.has_error());
+    auto [sum_type_file, sum_type_function] = origin_of(sum_type.error());
+    CHECK(sum_type_file.ends_with("aggregate.cpp"));
+    CHECK(sum_type_function.find("sum_result_type") != std::string::npos);
+
+    auto avg_type = fx.result_type("avg", {logical_type::INTEGER, logical_type::INTEGER});
+    REQUIRE(avg_type.has_error());
+    auto [avg_type_file, avg_type_function] = origin_of(avg_type.error());
+    CHECK(avg_type_file.ends_with("aggregate.cpp"));
+    CHECK(avg_type_function.find("avg_result_type") != std::string::npos);
+
+    auto overflow = fx.run_one_group(*fx.get("sum"),
+                                     fx.typed_chunk<int64_t>(logical_type::BIGINT, {INT64_MAX, int64_t{1}}),
+                                     logical_type::BIGINT);
+    REQUIRE(overflow.has_error());
+    REQUIRE(overflow.error().type == core::error_code_t::arithmetics_failure);
+    auto [overflow_file, overflow_function] = origin_of(overflow.error());
+    CHECK(overflow_file.ends_with("aggregate.cpp"));
+    CHECK(overflow_function.find("sum_update") != std::string::npos);
+}
+#endif

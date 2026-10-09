@@ -47,7 +47,7 @@ namespace {
         uint64_t count{0};
     };
 
-    // avg over signed integers and decimals sums exactly in 128 bits, over real/double in double.
+    // avg over 8..64-bit integers and decimals sums exactly in 128 bits, over real/double in double.
     struct avg_wide_state_t {
         int128_t exact{0};
         double inexact{0};
@@ -58,11 +58,12 @@ namespace {
         uint64_t value{0};
     };
 
-    // How sum/avg accumulate an argument type (Trino semantics). Unsigned integers and HUGEINT have no Trino
-    // counterpart and keep accumulating in their own type.
+    // How sum/avg accumulate an argument type (Trino semantics). Unsigned integers have no Trino counterpart
+    // and widen like the signed ones, into UBIGINT; HUGEINT and UHUGEINT keep accumulating in their own type.
     enum class accumulation
     {
-        widened_integer,
+        widened_signed,
+        widened_unsigned,
         decimal,
         floating,
         input_type
@@ -74,7 +75,12 @@ namespace {
             case logical_type::SMALLINT:
             case logical_type::INTEGER:
             case logical_type::BIGINT:
-                return accumulation::widened_integer;
+                return accumulation::widened_signed;
+            case logical_type::UTINYINT:
+            case logical_type::USMALLINT:
+            case logical_type::UINTEGER:
+            case logical_type::UBIGINT:
+                return accumulation::widened_unsigned;
             case logical_type::DECIMAL:
                 return accumulation::decimal;
             case logical_type::FLOAT:
@@ -85,20 +91,18 @@ namespace {
         }
     }
 
-    core::error_t one_argument_expected(std::pmr::memory_resource* resource) {
-        return core::error_t(core::error_code_t::incorrect_function_argument,
-                             std::pmr::string{"the aggregate takes exactly one argument", resource});
-    }
-
     core::result_wrapper_t<complex_logical_type> sum_result_type(std::pmr::memory_resource* resource,
                                                                  const std::pmr::vector<complex_logical_type>& inputs) {
         if (inputs.size() != 1) {
-            return one_argument_expected(resource);
+            return core::error_t(core::error_code_t::incorrect_function_argument,
+                                 std::pmr::string{"the aggregate takes exactly one argument", resource});
         }
         const auto& input = inputs.front();
         switch (accumulation_of(input)) {
-            case accumulation::widened_integer:
+            case accumulation::widened_signed:
                 return complex_logical_type{logical_type::BIGINT};
+            case accumulation::widened_unsigned:
+                return complex_logical_type{logical_type::UBIGINT};
             case accumulation::decimal:
                 return complex_logical_type::create_decimal(
                     resource,
@@ -114,16 +118,24 @@ namespace {
     core::result_wrapper_t<complex_logical_type> avg_result_type(std::pmr::memory_resource* resource,
                                                                  const std::pmr::vector<complex_logical_type>& inputs) {
         if (inputs.size() != 1) {
-            return one_argument_expected(resource);
+            return core::error_t(core::error_code_t::incorrect_function_argument,
+                                 std::pmr::string{"the aggregate takes exactly one argument", resource});
         }
-        if (accumulation_of(inputs.front()) == accumulation::widened_integer) {
-            return complex_logical_type{logical_type::DOUBLE};
+        switch (accumulation_of(inputs.front())) {
+            case accumulation::widened_signed:
+            case accumulation::widened_unsigned:
+                return complex_logical_type{logical_type::DOUBLE};
+            case accumulation::decimal:
+            case accumulation::floating:
+            case accumulation::input_type:
+                break;
         }
         return inputs.front();
     }
 
     // Adds without ever wrapping: false means the total left the accumulator's range.
     bool checked_add(int64_t& total, int64_t value) { return !__builtin_add_overflow(total, value, &total); }
+    bool checked_add(uint64_t& total, uint64_t value) { return !__builtin_add_overflow(total, value, &total); }
 
     // The largest unscaled DECIMAL(38, s) payload.
     const int128_t& max_decimal_payload() {
@@ -160,12 +172,6 @@ namespace {
             }
         }
         return true;
-    }
-
-    core::error_t overflow(kernel_context& ctx, const char* name) {
-        std::pmr::string message{name, ctx.exec_context().resource()};
-        message += " overflow: the total leaves the range of its result type";
-        return core::error_t(core::error_code_t::arithmetics_failure, std::move(message));
     }
 
     template<template<typename> class op_t, typename fallback_t, typename... args_t>
@@ -273,8 +279,10 @@ namespace {
             return {};
         }
         switch (accumulation_of(inputs.front())) {
-            case accumulation::widened_integer:
+            case accumulation::widened_signed:
                 return aggregate_state_of<numeric_state_t<int64_t>>();
+            case accumulation::widened_unsigned:
+                return aggregate_state_of<numeric_state_t<uint64_t>>();
             case accumulation::decimal:
                 return aggregate_state_of<numeric_state_t<int128_t>>();
             case accumulation::floating:
@@ -371,10 +379,15 @@ namespace {
                              aggregate_states_t states) {
         const auto& column = input.data.front();
         using sum64_t = numeric_state_t<int64_t>;
+        using sum_u64_t = numeric_state_t<uint64_t>;
         using sum128_t = numeric_state_t<int128_t>;
         auto add64 = [](sum64_t& total, auto value) {
             total.has_value = true;
             return checked_add(total.value, static_cast<int64_t>(value));
+        };
+        auto add_u64 = [](sum_u64_t& total, auto value) {
+            total.has_value = true;
+            return checked_add(total.value, static_cast<uint64_t>(value));
         };
         auto add128 = [](sum128_t& total, auto value) {
             total.has_value = true;
@@ -393,6 +406,18 @@ namespace {
                 break;
             case logical_type::BIGINT:
                 fits = fold<int64_t, sum64_t>(column, groups, states, add64);
+                break;
+            case logical_type::UTINYINT:
+                fits = fold<uint8_t, sum_u64_t>(column, groups, states, add_u64);
+                break;
+            case logical_type::USMALLINT:
+                fits = fold<uint16_t, sum_u64_t>(column, groups, states, add_u64);
+                break;
+            case logical_type::UINTEGER:
+                fits = fold<uint32_t, sum_u64_t>(column, groups, states, add_u64);
+                break;
+            case logical_type::UBIGINT:
+                fits = fold<uint64_t, sum_u64_t>(column, groups, states, add_u64);
                 break;
             case logical_type::DECIMAL:
                 switch (column.type().to_physical_type()) {
@@ -420,7 +445,12 @@ namespace {
                     groups,
                     states);
         }
-        return fits ? core::error_t::no_error() : overflow(ctx, "sum");
+        if (!fits) {
+            return core::error_t(core::error_code_t::arithmetics_failure,
+                                 std::pmr::string{"sum overflow: the total leaves the range of its result type",
+                                                  ctx.exec_context().resource()});
+        }
+        return core::error_t::no_error();
     }
 
     // One update for every type MIN/MAX accepts: order the incoming row against the group's
@@ -496,6 +526,18 @@ namespace {
             case logical_type::BIGINT:
                 fits = fold<int64_t, avg_wide_state_t>(column, groups, states, add_integer);
                 break;
+            case logical_type::UTINYINT:
+                fits = fold<uint8_t, avg_wide_state_t>(column, groups, states, add_integer);
+                break;
+            case logical_type::USMALLINT:
+                fits = fold<uint16_t, avg_wide_state_t>(column, groups, states, add_integer);
+                break;
+            case logical_type::UINTEGER:
+                fits = fold<uint32_t, avg_wide_state_t>(column, groups, states, add_integer);
+                break;
+            case logical_type::UBIGINT:
+                fits = fold<uint64_t, avg_wide_state_t>(column, groups, states, add_integer);
+                break;
             case logical_type::FLOAT:
                 fits = fold<float, avg_wide_state_t>(column, groups, states, add_floating);
                 break;
@@ -528,7 +570,12 @@ namespace {
                     groups,
                     states);
         }
-        return fits ? core::error_t::no_error() : overflow(ctx, "avg");
+        if (!fits) {
+            return core::error_t(core::error_code_t::arithmetics_failure,
+                                 std::pmr::string{"avg overflow: the total leaves the range of its result type",
+                                                  ctx.exec_context().resource()});
+        }
+        return core::error_t::no_error();
     }
 
     // COUNT(x) counts the rows where x is not null.
@@ -820,7 +867,8 @@ namespace components::compute {
         r.add_builtin(make_sum_func(r.resource(),
                                     "sum",
                                     "Add all numeric values",
-                                    "BIGINT over integers, DECIMAL(38, s) over DECIMAL(p, s), else the input type"));
+                                    "BIGINT over signed integers, UBIGINT over unsigned, DECIMAL(38, s) over DECIMAL(p, s), "
+                                    "else the input type"));
         r.add_builtin(make_min_func(r.resource(),
                                     "min",
                                     "Selects minimal value",

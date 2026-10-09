@@ -146,10 +146,8 @@ namespace {
 
 } // namespace
 
-// The 1-in-20 Release failure of hash_journals_btree_does_not at its journal-size check, made deterministic:
-// index_deferred_deletes() counts an erase down when the horizon sweep SENDS it to the agent
-// (manager_index_t::on_horizon_advanced), not when the agent has journalled it, so a test that gates on zero
-// can read the journal before the frame is in it. Here the agent is parked inside the append.
+// The agent parks inside the journal append, so the erase is sent but not journalled. A meter that counted down
+// on the send let hash_journals_btree_does_not read the journal before the frame (1 Release run in 20).
 TEST_CASE("integration::cpp::test_index_txn_log_routing::the_meter_reads_zero_only_once_the_erase_is_journalled") {
     auto config = test_create_config(integration_fixture_path("test_index_txn_log_routing/meter"));
     test_clear_directory(config);

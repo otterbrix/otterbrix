@@ -15,7 +15,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-// Both scenarios run the engine in a child process: the unfixed shutdown kills the process, and
+// Both scenarios run the engine in a child process: a broken shutdown kills the process, and
 // the parent has to be the one left to report it.
 
 using namespace test_helpers;
@@ -45,7 +45,7 @@ namespace {
         }
     };
 
-    // Bug B: a round parked on the index manager until the shutdown waits for it, so the shutdown always
+    // A round parked on the index manager until the shutdown waits for it, so the shutdown always
     // finds the round in flight.
     auto_checkpoint_park_t park_on_index_at_start(auto_checkpoint_point_t point, bool shutdown_waits) {
         if (point != auto_checkpoint_point_t::round_start) {
@@ -55,7 +55,7 @@ namespace {
         return shutdown_waits ? auto_checkpoint_park_t::go : auto_checkpoint_park_t::on_index;
     }
 
-    // Bug A: the round flushes the indexes only after the final CHECKPOINT has rebuilt them and
+    // The round flushes the indexes only after the final CHECKPOINT has rebuilt them and
     // cleared the rebuild marker, then stays parked past the end of the shutdown. A shutdown that
     // waits for the round releases it before any final CHECKPOINT can run.
     auto_checkpoint_park_t flush_after_the_final_checkpoint(auto_checkpoint_point_t point, bool shutdown_waits) {

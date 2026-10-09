@@ -1,6 +1,6 @@
 // The physical DROP COLUMN (collection_t::remove_column, reached from SQL by VACUUM on a computed
-// table) seals the table's append packer first. A refused seal used to be printed and dropped;
-// it is the statement's error now, and the storage keeps the column.
+// table) seals the table's append packer first; a refused seal is the statement's error, and the
+// storage keeps the column.
 
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"

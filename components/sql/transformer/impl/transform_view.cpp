@@ -50,7 +50,7 @@ namespace components::sql::transform {
                                        query_end_location,
                                        materialized ? "CREATE MATERIALIZED VIEW" : "CREATE VIEW"));
 
-        // The body goes through the canonical path now, so a broken body is refused here and not on the first read.
+        // The body goes through the canonical path, so a broken body is refused here and not on the first read.
         const auto sub_queries_before = plan->sub_queries.size();
         VALUE_OR_RETURN(auto body, transform_select(query, plan));
         if (!body) {

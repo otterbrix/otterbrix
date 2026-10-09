@@ -128,7 +128,7 @@ namespace test_helpers {
         return exec(dispatcher, sql)->is_success();
     }
 
-    // A crash image: the live directory copied as it lies on disk, replacing whatever `to` held.
+    // A crash image: the live directory copied as it lies on disk.
     inline void copy_crash_image(const std::filesystem::path& from, const std::filesystem::path& to) {
         std::error_code ec;
         std::filesystem::remove_all(to, ec);

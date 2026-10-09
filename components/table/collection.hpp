@@ -118,7 +118,6 @@ namespace components::table {
 
         storage::block_manager_t& block_manager() { return block_manager_; }
 
-        // The packer every append into this collection's row groups goes through (see append_pbm_).
         storage::partial_block_manager_t& append_packer() { return append_pbm_; }
 
         uint64_t allocation_size() const { return allocation_size_; }

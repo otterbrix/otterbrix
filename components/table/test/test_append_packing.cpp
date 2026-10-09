@@ -1,6 +1,5 @@
-// Blocks issued while appending, measured without the services stack: the integration guard on
-// table-bytes-per-payload-byte (test_text_column_storage) was hidden and never ran, and a packer
-// per append call cost one 256 KiB block per filled 16 KiB string segment (19 blocks here).
+// Blocks issued while appending, measured without the services stack. Rejected: a packer per
+// append call -- one 256 KiB block per filled 16 KiB string segment (19 blocks here).
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>

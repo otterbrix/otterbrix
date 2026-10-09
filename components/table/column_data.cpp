@@ -212,7 +212,6 @@ namespace components::table {
     void column_data_t::skip(column_scan_state& state, uint64_t count) { state.next(count); }
 
     core::result_wrapper_t<bool> column_data_t::initialize_append(column_append_state& state) {
-        // Every filled segment is packed by the collection's packer; there is no private one.
         assert(state.pbm != nullptr && "an append state is built with the collection's packer");
         if (data_.is_empty()) {
             auto created = apend_transient_segment(start_);
@@ -261,9 +260,7 @@ namespace components::table {
     core::result_wrapper_t<bool>
     column_data_t::append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t append_count) {
         uint64_t offset = 0;
-        // The collection's packer: filled segments of every column and every statement share its
-        // open tail blocks (a packer per append call gave each 16 KiB segment its own 256 KiB block).
-        // The collection flushes it once per append, after every column.
+        // The collection's packer, shared by every column; the collection flushes it once per append.
         storage::partial_block_manager_t& pbm = *state.pbm;
         while (true) {
             auto appended = state.current->append(state, uvf, offset, append_count);
@@ -335,8 +332,6 @@ namespace components::table {
         }
         auto segment = data_.segment_at(static_cast<int64_t>(segment_index));
         if (segment->start == start_row) {
-            // Truncating to zero rows pinned a written-through segment's block: the buffer the pool had just
-            // refused (test_append_count, the three-segment case).
             data_.erase_segments(segment_index);
             return true;
         }

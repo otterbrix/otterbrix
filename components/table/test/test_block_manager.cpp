@@ -599,11 +599,9 @@ TEST_CASE("block_manager: create_new_database refuses an unusable block allocati
     std::remove(path.c_str());
 }
 
-// A block freed while a handle still names it is not free yet: the id stays out of every pool and the slot
-// stays with the live handle (register_block dedups onto it, never a second handle for one block). The
-// handle's death changes nothing by itself (its destructor writes nothing on the manager); the next
-// serialize_free_list finds the slot expired, moves the id to pending_free_ and publishes it, and the
-// header that commits that list is what lets free_block_id draw it again.
+// The handle's destructor writes nothing on the manager: the next serialize_free_list finds the slot
+// expired and moves the id to pending_free_, and only the header committing that list lets
+// free_block_id draw it again.
 TEST_CASE("block_manager: a block freed under a live handle is given back by the checkpoint after its death") {
     using namespace components::table::storage;
     cleanup_test_file();
@@ -618,7 +616,6 @@ TEST_CASE("block_manager: a block freed under a live handle is given back by the
     REQUIRE(held);
     REQUIRE(bm.registry_alive(id));
 
-    // Freed while `held` is alive: parked, not performed.
     bm.mark_as_free(id);
     CHECK(bm.registry_alive(id));
     CHECK(bm.free_blocks() == 0);
@@ -631,7 +628,6 @@ TEST_CASE("block_manager: a block freed under a live handle is given back by the
     again.reset();
     CHECK(bm.registry_alive(id));
 
-    // Not reissued while held: the next id is a fresh one.
     const uint64_t fresh = bm.free_block_id();
     CHECK(fresh != id);
 

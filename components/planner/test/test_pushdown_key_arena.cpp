@@ -115,7 +115,7 @@ TEST_CASE("components::planner::pushdown_filter::derivation_allocates_on_the_nam
     REQUIRE(deriving <= one_compare_expression + 1);
 }
 
-// DEFAULT parity is closed in executor.cpp (CREATE TABLE and ALTER TABLE ... ADD COLUMN share prepare_column_)
+// executor.cpp's prepare_column_ (CREATE TABLE and ALTER TABLE ... ADD COLUMN) checks a DEFAULT's cast
 // via cast_registry_t, which the planner lacks; planner-side logical_value_t::cast_as() has no range check
 // (unlike numeric_cast.hpp) and silently truncates instead of refusing.
 TEST_CASE("components::planner::alter_default_coercion::value_cast_narrows_without_saying_so") {

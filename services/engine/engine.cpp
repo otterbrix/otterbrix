@@ -732,7 +732,7 @@ namespace services::engine {
 
         RETURN_IF_ERROR(disk.load_user_table_storages_sync());
 
-        // Re-derives a column drop a crash discarded; must run before bootstrap_indexes_sync opens
+        // Re-derives a column drop a crash discarded; must run before bootstrap_indexes opens
         // index stores against this schema.
         RETURN_IF_ERROR(disk.reconcile_storage_with_catalog_sync());
 
@@ -776,7 +776,6 @@ namespace services::engine {
             trace(log, "engine::bootstrap: rebuilt {} dropped storage/index entries from pg_class", dropped_oids.size());
         }
 
-        // Travels by value — legal only during this single-threaded bootstrap window.
         return bootstrap_indexes(parts);
     }
 

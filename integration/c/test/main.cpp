@@ -120,7 +120,6 @@ TEST_CASE("c-api: CREATE TABLE in a database that does not exist is refused", "[
     release_cursor(other);
 }
 
-// Document mode through the C API: a lower-case database, a table without columns, fields registered by INSERT.
 TEST_CASE("c-api: document flow in a database created through the C API", "[c-api][ddl]") {
     test_db_t t("document_flow");
     REQUIRE(t.ptr != nullptr);

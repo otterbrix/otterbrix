@@ -187,7 +187,6 @@ TEST_CASE("core::sanitizers::asan_sees_a_use_after_free") {
 #endif
 }
 
-// The arena's tracer stops a double free before it reaches ASAN.
 TEST_CASE("core::sanitizers::the_tracer_stops_a_double_free") {
 #if defined(OTTERBRIX_ADDRESS_SANITIZER)
     const auto outcome = run_in_child(&double_free);

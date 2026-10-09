@@ -35,7 +35,6 @@ namespace {
         return cur->size();
     }
 
-    // The oid in column 0 of the first row `sql` answers; INVALID_OID when it answers none.
     catalog::oid_t first_oid(otterbrix::wrapper_dispatcher_t* d, const std::string& sql) {
         auto cur = exec(d, sql);
         REQUIRE(cur->is_success());

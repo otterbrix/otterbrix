@@ -1,7 +1,6 @@
-// Variant 1 (shared per-collection packer, tails reused across appends): the three things it must
-// keep true -- a tail block is never rewritten once a root names it, a resident copy of a reused
-// block serves the rows written after it was loaded, and a crash mid-rewrite loses only the rows
-// the durable root never had.
+// A shared per-collection packer reuses tail blocks across appends. What it must keep true: a tail
+// block is never rewritten once a root names it, a resident copy of a reused block serves the rows
+// written after it was loaded, and a crash mid-rewrite loses only the rows the durable root never had.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>

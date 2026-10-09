@@ -1,5 +1,5 @@
-// Names the transformer used to drop or misread without a word (qualified types, FK targets, CREATE TABLE
-// clauses, the object kind of ALTER). Each case is refused or read as written.
+// Names the transformer must not drop or misread silently (qualified types, FK targets, CREATE TABLE clauses,
+// the object kind of ALTER): each is refused or read as written.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
@@ -68,7 +68,7 @@ namespace {
 
 } // namespace
 
-// B1: the type name is the LAST part; `public.` names the one namespace types live in.
+// The type name is the LAST part; `public.` names the one namespace types live in.
 TEST_CASE("components::sql::name_bugs::qualified_column_type_reads_the_type_name") {
     const auto transformed = transform_one("CREATE TABLE t (a public.mytype);");
     const auto& type = only_column_type(transformed);
@@ -96,7 +96,7 @@ TEST_CASE("components::sql::name_bugs::type_outside_public_or_too_long_is_refuse
     require_refused("CREATE TABLE t (a x.y.mytype);", core::error_code_t::invalid_parameter);
 }
 
-// B2: a REFERENCES target keeps every written slot; the refusal comes after resolve.
+// A REFERENCES target keeps every written slot; the refusal comes after resolve.
 TEST_CASE("components::sql::name_bugs::fk_target_keeps_its_schema_and_uid") {
     for (const std::string sql : {"CREATE TABLE c (id BIGINT REFERENCES d.s.p (id));",
                                   "CREATE TABLE c (id BIGINT, FOREIGN KEY (id) REFERENCES d.s.p (id));",
@@ -117,7 +117,6 @@ TEST_CASE("components::sql::name_bugs::fk_target_keeps_its_schema_and_uid") {
     CHECK(plain.resolves.referenced_tables.front().schema.t.empty());
 }
 
-// B7: clauses CREATE TABLE cannot carry out are refused instead of dropped.
 TEST_CASE("components::sql::name_bugs::create_table_like_inherits_of_are_refused") {
     require_refused("CREATE TABLE t (LIKE x);", core::error_code_t::unimplemented_yet);
     require_refused("CREATE TABLE t (a BIGINT, LIKE x);", core::error_code_t::unimplemented_yet);
@@ -125,7 +124,6 @@ TEST_CASE("components::sql::name_bugs::create_table_like_inherits_of_are_refused
     require_refused("CREATE TABLE t OF mytype;", core::error_code_t::unimplemented_yet);
 }
 
-// B8: ALTER TABLE subcommands through ALTER VIEW / INDEX / SEQUENCE / MATERIALIZED VIEW / FOREIGN TABLE.
 TEST_CASE("components::sql::name_bugs::alter_of_another_object_kind_is_refused") {
     for (const std::string sql : {"ALTER VIEW v ADD COLUMN z BIGINT;",
                                   "ALTER INDEX i ADD COLUMN z BIGINT;",

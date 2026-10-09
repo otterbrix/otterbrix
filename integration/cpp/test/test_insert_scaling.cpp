@@ -87,7 +87,7 @@ TEST_CASE("integration::cpp::test_insert_scaling::duplicate_id_without_constrain
     {
         auto cur = exec(d, "INSERT INTO B0.docs (_id, v) VALUES ('k', 2);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->affected_rows() == 1); // the old dedup reported 0 affected rows here
+        REQUIRE(cur->affected_rows() == 1);
     }
     {
         auto cur = exec(d, "SELECT * FROM B0.docs WHERE _id = 'k';");

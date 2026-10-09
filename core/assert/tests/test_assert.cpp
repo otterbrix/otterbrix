@@ -18,7 +18,6 @@ TEST_CASE("core::assert::test_string_view") {
     REQUIRE_NOTHROW([&]() { assertion_log_msg(nullptr, true, message); }());
 }
 namespace {
-    // A failed assertion must reach the log it was given and not the other one.
     struct log_pair_t {
         log_t other;
         log_t own;
@@ -49,7 +48,6 @@ TEST_CASE("core::assert::a_failed_assertion_reports_through_the_given_log") {
         REQUIRE(::waitpid(child, &status, 0) == child);
         REQUIRE(WIFSIGNALED(status));
     } else {
-        // An NDEBUG build reports the same and throws InvariantError, naming the condition and the message.
         auto logs = make_log_pair(root);
         REQUIRE_THROWS_WITH([&] { assertion_log_msg(&logs.own, 1 + 1 == 3, "the given log carries this"); }(),
                             "invariant (1 + 1 == 3) violation: the given log carries this");

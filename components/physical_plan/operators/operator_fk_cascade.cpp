@@ -21,7 +21,7 @@ namespace components::operators {
         , fk_(std::move(fk)) {}
 
     actor_zeta::unique_future<void> operator_fk_cascade_t::await_async_and_resume(pipeline::context_t* ctx) {
-        // fk_cascade is the plan root: its result is the DELETE's RETURNING rows; the matched parent rows (R6)
+        // fk_cascade is the plan root: its result is the DELETE's RETURNING rows; the matched parent rows
         // only drive the cascade.
         output_ = left_->output();
         written_ = left_->written();

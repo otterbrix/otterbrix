@@ -3,8 +3,7 @@
 #include <components/table/segment_tree.hpp>
 
 // The gap tripwire in contiguous() must ANSWER false, not throw: a throw here would unwind
-// into a coroutine with no unhandled_exception(), hanging the statement instead of failing it
-//.
+// into a coroutine with no unhandled_exception(), hanging the statement instead of failing it.
 
 namespace {
     struct dummy_segment_t : components::table::segment_base_t<dummy_segment_t> {
@@ -16,7 +15,6 @@ namespace {
     static_assert(!std::is_copy_constructible_v<dummy_tree_t> && !std::is_move_constructible_v<dummy_tree_t>);
 } // namespace
 
-// The successor is the next entry of the list: an erase or a replace needs no link re-pointed.
 TEST_CASE("components::table::segment_tree::the_successor_follows_erase_and_replace_without_a_link",
           "[segment_tree_next]") {
     dummy_tree_t tree;
@@ -48,7 +46,6 @@ TEST_CASE("components::table::segment_tree::a_gap_answers_instead_of_throwing") 
     // A gap: the second segment starts at 20 while the first ends at 10.
     tree.append_segment(std::make_unique<dummy_segment_t>(20, 5));
 
-    // The tripwire answers false.
     bool contiguous = true;
     REQUIRE_NOTHROW(contiguous = tree.contiguous());
     REQUIRE_FALSE(contiguous);

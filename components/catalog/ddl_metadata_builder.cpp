@@ -126,7 +126,6 @@ namespace components::catalog {
             std::int64_t dropped_at_commit_id{0};
         };
 
-        // The pg_attribute rows of one relation.
         vector::data_chunk_t make_pg_attribute_rows(std::pmr::memory_resource* resource,
                                                     oid_t table_oid,
                                                     std::span<const attribute_row_t> rows) {
@@ -147,7 +146,6 @@ namespace components::catalog {
                                         set_bool(c, 7, i, a.is_dropped);
                                         set_str(c, 8, i, a.typspec, r);
                                         set_str(c, 9, i, a.defspec, r);
-                                        // Written explicitly, not left to vector_t's zero-init.
                                         set_i64(c, 10, i, a.added_at_commit_id);
                                         set_i64(c, 11, i, a.dropped_at_commit_id);
                                     }

@@ -233,7 +233,7 @@ TEST_CASE("components::sql::errors") {
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE 5 ? 'a';", R"_(unsupported base operand for jsonb operator)_");
 }
 
-// CONCURRENTLY was parsed and then ignored: the refresh ran as a plain one under the caller's name.
+// Ignoring CONCURRENTLY would run a plain refresh under the caller's name.
 TEST_CASE("components::sql::errors::refresh_concurrently_is_refused") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);

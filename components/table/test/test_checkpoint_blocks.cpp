@@ -1,16 +1,9 @@
 // A checkpoint packs the segments of every column of the table into shared blocks: a table whose
 // whole payload fits one block names ONE data block after its checkpoint, and a later round with a
-// one-row change adds a block, not a block per column. Measured before this test (2026-10-07,
-// 100 rows x 32 INTEGER, 17 KB of payload): 67 blocks and a 17.6 MB file after the first
-// checkpoint, 134 blocks and 35 MB after a second round with one more row -- the live tail of
-// every column (and of its validity child) was re-pointed through its own short-lived packer and
-// so took a dedicated 256 KiB block each round.
-//
-// Second case: with ONE packer per table checkpoint, a write refused in the middle of the
-// checkpoint must leave every live tail whose block never reached the file transient (readable
-// from memory), and the round's blocks must come back through roll_back_uncommitted_round: every
-// id issued in the round is either named by a live segment (its block is on the file) or back in
-// the reusable set -- run at every write of the checkpoint.
+// one-row change adds a block, not a block per column. Measured with a packer per column (100 rows
+// x 32 INTEGER, 17 KB of payload): 67 blocks and a 17.6 MB file after the first checkpoint, 134
+// blocks and 35 MB after a second round with one more row -- the live tail of every column (and of
+// its validity child) took a dedicated 256 KiB block each round.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/column_data.hpp>
@@ -294,7 +287,6 @@ namespace {
 
             // The rows are still readable, from memory or from the blocks that did reach the file.
             CHECK(scan_mixed(*table, &resource) == MIXED_ROWS);
-            // Still appendable and scannable after the refusal.
             append_mixed_rows(*table, &resource, MIXED_ROWS, 1);
             CHECK(scan_mixed(*table, &resource) == MIXED_ROWS + 1);
         }
@@ -349,8 +341,6 @@ TEST_CASE("checkpoint: the columns of a small table share one data block, a one-
     std::remove(path.c_str());
 }
 
-// At every write of the checkpoint: a dry run counts the writes, then the scenario is run once per
-// write index, the file refusing that write and every later one.
 TEST_CASE("checkpoint: a write refused in the middle of a table checkpoint leaves the unwritten tails transient "
           "and the round's blocks to the rollback",
           "[checkpoint][packing][refusal]") {
@@ -475,8 +465,8 @@ namespace {
 
 // The checkpoint hands the packer one placement per live segment it switches to the file; a second
 // placement of the same segment is never adopted, and its bytes sit in a block the root names
-// under nobody's segment. Measured before: a validity child placed by its own checkpoint() AND by
-// its parent's transition_to_disk(), 128 B per 1024 rows per standard column and per round.
+// under nobody's segment. Measured with a validity child placed by its own checkpoint() AND by
+// its parent's transition_to_disk(): 128 B per 1024 rows per standard column and per round.
 TEST_CASE("checkpoint: every live segment of a column tree is placed once", "[checkpoint][packing]") {
     for (auto shape : {shape_t::INTEGER, shape_t::VARCHAR, shape_t::LIST, shape_t::STRUCT, shape_t::ARRAY}) {
         const std::string path = "/tmp/test_otterbrix_checkpoint_placements_" + std::to_string(::getpid()) + ".otbx";

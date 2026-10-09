@@ -142,7 +142,6 @@ TEST_CASE("dispatcher::resolve_function: a restricted variable admits its domain
     auto integer = resolve("sum", {logical_type::INTEGER});
     REQUIRE_FALSE(integer.has_error());
     REQUIRE_FALSE(integer.value().arguments[0].cast);
-    // sum over an integer answers BIGINT
     REQUIRE(integer.value().result.type() == logical_type::BIGINT);
 
     // DATE is not summable, and BOOLEAN was removed from the domain because
@@ -192,7 +191,7 @@ TEST_CASE("dispatcher::resolve_function: mergeable rides along from the matched 
 }
 
 // A DECIMAL entry in the domain carries no width/scale, so it stands for the whole family:
-// the argument keeps its own parameters and nothing is converted. sum answers DECIMAL(38, s).
+// the argument keeps its own parameters and nothing is converted.
 TEST_CASE("dispatcher::resolve_function: a family entry keeps the argument's parameters") {
     auto decimal = make_decimal(10, 2);
     std::pmr::vector<complex_logical_type> arguments(resource());

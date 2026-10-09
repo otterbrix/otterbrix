@@ -127,9 +127,7 @@ namespace components::table {
         column_segment_t* current = nullptr;
         std::vector<column_append_state> child_appends;
         std::unique_ptr<storage::buffer_handle_t> handle;
-        // The collection's shared packer for the segments this append fills; never null once an append
-        // starts (column_data_t::initialize_append asserts it): a private packer per append would give each
-        // segment its own 256 KiB block.
+        // The collection's shared packer; never null once an append starts (initialize_append asserts it).
         storage::partial_block_manager_t* pbm = nullptr;
     };
 

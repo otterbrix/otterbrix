@@ -149,8 +149,7 @@ namespace components::table {
         // Plain bool, not atomic: same single-actor ownership as row_groups_ below.
         void mark_modified() noexcept { modified_since_checkpoint_ = true; }
 
-        // A constructor can't return, so an ALTER successor that failed to build latches the error:
-        // the parent stays root, this table lists the parent's columns and shares its collection read-only.
+        // The parent stays root; this table lists the parent's columns and shares its collection read-only.
         void latch_construction_error(const data_table_t& parent, const core::error_t& error);
 
         void initialize_scan_with_offset(table_scan_state& state,

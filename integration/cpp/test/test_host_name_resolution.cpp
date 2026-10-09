@@ -596,7 +596,6 @@ namespace {
         return operators::operator_ptr{new remote_modify_t(context.resource, context.log.clone(), payload.spec)};
     }
 
-    // The host's own table, or nullptr.
     const remote_storage_t* own_storage(const logical_plan::node_t& node) {
         const auto* table = node.table_metadata();
         if (table == nullptr || table->storage == nullptr || table->storage->owner() != &host_tag) {
@@ -999,7 +998,6 @@ TEST_CASE("integration::cpp::host_names::a_matview_over_a_view_over_a_storage_ta
     CHECK(sorted_int_rows(read) == rows_t{{1, 100}, {2, 200}, {3, 300}});
 }
 
-// A table without columns still has rows: count(*) counts them, one batch or several.
 TEST_CASE("integration::cpp::host_names::rows_without_columns_are_counted") {
     HOST_TEST_BOILERPLATE("test_host_names/no_columns")
     REQUIRE(run(dispatcher,

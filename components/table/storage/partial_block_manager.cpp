@@ -182,9 +182,7 @@ namespace components::table::storage {
 
     core::result_wrapper_t<bool> partial_block_manager_t::flush_partial_blocks() {
         // Only the open tails are buffered here: place() wrote and dropped every other image. The
-        // first failure ends the flush and is returned; the tails are still dropped regardless,
-        // since their segments are already re-pointed at these block ids (the round is over
-        // either way).
+        // first failure ends the flush and is returned.
         core::result_wrapper_t<bool> result = true;
         // A tail whose every byte since its last write belongs to segments a refused
         // append unwound is rolled back to what is on the file; a fresh one is given back whole.

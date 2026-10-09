@@ -23,7 +23,7 @@ using logical_value_t = components::types::logical_value_t;
 using otterbrix::otterbrix_t;
 
 namespace {
-    // The engine goes before the cursor it answered: members are destroyed bottom-up.
+    // `engine` is declared first so it outlives the cursor it answered: members are destroyed bottom-up.
     struct cursor_storage_t {
         otterbrix::otterbrix_ptr engine;
         boost::intrusive_ptr<cursor_t> cursor;

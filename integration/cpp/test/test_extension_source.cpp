@@ -634,7 +634,6 @@ TEST_CASE("integration::cpp::extension_source::join_with_local_table") {
     REQUIRE(cursor->size() == 2);
 }
 
-// A storage whose scan factory builds no operator must surface a clean error, not a crash.
 TEST_CASE("integration::cpp::extension_source::missing_operator_errors_not_crash") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_norule/base"))
     REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE extdb;")->is_success());
@@ -679,7 +678,6 @@ TEST_CASE("integration::cpp::extension_source::explain_shows_backend") {
     REQUIRE(text.find("Extension Scan", first + 1) != std::string::npos);
 }
 
-// INSERT INTO a storage table: the rows of a local query reach the storage's insert sink.
 TEST_CASE("integration::cpp::extension_source::sink_writes_backend") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_sink/base"))
     REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE sdb;")->is_success());
@@ -883,8 +881,6 @@ TEST_CASE("integration::cpp::extension_source::count_star_over_a_storage_table")
     REQUIRE(cursor->value(0, 0).value<int64_t>() == 3);
 }
 
-// A host rule at the last optimizer stage gives the aggregate an explicit source child built from the same
-// storage; count(*) counts that child's rows.
 TEST_CASE("integration::cpp::extension_source::count_star_after_host_optimizer_rule") {
     auto config = test_create_config(integration_fixture_path("test_ext_count_pass/base"));
     test_clear_directory(config);

@@ -1581,8 +1581,8 @@ namespace components::table {
     void column_segment_t::revert_append(uint64_t start_row) {
         // Only the count moves. The bytes past it are never read: string_append derives the dictionary
         // size from the last kept row's offset, validity_append writes every bit it appends, and the
-        // scans mask the bits past their count. The pin this used to take needed memory the pool had
-        // just refused (test_list_revert_pin R5: the block had been spilled meanwhile).
+        // scans mask the bits past their count. Rejected: a pin to roll the bytes back -- it needs memory
+        // the pool has just refused when the block was spilled meanwhile (test_list_revert_pin R5).
         count = start_row - static_cast<uint64_t>(start);
     }
 

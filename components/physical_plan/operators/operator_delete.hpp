@@ -62,7 +62,7 @@ namespace components::operators {
         [[nodiscard]] uint64_t buffered_rows() const noexcept override { return modified_ ? modified_->size() : 0; }
 
     private:
-        // A write into external storage reads as the storage's sink says it, as postgres_fdw's "Foreign Insert on".
+        // EXPLAIN labels a write into external storage the way its sink does, like postgres_fdw's "Foreign Delete on".
         std::pmr::string explain_label_impl() const override {
             return storage_sink_ ? storage_sink_->explain_label() : std::pmr::string{resource_};
         }

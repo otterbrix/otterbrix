@@ -597,7 +597,6 @@ TEST_CASE("root_reclaim: a collection held across compact keeps its blocks and g
 
     stale.reset();
 
-    // The handle is gone; nothing moves until the manager's own thread serializes the next free list.
     {
         const auto pending = bm.dev_pending_free_snapshot();
         const auto parked = bm.dev_freed_while_held_snapshot();
@@ -609,7 +608,6 @@ TEST_CASE("root_reclaim: a collection held across compact keeps its blocks and g
         }
     }
 
-    // The first round after the death publishes them (quarantined behind that header like any other free).
     REQUIRE(table->compact(WATERMARK));
     checkpoint_production(bm, *table);
     auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
@@ -625,7 +623,6 @@ TEST_CASE("root_reclaim: a collection held across compact keeps its blocks and g
         CHECK(report.free_list_content.count(id) != 0);
     }
 
-    // Promoted with that header: the next round draws them again.
     bm.dev_reset_tracking();
     REQUIRE(table->compact(WATERMARK));
     checkpoint_production(bm, *table);

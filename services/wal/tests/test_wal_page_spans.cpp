@@ -437,8 +437,6 @@ TEST_CASE("wal::page_spans::an_orphan_span_left_by_a_crash") {
     }
 }
 
-// Bytes inside an intact checksum chain that do not parse into the records the headers promise are a refusal,
-// never a silent skip.
 TEST_CASE("wal::page_spans::an_inconsistent_page_is_refused_not_skipped") {
     auto build = [](segment_t& s, size_t& a_end) {
         s.fill(1000);

@@ -1,11 +1,11 @@
 // The revert of an append must not need memory the exhausted pool refuses.
-//   R1..R2: the LIST unwind of a REFUSED append reads the previous row's end offset through a pin
-//           of a disk-loaded offsets segment the same exhaustion evicted.
-//   R3..R4: the transaction revert (data_table_t::revert_append after finalize_append) does the
-//           same read; R4 reverts two ranges in reverse order, as a multi-statement rollback does.
-//   R5:     a STRING/validity cut inside a transient segment pins its block; spilled under the
-//           exhaustion, the pin needs memory too.
-//   C1..C2: STRUCT and ARRAY controls: no read in their unwind, green on the base.
+//   R1..R2: the LIST unwind of a REFUSED append; reading the previous row's end offset would need a
+//           pin of a disk-loaded offsets segment the same exhaustion evicted.
+//   R3..R4: the transaction revert (data_table_t::revert_append after finalize_append), same read;
+//           R4 reverts two ranges in reverse order, as a multi-statement rollback does.
+//   R5:     a STRING/validity cut inside a transient segment; spilled under the exhaustion, a pin
+//           of its block would need memory too.
+//   C1..C2: STRUCT and ARRAY controls: no read in their unwind.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/collection.hpp>
@@ -316,8 +316,8 @@ namespace {
 } // namespace
 
 // R1. LIST<STRING> reloaded: its offsets segment is disk-loaded. 40 x 1000-byte elements fill the
-// element column's first transient segment; the second one is refused. The unwind then reads row
-// 0's end offset through a pin of the evicted offsets segment, which the pool refuses as well.
+// element column's first transient segment; the second one is refused. Reading row 0's end offset
+// in the unwind would need a pin of the evicted offsets segment, which the pool refuses as well.
 TEST_CASE("list_revert_pin: R1 LIST<STRING> reloaded, refused append under pool exhaustion",
           "[list_revert_pin][r1]") {
     const auto list_type = complex_logical_type::create_list(logical_type::STRING_LITERAL);
@@ -331,7 +331,7 @@ TEST_CASE("list_revert_pin: R1 LIST<STRING> reloaded, refused append under pool 
         check_list_ok);
 }
 
-// R2. LIST<LIST<STRING>>: both LIST levels read a stored offset in their unwind.
+// R2. LIST<LIST<STRING>>: both LIST levels would read a stored offset in their unwind.
 TEST_CASE("list_revert_pin: R2 LIST<LIST<STRING>> reloaded, refused append under pool exhaustion",
           "[list_revert_pin][r2]") {
     const auto inner_type = complex_logical_type::create_list(logical_type::STRING_LITERAL);
@@ -399,7 +399,7 @@ TEST_CASE("list_revert_pin: C2 ARRAY<STRING> reloaded, refused append under pool
 
 // R3. The transaction path: a reloaded LIST<STRING> table takes an uncommitted row; the pool is
 // exhausted when the transaction's revert runs (storage_revert_appends_inner ->
-// data_table_t::revert_append). Expected: the revert succeeds and the next good row is ['ok'].
+// data_table_t::revert_append).
 TEST_CASE("list_revert_pin: R3 LIST<STRING> reloaded, transaction revert under pool exhaustion",
           "[list_revert_pin][r3]") {
     const std::string path = db_path("r3");
@@ -462,7 +462,7 @@ TEST_CASE("list_revert_pin: R3 LIST<STRING> reloaded, transaction revert under p
 
 // R4. A multi-statement rollback: two uncommitted one-row statements on a fresh (never reloaded)
 // LIST<STRING> table, reverted in reverse order as storage_revert_appends_inner does, with the
-// pool exhausted: the transient segments were spilled, so the reads need memory again.
+// pool exhausted: the transient segments were spilled, so a read would need memory again.
 TEST_CASE("list_revert_pin: R4 LIST<STRING> two statements reverted in reverse order under pool exhaustion",
           "[list_revert_pin][r4]") {
     const std::string path = db_path("r4");
@@ -521,8 +521,8 @@ TEST_CASE("list_revert_pin: R4 LIST<STRING> two statements reverted in reverse o
 }
 
 // R5. STRING: a committed row and an uncommitted row share one transient segment. The revert cuts
-// inside the segment, which rolls the dictionary back through a pin of its block; spilled under the
-// exhaustion, the pin needs memory. Expected: the revert succeeds and the next row reads "ok".
+// inside the segment; rolling the dictionary back through a pin of its block would need memory, the
+// block being spilled under the exhaustion.
 TEST_CASE("list_revert_pin: R5 STRING transaction revert inside a spilled transient segment",
           "[list_revert_pin][r5]") {
     const std::string path = db_path("r5");
@@ -580,7 +580,7 @@ TEST_CASE("list_revert_pin: R5 STRING transaction revert inside a spilled transi
 }
 
 // The revert takes a session back from its first row only: a cut inside a session has no recorded
-// counts, and guessing them would need the reads R1-R5 removed. Refused, the table untouched.
+// counts, and finding them would need the reads R1-R5 keep out of a revert.
 TEST_CASE("list_revert_pin: a revert from inside an append session is refused", "[list_revert_pin][contract]") {
     const std::string path = db_path("contract");
     std::remove(path.c_str());

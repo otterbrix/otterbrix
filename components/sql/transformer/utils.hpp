@@ -67,7 +67,6 @@ namespace components::sql::transform {
 
     // A REFERENCES target as written; one with a uid or schema segment is refused after resolve.
     qualified_name_t referenced_table_as_written(RangeVar* target);
-    // Every REFERENCES target of a CREATE TABLE element list, into resolves->referenced_tables.
     void register_referenced_tables(logical_plan::catalog_resolves_t* resolves, PGList& table_elts);
 
     enum table_name

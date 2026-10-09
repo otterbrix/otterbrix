@@ -95,8 +95,8 @@ TEST_CASE("integration::cpp::null_agg::count_over_all_null_table_is_zero") {
     CHECK(scalar(d, "SELECT MAX(x) FROM ag.t;") == opt{});
 }
 
-// COUNT(DISTINCT) keeps a seen-set keyed by logical_value_t::hash(): a value that hashed its storage pointer
-// (LIST, STRUCT, INTERVAL, TIME_TZ) counted every equal copy as one more distinct value.
+// COUNT(DISTINCT) keeps a seen-set keyed by logical_value_t::hash(): a hash of the storage pointer would count
+// every equal LIST, STRUCT, INTERVAL or TIME_TZ copy as one more distinct value.
 TEST_CASE("integration::cpp::null_agg::count_distinct_over_list_struct_interval_and_timetz") {
     auto config = test_create_config(integration_fixture_path("test_null_agg/distinct_composite"));
     test_clear_directory(config);

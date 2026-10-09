@@ -111,9 +111,8 @@ namespace components::table::storage {
 
     block_handle_t::~block_handle_t() {
         // The buffer_/state_/memory_charge_ teardown takes lock_ like unload() / unload_and_take_block()
-        // do (BUG A: a pool shared by two disk agents let an unload race this teardown and double-free the
-        // block buffer; the pool is per table now). Deadlock-safe: no path holds lock_ while dropping the
-        // last shared_ptr (pin, unload and reallocate keep a strong reference while they hold it).
+        // do: an unload racing it would double-free the block buffer. Deadlock-safe: no path holds lock_
+        // while dropping the last shared_ptr (pin, unload and reallocate keep a strong reference while they hold it).
         {
             std::unique_lock<std::mutex> lock(lock_);
             unswizzled_ = nullptr;

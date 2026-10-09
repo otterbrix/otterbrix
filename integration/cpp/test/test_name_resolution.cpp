@@ -448,7 +448,7 @@ TEST_CASE("name_resolution::from_name::five_part_from_reference_rejected") {
     require_rejected_by_parser(result);
 }
 
-// B4: ALTER TYPE follows CREATE/DROP TYPE — a type always lives in public.
+// ALTER TYPE follows CREATE/DROP TYPE — a type always lives in public.
 TEST_CASE("name_resolution::type_name::alter_type_keeps_its_database") {
     auto result = transform_only("ALTER TYPE shop.addr_t ADD ATTRIBUTE zip TEXT;");
     INFO(describe(result));
@@ -1130,7 +1130,6 @@ TEST_CASE("name_resolution::column_ref::column_arities_fill_the_slots") {
     }
 }
 
-// B5: a qualified star keeps the side its qualification names.
 TEST_CASE("name_resolution::star::qualified_star_keeps_its_side") {
     database_t db(integration_fixture_path("test_name_resolution/qualified_star_side"));
     db.seed({"CREATE DATABASE d1;",
@@ -1151,7 +1150,6 @@ TEST_CASE("name_resolution::star::qualified_star_keeps_its_side") {
     CHECK(left->value(1, 0).value<int64_t>() == 10);
 }
 
-// B8: the statement's IF EXISTS makes a missing table a no-op.
 TEST_CASE("name_resolution::alter::alter_table_if_exists_on_a_missing_table_is_a_no_op") {
     database_t db(integration_fixture_path("test_name_resolution/alter_if_exists"));
     db.seed({"CREATE DATABASE d;"});
@@ -1216,7 +1214,6 @@ TEST_CASE("name_resolution::alter::alter_table_if_exists_rename_column_on_a_miss
     CHECK(refused.type != core::error_code_t::none);
 }
 
-// B2: a REFERENCES target with a schema or uid segment is refused.
 TEST_CASE("name_resolution::fk_target::schema_or_uid_segment_is_refused") {
     database_t db(integration_fixture_path("test_name_resolution/fk_segments"));
     db.seed({"CREATE DATABASE d;", "CREATE TABLE d.p (id BIGINT PRIMARY KEY);", "CREATE TABLE d.c (id BIGINT);"});
@@ -1293,7 +1290,6 @@ TEST_CASE("name_resolution::if_exists::alter_of_an_existing_table_keeps_other_er
     }
 }
 
-// ADD COLUMN resolves its type like CREATE TABLE does: an unknown one is refused, a user type is used.
 TEST_CASE("name_resolution::alter::add_column_resolves_its_type") {
     database_t db(integration_fixture_path("test_name_resolution/add_column_type"));
     db.seed({"CREATE DATABASE d;", "CREATE TABLE d.t (id BIGINT);", "CREATE TYPE mood AS ENUM ('sad', 'ok');"});
@@ -1306,7 +1302,7 @@ TEST_CASE("name_resolution::alter::add_column_resolves_its_type") {
     REQUIRE(rows->size() == 1);
 }
 
-// B9: DROP MATERIALIZED VIEW through the same path as DROP TABLE / DROP VIEW.
+// DROP MATERIALIZED VIEW goes through the same path as DROP TABLE / DROP VIEW.
 TEST_CASE("name_resolution::drop_matview::drop_survives_restart") {
     const auto path = integration_fixture_path("test_name_resolution/drop_matview");
     {

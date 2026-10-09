@@ -232,7 +232,6 @@ namespace services::collection::executor {
                                                            host_names_t host_names,
                                                            std::pmr::vector<expanded_view_t> expanded_views);
 
-        // The catalog read of `resolve_nodes`, in the statement's snapshot, into `resolves`.
         unique_future<execute_result_t>
         run_resolve_subplan_(components::session::session_id_t session,
                              const services::dispatcher::txn_session_context_t& session_ctx,
@@ -316,7 +315,6 @@ namespace services::collection::executor {
         unique_future<core::error_t> drive_subplan_(components::operators::operator_ptr root,
                                                     components::pipeline::context_t* ctx);
 
-        // The context a sub-plan of `plan_data` runs in: this executor, the plan's parameters, the statement's snapshot.
         components::pipeline::context_t make_pipeline_context_(components::session::session_id_t session,
                                                                const plan_t& plan_data,
                                                                components::table::transaction_data txn,

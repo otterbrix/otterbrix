@@ -41,7 +41,7 @@ namespace {
             return std::string{cursor->get_error().what};
         }
 
-        // (a, b, c, e) of every row ordered by a; NULL reads as "null".
+        // NULL reads as "null".
         std::vector<std::string> rows() {
             auto cursor = ok("SELECT a, b, c, e FROM d.t ORDER BY a;");
             std::vector<std::string> out;

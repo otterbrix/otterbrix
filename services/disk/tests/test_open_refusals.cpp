@@ -537,7 +537,6 @@ TEST_CASE("services::disk::open::an_unreadable_system_table_sidecar_is_not_a_bri
     cleanup_refusal_dir();
 }
 
-// One table file that does not load stops the start of the whole database; the file is left as it was.
 TEST_CASE("services::disk::open::a_table_file_that_does_not_load_refuses_the_start") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
@@ -630,7 +629,6 @@ TEST_CASE("services::disk::open::rehydrate_refuses_a_table_directory_it_cannot_e
     cleanup_refusal_dir();
 }
 
-// The directory of a lost .otbx that cannot be created stops the start like a file that cannot be examined.
 TEST_CASE("services::disk::open::rehydrate_refuses_a_table_directory_it_cannot_create") {
     test_helpers::skip_under_root();
     cleanup_refusal_dir();

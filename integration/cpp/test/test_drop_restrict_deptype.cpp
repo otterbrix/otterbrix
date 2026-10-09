@@ -38,7 +38,6 @@ namespace {
 
     namespace catalog = components::catalog;
 
-    // The oid in column 0 of the first row `sql` answers; INVALID_OID when it answers none.
     catalog::oid_t first_oid(otterbrix::wrapper_dispatcher_t* d, const std::string& sql) {
         auto cur = exec(d, sql);
         REQUIRE(cur->is_success());
@@ -165,9 +164,7 @@ TEST_CASE("integration::cpp::drop_restrict::computing_table_is_blocked_by_its_ow
     CHECK_FALSE(gone->is_success());
 }
 
-// operator_alter_column_drop.cpp used to refuse on `dependents` (every
-// pg_depend row on the column); now the shared drop walk refuses only a normal
-// dependent, so an owned index no longer blocks RESTRICT.
+// RESTRICT refuses only a normal dependent: the column's own index goes with it.
 TEST_CASE("integration::cpp::drop_restrict::column_is_blocked_by_its_own_index") {
     auto config = make_test_config(fixture_path("own_index"));
     config.log.level = log_t::level::off;

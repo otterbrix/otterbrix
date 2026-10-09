@@ -101,7 +101,7 @@ TEST_CASE("integration::cpp::builtin_unregister::a_pushed_filter_outlives_an_unr
         unregistered = d->unregister_udf(otterbrix::session_id_t(), "abs", {components::types::logical_type::BIGINT});
         unregister_answered.store(true, std::memory_order_release);
     });
-    // The reader's executor is parked in the scan, not blocked: the unregister reaches it between batches.
+    // A builtin is refused by the dispatcher before any executor is asked, so the busy reader cannot delay it.
     const bool answered_while_parked = test_helpers::wait_until([&] { return unregister_answered.load(); });
 
     guard.gate.released.store(true, std::memory_order_release);

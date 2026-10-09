@@ -427,21 +427,18 @@ namespace {
 
 } // namespace
 
-// L0. The next row group cannot open its append: the pool refuses its transient segments. The
-// unwind ran from under the row-group lock the append held and took it again (1800f017: hang).
+// L0. The next row group cannot open its append: the pool refuses its transient segments.
 TEST_CASE("unwind_limits: L0 a crossing chunk whose next row group cannot open its append", "[unwind_limits][l0]") {
     crossing_chunk_refused("l0", 0);
 }
 
 // L0b. Two 4 KiB pins free: the next row group opens, re-pointing the filled one at the disk is
-// refused; 4 and more let the whole append through. Same unwind under the same lock.
+// refused; 4 and more let the whole append through.
 TEST_CASE("unwind_limits: L0b a crossing chunk whose filled row group cannot be re-pointed at the disk",
           "[unwind_limits][l0b]") {
     crossing_chunk_refused("l0b", 2);
 }
 
-// L2 at every cut: a dry run counts the writes of the crossing append, then the scenario is run
-// once per write index, the file refusing that write and every later one.
 TEST_CASE("unwind_limits: L2 a crossing chunk whose flush fails keeps the committed rows readable",
           "[unwind_limits][l2]") {
     const uint64_t writes = l2_at(0);
@@ -451,7 +448,6 @@ TEST_CASE("unwind_limits: L2 a crossing chunk whose flush fails keeps the commit
     }
 }
 
-// L3 at every cut: a dry run counts the writes of the checkpoint, then one run per write index.
 TEST_CASE("unwind_limits: L3 a checkpoint whose re-point flush fails keeps the committed rows readable",
           "[unwind_limits][l3]") {
     const uint64_t writes = l3_at(0);

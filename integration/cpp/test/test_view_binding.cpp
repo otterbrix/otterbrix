@@ -147,7 +147,6 @@ namespace {
         std::string prorettype;
     };
 
-    // The pg_proc rows named `name`, as the catalog has them now.
     std::vector<proc_row_t> proc_rows(otterbrix::wrapper_dispatcher_t* d, const std::string& name) {
         auto cur = run_ok(d,
                           "SELECT oid, prouid, proargmatchers, prorettype FROM pg_catalog.pg_proc WHERE proname = '" +
@@ -432,8 +431,8 @@ TEST_CASE("integration::cpp::view_binding::drop_column_the_view_does_not_read_is
     CHECK(bigints(run_ok(d, "SELECT a FROM vb.v;")) == std::set<std::int64_t>{1, 2});
 }
 
-// A dependent pg_class row of a column used to be taken for an index; a view's pg_rewrite, pg_rewrite_ref and
-// pg_attribute rows were left behind.
+// A column's dependent pg_class row is not necessarily an index: here it is a view, and its pg_rewrite,
+// pg_rewrite_ref and pg_attribute rows go with it.
 TEST_CASE("integration::cpp::view_binding::drop_column_cascade_drops_the_view_whole") {
     test_spaces space(config_for("drop_column_cascade"));
     auto* d = space.dispatcher();
@@ -781,7 +780,7 @@ TEST_CASE("integration::cpp::view_binding::create_matview_refuses_a_missing_colu
     CHECK(run_ok(d, "SELECT relname FROM pg_catalog.pg_class WHERE relname = 'mv';")->size() == 0);
 }
 
-// The column name list used to be dropped: the matview came out with the body's names.
+// Refused rather than ignored: ignoring the list would name the matview's columns after the body.
 TEST_CASE("integration::cpp::view_binding::create_matview_with_a_column_name_list_is_refused") {
     test_spaces space(config_for("matview_column_names"));
     auto* d = space.dispatcher();

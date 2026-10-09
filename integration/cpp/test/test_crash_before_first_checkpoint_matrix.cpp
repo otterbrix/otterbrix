@@ -314,9 +314,7 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P6_torn_first_header") {
     }
 }
 
-// P7: the first CHECKPOINT committed, then its slot rots. With the mirror the table comes back from root 1; without
-// it the file falls back to the CREATE-time header and the sidecar contradiction refuses the open (no data loss,
-// no availability either).
+// P7: the first CHECKPOINT committed, then its header slot rots; the table must still come up with every row.
 TEST_CASE("integration::cpp::crash_first_ckpt::P7_slot_rot_after_first_checkpoint") {
     auto config = test_create_config(integration_fixture_path("crash_first_ckpt/p7_src"));
     test_clear_directory(config);

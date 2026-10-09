@@ -229,7 +229,7 @@ TEST_CASE("components::compute::aggregate::accumulates_across_chunks") {
         // avg over INTEGER answers DOUBLE
         auto res = fx.run(*fx.get("avg"), chunks, groups, 1, logical_type::DOUBLE);
         REQUIRE_FALSE(res.has_error());
-        REQUIRE(res.value().data<double>()[0] == Catch::Approx(3.0)); // (1+2+3+4+5) / 5
+        REQUIRE(res.value().data<double>()[0] == Catch::Approx(3.0));
     }
 }
 

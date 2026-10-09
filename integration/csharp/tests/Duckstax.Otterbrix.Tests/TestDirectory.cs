@@ -4,7 +4,6 @@ using Duckstax.Otterbrix;
 
 internal static class TestDirectory
 {
-    // An empty directory named after the test, under the working directory.
     public static string Fresh(string name) {
         string path = System.Environment.CurrentDirectory + "/" + name;
         if (System.IO.Directory.Exists(path)) {

@@ -80,7 +80,6 @@ namespace services::dispatcher {
             }
         }
 
-        // A catalog table's own column, with its origin.
         type_from_t catalog_column(std::string alias,
                                    const resolved_table_metadata_t& table,
                                    const resolved_column_metadata_t& column) {

@@ -338,10 +338,9 @@ namespace components::table::storage {
         return checksum_and_write(buffer, block_id);
     }
 
-    // Two positional writes: the checksum slot, then the appended range. A crash between them
-    // leaves a block that fails its checksum -- acceptable only because no durable root names a
-    // block still being grown (the append packer seals before every checkpoint), so recovery
-    // never reads it; a live write failure latches durability_error_ like any other.
+    // A block still being grown is rewritten in place: acceptable only because no durable root names
+    // it (the append packer seals before every checkpoint), so recovery never reads it; a live write
+    // failure latches durability_error_ like any other.
     uint32_t single_file_block_manager_t::range_payload_crc(file_buffer_t& buffer, uint64_t covered) {
         const auto* payload = reinterpret_cast<const char*>(buffer.internal_buffer() + sizeof(uint64_t));
         return static_cast<uint32_t>(absl::ComputeCrc32c({payload, covered}));

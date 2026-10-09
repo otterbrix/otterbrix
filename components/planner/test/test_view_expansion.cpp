@@ -233,9 +233,7 @@ TEST_CASE("planner::view_expansion::a pin the statement disagrees with is refuse
     CHECK(std::string(err.what).find("view \"v\" is stale") != std::string::npos);
 }
 
-// REFRESH MATERIALIZED VIEW is an INSERT into the matview over its stored body (PostgreSQL 18 matview.c runs the
-// stored query; Trino 483 analyzes an INSERT into the storage table with the parsed body as its source), not a read
-// of the matview that expands into the body.
+// Not a read of the matview that expands into the body (PostgreSQL 18, Trino 483: see view_expansion.hpp).
 TEST_CASE("planner::view_expansion::refresh is an insert into the matview over its pinned body") {
     logical_plan::resolved_table_metadata_t matview;
     matview.name = "mv";

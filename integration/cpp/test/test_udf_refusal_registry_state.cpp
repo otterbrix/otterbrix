@@ -297,7 +297,6 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_seeded_builtin_r
     CHECK(pg_proc_rows_named(restarted, "count") == 1);
 }
 
-// The row a previous process left can be unregistered without registering the function again.
 TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_leftover_is_unregistered") {
     const std::filesystem::path dir = integration_fixture_path("test_udf_refusal_registry_state/leftover_unregister");
     std::filesystem::remove_all(dir);

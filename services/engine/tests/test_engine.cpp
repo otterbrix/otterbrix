@@ -164,7 +164,6 @@ TEST_CASE("services::engine::pump::an_idle_engine_burns_no_cpu") {
     CHECK(services::dev_pump_idle_waiters() == kPumpLoops);
 }
 
-// A request wakes each idle loop it reaches: with an idle interval of an hour, a missed wake-up never answers.
 TEST_CASE("services::engine::pump::a_query_to_an_idle_engine_does_not_wait_for_the_idle_interval") {
     const auto root = test_root("idle_latency");
     host_t host(root);

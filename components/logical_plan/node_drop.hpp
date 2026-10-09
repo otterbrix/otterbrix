@@ -45,6 +45,11 @@ namespace components::logical_plan {
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
         void set_behavior(components::catalog::drop_behavior_t b) noexcept { behavior_ = b; }
 
+        // DROP ... IF EXISTS (DropStmt / DropdbStmt missing_ok): the executor turns the refusal "its target does not
+        // exist" — and only that one — into an empty success. The operators themselves always refuse a missing target.
+        bool if_exists() const noexcept { return if_exists_; }
+        void set_if_exists(bool v) noexcept { if_exists_ = v; }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -55,6 +60,7 @@ namespace components::logical_plan {
         components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t index_oid_{components::catalog::INVALID_OID};
         components::catalog::drop_behavior_t behavior_{components::catalog::drop_behavior_t::restrict_};
+        bool if_exists_{false};
     };
 
     using node_drop_ptr = boost::intrusive_ptr<node_drop_t>;

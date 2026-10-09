@@ -256,10 +256,9 @@ namespace services::collection::executor {
                                 components::logical_plan::execution_plan_t& plan,
                                 const services::dispatcher::txn_session_context_t& session_ctx);
 
-        // The statement's IF EXISTS turns "its target does not exist", reported only through this, into an empty
-        // success; every other refusal stays one.
-        components::cursor::cursor_t_ptr refuse_missing_target_(const components::logical_plan::execution_plan_t& plan,
-                                                                core::error_t missing);
+        // The statement's IF EXISTS (read off its node) turns "its target does not exist", reported only through
+        // this, into an empty success; every other refusal stays one.
+        components::cursor::cursor_t_ptr refuse_missing_target_(bool if_exists, core::error_t missing);
         core::error_t missing_relation_(std::string_view dbname, std::string_view relname) const;
         core::error_t missing_database_(std::string_view dbname) const;
 
@@ -294,7 +293,7 @@ namespace services::collection::executor {
             none_left
         };
         core::result_wrapper_t<alter_subcommands_t>
-        check_alter_subcommands_(const components::logical_plan::execution_plan_t& plan,
+        check_alter_subcommands_(const components::logical_plan::catalog_resolves_t& resolves,
                                  const components::logical_plan::resolved_table_metadata_t& table,
                                  std::vector<components::logical_plan::alter_table_subcommand_t>& subcommands);
 

@@ -22,6 +22,7 @@ namespace components::logical_plan {
         boost::hash_combine(hash_value, target_.collection.t);
         boost::hash_combine(hash_value, index_name_.t);
         boost::hash_combine(hash_value, static_cast<uint8_t>(behavior_));
+        boost::hash_combine(hash_value, if_exists_);
         switch (kind_) {
             case drop_target_kind::database:
                 boost::hash_combine(hash_value, static_cast<hash_t>(namespace_oid_));

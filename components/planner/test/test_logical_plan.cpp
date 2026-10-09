@@ -345,6 +345,11 @@ TEST_CASE("components::planner::node_drop_hash_folds_names_and_flags") {
         b->set_behavior(components::catalog::drop_behavior_t::cascade_);
         REQUIRE(a->hash() != b->hash());
     }
+    SECTION("IF EXISTS hashes differently from the plain statement") {
+        auto b = base();
+        b->set_if_exists(true);
+        REQUIRE(a->hash() != b->hash());
+    }
     SECTION("a different index name hashes differently") {
         auto i1 = make_node_drop(&resource, drop_target_kind::index);
         i1->set_target(qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});

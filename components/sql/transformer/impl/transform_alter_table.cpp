@@ -248,8 +248,7 @@ namespace components::sql::transform {
         constexpr std::string_view alter_table_refusal_tail = " is not implemented; the table was not altered";
     } // namespace
 
-    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_rename(RenameStmt& node,
-                                                                                 logical_plan::execution_plan_t* plan) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_rename(RenameStmt& node) {
         if (node.renameType != OBJECT_COLUMN) {
             // Everything but RENAME COLUMN is refused: an empty-named DROP COLUMN node
             // no-ops on operator_alter_column_drop_t, so e.g. `ALTER TABLE t RENAME TO t2`
@@ -289,7 +288,7 @@ namespace components::sql::transform {
                                  resource_});
         }
         auto n = logical_plan::make_node_alter_table_rename_column(resource_, std::move(old_name), std::move(new_name));
-        plan->if_exists = node.missing_ok;
+        n->set_if_exists(node.missing_ok);
         // The altered table's identity stays ON the node: enrich binds it to a
         // resolved entry by name and stamps table_oid() + relkind from there.
         const std::string db_for_resolve = set_target(*n, qn, target_slots::relation);
@@ -302,7 +301,6 @@ namespace components::sql::transform {
         auto qn = rangevar_to_qualified_name(node.relation);
         const std::string& db = qn.database.t;
         const std::string& rel = qn.collection.t;
-        plan->if_exists = node.missing_ok;
         // The grammar hands the table subcommands of ALTER VIEW / INDEX / SEQUENCE / MATERIALIZED VIEW /
         // FOREIGN TABLE over as an AlterTableStmt of that kind; they would otherwise change whatever table has
         // the name. ALTER TYPE shares the statement too and keeps its own path.
@@ -322,8 +320,8 @@ namespace components::sql::transform {
             default:
                 break;
         }
-        // Helper: every return path below targets (db, rel) — name the node and
-        // register the lookup once.
+        // Helper: every return path below targets (db, rel) — name the node, hand it the statement's
+        // IF EXISTS (AlterTableStmt.missing_ok) and register the lookup once.
         auto wrap_primary = [&](logical_plan::node_ptr n) {
             std::string target_db = db;
             if (n && n->type() == logical_plan::node_type::alter_table_t) {
@@ -331,7 +329,10 @@ namespace components::sql::transform {
                 if (node.relkind == OBJECT_TYPE) {
                     alter->set_relkind(components::catalog::relkind::composite_type);
                 }
+                alter->set_if_exists(node.missing_ok);
                 target_db = set_target(*alter, qn, target_slots::relation);
+            } else if (n && n->type() == logical_plan::node_type::create_constraint_t) {
+                static_cast<logical_plan::node_create_constraint_t*>(n.get())->set_if_exists(node.missing_ok);
             }
             register_table(target_db, rel, constraint_resolve_kind::none);
             return n;
@@ -393,9 +394,7 @@ namespace components::sql::transform {
                     logical_plan::alter_table_subcommand_t sub;
                     sub.kind = logical_plan::alter_table_kind::drop_column;
                     sub.column_name = cmd->name;
-                    if (cmd->missing_ok) {
-                        plan->if_exists_subcommands.push_back(subs.size());
-                    }
+                    sub.if_exists = cmd->missing_ok;
                     sub.behavior = drop_behavior_of(cmd->behavior);
                     subs.push_back(std::move(sub));
                     break;
@@ -430,6 +429,8 @@ namespace components::sql::transform {
                             core::constraint_name_t{std::move(con_name)},
                             logical_plan::constraint_kind::foreign_key,
                             qualified_name_t{core::dbname_t{ref_db}, core::relname_t{ref_rel}});
+                        // Returned straight out (its own two-table registration), so not through wrap_primary.
+                        fk_node->set_if_exists(node.missing_ok);
                         if (constr->fk_attrs) {
                             std::vector<std::string> fk_cols;
                             fk_cols.reserve(constr->fk_attrs->lst.size());
@@ -551,9 +552,7 @@ namespace components::sql::transform {
                     logical_plan::alter_table_subcommand_t sub;
                     sub.kind = logical_plan::alter_table_kind::drop_constraint;
                     sub.constraint_name = cmd->name;
-                    if (cmd->missing_ok) {
-                        plan->if_exists_subcommands.push_back(subs.size());
-                    }
+                    sub.if_exists = cmd->missing_ok;
                     sub.behavior = drop_behavior_of(cmd->behavior);
                     subs.push_back(std::move(sub));
                     // names_only so a doubled-PRIMARY-KEY catalog cannot refuse its own repair statement.

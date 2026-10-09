@@ -28,6 +28,10 @@ namespace components::logical_plan {
         // drop_column only: RESTRICT (default or written) or CASCADE; see
         // operator_alter_column_drop_t, which refuses a dependent-blocked drop under restrict_
         components::catalog::drop_behavior_t behavior{components::catalog::drop_behavior_t::restrict_};
+        // drop_column / drop_constraint only: DROP ... IF EXISTS (AlterTableCmd.missing_ok). A missing column /
+        // constraint skips this subcommand alone and the others still apply; the operators always refuse a missing
+        // target.
+        bool if_exists{false};
         components::table::column_definition_t column;
         alter_table_subcommand_t()
             : column("", components::types::complex_logical_type{components::types::logical_type::UNKNOWN}) {}
@@ -56,12 +60,18 @@ namespace components::logical_plan {
         char relkind() const noexcept { return relkind_; }
         void set_relkind(char rk) noexcept { relkind_ = rk; }
 
+        // ALTER TABLE IF EXISTS (AlterTableStmt.missing_ok): a missing table is an empty success instead of the
+        // refusal; every other refusal stays one. The clause-level flag is each subcommand's own.
+        bool if_exists() const noexcept { return if_exists_; }
+        void set_if_exists(bool v) noexcept { if_exists_ = v; }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::vector<alter_table_subcommand_t> subcommands_;
         char relkind_{components::catalog::relkind::regular};
+        bool if_exists_{false};
     };
 
     using node_alter_table_ptr = boost::intrusive_ptr<node_alter_table_t>;

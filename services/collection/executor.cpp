@@ -599,9 +599,8 @@ namespace services::collection::executor {
                 resolves.types ? resolves.types->entries().size() : std::size_t{0}};
     }
 
-    cursor_t_ptr executor_t::refuse_missing_target_(const components::logical_plan::execution_plan_t& plan,
-                                                    core::error_t missing) {
-        return plan.if_exists ? make_cursor(resource()) : make_cursor(resource(), std::move(missing));
+    cursor_t_ptr executor_t::refuse_missing_target_(bool if_exists, core::error_t missing) {
+        return if_exists ? make_cursor(resource()) : make_cursor(resource(), std::move(missing));
     }
 
     core::error_t executor_t::missing_relation_(std::string_view dbname, std::string_view relname) const {
@@ -633,7 +632,7 @@ namespace services::collection::executor {
             case drop_target_kind::database:
                 if (auto err = services::dispatcher::check_namespace_exists(resource(), &plan.catalog_resolves, id);
                     err.contains_error()) {
-                    error = refuse_missing_target_(plan, missing_database_(id.database()));
+                    error = refuse_missing_target_(drop_node->if_exists(), missing_database_(id.database()));
                 } else if (components::catalog::is_catalog_table(drop_node->namespace_oid())) {
                     error = make_cursor(resource(),
                                         core::error_t{core::error_code_t::sql_parse_error,
@@ -646,8 +645,9 @@ namespace services::collection::executor {
                 if (auto err = services::dispatcher::check_collection_exists(resource(), &plan.catalog_resolves, id);
                     err.contains_error()) {
                     error = err.type == core::error_code_t::database_not_exists
-                                ? refuse_missing_target_(plan, std::move(err))
-                                : refuse_missing_target_(plan, missing_relation_(id.database(), id.table_name()));
+                                ? refuse_missing_target_(drop_node->if_exists(), std::move(err))
+                                : refuse_missing_target_(drop_node->if_exists(),
+                                                         missing_relation_(id.database(), id.table_name()));
                 } else if (components::catalog::is_catalog_table(drop_node->table_oid())) {
                     // Same rule as the DML arms — DDL never touches a system catalog (orphans storage).
                     error =
@@ -668,7 +668,7 @@ namespace services::collection::executor {
                     std::pmr::string msg{"type \"", resource()};
                     msg.append(type_name);
                     msg.append("\" does not exist");
-                    error = refuse_missing_target_(plan,
+                    error = refuse_missing_target_(drop_node->if_exists(),
                                                    core::error_t{core::error_code_t::type_not_exists, std::move(msg)});
                 }
                 break;
@@ -676,14 +676,16 @@ namespace services::collection::executor {
             case drop_target_kind::sequence:
             case drop_target_kind::macro:
                 if (!plan.catalog_resolves.table_md(id.database(), std::string_view(id.table_name()))) {
-                    error = refuse_missing_target_(plan, missing_relation_(id.database(), id.table_name()));
+                    error = refuse_missing_target_(drop_node->if_exists(),
+                                                   missing_relation_(id.database(), id.table_name()));
                 }
                 break;
             case drop_target_kind::view:
             case drop_target_kind::materialized_view: {
                 const auto* md = plan.catalog_resolves.table_md(id.database(), std::string_view(id.table_name()));
                 if (!md) {
-                    error = refuse_missing_target_(plan, missing_relation_(id.database(), id.table_name()));
+                    error = refuse_missing_target_(drop_node->if_exists(),
+                                                   missing_relation_(id.database(), id.table_name()));
                     break;
                 }
                 // The statement names the kind it drops (PostgreSQL: wrong object type).
@@ -708,7 +710,7 @@ namespace services::collection::executor {
                     msg.append(".");
                     msg.append(index_name);
                     msg.append(" does not exist");
-                    error = refuse_missing_target_(plan,
+                    error = refuse_missing_target_(drop_node->if_exists(),
                                                    core::error_t{core::error_code_t::index_not_exists, std::move(msg)});
                 }
                 break;
@@ -803,27 +805,21 @@ namespace services::collection::executor {
     // missing is skipped alone (PostgreSQL: a notice); the others still apply, and the operators keep refusing a
     // missing column.
     core::result_wrapper_t<executor_t::alter_subcommands_t>
-    executor_t::check_alter_subcommands_(const components::logical_plan::execution_plan_t& plan,
+    executor_t::check_alter_subcommands_(const components::logical_plan::catalog_resolves_t& resolves,
                                          const components::logical_plan::resolved_table_metadata_t& table,
                                          std::vector<components::logical_plan::alter_table_subcommand_t>& subcommands) {
-        // if_exists_subcommands is ascending: walked from the back, erasing keeps the lower indices.
-        auto written_if_exists = plan.if_exists_subcommands.rbegin();
+        // Walked from the back so erasing keeps the lower indices.
         for (std::size_t index = subcommands.size(); index-- > 0;) {
             auto& sub = subcommands[index];
-            const bool if_exists =
-                written_if_exists != plan.if_exists_subcommands.rend() && *written_if_exists == index;
-            if (if_exists) {
-                ++written_if_exists;
-            }
             bool missing = false;
             if (sub.kind == components::logical_plan::alter_table_kind::drop_column) {
                 missing = std::none_of(table.columns.begin(), table.columns.end(), [&sub](const auto& column) {
                     return column.attname == sub.column_name;
                 });
             } else if (sub.kind == components::logical_plan::alter_table_kind::drop_constraint) {
-                sub.constraint_oid = plan.catalog_resolves.constraint_oid(table.table_oid, sub.constraint_name);
+                sub.constraint_oid = resolves.constraint_oid(table.table_oid, sub.constraint_name);
                 missing = sub.constraint_oid == components::catalog::INVALID_OID;
-                if (missing && !if_exists) {
+                if (missing && !sub.if_exists) {
                     std::pmr::string msg{"constraint \"", resource()};
                     msg.append(sub.constraint_name);
                     msg.append("\" of relation \"");
@@ -832,7 +828,7 @@ namespace services::collection::executor {
                     return core::error_t{core::error_code_t::invalid_constraint, std::move(msg)};
                 }
             }
-            if (missing && if_exists) {
+            if (missing && sub.if_exists) {
                 info(log_,
                      "notice: {} \"{}\" of relation \"{}\" does not exist, skipping",
                      sub.kind == components::logical_plan::alter_table_kind::drop_column ? "column" : "constraint",
@@ -842,8 +838,6 @@ namespace services::collection::executor {
                 subcommands.erase(subcommands.begin() + static_cast<std::ptrdiff_t>(index));
             }
         }
-        assert(written_if_exists == plan.if_exists_subcommands.rend() &&
-               "every IF EXISTS subcommand index names a subcommand");
         return subcommands.empty() ? alter_subcommands_t::none_left : alter_subcommands_t::remain;
     }
 
@@ -1325,7 +1319,7 @@ namespace services::collection::executor {
                 }
                 auto& subcommands = alter_node->subcommands();
                 if (const auto* md = plan.catalog_resolves.table_md(id.database(), std::string_view(id.table_name()))) {
-                    auto checked = check_alter_subcommands_(plan, *md, subcommands);
+                    auto checked = check_alter_subcommands_(plan.catalog_resolves, *md, subcommands);
                     if (checked.has_error()) {
                         error = make_cursor(resource(), checked.error());
                         break;
@@ -1351,12 +1345,13 @@ namespace services::collection::executor {
                 break;
             }
             case node_type::create_constraint_t: {
+                auto* cstr = static_cast<node_create_constraint_t*>(plan.sub_queries.back().get());
                 // An unqualified ALTER TABLE names no database: the table is whatever resolve found by name.
                 if (!plan.catalog_resolves.table_md(id.database(), std::string_view(id.table_name()))) {
-                    error = refuse_missing_target_(plan, missing_relation_(id.database(), id.table_name()));
+                    error =
+                        refuse_missing_target_(cstr->if_exists(), missing_relation_(id.database(), id.table_name()));
                 }
                 if (!error) {
-                    auto* cstr = static_cast<node_create_constraint_t*>(plan.sub_queries.back().get());
                     const bool key_kind =
                         cstr->kind() == constraint_kind::unique || cstr->kind() == constraint_kind::primary_key;
                     if (cstr->kind() == constraint_kind::foreign_key || cstr->kind() == constraint_kind::check ||
@@ -1791,7 +1786,8 @@ namespace services::collection::executor {
             msg.append(alter_node->target().collection.t.data(), alter_node->target().collection.t.size());
             msg.append("\" does not exist");
             co_return execute_result_t{
-                refuse_missing_target_(plan, core::error_t{core::error_code_t::table_not_exists, std::move(msg)})};
+                refuse_missing_target_(alter_node->if_exists(),
+                                       core::error_t{core::error_code_t::table_not_exists, std::move(msg)})};
         }
 
         const bool can_push_to_agent = disk_address_ != actor_zeta::address_t::empty_address();

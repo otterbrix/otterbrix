@@ -162,8 +162,7 @@ namespace components::sql::transform {
         return created;
     }
 
-    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_drop(DropStmt& node,
-                                                                               logical_plan::execution_plan_t* plan) {
+    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_drop(DropStmt& node) {
         // Every arm below reads only `node.objects->lst.front()`; `DROP TABLE a, b, c` would otherwise
         // silently drop just `a` and report success. One node_drop_t names one object, so refuse
         // instead and name the objects that would have been skipped.
@@ -207,7 +206,12 @@ namespace components::sql::transform {
             msg += "); only one object per DROP is supported — nothing was dropped";
             return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
         }
-        plan->if_exists = node.missing_ok;
+        // One node per DROP arm; the statement's IF EXISTS rides it (DropStmt.missing_ok).
+        auto drop_node = [&](logical_plan::drop_target_kind kind) {
+            auto n = logical_plan::make_node_drop(resource_, kind);
+            n->set_if_exists(node.missing_ok);
+            return n;
+        };
         auto wrap_one = [&](const qualified_name_t& written, logical_plan::node_ptr n) {
             auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
             set_target(*drop, written, target_slots::relation);
@@ -247,7 +251,7 @@ namespace components::sql::transform {
                         std::string database = strVal(it++->data);
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
-                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
+                        auto n = drop_node(logical_plan::drop_target_kind::index);
                         return wrap_index(qualified_name_t{core::dbname_t{database}, core::relname_t{collection}},
                                           name,
                                           std::move(n));
@@ -258,7 +262,7 @@ namespace components::sql::transform {
                         std::string schema = strVal(it++->data);
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
-                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
+                        auto n = drop_node(logical_plan::drop_target_kind::index);
                         return wrap_index(qualified_name_t{core::dbname_t{database},
                                                            core::schema_t{schema},
                                                            core::relname_t{collection}},
@@ -272,7 +276,7 @@ namespace components::sql::transform {
                         std::string schema = strVal(it++->data);
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
-                        auto n = logical_plan::make_node_drop(resource_, logical_plan::drop_target_kind::index);
+                        auto n = drop_node(logical_plan::drop_target_kind::index);
                         return wrap_index(qualified_name_t{core::uid_t{uuid},
                                                            core::dbname_t{database},
                                                            core::schema_t{schema},
@@ -313,7 +317,7 @@ namespace components::sql::transform {
         }
         VALUE_OR_RETURN(auto written,
                         qualified_name_of(resource_, *reinterpret_cast<List*>(node.objects->lst.front().data)));
-        auto n = logical_plan::make_node_drop(resource_, kind);
+        auto n = drop_node(kind);
         if (kind != logical_plan::drop_target_kind::type) {
             return wrap_one(written, std::move(n));
         }

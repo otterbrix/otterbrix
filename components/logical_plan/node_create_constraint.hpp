@@ -77,6 +77,11 @@ namespace components::logical_plan {
         bool self_reference() const noexcept { return self_reference_; }
         void set_self_reference(bool value) noexcept { self_reference_ = value; }
 
+        // ALTER TABLE IF EXISTS ... ADD CONSTRAINT (AlterTableStmt.missing_ok): a missing table is an empty success
+        // instead of the refusal; every other refusal stays one.
+        bool if_exists() const noexcept { return if_exists_; }
+        void set_if_exists(bool value) noexcept { if_exists_ = value; }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -97,6 +102,7 @@ namespace components::logical_plan {
         std::vector<components::catalog::oid_t> ref_col_attoids_;
         bool inline_with_table_{false};
         bool self_reference_{false};
+        bool if_exists_{false};
     };
 
     using node_create_constraint_ptr = boost::intrusive_ptr<node_create_constraint_t>;

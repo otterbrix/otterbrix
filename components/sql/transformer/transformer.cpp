@@ -123,7 +123,7 @@ namespace components::sql::transform {
             case T_DropdbStmt: {
                 auto& n = pg_cast<DropdbStmt>(node);
                 const std::string dbname = construct(n.dbname);
-                auto dropped = transform_drop_database(n, plan);
+                auto dropped = transform_drop_database(n);
                 if (dropped.has_error()) {
                     log_node = dropped.error();
                     break;
@@ -139,7 +139,7 @@ namespace components::sql::transform {
                 log_node = transform_create_table(pg_cast<CreateStmt>(node));
                 break;
             case T_DropStmt:
-                log_node = transform_drop(pg_cast<DropStmt>(node), plan);
+                log_node = transform_drop(pg_cast<DropStmt>(node));
                 // TODO: DROP TABLE/INDEX/etc need per-removeType resolve wrap
                 // (resolve_table or resolve_namespace). Out of scope for the
                 // minimal hookup — transform_drop has 6 branches.
@@ -227,7 +227,7 @@ namespace components::sql::transform {
                 log_node = transform_alter_table(pg_cast<AlterTableStmt>(node), plan);
                 break;
             case T_RenameStmt:
-                log_node = transform_rename(pg_cast<RenameStmt>(node), plan);
+                log_node = transform_rename(pg_cast<RenameStmt>(node));
                 break;
             case T_TransactionStmt:
                 log_node = transform_transaction(pg_cast<TransactionStmt>(node));

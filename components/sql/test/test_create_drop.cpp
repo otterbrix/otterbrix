@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
+#include <components/logical_plan/node_create_constraint.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_create_macro.hpp>
 #include <components/logical_plan/node_drop.hpp>
@@ -519,7 +520,8 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
     }
 }
 
-// CREATE honours IF NOT EXISTS; this pins the other half of the pair. IF EXISTS is the statement's, not the node's.
+// CREATE honours IF NOT EXISTS; this pins the other half of the pair. IF EXISTS rides the DROP node, like
+// DropStmt.missing_ok in PostgreSQL, so a plan-to-SQL writer sees it next to the behavior.
 TEST_CASE("components::sql::drop_carries_missing_ok") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
@@ -529,8 +531,9 @@ TEST_CASE("components::sql::drop_carries_missing_ok") {
         auto stmt = linitial(raw_parser(&arena_resource, query));
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
-        REQUIRE(result.value().sub_queries.back()->type() == node_type::drop_t);
-        return result.value().if_exists;
+        auto node = result.value().sub_queries.back();
+        REQUIRE(node->type() == node_type::drop_t);
+        return static_cast<const node_drop_t*>(node.get())->if_exists();
     };
 
     SECTION("DROP TABLE IF EXISTS carries missing_ok") { REQUIRE(if_exists_of("DROP TABLE IF EXISTS db.t;")); }
@@ -625,14 +628,68 @@ TEST_CASE("components::sql::alter_drop_column_carries_written_behavior") {
         REQUIRE(subs.size() == 2);
         REQUIRE(subs.front().behavior == drop_behavior_t::cascade_);
         REQUIRE(subs.back().behavior == drop_behavior_t::restrict_);
-        // IF EXISTS is per-clause too (recorded on the statement), and must not have been swapped with the behavior.
-        auto stmt = raw_parser(&arena_resource, "ALTER TABLE db.t DROP COLUMN a CASCADE, DROP COLUMN IF EXISTS b;")
-                        ->lst.front()
-                        .data;
-        auto plan = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
-        REQUIRE(!plan.has_error());
-        REQUIRE(plan.value().if_exists_subcommands.size() == 1);
-        REQUIRE(plan.value().if_exists_subcommands.front() == 1);
+        // IF EXISTS is per-clause too (AlterTableCmd.missing_ok), and must not have been swapped with the behavior.
+        auto mixed = subcommands_of("ALTER TABLE db.t DROP COLUMN a CASCADE, DROP COLUMN IF EXISTS b;");
+        REQUIRE(mixed.size() == 2);
+        REQUIRE_FALSE(mixed.front().if_exists);
+        REQUIRE(mixed.back().if_exists);
+        REQUIRE(mixed.back().behavior == drop_behavior_t::restrict_);
+    }
+    SECTION("every clause may say IF EXISTS, so it is not one index per statement") {
+        auto subs = subcommands_of("ALTER TABLE db.t DROP COLUMN IF EXISTS a, DROP CONSTRAINT IF EXISTS c, "
+                                   "DROP COLUMN b;");
+        REQUIRE(subs.size() == 3);
+        REQUIRE(subs[0].if_exists);
+        REQUIRE(subs[1].if_exists);
+        REQUIRE_FALSE(subs[2].if_exists);
+    }
+}
+
+// ALTER TABLE IF EXISTS is the table's flag (AlterTableStmt.missing_ok): it rides whichever node the statement
+// lowers to, so the executor and a plan-to-SQL writer read it where the subcommands are.
+TEST_CASE("components::sql::alter_table_carries_missing_ok") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+
+    auto node_of = [&](const char* query) {
+        // With the statement text: a CHECK's expression is sliced from it.
+        transform::transformer transformer(&resource, query);
+        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
+        REQUIRE(!result.has_error());
+        return result.value().sub_queries.back();
+    };
+    auto alter_if_exists = [&](const char* query) {
+        auto node = node_of(query);
+        REQUIRE(node->type() == node_type::alter_table_t);
+        return static_cast<const node_alter_table_t*>(node.get())->if_exists();
+    };
+    auto constraint_if_exists = [&](const char* query) {
+        auto node = node_of(query);
+        REQUIRE(node->type() == node_type::create_constraint_t);
+        return static_cast<const node_create_constraint_t*>(node.get())->if_exists();
+    };
+
+    SECTION("DROP COLUMN") {
+        REQUIRE(alter_if_exists("ALTER TABLE IF EXISTS db.t DROP COLUMN c;"));
+        REQUIRE_FALSE(alter_if_exists("ALTER TABLE db.t DROP COLUMN c;"));
+    }
+    SECTION("the table's flag is not the clause's") {
+        auto node = node_of("ALTER TABLE db.t DROP COLUMN IF EXISTS c;");
+        const auto* alter = static_cast<const node_alter_table_t*>(node.get());
+        REQUIRE_FALSE(alter->if_exists());
+        REQUIRE(alter->subcommands().front().if_exists);
+    }
+    SECTION("RENAME COLUMN") {
+        REQUIRE(alter_if_exists("ALTER TABLE IF EXISTS db.t RENAME COLUMN a TO b;"));
+        REQUIRE_FALSE(alter_if_exists("ALTER TABLE db.t RENAME COLUMN a TO b;"));
+    }
+    SECTION("ADD CONSTRAINT lowers to the constraint node and keeps the flag") {
+        REQUIRE(constraint_if_exists("ALTER TABLE IF EXISTS db.t ADD CONSTRAINT uq UNIQUE (c);"));
+        REQUIRE_FALSE(constraint_if_exists("ALTER TABLE db.t ADD CONSTRAINT uq UNIQUE (c);"));
+        REQUIRE(constraint_if_exists("ALTER TABLE IF EXISTS db.t ADD CONSTRAINT ck CHECK (c > 0);"));
+        REQUIRE(
+            constraint_if_exists("ALTER TABLE IF EXISTS db.t ADD CONSTRAINT fk FOREIGN KEY (c) REFERENCES db.p (id);"));
     }
 }
 

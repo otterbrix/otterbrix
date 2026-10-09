@@ -66,14 +66,6 @@ namespace components::logical_plan {
         // hold various parameters for the whole execution_plan_t, including subquery mapping
         parameter_node_ptr parameters;
 
-        // The statement's IF EXISTS (DROP ..., ALTER TABLE ...): the refusal "its target does not exist" — and only
-        // that one — becomes an empty success. The operations themselves always refuse a missing target.
-        bool if_exists{false};
-        // ALTER TABLE subcommands written with IF EXISTS (indexes into the statement's subcommands): a missing
-        // column / constraint skips that subcommand alone and the others still apply (PostgreSQL). The operators
-        // themselves always refuse a missing target.
-        std::pmr::vector<std::size_t> if_exists_subcommands;
-
         // EXPLAIN / EXPLAIN ANALYZE mode (none for a normal query). Only the main (top-level)
         // plan carries it; flattened sub-queries are built fresh and stay `none`.
         explain_type explain{explain_type::none};

@@ -78,13 +78,11 @@ namespace components::sql::transform {
 
     private:
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_database(CreatedbStmt& node);
-        core::result_wrapper_t<logical_plan::node_ptr> transform_drop_database(DropdbStmt& node,
-                                                                               logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_drop_database(DropdbStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_checkpoint(CheckPointStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_vacuum(VacuumStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_table(CreateStmt& node);
-        core::result_wrapper_t<logical_plan::node_ptr> transform_drop(DropStmt& node,
-                                                                      logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_drop(DropStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_select(SelectStmt& node,
                                                                         logical_plan::execution_plan_t* plan);
         // Build a node_limit from a limitCount/limitOffset pair (nullptr when neither is present). A
@@ -138,8 +136,7 @@ namespace components::sql::transform {
                                                                              logical_plan::execution_plan_t* plan);
         // RENAME COLUMN comes through T_RenameStmt with renameType=OBJECT_COLUMN.
         // Routes here from the top-level transform() switch.
-        core::result_wrapper_t<logical_plan::node_ptr> transform_rename(RenameStmt& node,
-                                                                        logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_rename(RenameStmt& node);
         // BEGIN / COMMIT / ROLLBACK; unsupported variants (SAVEPOINT / 2PC)
         // return nullptr (see impl).
         core::result_wrapper_t<logical_plan::node_ptr> transform_transaction(TransactionStmt& node);

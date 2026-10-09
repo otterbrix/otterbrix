@@ -61,7 +61,7 @@ TEST_CASE("components::planner::ddl_unresolved::drop_index_on_a_missing_index_is
     REQUIRE(rewritten.error().type == core::error_code_t::index_not_exists);
 }
 
-// IF EXISTS is statement-level (execution_plan_t::if_exists): the planner refuses a missing index either way, and
+// IF EXISTS rides the DROP node (node_drop_t::if_exists): the planner refuses a missing index either way, and
 // the executor turns exactly that refusal into success (integration: test_drop_index_repeat).
 TEST_CASE("components::planner::ddl_unresolved::drop_index_if_exists_on_a_missing_index_is_a_noop_success") {
     auto resource = core::pmr::otterbrix_resource();

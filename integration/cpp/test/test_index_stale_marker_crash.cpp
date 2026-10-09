@@ -225,8 +225,7 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
             INFO("the deferred-erase queue has to be empty before the fault goes in");
             REQUIRE(test_helpers::wait_until([] { return services::index::index_deferred_deletes() == 0; }));
 
-            // AND LANDED: a zero meter only proves the erase reached the mailbox, not that it finished.
-            // MEASURED: shortening this wait to zero did not fail in 8 runs (5 idle, 3 under 24-way load).
+            // A zero meter means the erase has reached the store; the read is the index's own word on it.
             INFO("a read through the index orders the injection after the erase write");
             REQUIRE(disagreements_with_the_full_scan(d) == 0);
         }

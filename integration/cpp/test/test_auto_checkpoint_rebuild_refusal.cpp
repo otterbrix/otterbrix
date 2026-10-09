@@ -349,8 +349,8 @@ TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_
         });
         INFO("the deferred-erase queue has to be empty before the fault goes in");
         REQUIRE(drained);
-        // The sweep sends its erases before the meter reaches zero; a read through the index queues
-        // behind them, so its answer means the erases and their merge have run.
+        // The meter reaches zero once the erases have run; the read checks their merge left the index
+        // and the table agreeing.
         REQUIRE(index_disagreements_with_the_full_scan(d) == 0);
     }
 

@@ -61,7 +61,7 @@ namespace components::expressions {
         bool do_not_fold_ = false;
         core::parameter_id_t regex_flags_param_{0};
         compute::function_uid function_uid_{compute::invalid_function_uid};
-        compute::function_ptr function_;
+        compute::function_ptr function_{compute::no_function()};
         param_storage left_;
         param_storage right_;
         std::pmr::vector<expression_ptr> children_;

@@ -37,7 +37,7 @@ namespace components::operators {
             co_return;
         }
 
-        const std::string func_name = function_->name();
+        const std::string func_name{function_->name()};
         const auto signatures = proc_signatures(resource_, *function_);
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};

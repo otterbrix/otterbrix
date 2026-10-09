@@ -133,10 +133,12 @@ namespace {
 
     components::compute::function_ptr make_remainder(std::pmr::memory_resource* resource) {
         using namespace components::compute;
-        auto fn = std::make_unique<vector_function>("remainder",
-                                                    arity::binary(),
-                                                    function_doc{"short_doc", "full_doc", {"a", "b"}, false},
-                                                    1);
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(
+            resource,
+            "remainder",
+            arity::binary(),
+            function_doc{resource, "short_doc", "full_doc", {"a", "b"}, false},
+            size_t{1});
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(components::types::logical_type::BIGINT),
                                 parameter_type::exact(components::types::logical_type::BIGINT)},

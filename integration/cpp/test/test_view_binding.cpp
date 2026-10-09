@@ -123,13 +123,13 @@ namespace {
     using components::types::logical_type;
 
     // One kernel per (input, output) pair; a BIGINT input doubles BIGINTs, a DOUBLE input doubles DOUBLEs.
-    std::unique_ptr<components::compute::vector_function>
-    make_twice(std::pmr::memory_resource* resource,
-               std::vector<std::pair<logical_type, logical_type>> kernels = {{logical_type::BIGINT,
-                                                                              logical_type::BIGINT}}) {
+    components::compute::function_ptr make_twice(std::pmr::memory_resource* resource,
+                                                 std::vector<std::pair<logical_type, logical_type>> kernels = {
+                                                     {logical_type::BIGINT, logical_type::BIGINT}}) {
         using namespace components::compute;
-        function_doc doc{"twice", "twice", {"arg"}, false};
-        auto fn = std::make_unique<vector_function>("twice", arity::unary(), doc, kernels.size());
+        function_doc doc{resource, "twice", "twice", {"arg"}, false};
+        auto fn =
+            core::pmr::make_polymorphic_unique<vector_function>(resource, "twice", arity::unary(), doc, kernels.size());
         for (const auto& [input, output] : kernels) {
             kernel_signature_t sig(function_type_t::vector,
                                    {parameter_type::exact(input)},
@@ -1057,10 +1057,15 @@ namespace {
     }
 
     // An aggregate UDF: the sum of its BIGINT argument.
-    std::unique_ptr<components::compute::aggregate_function> make_total(std::pmr::memory_resource* resource) {
+    components::compute::function_ptr make_total(std::pmr::memory_resource* resource) {
         using namespace components::compute;
-        function_doc doc{"total", "total", {"arg"}, false};
-        auto fn = std::make_unique<aggregate_function>("total", arity::unary(), doc, 1);
+        function_doc doc{resource, "total", "total", {"arg"}, false};
+        auto fn = core::pmr::make_polymorphic_unique<aggregate_function>(resource,
+                                                                         "total",
+                                                                         arity::unary(),
+                                                                         doc,
+                                                                         size_t{1},
+                                                                         false);
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::exact(logical_type::BIGINT)},
                                {output_type::fixed(logical_type::BIGINT)});

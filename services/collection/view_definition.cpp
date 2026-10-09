@@ -281,7 +281,7 @@ namespace services::collection {
             }
             catalog::view_binding_t binding;
             binding.refkind = catalog::view_refkind::function;
-            binding.relname = function->name();
+            binding.relname = std::string{function->name()};
             binding.refobjid = row->oid;
             binding.proargmatchers = signature.proargmatchers;
             binding.prorettype = signature.prorettype;

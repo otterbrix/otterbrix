@@ -50,7 +50,7 @@ namespace components::expressions {
         bool distinct_{false};
         bool star_argument_{false};
         compute::function_pin_t pin_;
-        compute::function_ptr function_;
+        compute::function_ptr function_{compute::no_function()};
         std::pmr::vector<compute::function_pin_t> pins_;
 
         hash_t hash_impl() const override;

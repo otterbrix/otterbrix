@@ -55,10 +55,15 @@ concat_finalize(kernel_context& ctx, aggregate_states_t states, uint64_t first, 
     return core::error_t::no_error();
 }
 
-std::unique_ptr<aggregate_function> make_concat_func(std::pmr::memory_resource* resource) {
-    function_doc doc{"short_doc", "full_doc", {"arg"}, false};
+core::pmr::polymorphic_unique_ptr<aggregate_function> make_concat_func(std::pmr::memory_resource* resource) {
+    function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
 
-    auto fn = std::make_unique<aggregate_function>(udf1_name, arity::unary(), doc, 1);
+    auto fn = core::pmr::make_polymorphic_unique<aggregate_function>(resource,
+                                                                     udf1_name,
+                                                                     arity::unary(),
+                                                                     doc,
+                                                                     size_t{1},
+                                                                     false);
 
     kernel_signature_t sig(function_type_t::aggregate,
                            {parameter_type::exact(types::logical_type::STRING_LITERAL)},
@@ -97,10 +102,15 @@ mult_finalize(kernel_context&, aggregate_states_t states, uint64_t first, uint64
 }
 
 // has overloads for diff argument types
-std::unique_ptr<aggregate_function> make_mult_func(std::pmr::memory_resource* resource) {
-    function_doc doc{"short_doc", "full_doc", {"arg1", "arg2"}, false};
+core::pmr::polymorphic_unique_ptr<aggregate_function> make_mult_func(std::pmr::memory_resource* resource) {
+    function_doc doc{resource, "short_doc", "full_doc", {"arg1", "arg2"}, false};
 
-    auto fn = std::make_unique<aggregate_function>(udf2_name, arity::binary(), doc, 1);
+    auto fn = core::pmr::make_polymorphic_unique<aggregate_function>(resource,
+                                                                     udf2_name,
+                                                                     arity::binary(),
+                                                                     doc,
+                                                                     size_t{1},
+                                                                     false);
 
     kernel_signature_t sig(
         function_type_t::aggregate,
@@ -121,10 +131,10 @@ static core::error_t is_even_exec(kernel_context&, const vector::data_chunk_t& i
     return core::error_t::no_error();
 }
 
-std::unique_ptr<vector_function> make_is_even_func(std::pmr::memory_resource* resource) {
-    function_doc doc{"short_doc", "full_doc", {"arg"}, false};
+core::pmr::polymorphic_unique_ptr<vector_function> make_is_even_func(std::pmr::memory_resource* resource) {
+    function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
 
-    auto fn = std::make_unique<vector_function>(udf3_name, arity::unary(), doc, 1);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource, udf3_name, arity::unary(), doc, size_t{1});
 
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(types::logical_type::BIGINT)},
@@ -145,10 +155,10 @@ static core::error_t modulo_exec(kernel_context&, const vector::data_chunk_t& in
     return core::error_t::no_error();
 }
 
-std::unique_ptr<vector_function> make_modulo_func(std::pmr::memory_resource* resource) {
-    function_doc doc{"short_doc", "full_doc", {"arg1", "arg2"}, false};
+core::pmr::polymorphic_unique_ptr<vector_function> make_modulo_func(std::pmr::memory_resource* resource) {
+    function_doc doc{resource, "short_doc", "full_doc", {"arg1", "arg2"}, false};
 
-    auto fn = std::make_unique<vector_function>(udf4_name, arity::binary(), doc, 1);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource, udf4_name, arity::binary(), doc, size_t{1});
 
     kernel_signature_t sig(
         function_type_t::vector,
@@ -463,9 +473,15 @@ namespace {
         return core::error_t::no_error();
     }
 
-    std::unique_ptr<aggregate_function> make_mergeable_total_func(std::pmr::memory_resource* resource) {
-        function_doc doc{"short_doc", "full_doc", {"arg"}, false};
-        auto fn = std::make_unique<aggregate_function>("total", arity::unary(), doc, 1, /*mergeable=*/true);
+    core::pmr::polymorphic_unique_ptr<aggregate_function>
+    make_mergeable_total_func(std::pmr::memory_resource* resource) {
+        function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
+        auto fn = core::pmr::make_polymorphic_unique<aggregate_function>(resource,
+                                                                         "total",
+                                                                         arity::unary(),
+                                                                         doc,
+                                                                         size_t{1},
+                                                                         /*mergeable=*/true);
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::exact(types::logical_type::BIGINT)},
                                {output_type::fixed(types::logical_type::BIGINT)});

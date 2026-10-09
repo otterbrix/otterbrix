@@ -23,7 +23,7 @@ namespace components::expressions {
         }
 
         compute::function_ptr copy_function(std::pmr::memory_resource* resource, const compute::function* function) {
-            return function == nullptr ? nullptr : function->get_copy(resource);
+            return function == nullptr ? compute::no_function() : function->get_copy(resource);
         }
     } // namespace
 

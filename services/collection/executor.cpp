@@ -786,11 +786,11 @@ namespace services::collection::executor {
             if (function == nullptr || std::find(names.begin(), names.end(), function->name()) != names.end()) {
                 continue;
             }
-            names.push_back(function->name());
+            names.emplace_back(function->name());
             auto [_rf, rff] = actor_zeta::otterbrix::send(disk_address_,
                                                           &services::disk::manager_disk_t::resolve_function_by_name,
                                                           proc_ctx,
-                                                          function->name());
+                                                          std::string{function->name()});
             auto procs = co_await std::move(rff);
             if (procs.has_error()) {
                 co_return core::error_on(resource(), procs.error());
@@ -2105,7 +2105,7 @@ namespace services::collection::executor {
     executor_t::unique_future<std::unique_ptr<function_result_t>>
     executor_t::register_udf(components::session::session_id_t session, components::compute::function_ptr function) {
         trace(log_, "executor::register_udf, session: {}, {}", session.data(), function->name());
-        std::string name = function->name();
+        std::string name{function->name()};
         auto signatures = function->get_signatures();
         for (const auto& [registered_name, uid] : function_registry_.get_functions()) {
             if (registered_name != name) {

@@ -611,8 +611,9 @@ namespace {
 
     components::compute::function_ptr make_call_probe(std::pmr::memory_resource* resource) {
         using namespace components::compute;
-        function_doc doc{"short_doc", "full_doc", {"arg"}, false};
-        auto fn = std::make_unique<vector_function>("call_probe", arity::unary(), doc, 1);
+        function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
+        auto fn =
+            core::pmr::make_polymorphic_unique<vector_function>(resource, "call_probe", arity::unary(), doc, size_t{1});
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(components::types::logical_type::BIGINT)},
                                {output_type::fixed(components::types::logical_type::BIGINT)});

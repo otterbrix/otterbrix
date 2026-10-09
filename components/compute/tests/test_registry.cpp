@@ -14,7 +14,11 @@ TEST_CASE("components::compute::registry::basic") {
         function_registry_t other(&resource);
         register_default_functions(other);
         auto added = other.add_function(
-            std::make_unique<vector_function>("only_in_other", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
+            core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                                "only_in_other",
+                                                                arity::unary(),
+                                                                function_doc{&resource},
+                                                                /*available_kernel_slots=*/size_t{1}));
         REQUIRE_FALSE(added.has_error());
         REQUIRE(other.find_functions("only_in_other").size() == 1);
         REQUIRE(reg->find_functions("only_in_other").empty());
@@ -62,7 +66,7 @@ TEST_CASE("components::compute::registry::add_function_refuses_a_null_payload") 
     core::pmr::otterbrix_resource resource;
     function_registry_t registry(&resource);
 
-    auto added = registry.add_function(nullptr);
+    auto added = registry.add_function(no_function());
     REQUIRE(added.has_error());
     REQUIRE(added.error().type == core::error_code_t::function_registry_error);
 }
@@ -71,7 +75,7 @@ TEST_CASE("components::compute::registry::a_refused_null_payload_never_enters_th
     core::pmr::otterbrix_resource resource;
     function_registry_t registry(&resource);
 
-    auto added = registry.add_function(nullptr);
+    auto added = registry.add_function(no_function());
     INFO("add_function reported " << (added.has_error() ? "a refusal" : "a uid"));
 
     // Probed via remove_function(), not get_functions(): get_functions() dereferences every
@@ -88,7 +92,11 @@ TEST_CASE("components::compute::registry::shifted_builtin_table_never_serves") {
 
     // Occupy uid 0 before the builtins arrive.
     auto added = registry.add_function(
-        std::make_unique<vector_function>("stray", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
+        core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                            "stray",
+                                                            arity::unary(),
+                                                            function_doc{&resource},
+                                                            /*available_kernel_slots=*/size_t{1}));
     REQUIRE_FALSE(added.has_error());
     REQUIRE(added.value() == 0);
 
@@ -108,7 +116,11 @@ TEST_CASE("components::compute::registry::poisoned_builtin_registration_reports_
     function_registry_t registry(&resource);
 
     auto added = registry.add_function(
-        std::make_unique<vector_function>("stray", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
+        core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                            "stray",
+                                                            arity::unary(),
+                                                            function_doc{&resource},
+                                                            /*available_kernel_slots=*/size_t{1}));
     REQUIRE_FALSE(added.has_error());
 
     register_default_functions(registry);
@@ -128,7 +140,11 @@ TEST_CASE("components::compute::registry::poisoned_builtin_registration_reports_
 
     // and refuses every further add with the recorded error
     auto after = registry.add_function(
-        std::make_unique<vector_function>("late", arity::unary(), function_doc{}, /*available_kernel_slots=*/1));
+        core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                            "late",
+                                                            arity::unary(),
+                                                            function_doc{&resource},
+                                                            /*available_kernel_slots=*/size_t{1}));
     REQUIRE(after.has_error());
     CHECK(after.error().type == core::error_code_t::function_registry_error);
 }

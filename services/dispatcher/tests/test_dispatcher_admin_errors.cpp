@@ -82,11 +82,10 @@ namespace {
     }
 
     // The name is a parameter so each test names its own function.
-    std::unique_ptr<components::compute::vector_function> make_probe_func(std::pmr::memory_resource* resource,
-                                                                          const std::string& name) {
+    components::compute::function_ptr make_probe_func(std::pmr::memory_resource* resource, const std::string& name) {
         using namespace components::compute;
-        function_doc doc{"short_doc", "full_doc", {"arg"}, false};
-        auto fn = std::make_unique<vector_function>(name, arity::unary(), doc, 1);
+        function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource, name, arity::unary(), doc, size_t{1});
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::BIGINT)},
                                {output_type::fixed(logical_type::BIGINT)});

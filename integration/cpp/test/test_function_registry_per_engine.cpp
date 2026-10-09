@@ -27,7 +27,11 @@ namespace {
 
     template<bool Even>
     function_ptr make_parity(std::pmr::memory_resource* resource, const std::string& name) {
-        auto fn = std::make_unique<vector_function>(name, arity::unary(), function_doc{"", "", {"arg"}, false}, 1);
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                      name,
+                                                                      arity::unary(),
+                                                                      function_doc{resource, "", "", {"arg"}, false},
+                                                                      size_t{1});
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(components::types::logical_type::BIGINT)},
                                {output_type::fixed(components::types::logical_type::BOOLEAN)});

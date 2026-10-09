@@ -32,12 +32,12 @@ namespace services::planner::impl {
 
         // Validation resolved the uid against this same registry, so the operator owns a copy and runs without one.
         const auto* function = function_registry.get_function(function_node->function_uid());
-        return boost::intrusive_ptr(
-            new components::operators::operator_function_t(resource,
-                                                           std::move(log),
-                                                           function == nullptr ? nullptr : function->get_copy(resource),
-                                                           std::move(args),
-                                                           alias));
+        return boost::intrusive_ptr(new components::operators::operator_function_t(
+            resource,
+            std::move(log),
+            function == nullptr ? components::compute::no_function() : function->get_copy(resource),
+            std::move(args),
+            alias));
     }
 
 } // namespace services::planner::impl

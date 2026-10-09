@@ -116,8 +116,12 @@ namespace {
     }
 
     compute::function_ptr make_probe_unary(std::pmr::memory_resource* resource, const std::string& name = kFuncName) {
-        compute::function_doc doc{"short_doc", "full_doc", {"arg"}, false};
-        auto fn = std::make_unique<compute::vector_function>(name, compute::arity::unary(), doc, 1);
+        compute::function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
+        auto fn = core::pmr::make_polymorphic_unique<compute::vector_function>(resource,
+                                                                               name,
+                                                                               compute::arity::unary(),
+                                                                               doc,
+                                                                               size_t{1});
         compute::kernel_signature_t sig(compute::function_type_t::vector,
                                         {compute::parameter_type::exact(types::logical_type::BIGINT)},
                                         {compute::output_type::fixed(types::logical_type::BIGINT)});

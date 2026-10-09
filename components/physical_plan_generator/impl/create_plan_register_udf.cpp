@@ -16,7 +16,8 @@ namespace services::planner::impl {
         // The node retains ownership of the canonical payload; the operator gets
         // an independent deep copy so it can read name()/signatures and mirror it
         // into the default registry without consuming the node's instance.
-        components::compute::function_ptr fn_copy = fn ? fn->get_copy(context.resource) : nullptr;
+        components::compute::function_ptr fn_copy =
+            fn ? fn->get_copy(context.resource) : components::compute::no_function();
         return boost::intrusive_ptr(new components::operators::operator_register_udf_t(context.resource,
                                                                                        context.log.clone(),
                                                                                        std::move(fn_copy),

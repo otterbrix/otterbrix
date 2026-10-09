@@ -140,8 +140,12 @@ namespace {
     }
 
     compute::function_ptr make_probe_unary(std::pmr::memory_resource* resource) {
-        compute::function_doc doc{"short_doc", "full_doc", {"arg"}, false};
-        auto fn = std::make_unique<compute::vector_function>(kFuncName, compute::arity::unary(), doc, 1);
+        compute::function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
+        auto fn = core::pmr::make_polymorphic_unique<compute::vector_function>(resource,
+                                                                               kFuncName,
+                                                                               compute::arity::unary(),
+                                                                               doc,
+                                                                               size_t{1});
         compute::kernel_signature_t sig(compute::function_type_t::vector,
                                         {compute::parameter_type::exact(types::logical_type::BIGINT)},
                                         {compute::output_type::fixed(types::logical_type::BIGINT)});
@@ -154,8 +158,12 @@ namespace {
     // Same name, different signature: manager_dispatcher_t::register_udf refuses an identical
     // signature in the per-executor registries first, so only a new overload reaches pg_proc.
     compute::function_ptr make_probe_binary(std::pmr::memory_resource* resource) {
-        compute::function_doc doc{"short_doc", "full_doc", {"arg1", "arg2"}, false};
-        auto fn = std::make_unique<compute::vector_function>(kFuncName, compute::arity::binary(), doc, 1);
+        compute::function_doc doc{resource, "short_doc", "full_doc", {"arg1", "arg2"}, false};
+        auto fn = core::pmr::make_polymorphic_unique<compute::vector_function>(resource,
+                                                                               kFuncName,
+                                                                               compute::arity::binary(),
+                                                                               doc,
+                                                                               size_t{1});
         compute::kernel_signature_t sig(compute::function_type_t::vector,
                                         {compute::parameter_type::exact(types::logical_type::BIGINT),
                                          compute::parameter_type::exact(types::logical_type::BIGINT)},

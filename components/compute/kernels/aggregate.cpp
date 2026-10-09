@@ -757,15 +757,19 @@ namespace {
         return types;
     }
 
-    std::unique_ptr<aggregate_function> make_sum_func(std::pmr::memory_resource* resource,
-                                                      const std::string& name,
-                                                      const std::string& short_doc,
-                                                      const std::string& full_doc,
-                                                      size_t available_kernel_slots = 1) {
-        function_doc doc{short_doc, full_doc, {"arg"}, false};
+    core::pmr::polymorphic_unique_ptr<aggregate_function> make_sum_func(std::pmr::memory_resource* resource,
+                                                                        const std::string& name,
+                                                                        const std::string& short_doc,
+                                                                        const std::string& full_doc,
+                                                                        size_t available_kernel_slots = 1) {
+        function_doc doc{resource, short_doc, full_doc, {"arg"}, false};
 
-        auto fn =
-            std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
+        auto fn = core::pmr::make_polymorphic_unique<aggregate_function>(resource,
+                                                                         name,
+                                                                         arity::unary(),
+                                                                         doc,
+                                                                         available_kernel_slots,
+                                                                         /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0, numeric_parameters(resource))},
@@ -776,15 +780,19 @@ namespace {
         return fn;
     }
 
-    std::unique_ptr<aggregate_function> make_min_func(std::pmr::memory_resource* resource,
-                                                      const std::string& name,
-                                                      const std::string& short_doc,
-                                                      const std::string& full_doc,
-                                                      size_t available_kernel_slots = 1) {
-        function_doc doc{short_doc, full_doc, {"arg"}, false};
+    core::pmr::polymorphic_unique_ptr<aggregate_function> make_min_func(std::pmr::memory_resource* resource,
+                                                                        const std::string& name,
+                                                                        const std::string& short_doc,
+                                                                        const std::string& full_doc,
+                                                                        size_t available_kernel_slots = 1) {
+        function_doc doc{resource, short_doc, full_doc, {"arg"}, false};
 
-        auto fn =
-            std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
+        auto fn = core::pmr::make_polymorphic_unique<aggregate_function>(resource,
+                                                                         name,
+                                                                         arity::unary(),
+                                                                         doc,
+                                                                         available_kernel_slots,
+                                                                         /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0)},
@@ -795,15 +803,19 @@ namespace {
         return fn;
     }
 
-    std::unique_ptr<aggregate_function> make_max_func(std::pmr::memory_resource* resource,
-                                                      const std::string& name,
-                                                      const std::string& short_doc,
-                                                      const std::string& full_doc,
-                                                      size_t available_kernel_slots = 1) {
-        function_doc doc{short_doc, full_doc, {"arg"}, false};
+    core::pmr::polymorphic_unique_ptr<aggregate_function> make_max_func(std::pmr::memory_resource* resource,
+                                                                        const std::string& name,
+                                                                        const std::string& short_doc,
+                                                                        const std::string& full_doc,
+                                                                        size_t available_kernel_slots = 1) {
+        function_doc doc{resource, short_doc, full_doc, {"arg"}, false};
 
-        auto fn =
-            std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
+        auto fn = core::pmr::make_polymorphic_unique<aggregate_function>(resource,
+                                                                         name,
+                                                                         arity::unary(),
+                                                                         doc,
+                                                                         available_kernel_slots,
+                                                                         /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0)},
@@ -814,18 +826,19 @@ namespace {
         return fn;
     }
 
-    std::unique_ptr<aggregate_function> make_count_func(std::pmr::memory_resource* resource,
-                                                        const std::string& name,
-                                                        const std::string& short_doc,
-                                                        const std::string& full_doc,
-                                                        size_t available_kernel_slots = 1) {
-        function_doc doc{short_doc, full_doc, {"arg"}, false};
+    core::pmr::polymorphic_unique_ptr<aggregate_function> make_count_func(std::pmr::memory_resource* resource,
+                                                                          const std::string& name,
+                                                                          const std::string& short_doc,
+                                                                          const std::string& full_doc,
+                                                                          size_t available_kernel_slots = 1) {
+        function_doc doc{resource, short_doc, full_doc, {"arg"}, false};
 
-        auto fn = std::make_unique<aggregate_function>(name,
-                                                       arity::var_args(0),
-                                                       doc,
-                                                       available_kernel_slots + 1,
-                                                       /*mergeable=*/true);
+        auto fn = core::pmr::make_polymorphic_unique<aggregate_function>(resource,
+                                                                         name,
+                                                                         arity::var_args(0),
+                                                                         doc,
+                                                                         available_kernel_slots + 1,
+                                                                         /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0)},
@@ -841,15 +854,19 @@ namespace {
         return fn;
     }
 
-    std::unique_ptr<aggregate_function> make_avg_func(std::pmr::memory_resource* resource,
-                                                      const std::string& name,
-                                                      const std::string& short_doc,
-                                                      const std::string& full_doc,
-                                                      size_t available_kernel_slots = 1) {
-        function_doc doc{short_doc, full_doc, {"arg"}, false};
+    core::pmr::polymorphic_unique_ptr<aggregate_function> make_avg_func(std::pmr::memory_resource* resource,
+                                                                        const std::string& name,
+                                                                        const std::string& short_doc,
+                                                                        const std::string& full_doc,
+                                                                        size_t available_kernel_slots = 1) {
+        function_doc doc{resource, short_doc, full_doc, {"arg"}, false};
 
-        auto fn =
-            std::make_unique<aggregate_function>(name, arity::unary(), doc, available_kernel_slots, /*mergeable=*/true);
+        auto fn = core::pmr::make_polymorphic_unique<aggregate_function>(resource,
+                                                                         name,
+                                                                         arity::unary(),
+                                                                         doc,
+                                                                         available_kernel_slots,
+                                                                         /*mergeable=*/true);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0, numeric_parameters(resource))},

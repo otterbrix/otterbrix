@@ -333,22 +333,23 @@ TEST_CASE("integration::cpp::auto_checkpoint_rebuild_refusal::a_refused_rebuild_
     INFO("the index and the table agree BEFORE the armed round, so a disagreement after it is that round's");
     REQUIRE(index_disagreements_with_the_full_scan(d) == 0);
 
+    services::disk::reset_table_checkpoints();
+    services::wal::reset_auto_checkpoint_rounds();
+
     INFO("front-of-table deletes, so the armed round's compaction has a shift to hand out");
     REQUIRE(exec(d, "DELETE FROM adb.t WHERE id >= 1 AND id <= 10;")->is_success());
 
     // Must drain the deferred-delete queue before arming: its horizon sweep also lists the index
     // directory (bitcask_index_agent_t::pay_merge_debt), tripping the flush refusal instead of this rebuild.
+    // The DELETE's own publish is the horizon advance the sweep waits for; a commit per poll here (rejected)
+    // crossed the auto-checkpoint threshold under load, and that round compacted the deletes away first.
     {
-        // Each churn commits, and a commit advances the horizon the sweep waits for.
-        const bool drained = test_helpers::wait_until([&] {
-            if (services::index::index_deferred_deletes() == 0) {
-                return true;
-            }
-            churn_once(d, churn_id);
-            return false;
-        });
         INFO("the deferred-erase queue has to be empty before the fault goes in");
-        REQUIRE(drained);
+        REQUIRE(test_helpers::wait_until([] { return services::index::index_deferred_deletes() == 0; }));
+        INFO("no automatic round may run before the fault goes in: it would leave the armed round nothing to "
+             "renumber");
+        REQUIRE(services::disk::table_checkpoints() == 0);
+        REQUIRE(services::wal::auto_checkpoint_rounds() == 0);
         // The meter reaches zero once the erases have run; the read checks their merge left the index
         // and the table agreeing.
         REQUIRE(index_disagreements_with_the_full_scan(d) == 0);

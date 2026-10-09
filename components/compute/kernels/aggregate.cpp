@@ -1,5 +1,6 @@
 #include "../function.hpp"
 #include <components/types/logical_value.hpp>
+#include <components/types/operations_helper.hpp>
 #include <components/vector/operations/apply_operator.hpp>
 #include <components/vector/vector_operations.hpp>
 
@@ -41,13 +42,6 @@ namespace {
         bool has_value{false};
     };
 
-    template<typename T>
-    struct avg_state_t {
-        T value{};
-        uint64_t count{0};
-    };
-
-    // avg over 8..64-bit integers and decimals sums exactly in 128 bits, over real/double in double.
     struct avg_wide_state_t {
         int128_t exact{0};
         double inexact{0};
@@ -59,11 +53,12 @@ namespace {
     };
 
     // How sum/avg accumulate an argument type (Trino semantics). Unsigned integers have no Trino counterpart
-    // and widen like the signed ones, into UBIGINT; HUGEINT and UHUGEINT keep accumulating in their own type.
+    // and widen like the signed ones, into UBIGINT; HUGEINT and UHUGEINT sum in their own type and average in DOUBLE.
     enum class accumulation
     {
         widened_signed,
         widened_unsigned,
+        wide_integer,
         decimal,
         floating,
         input_type
@@ -81,6 +76,9 @@ namespace {
             case logical_type::UINTEGER:
             case logical_type::UBIGINT:
                 return accumulation::widened_unsigned;
+            case logical_type::HUGEINT:
+            case logical_type::UHUGEINT:
+                return accumulation::wide_integer;
             case logical_type::DECIMAL:
                 return accumulation::decimal;
             case logical_type::FLOAT:
@@ -108,6 +106,7 @@ namespace {
                     resource,
                     DECIMAL_MAX_WIDTH,
                     input.extension_as<decimal_logical_type_extension>()->scale());
+            case accumulation::wide_integer:
             case accumulation::floating:
             case accumulation::input_type:
                 return input;
@@ -124,6 +123,7 @@ namespace {
         switch (accumulation_of(inputs.front())) {
             case accumulation::widened_signed:
             case accumulation::widened_unsigned:
+            case accumulation::wide_integer:
                 return complex_logical_type{logical_type::DOUBLE};
             case accumulation::decimal:
             case accumulation::floating:
@@ -137,20 +137,9 @@ namespace {
     bool checked_add(int64_t& total, int64_t value) { return !__builtin_add_overflow(total, value, &total); }
     bool checked_add(uint64_t& total, uint64_t value) { return !__builtin_add_overflow(total, value, &total); }
 
-    // The largest unscaled DECIMAL(38, s) payload.
-    const int128_t& max_decimal_payload() {
-        static const int128_t limit = [] {
-            int128_t value{1};
-            for (uint8_t digit = 0; digit < DECIMAL_MAX_WIDTH; digit++) {
-                value *= 10;
-            }
-            return value - 1;
-        }();
-        return limit;
-    }
-
     bool checked_add(int128_t& total, int128_t value) {
-        const auto& limit = max_decimal_payload();
+        // The largest unscaled DECIMAL(38, s) payload.
+        static constexpr int128_t limit = POWERS_OF_TEN[DECIMAL_MAX_WIDTH] - 1;
         if ((value > 0 && total > limit - value) || (value < 0 && total < -limit - value)) {
             return false;
         }
@@ -261,11 +250,6 @@ namespace {
         aggregate_state_layout_t operator()() const { return aggregate_state_of<numeric_state_t<T>>(); }
     };
 
-    template<typename T>
-    struct avg_layout_t {
-        aggregate_state_layout_t operator()() const { return aggregate_state_of<avg_state_t<T>>(); }
-    };
-
     aggregate_state_layout_t no_layout() { return {}; }
 
     aggregate_state_layout_t sum_layout(const std::pmr::vector<complex_logical_type>& inputs) {
@@ -279,6 +263,7 @@ namespace {
                 return aggregate_state_of<numeric_state_t<uint64_t>>();
             case accumulation::decimal:
                 return aggregate_state_of<numeric_state_t<int128_t>>();
+            case accumulation::wide_integer:
             case accumulation::floating:
             case accumulation::input_type:
                 break;
@@ -319,10 +304,7 @@ namespace {
         if (inputs.size() != 1) {
             return {};
         }
-        if (accumulation_of(inputs.front()) != accumulation::input_type) {
-            return aggregate_state_of<avg_wide_state_t>();
-        }
-        return arithmetic_dispatch<avg_layout_t>(inputs.front(), no_layout);
+        return aggregate_state_of<avg_wide_state_t>();
     }
 
     aggregate_state_layout_t count_layout(const std::pmr::vector<complex_logical_type>&) {
@@ -344,24 +326,6 @@ namespace {
                 auto& accumulator = states.at<numeric_state_t<T>>(groups[row]);
                 accumulator.value = static_cast<T>(accumulator.value + data[row]);
                 accumulator.has_value = true;
-            }
-            return core::error_t::no_error();
-        }
-    };
-
-    template<typename T>
-    struct avg_update_t {
-        core::error_t
-        operator()(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) const {
-            const auto* data = input.data<T>();
-            const bool all_valid = input.validity().all_valid();
-            for (uint64_t row = 0; row < groups.size(); row++) {
-                if (!all_valid && input.is_null(row)) {
-                    continue;
-                }
-                auto& accumulator = states.at<avg_state_t<T>>(groups[row]);
-                accumulator.value = static_cast<T>(accumulator.value + data[row]);
-                accumulator.count++;
             }
             return core::error_t::no_error();
         }
@@ -543,6 +507,12 @@ namespace {
             case logical_type::UBIGINT:
                 fits = fold<uint64_t, avg_wide_state_t>(column, groups, states, add_unsigned);
                 break;
+            case logical_type::HUGEINT:
+                fits = fold<int128_t, avg_wide_state_t>(column, groups, states, add_floating);
+                break;
+            case logical_type::UHUGEINT:
+                fits = fold<uint128_t, avg_wide_state_t>(column, groups, states, add_floating);
+                break;
             case logical_type::FLOAT:
                 fits = fold<float, avg_wide_state_t>(column, groups, states, add_floating);
                 break;
@@ -570,16 +540,9 @@ namespace {
                 }
                 break;
             default:
-                return arithmetic_dispatch<avg_update_t>(
-                    column.type(),
-                    [&ctx] {
-                        return core::error_t(core::error_code_t::kernel_error,
-                                             std::pmr::string{"avg does not accumulate the type it was given",
-                                                              ctx.exec_context().resource()});
-                    },
-                    column,
-                    groups,
-                    states);
+                return core::error_t(core::error_code_t::kernel_error,
+                                     std::pmr::string{"avg does not accumulate the type it was given",
+                                                      ctx.exec_context().resource()});
         }
         if (!fits) {
             return core::error_t(core::error_code_t::arithmetics_failure,
@@ -626,21 +589,6 @@ namespace {
                 const auto& accumulator = states.at<numeric_state_t<T>>(first + row);
                 output.set_null(row, !accumulator.has_value);
                 data[row] = accumulator.has_value ? accumulator.value : T{};
-            }
-            return core::error_t::no_error();
-        }
-    };
-
-    template<typename T>
-    struct avg_finalize_t {
-        core::error_t operator()(aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) const {
-            auto* data = output.data<T>();
-            for (uint64_t row = 0; row < count; row++) {
-                const auto& accumulator = states.at<avg_state_t<T>>(first + row);
-                output.set_null(row, accumulator.count == 0);
-                data[row] = accumulator.count == 0
-                                ? T{}
-                                : static_cast<T>(accumulator.value / static_cast<T>(accumulator.count));
             }
             return core::error_t::no_error();
         }
@@ -732,19 +680,10 @@ namespace {
                                                               ctx.exec_context().resource()});
                 }
             default:
-                break;
-        }
-        return arithmetic_dispatch<avg_finalize_t>(
-            output.type(),
-            [&ctx] {
                 return core::error_t(
                     core::error_code_t::kernel_error,
                     std::pmr::string{"avg does not accumulate the type it was given", ctx.exec_context().resource()});
-            },
-            states,
-            first,
-            count,
-            output);
+        }
     }
 
     core::error_t

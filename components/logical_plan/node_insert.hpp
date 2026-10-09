@@ -103,6 +103,10 @@ namespace components::logical_plan {
         void set_fill_list(insert_fill_list_t v) { fill_list_ = std::move(v); }
         const insert_fill_list_t& fill_list() const { return fill_list_; }
 
+        // data -> table reordering
+        void set_column_slots(std::pmr::vector<uint64_t> v) { column_slots_ = std::move(v); }
+        const std::pmr::vector<uint64_t>& column_slots() const { return column_slots_; }
+
         // One entry per incoming chunk column, in chunk order. Stamped by validate_schema.
         void set_column_bindings(insert_column_bindings_t v) { column_bindings_ = std::move(v); }
         const insert_column_bindings_t& column_bindings() const { return column_bindings_; }
@@ -129,6 +133,7 @@ namespace components::logical_plan {
         std::vector<std::vector<std::string>> unique_groups_;           // UNIQUE / PK column groups
         insert_column_bindings_t column_bindings_;
         insert_fill_list_t fill_list_; // omitted columns + the value each is filled with
+        std::pmr::vector<uint64_t> column_slots_;
         insert_literal_digits_list_t literal_digits_;
     };
 

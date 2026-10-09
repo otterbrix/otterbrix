@@ -75,22 +75,24 @@ namespace services::dispatcher { namespace {
                                          const components::logical_plan::resolved_table_metadata_t& md) {
         auto* resource = node->resource();
         components::logical_plan::insert_fill_list_t fill(resource);
-        if (node->column_bindings().empty()) {
+        std::pmr::vector<uint64_t> slots(resource);
+        const auto& bindings = node->column_bindings();
+        if (bindings.empty()) {
             node->set_fill_list(std::move(fill));
+            node->set_column_slots(std::move(slots));
             return core::error_t::no_error();
         }
+        slots.reserve(md.columns.size());
         for (std::size_t i = 0; i < md.columns.size(); ++i) {
             const auto& col = md.columns[i];
-            bool written = false;
-            for (const auto& binding : node->column_bindings()) {
-                if (binding.target_index == i) {
-                    written = true;
-                    break;
-                }
-            }
-            if (written) {
+            auto written = std::find_if(bindings.begin(), bindings.end(), [i](const auto& binding) {
+                return binding.target_index == i;
+            });
+            if (written != bindings.end()) {
+                slots.push_back(static_cast<uint64_t>(written - bindings.begin()));
                 continue;
             }
+            slots.push_back(bindings.size() + fill.size());
             std::optional<components::types::logical_value_t> decoded;
             if (col.atthasdefault) {
                 if (auto ec = components::catalog::decode_default_spec(resource, col.type, col.attdefspec, decoded);
@@ -107,6 +109,7 @@ namespace services::dispatcher { namespace {
                                                                              components::types::logical_type::NA})});
         }
         node->set_fill_list(std::move(fill));
+        node->set_column_slots(std::move(slots));
         return core::error_t::no_error();
     }
 

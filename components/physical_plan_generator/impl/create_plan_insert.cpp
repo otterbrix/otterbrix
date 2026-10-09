@@ -51,7 +51,9 @@ namespace services::planner::impl {
             for (const auto& column : table->columns) {
                 columns.push_back(column.type);
             }
-            plan->set_storage_sink(std::move(sink), std::move(columns));
+            plan->set_storage_sink(std::move(sink),
+                                   std::move(columns),
+                                   std::pmr::vector<uint64_t>{node_insert->column_slots(), context.resource});
         }
         VALUE_OR_RETURN(auto child,
                         create_plan(context,

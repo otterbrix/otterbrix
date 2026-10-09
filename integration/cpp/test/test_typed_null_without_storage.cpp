@@ -115,11 +115,10 @@ TEST_CASE("integration::cpp::typed_null_without_storage::cast_null_to_blob_is_re
     test_spaces space(config_for("cast_blob"));
     auto* d = space.dispatcher();
     run_ok(d, "CREATE DATABASE d;");
-    auto blob = run_refused(d, "SELECT CAST(NULL AS blob) AS x;");
-    const std::string why{blob->get_error().what};
-    CHECK(why.find("no cast from unknown to bytea") != std::string::npos);
+    run_refused(d, "SELECT CAST(NULL AS blob) AS x;");
     run_refused(d, "SELECT CAST(NULL AS bit) AS x;");
     run_refused(d, "SELECT CAST(NULL AS pointer) AS x;");
+    run_refused(d, "SELECT CAST(NULL AS blob[]) AS x;");
     auto text = run_ok(d, "SELECT CAST(NULL AS text) AS x;");
     REQUIRE(text->size() == 1);
     CHECK(text->value(0, 0).is_null());

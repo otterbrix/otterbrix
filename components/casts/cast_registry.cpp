@@ -45,6 +45,9 @@ namespace components::casts {
     core::error_t cast_registry_t::add(const types::complex_logical_type& source,
                                        const types::complex_logical_type& target,
                                        cast_entry&& entry) {
+        assert(source.type() != types::logical_type::INVALID);
+        assert(target.type() != types::logical_type::INVALID);
+        assert(target.type() != types::logical_type::NA);
         auto [source_iterator, _] = entries_.try_emplace(source, resource_);
         target_entries_t& targets = source_iterator->second;
 
@@ -81,6 +84,9 @@ namespace components::casts {
     core::error_t cast_registry_t::add(const types::complex_logical_type& source,
                                        const types::complex_logical_type& target,
                                        complex_cast_entry&& cast) {
+        assert(source.type() != types::logical_type::INVALID);
+        assert(target.type() != types::logical_type::INVALID);
+        assert(target.type() != types::logical_type::NA);
         auto [source_iterator, _] = complex_entries_.try_emplace(source, resource_);
         complex_target_entries_t& targets = source_iterator->second;
         for (const auto& registered : targets) {
@@ -116,9 +122,6 @@ namespace components::casts {
                                                      const types::complex_logical_type& target) const {
         // NULL from the parser must be converted to a usable type.
         if (source.type() == types::logical_type::NA) {
-            if (target.to_physical_type() == types::physical_type::INVALID) {
-                return std::nullopt;
-            }
             return cast_info{cast_type::implicit,
                              cast_cost{.precision_loss = 0, .footprint = static_cast<uint32_t>(target.size())}};
         }

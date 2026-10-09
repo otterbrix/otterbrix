@@ -78,17 +78,15 @@ namespace components::operators {
                 }
             }
             if (storage_sink_) {
-                // Every declared column is here by its name: written by the statement or filled above.
+                // Every declared column is here: written by the statement or filled above.
+                assert(storage_slots_.size() == storage_columns_.size());
                 vector::data_chunk_t ordered(resource_,
                                              std::pmr::vector<types::complex_logical_type>{resource_},
                                              input.capacity());
-                ordered.data.reserve(storage_columns_.size());
-                for (const auto& column : storage_columns_) {
-                    auto written = std::find_if(input.data.begin(), input.data.end(), [&column](const auto& v) {
-                        return v.type().alias() == column.alias();
-                    });
-                    assert(written != input.data.end());
-                    ordered.data.push_back(std::move(*written));
+                ordered.data.reserve(storage_slots_.size());
+                for (const auto slot : storage_slots_) {
+                    assert(slot < input.data.size());
+                    ordered.data.push_back(std::move(input.data[slot]));
                 }
                 ordered.set_cardinality(input.size());
                 input = std::move(ordered);

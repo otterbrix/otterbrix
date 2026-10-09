@@ -76,14 +76,33 @@ namespace components::cursor {
     // Column shape/types are shared by every chunk; row access that may span chunks goes
     // through value()/row(), which locate the owning chunk. chunks() is for callers that
     // genuinely need raw per-chunk column vectors (and must iterate chunks themselves).
-    std::pmr::vector<vector::data_chunk_t>& cursor_t::chunks() { return chunks_; }
-    const std::pmr::vector<vector::data_chunk_t>& cursor_t::chunks() const { return chunks_; }
-    std::pmr::vector<components::types::complex_logical_type>& cursor_t::type_data() { return type_data_; }
-    const std::pmr::vector<components::types::complex_logical_type>& cursor_t::type_data() const { return type_data_; }
+    std::pmr::vector<vector::data_chunk_t>& cursor_t::chunks() {
+        assert(!is_write_ && "result is a row count, not a data");
+        return chunks_;
+    }
+    const std::pmr::vector<vector::data_chunk_t>& cursor_t::chunks() const {
+        assert(!is_write_ && "result is a row count, not a data");
+        return chunks_;
+    }
+    std::pmr::vector<components::types::complex_logical_type>& cursor_t::type_data() {
+        assert(!is_write_ && "result is a row count, not a data");
+        return type_data_;
+    }
+    const std::pmr::vector<components::types::complex_logical_type>& cursor_t::type_data() const {
+        assert(!is_write_ && "result is a row count, not a data");
+        return type_data_;
+    }
 
-    std::size_t cursor_t::size() const { return size_; }
-    std::size_t cursor_t::column_count() const { return type_data_.size(); }
+    std::size_t cursor_t::size() const {
+        assert(!is_write_ && "result is a row count, not a data");
+        return size_;
+    }
+    std::size_t cursor_t::column_count() const {
+        assert(!is_write_ && "result is a row count, not a data");
+        return type_data_.size();
+    }
     core::result_wrapper_t<std::size_t> cursor_t::column_index(std::string_view key) const {
+        assert(!is_write_ && "result is a row count, not a data");
         return chunks_.front().column_index(key);
     }
     bool cursor_t::has_next() const { return static_cast<std::size_t>(current_index_ + 1) < size_; }
@@ -91,10 +110,12 @@ namespace components::cursor {
     index_t cursor_t::current_index() const { return current_index_; }
 
     types::logical_value_t cursor_t::value(uint64_t col_idx) const {
+        assert(!is_write_ && "result is a row count, not a data");
         return value(col_idx, static_cast<uint64_t>(current_index_));
     }
 
     types::logical_value_t cursor_t::value(uint64_t col_idx, uint64_t row_idx) const {
+        assert(!is_write_ && "result is a row count, not a data");
         // Locate the chunk holding the global row_idx (chunks are ≤CAP each).
         uint64_t base = 0;
         for (const auto& chunk : chunks_) {
@@ -108,10 +129,12 @@ namespace components::cursor {
     }
 
     std::pmr::vector<types::logical_value_t> cursor_t::row() const {
+        assert(!is_write_ && "result is a row count, not a data");
         return row(static_cast<uint64_t>(current_index_));
     }
 
     std::pmr::vector<types::logical_value_t> cursor_t::row(uint64_t row_idx) const {
+        assert(!is_write_ && "result is a row count, not a data");
         const auto cols = chunks_.front().column_count();
         std::pmr::vector<types::logical_value_t> result(chunks_.front().resource());
         result.reserve(cols);
@@ -127,7 +150,10 @@ namespace components::cursor {
 
     const core::error_t& cursor_t::get_error() const noexcept { return error_; }
 
-    std::uint64_t cursor_t::affected_rows() const noexcept { return affected_rows_; }
+    std::uint64_t cursor_t::affected_rows() const noexcept {
+        assert(is_write_ && "result is stored as data, not row count");
+        return affected_rows_;
+    }
 
     bool cursor_t::is_write() const noexcept { return is_write_; }
 

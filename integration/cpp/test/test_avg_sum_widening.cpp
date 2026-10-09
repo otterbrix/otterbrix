@@ -135,6 +135,20 @@ TEST_CASE("integration::cpp::avg_sum_widening::avg_keeps_fraction") {
     CHECK(cell(d, "SELECT avg(f) FROM m.t;") == "DOUBLE:3.2");
 }
 
+TEST_CASE("integration::cpp::avg_sum_widening::avg_of_128_bit_integers") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/wide_integers"));
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE TABLE m.w (h HUGEINT, u UHUGEINT);"));
+    REQUIRE(ok(d, "INSERT INTO m.w (h, u) VALUES (1, 1);"));
+    REQUIRE(ok(d, "INSERT INTO m.w (h, u) VALUES (2, 170141183460469231731687303715884105728);"));
+
+    CHECK(cell(d, "SELECT avg(h) FROM m.w;") == "DOUBLE:1.5");
+    // (1 + 2^127) / 2
+    CHECK(cell(d, "SELECT avg(u) FROM m.w;") == "DOUBLE:8.50706e+37");
+}
+
 TEST_CASE("integration::cpp::avg_sum_widening::sum_widens_integers") {
     auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/sum_widens"));
     test_spaces space(config);

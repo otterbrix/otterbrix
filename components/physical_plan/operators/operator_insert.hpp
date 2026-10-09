@@ -36,10 +36,13 @@ namespace components::operators {
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
 
         // A table with external storage: the full rows, in the declared column order, go to the storage's insert
-        // sink instead of the disk, the WAL and the index.
-        void set_storage_sink(operator_ptr sink, std::pmr::vector<types::complex_logical_type> columns) {
+        // sink instead of the disk, the WAL and the index. `slots` holds each declared column's position in the chunk.
+        void set_storage_sink(operator_ptr sink,
+                              std::pmr::vector<types::complex_logical_type> columns,
+                              std::pmr::vector<uint64_t> slots) {
             storage_sink_ = std::move(sink);
             storage_columns_ = std::move(columns);
+            storage_slots_ = std::move(slots);
         }
 
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
@@ -75,6 +78,7 @@ namespace components::operators {
         bool table_has_indexes_{true};
         operator_ptr storage_sink_;
         std::pmr::vector<types::complex_logical_type> storage_columns_{resource_};
+        std::pmr::vector<uint64_t> storage_slots_{resource_};
     };
 
 } // namespace components::operators

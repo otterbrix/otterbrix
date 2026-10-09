@@ -403,6 +403,16 @@ namespace services::dispatcher::validation {
                 if (conversion->cast()) {
                     return;
                 }
+                if (complex_logical_type::contains(conversion->result_type(), [](const complex_logical_type& part) {
+                        return part.to_physical_type() == components::types::physical_type::INVALID;
+                    })) {
+                    fail(core::error_code_t::schema_error,
+                         message(context_.resource,
+                                 "type ",
+                                 describe_type(conversion->result_type()),
+                                 " is not supported"));
+                    return;
+                }
                 auto resolved = context_.cast_registry.resolve(source,
                                                                conversion->result_type(),
                                                                components::casts::cast_type::explicit_only);

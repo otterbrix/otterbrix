@@ -498,8 +498,13 @@ namespace {
                              core::span<const uint32_t> groups,
                              aggregate_states_t states) {
         const auto& column = input.data.front();
-        auto add_integer = [](avg_wide_state_t& total, auto value) {
-            total.exact += static_cast<int128_t>(value);
+        auto add_signed = [](avg_wide_state_t& total, auto value) {
+            total.exact += static_cast<int128_t>(static_cast<int64_t>(value));
+            total.count++;
+            return true;
+        };
+        auto add_unsigned = [](avg_wide_state_t& total, auto value) {
+            total.exact += static_cast<int128_t>(static_cast<uint64_t>(value));
             total.count++;
             return true;
         };
@@ -515,28 +520,28 @@ namespace {
         bool fits = true;
         switch (column.type().type()) {
             case logical_type::TINYINT:
-                fits = fold<int8_t, avg_wide_state_t>(column, groups, states, add_integer);
+                fits = fold<int8_t, avg_wide_state_t>(column, groups, states, add_signed);
                 break;
             case logical_type::SMALLINT:
-                fits = fold<int16_t, avg_wide_state_t>(column, groups, states, add_integer);
+                fits = fold<int16_t, avg_wide_state_t>(column, groups, states, add_signed);
                 break;
             case logical_type::INTEGER:
-                fits = fold<int32_t, avg_wide_state_t>(column, groups, states, add_integer);
+                fits = fold<int32_t, avg_wide_state_t>(column, groups, states, add_signed);
                 break;
             case logical_type::BIGINT:
-                fits = fold<int64_t, avg_wide_state_t>(column, groups, states, add_integer);
+                fits = fold<int64_t, avg_wide_state_t>(column, groups, states, add_signed);
                 break;
             case logical_type::UTINYINT:
-                fits = fold<uint8_t, avg_wide_state_t>(column, groups, states, add_integer);
+                fits = fold<uint8_t, avg_wide_state_t>(column, groups, states, add_unsigned);
                 break;
             case logical_type::USMALLINT:
-                fits = fold<uint16_t, avg_wide_state_t>(column, groups, states, add_integer);
+                fits = fold<uint16_t, avg_wide_state_t>(column, groups, states, add_unsigned);
                 break;
             case logical_type::UINTEGER:
-                fits = fold<uint32_t, avg_wide_state_t>(column, groups, states, add_integer);
+                fits = fold<uint32_t, avg_wide_state_t>(column, groups, states, add_unsigned);
                 break;
             case logical_type::UBIGINT:
-                fits = fold<uint64_t, avg_wide_state_t>(column, groups, states, add_integer);
+                fits = fold<uint64_t, avg_wide_state_t>(column, groups, states, add_unsigned);
                 break;
             case logical_type::FLOAT:
                 fits = fold<float, avg_wide_state_t>(column, groups, states, add_floating);

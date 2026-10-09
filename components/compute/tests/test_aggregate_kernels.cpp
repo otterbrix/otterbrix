@@ -402,5 +402,16 @@ TEST_CASE("components::compute::aggregate::errors_name_the_function_that_refused
     auto [overflow_file, overflow_function] = origin_of(overflow.error());
     CHECK(overflow_file.ends_with("aggregate.cpp"));
     CHECK(overflow_function.find("sum_update") != std::string::npos);
+
+    for (const std::string name : {"sum", "avg"}) {
+        CAPTURE(name);
+        auto unsupported = fx.run_one_group(*fx.get(name), fx.int_chunk({1, 2}), logical_type::BOOLEAN);
+        REQUIRE(unsupported.has_error());
+        REQUIRE(unsupported.error().type == core::error_code_t::kernel_error);
+        CHECK(std::string{unsupported.error().what} == name + " does not accumulate the type it was given");
+        auto [unsupported_file, unsupported_function] = origin_of(unsupported.error());
+        CHECK(unsupported_file.ends_with("aggregate.cpp"));
+        CHECK(unsupported_function.find(name + "_finalize") != std::string::npos);
+    }
 }
 #endif

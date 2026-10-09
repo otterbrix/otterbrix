@@ -254,12 +254,6 @@ namespace {
         }
     }
 
-    core::error_t unsupported_argument(kernel_context& ctx, const char* name) {
-        std::pmr::string message{name, ctx.exec_context().resource()};
-        message += " does not accumulate the type it was given";
-        return core::error_t(core::error_code_t::kernel_error, std::move(message));
-    }
-
     // ---- layouts ---------------------------------------------------------------------------
 
     template<typename T>
@@ -434,13 +428,19 @@ namespace {
                         fits = fold<int128_t, sum128_t>(column, groups, states, add128);
                         break;
                     default:
-                        return unsupported_argument(ctx, "sum");
+                        return core::error_t(core::error_code_t::kernel_error,
+                                             std::pmr::string{"sum does not accumulate the type it was given",
+                                                              ctx.exec_context().resource()});
                 }
                 break;
             default:
                 return arithmetic_dispatch<sum_update_t>(
                     column.type(),
-                    [&ctx] { return unsupported_argument(ctx, "sum"); },
+                    [&ctx] {
+                        return core::error_t(core::error_code_t::kernel_error,
+                                             std::pmr::string{"sum does not accumulate the type it was given",
+                                                              ctx.exec_context().resource()});
+                    },
                     column,
                     groups,
                     states);
@@ -564,13 +564,19 @@ namespace {
                         fits = fold<int128_t, avg_wide_state_t>(column, groups, states, add_decimal);
                         break;
                     default:
-                        return unsupported_argument(ctx, "avg");
+                        return core::error_t(core::error_code_t::kernel_error,
+                                             std::pmr::string{"avg does not accumulate the type it was given",
+                                                              ctx.exec_context().resource()});
                 }
                 break;
             default:
                 return arithmetic_dispatch<avg_update_t>(
                     column.type(),
-                    [&ctx] { return unsupported_argument(ctx, "avg"); },
+                    [&ctx] {
+                        return core::error_t(core::error_code_t::kernel_error,
+                                             std::pmr::string{"avg does not accumulate the type it was given",
+                                                              ctx.exec_context().resource()});
+                    },
                     column,
                     groups,
                     states);
@@ -644,7 +650,11 @@ namespace {
     sum_finalize(kernel_context& ctx, aggregate_states_t states, uint64_t first, uint64_t count, vector_t& output) {
         return arithmetic_dispatch<numeric_finalize_t>(
             output.type(),
-            [&ctx] { return unsupported_argument(ctx, "sum"); },
+            [&ctx] {
+                return core::error_t(
+                    core::error_code_t::kernel_error,
+                    std::pmr::string{"sum does not accumulate the type it was given", ctx.exec_context().resource()});
+            },
             states,
             first,
             count,
@@ -717,14 +727,20 @@ namespace {
                     case physical_type::INT128:
                         return emit_averages<int128_t>(states, first, count, output, decimal_average);
                     default:
-                        return unsupported_argument(ctx, "avg");
+                        return core::error_t(core::error_code_t::kernel_error,
+                                             std::pmr::string{"avg does not accumulate the type it was given",
+                                                              ctx.exec_context().resource()});
                 }
             default:
                 break;
         }
         return arithmetic_dispatch<avg_finalize_t>(
             output.type(),
-            [&ctx] { return unsupported_argument(ctx, "avg"); },
+            [&ctx] {
+                return core::error_t(
+                    core::error_code_t::kernel_error,
+                    std::pmr::string{"avg does not accumulate the type it was given", ctx.exec_context().resource()});
+            },
             states,
             first,
             count,

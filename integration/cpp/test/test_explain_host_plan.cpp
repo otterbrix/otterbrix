@@ -22,8 +22,10 @@ namespace {
     // catalog lookups and the sub-queries. A bare root + parameters would drop them all (EXPLAIN DELETE
     // then deleted), so transform_result must not hand those out.
     template<typename T>
-    concept exposes_bare_root = requires(const T& result) { result.node_ptr(); } ||
-                                requires(const T& result) { result.params_ptr(); };
+    concept exposes_bare_root = requires(const T& result) {
+        result.node_ptr();
+    }
+    || requires(const T& result) { result.params_ptr(); };
     static_assert(!exposes_bare_root<sql::transform::transform_result>);
 
     template<typename D>

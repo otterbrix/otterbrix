@@ -8,10 +8,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <sstream>
 #include <string>
 #include <thread>
-#include <core/tests/wait_ready.hpp>
 
 // storage_fetch_next_batch_inner's re-resolve leg used to read a DROP'd table's gone storage as the drained
 // sentinel, so a reader losing its table mid-scan got a truncated result reported as success. This is not

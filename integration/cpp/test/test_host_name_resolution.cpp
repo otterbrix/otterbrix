@@ -441,9 +441,7 @@ namespace {
                 qualified_name_t{core::dbname_t{"otterstax"}, core::relname_t{"remote_columns"}},
                 std::move(expr)));
             auto params = logical_plan::make_parameter_node(resource);
-            params->add_parameter(
-                core::parameter_id_t{1},
-                types::logical_value_t(resource, qualified(name)));
+            params->add_parameter(core::parameter_id_t{1}, types::logical_value_t(resource, qualified(name)));
             reads.emplace_back(resource, std::move(agg), std::move(params));
         }
         counters().reads.fetch_add(static_cast<int>(reads.size()));
@@ -478,7 +476,8 @@ namespace {
                         continue;
                     }
                     ordered.emplace_back(ord_cell.value<int64_t>(),
-                                         types::complex_logical_type{type == "TEXT"  ? types::logical_type::STRING_LITERAL
+                                         types::complex_logical_type{type == "TEXT"
+                                                                         ? types::logical_type::STRING_LITERAL
                                                                      : type == "INT" ? types::logical_type::INTEGER
                                                                                      : types::logical_type::BIGINT,
                                                                      col});
@@ -590,8 +589,8 @@ namespace {
     };
 
     logical_plan::storage_operator_t make_remote_modify(const services::context_storage_t& context,
-                                                         const compute::function_registry_t&,
-                                                         const logical_plan::node_extension_t& node) {
+                                                        const compute::function_registry_t&,
+                                                        const logical_plan::node_extension_t& node) {
         const auto& payload = static_cast<const remote_modify_payload_t&>(*node.payload());
         return operators::operator_ptr{new remote_modify_t(context.resource, context.log.clone(), payload.spec)};
     }
@@ -669,13 +668,12 @@ namespace {
         if (!one_remote_statement(*node, spec)) {
             return node;
         }
-        return logical_plan::node_ptr{
-            new logical_plan::node_extension_t(resource,
-                                               storage->name(),
-                                               std::pmr::vector<types::complex_logical_type>{resource},
-                                               &make_remote_modify,
-                                               logical_plan::extension_payload_ptr{
-                                                   new remote_modify_payload_t{std::move(spec)}})};
+        return logical_plan::node_ptr{new logical_plan::node_extension_t(
+            resource,
+            storage->name(),
+            std::pmr::vector<types::complex_logical_type>{resource},
+            &make_remote_modify,
+            logical_plan::extension_payload_ptr{new remote_modify_payload_t{std::move(spec)}})};
     }
 
     constexpr planner::optimizer_rule_t host_rules[] = {
@@ -872,7 +870,8 @@ TEST_CASE("integration::cpp::host_names::dml_on_a_local_table_reads_a_storage_ta
     }
     SECTION("UPDATE ... FROM reads the storage rows") {
         REQUIRE(run(dispatcher, "INSERT INTO loc.t (id, amount) VALUES (1, 0), (5, 0);")->is_success());
-        auto upd = run(dispatcher, "UPDATE loc.t SET amount = o.amount FROM m2.shop.orders AS o WHERE loc.t.id = o.id;");
+        auto upd =
+            run(dispatcher, "UPDATE loc.t SET amount = o.amount FROM m2.shop.orders AS o WHERE loc.t.id = o.id;");
         INFO(error_of(upd));
         REQUIRE(upd->is_success());
         auto updated = run(dispatcher, "SELECT id, amount FROM loc.t;");
@@ -1185,8 +1184,8 @@ TEST_CASE("integration::cpp::host_names::explain_prints_the_storage_scan_label_a
     SECTION("the details of a node below the root are indented under its label") {
         REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
         REQUIRE(run(dispatcher, "CREATE TABLE loc.c (id BIGINT);")->is_success());
-        auto lines = explain_lines(dispatcher,
-                                   "EXPLAIN SELECT o.id FROM m2.shop.orders AS o JOIN loc.c AS c ON o.id = c.id;");
+        auto lines =
+            explain_lines(dispatcher, "EXPLAIN SELECT o.id FROM m2.shop.orders AS o JOIN loc.c AS c ON o.id = c.id;");
         CHECK(lines == std::vector<std::string>{"Project",
                                                 "  ->  Hash Join",
                                                 "    ->  Foreign Scan on m2.shop.orders",
@@ -1293,8 +1292,7 @@ TEST_CASE("integration::cpp::host_names::a_storage_without_row_numbers_refuses_t
         auto refused = run(dispatcher, sql);
         REQUIRE(refused->is_error());
         CHECK(refused->get_error().type == core::error_code_t::unimplemented_yet);
-        CHECK(std::string{refused->get_error().what} ==
-              "storage \"m2.shop.orders\" cannot change a row by its number");
+        CHECK(std::string{refused->get_error().what} == "storage \"m2.shop.orders\" cannot change a row by its number");
     }
     CHECK(write_log().empty());
 

@@ -179,8 +179,7 @@ namespace components::table {
         // This node's segments only: the one place a segment of this node is handed to the packer.
         [[nodiscard]] core::result_wrapper_t<bool> transition_own_segments(storage::partial_block_manager_t& pbm);
         // NVI hook of transition_to_disk(): the children, each through its own transition_to_disk.
-        [[nodiscard]] virtual core::result_wrapper_t<bool>
-        transition_children(storage::partial_block_manager_t& pbm);
+        [[nodiscard]] virtual core::result_wrapper_t<bool> transition_children(storage::partial_block_manager_t& pbm);
 
         class repoint_t;
 

@@ -66,7 +66,8 @@ namespace components::catalog {
             r.prouid = chunk.get_value<std::uint64_t>(pg_proc_col::prouid, row);
         }
         if (!chunk.is_null(pg_proc_col::proargmatchers, row)) {
-            r.signature.proargmatchers = std::string{chunk.get_value<std::string_view>(pg_proc_col::proargmatchers, row)};
+            r.signature.proargmatchers =
+                std::string{chunk.get_value<std::string_view>(pg_proc_col::proargmatchers, row)};
         }
         if (!chunk.is_null(pg_proc_col::prorettype, row)) {
             r.signature.prorettype = std::string{chunk.get_value<std::string_view>(pg_proc_col::prorettype, row)};

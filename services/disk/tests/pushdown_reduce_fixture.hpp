@@ -22,15 +22,15 @@
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <limits>
+#include <services/disk/tests/test_directory.hpp>
 #include <string>
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
 
 namespace pushdown_reduce_test {
 

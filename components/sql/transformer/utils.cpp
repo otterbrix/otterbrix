@@ -547,8 +547,8 @@ namespace components::sql::transform {
         // namespace user types live in).
         const auto parts = list_length(type->names);
         const char* linint_name = strVal(linitial(type->names));
-        if (parts > 2 || (parts == 2 && std::strcmp(linint_name, "pg_catalog") != 0 &&
-                          std::strcmp(linint_name, "public") != 0)) {
+        if (parts > 2 ||
+            (parts == 2 && std::strcmp(linint_name, "pg_catalog") != 0 && std::strcmp(linint_name, "public") != 0)) {
             std::string written;
             for (const auto& part : type->names->lst) {
                 if (!written.empty()) {
@@ -601,11 +601,12 @@ namespace components::sql::transform {
                 const auto raw_scale = intVal(&scale->val);
                 if (raw_width < 0 || raw_scale < 0 || raw_width > types::DECIMAL_MAX_WIDTH ||
                     raw_scale > types::DECIMAL_MAX_WIDTH) {
-                    return core::error_t(core::error_code_t::invalid_parameter,
-                                         std::pmr::string{"DECIMAL width must be between 1 and " +
-                                                              std::to_string(static_cast<unsigned>(types::DECIMAL_MAX_WIDTH)) +
-                                                              " and scale must not exceed width",
-                                                          resource});
+                    return core::error_t(
+                        core::error_code_t::invalid_parameter,
+                        std::pmr::string{"DECIMAL width must be between 1 and " +
+                                             std::to_string(static_cast<unsigned>(types::DECIMAL_MAX_WIDTH)) +
+                                             " and scale must not exceed width",
+                                         resource});
                 }
                 VALUE_OR_RETURN(column,
                                 types::complex_logical_type::create_decimal(resource,
@@ -1417,9 +1418,9 @@ namespace components::sql::transform {
         out.reserve(table_elts.lst.size());
         for (auto data : table_elts.lst) {
             if (nodeTag(data.data) == T_TableLikeClause) {
-                return core::error_t(core::error_code_t::unimplemented_yet,
-                                     std::pmr::string{"CREATE TABLE ... (LIKE ...) is not supported: list the columns",
-                                                      resource});
+                return core::error_t(
+                    core::error_code_t::unimplemented_yet,
+                    std::pmr::string{"CREATE TABLE ... (LIKE ...) is not supported: list the columns", resource});
             }
             if (nodeTag(data.data) != T_ColumnDef) {
                 continue;
@@ -1979,14 +1980,13 @@ namespace components::sql::transform {
                                                           constraint_resolve_kind with_constraints) {
         logical_plan::resolve_entry_t target;
         target.relname = relname;
-        target.namespace_of =
-            register_table_entry(resource,
-                                 resolves,
-                                 std::string{},
-                                 owner_db,
-                                 std::string{},
-                                 owner_rel,
-                                 constraint_resolve_kind::none);
+        target.namespace_of = register_table_entry(resource,
+                                                   resolves,
+                                                   std::string{},
+                                                   owner_db,
+                                                   std::string{},
+                                                   owner_rel,
+                                                   constraint_resolve_kind::none);
         const auto target_index = resolves->ensure(resource, logical_plan::resolve_kind::table).add(std::move(target));
         register_constraint_entry(resource, resolves, target_index, with_constraints);
     }

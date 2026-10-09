@@ -17,12 +17,12 @@
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
+#include <services/disk/tests/test_directory.hpp>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
 
 // pg_depend cascade tests: CASCADE recurses through pg_depend rows; RESTRICT refuses if dependents exist.
 

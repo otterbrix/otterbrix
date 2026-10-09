@@ -17,11 +17,11 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <cstdio>
 #include <cstdlib>
 #include <thread>
 #include <unordered_map>
-#include <core/tests/wait_ready.hpp>
 
 using namespace components;
 
@@ -388,7 +388,8 @@ namespace {
         }
 
         logical_plan::storage_operator_t make_insert_impl(const services::context_storage_t& context) override {
-            return operators::operator_ptr{new mock_sink_op_t(context.resource, context.log.clone(), &remote_written())};
+            return operators::operator_ptr{
+                new mock_sink_op_t(context.resource, context.log.clone(), &remote_written())};
         }
 
         logical_plan::storage_operator_t read_only(const services::context_storage_t& context) const {
@@ -447,17 +448,15 @@ namespace {
         return cursor;
     }
 
-    cursor::cursor_t_ptr run_over_remote(otterbrix::wrapper_dispatcher_t* dispatcher,
-                                         const std::string& sql,
-                                         remote_tables_t tables) {
+    cursor::cursor_t_ptr
+    run_over_remote(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql, remote_tables_t tables) {
         remote_server() = std::move(tables);
         scans_made().store(0);
         return execute_within_deadline(dispatcher, sql);
     }
 
-    std::string explain_remote_plan(otterbrix::wrapper_dispatcher_t* dispatcher,
-                                    const std::string& sql,
-                                    remote_tables_t tables) {
+    std::string
+    explain_remote_plan(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql, remote_tables_t tables) {
         remote_server() = std::move(tables);
         auto cursor = dispatcher->execute_sql(otterbrix::session_id_t(), "EXPLAIN " + sql);
         REQUIRE(cursor->is_success());
@@ -510,13 +509,12 @@ namespace {
                 return node;
             }
         }
-        node->append_child(logical_plan::node_ptr{
-            new logical_plan::node_extension_t(res,
-                                               table->name,
-                                               std::pmr::vector<types::complex_logical_type>{res},
-                                               &passthrough_scan,
-                                               logical_plan::extension_payload_ptr{
-                                                   new passthrough_payload_t{table->storage}})});
+        node->append_child(logical_plan::node_ptr{new logical_plan::node_extension_t(
+            res,
+            table->name,
+            std::pmr::vector<types::complex_logical_type>{res},
+            &passthrough_scan,
+            logical_plan::extension_payload_ptr{new passthrough_payload_t{table->storage}})});
         return node;
     }
 
@@ -538,7 +536,7 @@ static remote_tables_t one_table(std::pmr::memory_resource* res,
 #define EXT_TEST_BOILERPLATE(DIR)                                                                                      \
     auto config = test_create_config(DIR);                                                                             \
     test_clear_directory(config);                                                                                      \
-    test_spaces space(config, remote_host()); /* the host's name resolution, given at engine start */                 \
+    test_spaces space(config, remote_host()); /* the host's name resolution, given at engine start */                  \
     source_await_hook_scope_t source_await_hook;                                                                       \
     remote_server_reset_t remote_server_reset;                                                                         \
     auto dispatcher = space.dispatcher();                                                                              \
@@ -620,16 +618,18 @@ TEST_CASE("integration::cpp::extension_source::barrier_where_above_join") {
 TEST_CASE("integration::cpp::extension_source::join_with_local_table") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_local/base"))
     REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE extdb;")->is_success());
-    REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE extdb.local_t (key BIGINT, amount BIGINT);")
-                ->is_success());
+    REQUIRE(
+        dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE extdb.local_t (key BIGINT, amount BIGINT);")
+            ->is_success());
     REQUIRE(dispatcher
                 ->execute_sql(otterbrix::session_id_t(),
                               "INSERT INTO extdb.local_t (key, amount) VALUES (1, 1000), (2, 2000), (5, 5000);")
                 ->is_success());
     auto tables = one_table(res, "remote.t1", "key", "name", {{1, 11}, {2, 22}, {3, 33}}, /*async=*/true);
-    auto cursor = run_over_remote(dispatcher,
-                                  "SELECT e.name, t.amount FROM remote.t1 AS e JOIN extdb.local_t AS t ON e.key = t.key;",
-                                  tables);
+    auto cursor =
+        run_over_remote(dispatcher,
+                        "SELECT e.name, t.amount FROM remote.t1 AS e JOIN extdb.local_t AS t ON e.key = t.key;",
+                        tables);
     REQUIRE(cursor->is_success());
     REQUIRE(cursor->size() == 2);
 }
@@ -637,15 +637,16 @@ TEST_CASE("integration::cpp::extension_source::join_with_local_table") {
 TEST_CASE("integration::cpp::extension_source::missing_operator_errors_not_crash") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_norule/base"))
     REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE extdb;")->is_success());
-    REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE extdb.local_t (key BIGINT, amount BIGINT);")
-                ->is_success());
+    REQUIRE(
+        dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE extdb.local_t (key BIGINT, amount BIGINT);")
+            ->is_success());
     {
         auto tables = one_table(res, "remote.t1", "key", "name", {{1, 11}}, /*async=*/false);
         tables.at("remote.t1").no_operator = true;
-        auto cursor = run_over_remote(
-            dispatcher,
-            "SELECT e.name, t.amount FROM remote.t1 AS e JOIN extdb.local_t AS t ON e.key = t.key;",
-            tables);
+        auto cursor =
+            run_over_remote(dispatcher,
+                            "SELECT e.name, t.amount FROM remote.t1 AS e JOIN extdb.local_t AS t ON e.key = t.key;",
+                            tables);
         REQUIRE(cursor->is_error());
         CHECK(std::string{cursor->get_error().what} == "the storage of \"t1\" built no operator");
     }
@@ -777,12 +778,10 @@ TEST_CASE("integration::cpp::extension_source::failed_open_awaits_the_rest") {
         const std::string prefix = "f" + std::to_string(failing) + "_";
         open_probe().reset();
         open_probe().answer_when_awaited.store(true);
-        auto cursor = run_over_remote(dispatcher,
-                                      n_way_join(prefix, kSources),
-                                      fetch_on_open_tables(res,
-                                                           prefix,
-                                                           same_latency(kSources, std::chrono::milliseconds(0)),
-                                                           failing));
+        auto cursor = run_over_remote(
+            dispatcher,
+            n_way_join(prefix, kSources),
+            fetch_on_open_tables(res, prefix, same_latency(kSources, std::chrono::milliseconds(0)), failing));
         INFO("failing source " << failing);
         REQUIRE(cursor->is_error());
         CHECK_FALSE(open_probe().answer_wait_ran_out.load());
@@ -810,7 +809,8 @@ TEST_CASE("integration::cpp::extension_source::uneven_open_latencies") {
 TEST_CASE("integration::cpp::extension_source::lateral_inner_source_opened_per_drive") {
     EXT_TEST_BOILERPLATE(integration_fixture_path("test_ext_lateral_open/base"))
     REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE DATABASE extdb;")->is_success());
-    REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE extdb.outer_t (id BIGINT);")->is_success());
+    REQUIRE(
+        dispatcher->execute_sql(otterbrix::session_id_t(), "CREATE TABLE extdb.outer_t (id BIGINT);")->is_success());
     REQUIRE(dispatcher->execute_sql(otterbrix::session_id_t(), "INSERT INTO extdb.outer_t (id) VALUES (1), (2), (3);")
                 ->is_success());
     open_probe().reset();

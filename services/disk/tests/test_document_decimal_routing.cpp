@@ -16,12 +16,12 @@
 #include <core/pmr.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
+#include <services/disk/tests/test_directory.hpp>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
 
 // The write path matches an incoming column by name (plus the bare enum on a computed table), so
 // DECIMAL(12,4) could land in a DECIMAL(10,2) column: a SIGABRT in debug, a silent x100 misread under NDEBUG.

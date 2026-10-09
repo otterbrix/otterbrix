@@ -8,12 +8,12 @@
 #include <services/wal/wal_page.hpp>
 
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <thread>
-#include <core/tests/wait_ready.hpp>
 
 // operator_commit_transaction adds commit_id to transaction_manager_t::in_flight_commits_ on its first
 // hop and removes it on its last, so a co_return between them leaks it past ROLLBACK; since the set is

@@ -12,7 +12,6 @@ namespace services::disk {
     static_assert(mailbox::owns_its_arguments<&agent_disk_t::storage_scan_inner>);
     static_assert(mailbox::owns_its_arguments<&agent_disk_t::storage_reduce_inner>);
 
-
     using namespace core::filesystem;
     namespace catalog = components::catalog;
     using namespace detail;

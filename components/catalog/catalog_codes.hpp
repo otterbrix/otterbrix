@@ -9,10 +9,10 @@ namespace components::catalog {
         inline constexpr char view = 'v';
         inline constexpr char materialized_view = 'm'; // PostgreSQL-canonical
         inline constexpr char composite_type = 'c';
-        inline constexpr char computed = 'g'; // otterbrix extension
-        inline constexpr char macro = 'F';    // pg_rewrite-backed (function-like)
+        inline constexpr char computed = 'g';      // otterbrix extension
+        inline constexpr char macro = 'F';         // pg_rewrite-backed (function-like)
         inline constexpr char foreign_table = 'f'; // external storage, never in pg_class (PostgreSQL-canonical)
-    }                                         // namespace relkind
+    }                                              // namespace relkind
 
     // pg_index.indtype (otterbrix extension): a row whose value is outside this alphabet is catalog corruption and must
     // fail loudly. Mapping to/from logical_plan::index_type lives in node_create_index.hpp, because catalog must

@@ -34,9 +34,9 @@ namespace components::sql::transform {
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_table(CreateStmt& node) {
         if (node.inhRelations && !node.inhRelations->lst.empty()) {
-            return core::error_t(core::error_code_t::unimplemented_yet,
-                                 std::pmr::string{"CREATE TABLE ... INHERITS is not supported; no table was created",
-                                                  resource_});
+            return core::error_t(
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{"CREATE TABLE ... INHERITS is not supported; no table was created", resource_});
         }
         if (node.ofTypename) {
             return core::error_t(core::error_code_t::unimplemented_yet,
@@ -231,19 +231,18 @@ namespace components::sql::transform {
                                          std::pmr::string{"incorrect drop: arguments size", resource_});
                 }
                 // DROP INDEX names two pg_class rows — the parent table and the index itself
-                auto wrap_index = [&](const qualified_name_t& written,
-                                      const std::string& index_name,
-                                      logical_plan::node_ptr n) {
-                    auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
-                    set_target(*drop, written, target_slots::relation);
-                    drop->set_index_name(core::indexname_t{index_name});
-                    // Not read yet (rewrite_drop_index builds its own delete sequence, not the
-                    // dynamic cascade), but this is the only place it could be set.
-                    drop->set_behavior(drop_behavior_of(node.behavior));
-                    register_table(written.database.t, written.collection.t, constraint_resolve_kind::none);
-                    register_table(written.database.t, index_name, constraint_resolve_kind::none);
-                    return n;
-                };
+                auto wrap_index =
+                    [&](const qualified_name_t& written, const std::string& index_name, logical_plan::node_ptr n) {
+                        auto* drop = static_cast<logical_plan::node_drop_t*>(n.get());
+                        set_target(*drop, written, target_slots::relation);
+                        drop->set_index_name(core::indexname_t{index_name});
+                        // Not read yet (rewrite_drop_index builds its own delete sequence, not the
+                        // dynamic cascade), but this is the only place it could be set.
+                        drop->set_behavior(drop_behavior_of(node.behavior));
+                        register_table(written.database.t, written.collection.t, constraint_resolve_kind::none);
+                        register_table(written.database.t, index_name, constraint_resolve_kind::none);
+                        return n;
+                    };
                 //when casting to enum -1 is used to account for obligated index name
                 switch (static_cast<table_name>(drop_name.size() - 1)) {
                     case database_table: {

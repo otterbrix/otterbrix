@@ -225,7 +225,7 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P3_after_write_through_multi_tabl
         control_bytes = largest_otbx(control_config.main_path);
     }
     INFO("P3 largest table.otbx after reopen + checkpoint: " << after_bytes << " (crash-free run " << control_bytes
-                                                              << ", image " << image_bytes << ")");
+                                                             << ", image " << image_bytes << ")");
     CHECK(after_bytes == control_bytes);
     {
         auto crash_config = test_create_config(crash_dir);

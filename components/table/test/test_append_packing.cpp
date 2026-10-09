@@ -44,8 +44,7 @@ namespace {
 
 // 50-row statements, as INSERT ... VALUES appends.
 TEST_CASE("append_packing: blocks issued while appending stay proportional to the payload", "[packing]") {
-    const std::string path =
-        "/tmp/test_otterbrix_append_packing_" + std::to_string(::getpid()) + ".otbx";
+    const std::string path = "/tmp/test_otterbrix_append_packing_" + std::to_string(::getpid()) + ".otbx";
     std::remove(path.c_str());
     pk_env_t env;
     tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);

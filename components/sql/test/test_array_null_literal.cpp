@@ -10,9 +10,8 @@ using namespace components::types;
 
 namespace {
 
-    logical_value_t inserted_literal(transformer& transformer,
-                                     std::pmr::monotonic_buffer_resource& arena,
-                                     const char* sql) {
+    logical_value_t
+    inserted_literal(transformer& transformer, std::pmr::monotonic_buffer_resource& arena, const char* sql) {
         auto stmt = linitial(raw_parser(&arena, sql));
         auto transformed = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE_FALSE(transformed.has_error());

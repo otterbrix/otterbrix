@@ -28,8 +28,8 @@
 #include <logical_plan/node_update.hpp>
 
 #include <algorithm>
-#include <iterator>
 #include <boost/smart_ptr/intrusive_ptr.hpp>
+#include <iterator>
 #include <string_view>
 
 namespace components::planner {
@@ -337,9 +337,12 @@ namespace components::planner {
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             if (replacing) {
                 using namespace catalog::well_known_oid;
-                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_attribute_table, std::int64_t{1}, view_oid));
-                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_depend_table, std::int64_t{1}, view_oid));
-                seq->append_child(logical_plan::make_node_catalog_delete(r, pg_rewrite_table, std::int64_t{2}, view_oid));
+                seq->append_child(
+                    logical_plan::make_node_catalog_delete(r, pg_attribute_table, std::int64_t{1}, view_oid));
+                seq->append_child(
+                    logical_plan::make_node_catalog_delete(r, pg_depend_table, std::int64_t{1}, view_oid));
+                seq->append_child(
+                    logical_plan::make_node_catalog_delete(r, pg_rewrite_table, std::int64_t{2}, view_oid));
                 seq->append_child(
                     logical_plan::make_node_catalog_delete(r, pg_rewrite_ref_table, std::int64_t{0}, view_oid));
             }

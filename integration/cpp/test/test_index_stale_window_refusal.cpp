@@ -7,11 +7,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <cstdio>
 #include <string>
 #include <thread>
-#include <core/tests/wait_ready.hpp>
 
 // PIN (loud-refusal policy): a reader that ARRIVES between the two phases of a checkpoint round
 // — after compact() renumbered the physical row ids, before repopulate_indexes_after_compaction

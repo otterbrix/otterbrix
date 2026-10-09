@@ -17,14 +17,14 @@
 #include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <services/disk/tests/test_directory.hpp>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
 
 // After bootstrap only pg_catalog.* is loaded; user tables stay out of storages_ until accessed.
 

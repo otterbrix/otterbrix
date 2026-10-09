@@ -10,13 +10,13 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <cstdio>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
-#include <core/tests/wait_ready.hpp>
 
 // MEASUREMENT, not a regression test. Question under measurement: between the two phases of a
 // checkpoint round — checkpoint_all (compact() renumbers physical row ids) and

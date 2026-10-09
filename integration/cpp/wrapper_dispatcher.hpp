@@ -50,10 +50,11 @@ namespace otterbrix {
 
         auto register_udf(const session_id_t& session, components::compute::function_ptr function) -> core::error_t;
         // RESTRICT (the default) refuses while a view calls the function; CASCADE drops those views too.
-        auto unregister_udf(const session_id_t& session,
-                            const std::string& function_name,
-                            const std::pmr::vector<components::types::complex_logical_type>& inputs,
-                            components::catalog::drop_behavior_t behavior = components::catalog::drop_behavior_t::restrict_)
+        auto
+        unregister_udf(const session_id_t& session,
+                       const std::string& function_name,
+                       const std::pmr::vector<components::types::complex_logical_type>& inputs,
+                       components::catalog::drop_behavior_t behavior = components::catalog::drop_behavior_t::restrict_)
             -> core::error_t;
         auto register_cast(const session_id_t& session,
                            const components::types::complex_logical_type& source,

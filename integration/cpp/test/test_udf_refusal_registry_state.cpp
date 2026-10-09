@@ -5,8 +5,8 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
-#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/physical_plan/operators/operator_unregister_udf.hpp>
+#include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/test/fault_injection_file.hpp>
 
 #include <algorithm>
@@ -136,7 +136,8 @@ namespace {
 
     // Unqualified: the qualifier of pg_catalog.pg_proc is resolved through pg_namespace, which a case below poisons.
     std::size_t pg_proc_rows_named(test_spaces& space, const std::string& name) {
-        auto cur = test_helpers::exec(space.dispatcher(), "SELECT proname FROM pg_proc WHERE proname = '" + name + "';");
+        auto cur =
+            test_helpers::exec(space.dispatcher(), "SELECT proname FROM pg_proc WHERE proname = '" + name + "';");
         if (cur->is_error()) {
             return kReadRefused;
         }
@@ -336,8 +337,8 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_refused_unregist
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE d;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE d.t (id BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO d.t (id) VALUES (1), (2), (3);")->is_success());
-    REQUIRE_FALSE(dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()))
-                      .contains_error());
+    REQUIRE_FALSE(
+        dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource())).contains_error());
 
     components::operators::dev_set_unregister_udf_purge_refusal(true);
     auto refused = dispatcher->unregister_udf(otterbrix::session_id_t(), kFuncName, {types::logical_type::BIGINT});

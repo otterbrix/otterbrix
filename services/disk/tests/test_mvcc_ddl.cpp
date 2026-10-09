@@ -18,12 +18,12 @@
 #include <limits>
 #include <services/disk/manager_disk.hpp>
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
+#include <services/disk/tests/test_directory.hpp>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
 
 // committed_version_operator (row_version_manager.cpp): INSERT is always visible, DELETE stays
 // visible while delete_id is uncommitted or newer than min_start_time. System-table scans use

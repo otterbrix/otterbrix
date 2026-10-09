@@ -26,7 +26,6 @@ namespace components::logical_plan {
 
     using node_refresh_matview_ptr = boost::intrusive_ptr<node_refresh_matview_t>;
 
-    node_refresh_matview_ptr
-    make_node_refresh_matview(std::pmr::memory_resource* resource, bool with_data);
+    node_refresh_matview_ptr make_node_refresh_matview(std::pmr::memory_resource* resource, bool with_data);
 
 } // namespace components::logical_plan

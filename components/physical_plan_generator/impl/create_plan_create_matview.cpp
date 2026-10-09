@@ -21,13 +21,12 @@ namespace services::planner::impl {
             writes.emplace_back(w.table_oid, std::move(w.row));
         }
 
-        return boost::intrusive_ptr(
-            new components::operators::operator_create_matview_t(context.resource,
-                                                                 context.log.clone(),
-                                                                 cm->matview_oid(),
-                                                                 cm->namespace_oid(),
-                                                                 std::move(columns),
-                                                                 std::move(writes)));
+        return boost::intrusive_ptr(new components::operators::operator_create_matview_t(context.resource,
+                                                                                         context.log.clone(),
+                                                                                         cm->matview_oid(),
+                                                                                         cm->namespace_oid(),
+                                                                                         std::move(columns),
+                                                                                         std::move(writes)));
     }
 
 } // namespace services::planner::impl

@@ -24,14 +24,14 @@
 #include "../../../components/table/test/fault_injection_file.hpp"
 
 #include <algorithm>
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <services/disk/tests/test_directory.hpp>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
 
 using namespace services::disk;
 namespace catalog = components::catalog;

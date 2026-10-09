@@ -1,7 +1,7 @@
 #pragma once
 
-#include <components/log/log.hpp>
 #include <chrono>
+#include <components/log/log.hpp>
 #include <cstdint>
 #include <filesystem>
 

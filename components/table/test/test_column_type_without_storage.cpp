@@ -52,8 +52,7 @@ TEST_CASE("components::table::column_type_without_storage::refused_top_level_and
 }
 
 TEST_CASE("components::table::column_type_without_storage::a_NULL_typed_column_refuses_its_first_append") {
-    const std::string path =
-        "/tmp/test_otterbrix_column_type_without_storage_" + std::to_string(::getpid()) + ".otbx";
+    const std::string path = "/tmp/test_otterbrix_column_type_without_storage_" + std::to_string(::getpid()) + ".otbx";
     std::remove(path.c_str());
     core::pmr::otterbrix_resource resource;
     core::filesystem::local_file_system_t fs;

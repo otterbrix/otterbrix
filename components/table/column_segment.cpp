@@ -489,8 +489,8 @@ namespace components::table {
                 for (uint64_t w = from / BITS; w * BITS < to; w++) {
                     const uint64_t lo = w * BITS < from ? from - w * BITS : 0;
                     const uint64_t hi = (w + 1) * BITS > to ? to - w * BITS : BITS;
-                    const uint64_t upto = hi == BITS ? vector::validity_data_t::MAX_ENTRY
-                                                     : vector::validity_details::LOWER_MASKS[hi];
+                    const uint64_t upto =
+                        hi == BITS ? vector::validity_data_t::MAX_ENTRY : vector::validity_details::LOWER_MASKS[hi];
                     words[w] |= upto & ~vector::validity_details::LOWER_MASKS[lo];
                 }
                 segment.count += append_count;
@@ -977,8 +977,9 @@ namespace components::table {
                     if (i + 1 == entry_scan_count && scan_count % vector::validity_mask_t::BITS_PER_VALUE != 0) {
                         // The bits past the scan are not rows of it: a revert leaves them as the
                         // reverted rows had them (scan_partial masks the same way).
-                        input_entry |= vector::validity_details::UPPER_MASKS
-                            [vector::validity_mask_t::BITS_PER_VALUE - scan_count % vector::validity_mask_t::BITS_PER_VALUE];
+                        input_entry |=
+                            vector::validity_details::UPPER_MASKS[vector::validity_mask_t::BITS_PER_VALUE -
+                                                                  scan_count % vector::validity_mask_t::BITS_PER_VALUE];
                     }
                     if (!result_data && input_entry == vector::validity_data_t::MAX_ENTRY) {
                         continue;
@@ -1247,7 +1248,8 @@ namespace components::table {
         // The size is the last row's offset, not the header's: after a revert the header still holds
         // the size the reverted rows had reached, and their bytes must not travel to the file.
         const auto* offsets = reinterpret_cast<const int32_t*>(segment_copy + impl::DICTIONARY_HEADER_SIZE);
-        const auto dict_size = tuple_count == 0 ? uint32_t{0} : static_cast<uint32_t>(std::abs(offsets[tuple_count - 1]));
+        const auto dict_size =
+            tuple_count == 0 ? uint32_t{0} : static_cast<uint32_t>(std::abs(offsets[tuple_count - 1]));
         impl::store<uint32_t>(dict_size, segment_copy);
         const auto dict_end = impl::load<uint32_t>(segment_copy + sizeof(uint32_t));
         // Both writers of this image keep the dictionary end equal to the segment size.

@@ -934,10 +934,10 @@ namespace components::catalog {
         using components::compute::parameter_type;
         std::pmr::vector<parameter_type> out{resource};
         const auto corrupt = [resource, text]() {
-            return core::error_t{core::error_code_t::data_corruption,
-                                 std::pmr::string{"pg_proc.proargmatchers \"" + std::string{text} +
-                                                      "\" is outside its grammar",
-                                                  resource}};
+            return core::error_t{
+                core::error_code_t::data_corruption,
+                std::pmr::string{"pg_proc.proargmatchers \"" + std::string{text} + "\" is outside its grammar",
+                                 resource}};
         };
         const auto number = [](std::string_view digits, int& value) {
             const auto [end, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), value);
@@ -958,7 +958,8 @@ namespace components::catalog {
                 if (!number(item.substr(2), type)) {
                     return corrupt();
                 }
-                out.push_back(parameter_type::exact(types::complex_logical_type{static_cast<types::logical_type>(type)}));
+                out.push_back(
+                    parameter_type::exact(types::complex_logical_type{static_cast<types::logical_type>(type)}));
             } else if (item[0] == 'v') {
                 const auto rest = item.substr(2);
                 const auto colon = rest.find(':');
@@ -982,7 +983,8 @@ namespace components::catalog {
                         list = list.substr(comma + 1);
                     }
                 }
-                out.push_back(parameter_type::variable(static_cast<parameter_type::variable_id>(id), std::move(admissible)));
+                out.push_back(
+                    parameter_type::variable(static_cast<parameter_type::variable_id>(id), std::move(admissible)));
             } else {
                 return corrupt();
             }

@@ -68,9 +68,8 @@ TEST_CASE("integration::cpp::constant_aggregates::many_chunks") {
     auto* d = space.dispatcher();
     REQUIRE(ok(d, "CREATE DATABASE m;"));
     REQUIRE(ok(d, "CREATE TABLE m.big (id BIGINT);"));
-    auto seeded = test_helpers::seed_rows(d, "m.big", "id", 2500, [](unsigned i) {
-        return "(" + std::to_string(i) + ")";
-    });
+    auto seeded =
+        test_helpers::seed_rows(d, "m.big", "id", 2500, [](unsigned i) { return "(" + std::to_string(i) + ")"; });
     REQUIRE(seeded);
     REQUIRE(seeded->is_success());
 

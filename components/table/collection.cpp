@@ -1,10 +1,10 @@
 #include "collection.hpp"
 
 #include <algorithm>
-#include <iterator>
 #include <components/table/storage/block_manager.hpp>
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <iterator>
 #include <queue>
 
 #include "column_data.hpp"
@@ -250,7 +250,11 @@ namespace components::table {
                     if (current_row_group == entry_row_group) {
                         return appended; // out_of_memory
                     }
-                    return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count,
+                    return unwind_append(state,
+                                         entry_row_group,
+                                         entry_offset,
+                                         entry_cut,
+                                         total_append_count,
                                          appended.error());
                 }
             }
@@ -264,8 +268,8 @@ namespace components::table {
             }
             // No row of this session has landed yet: the session's first row opens the new row group,
             // so its cut is that row group's (empty) counts, not the full entry row group's.
-            const bool session_untouched = remaining == total_append_count &&
-                                           state.total_append_count == total_append_count;
+            const bool session_untouched =
+                remaining == total_append_count && state.total_append_count == total_append_count;
             new_row_group = true;
             auto next_start = current_row_group->start + static_cast<int64_t>(state.append_state.offset_in_row_group);
 
@@ -273,15 +277,18 @@ namespace components::table {
             // switches them before the close below walks the row group, or the walk would place them
             // a second time (a transient placed twice names two blocks).
             if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
-                return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count,
+                return unwind_append(state,
+                                     entry_row_group,
+                                     entry_offset,
+                                     entry_cut,
+                                     total_append_count,
                                      flushed.error());
             }
 
             auto last_row_group = append_row_group(next_start);
             auto init = last_row_group->initialize_append(state.append_state);
             if (init.has_error()) {
-                return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count,
-                                     init.error());
+                return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count, init.error());
             }
             if (session_untouched) {
                 state.cut.counts.clear();
@@ -292,7 +299,11 @@ namespace components::table {
             // table size. A write/alloc failure surfaces as io_error/out_of_memory, never a throw.
             auto transitioned = current_row_group->transition_to_disk(append_pbm_);
             if (transitioned.has_error()) {
-                return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count,
+                return unwind_append(state,
+                                     entry_row_group,
+                                     entry_offset,
+                                     entry_cut,
+                                     total_append_count,
                                      transitioned.error());
             }
         }
@@ -300,8 +311,7 @@ namespace components::table {
         // writes the open tails and switches every placed segment whose block is on the file.
         if (auto flushed = append_pbm_.flush_partial_blocks(); flushed.has_error()) {
             // io_error: the segments of the tails not written stay transient; the unwind drops the rows
-            return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count,
-                                 flushed.error());
+            return unwind_append(state, entry_row_group, entry_offset, entry_cut, total_append_count, flushed.error());
         }
         state.current_row += int64_t(total_append_count);
         return new_row_group;

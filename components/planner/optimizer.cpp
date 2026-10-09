@@ -105,8 +105,7 @@ namespace components::planner {
         if (can_push_to_agent) {
             node = optimizer::pushdown_aggregate(resource, std::move(node));
         }
-        node =
-            run_stage(resource, std::move(node), host_rules, optimizer_stage::after_aggregate_pushdown);
+        node = run_stage(resource, std::move(node), host_rules, optimizer_stage::after_aggregate_pushdown);
 
         // Column pruning runs LAST — after pushdown_filter has relocalized any
         // single-table filters below the join and rewrite_hash_joins has settled the

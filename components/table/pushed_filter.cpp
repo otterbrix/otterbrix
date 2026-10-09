@@ -50,7 +50,10 @@ namespace components::table {
             }
             graph = std::move(built.value());
         }
-        const graph_execution_context context{filter.timezone_offset, nullptr, filter.decimal_width, filter.decimal_scale};
+        const graph_execution_context context{filter.timezone_offset,
+                                              nullptr,
+                                              filter.decimal_width,
+                                              filter.decimal_scale};
         return std::make_unique<table_filter_t>(std::move(parameters), context, std::move(graph), condition);
     }
 

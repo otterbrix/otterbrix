@@ -22,17 +22,17 @@
 
 #include "disk_test_helpers.hpp"
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/skip_under_root.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <services/disk/tests/test_directory.hpp>
 #include <string>
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/skip_under_root.hpp>
-#include <core/tests/wait_ready.hpp>
 
 // The open path must not let a real failure collapse into the value a legitimate empty state also
 // produces (a zero wal id, a '\0' relkind, a `false` create, a `0` append).
@@ -1201,14 +1201,13 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
         configuration::config_wal wal_config(wal_dir);
 
         open_fixture fx(base);
-        auto wal_manager =
-            actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
-                                                                      fx.scheduler,
-                                                                      wal_config,
-                                                                      fx.log,
-                                                                      components::pipeline::no_mailbox(),
-                                                                      components::pipeline::no_mailbox(),
-                                                                      configuration::pump_intervals_t{});
+        auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
+                                                                                     fx.scheduler,
+                                                                                     wal_config,
+                                                                                     fx.log,
+                                                                                     components::pipeline::no_mailbox(),
+                                                                                     components::pipeline::no_mailbox(),
+                                                                                     configuration::pump_intervals_t{});
         fx.manager->set_manager_wal_sync(wal_manager->address());
 
         REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
@@ -1229,14 +1228,13 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
         configuration::config_wal wal_config(wal_dir);
 
         open_fixture fx(base);
-        auto wal_manager =
-            actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
-                                                                      fx.scheduler,
-                                                                      wal_config,
-                                                                      fx.log,
-                                                                      components::pipeline::no_mailbox(),
-                                                                      components::pipeline::no_mailbox(),
-                                                                      configuration::pump_intervals_t{});
+        auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
+                                                                                     fx.scheduler,
+                                                                                     wal_config,
+                                                                                     fx.log,
+                                                                                     components::pipeline::no_mailbox(),
+                                                                                     components::pipeline::no_mailbox(),
+                                                                                     configuration::pump_intervals_t{});
         fx.manager->set_manager_wal_sync(wal_manager->address());
 
         REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());

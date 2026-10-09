@@ -209,9 +209,9 @@ namespace components::sql::transform {
                 if (cs.relkind == OBJECT_MATVIEW) {
                     log_node = transform_create_matview(cs, plan);
                 } else {
-                    log_node = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"CREATE TABLE AS is not supported yet (#675)", resource_});
+                    log_node =
+                        core::error_t(core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"CREATE TABLE AS is not supported yet (#675)", resource_});
                 }
                 break;
             }

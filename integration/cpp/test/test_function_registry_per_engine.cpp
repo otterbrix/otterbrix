@@ -16,7 +16,8 @@ using namespace components::compute;
 namespace {
 
     template<bool Even>
-    core::error_t parity_exec(kernel_context&, const components::vector::data_chunk_t& in, components::vector::vector_t& out) {
+    core::error_t
+    parity_exec(kernel_context&, const components::vector::data_chunk_t& in, components::vector::vector_t& out) {
         const auto* source = in.data[0].data<int64_t>();
         auto* destination = out.data<bool>();
         for (uint64_t row = 0; row < in.size(); ++row) {
@@ -68,9 +69,11 @@ TEST_CASE("integration::cpp::function_registry_per_engine::a_udf_of_one_engine_i
     seed(b->dispatcher());
 
     const otterbrix::session_id_t session;
-    REQUIRE_FALSE(a->dispatcher()->register_udf(session, make_parity<true>(a->dispatcher()->resource(), "a_parity"))
+    REQUIRE_FALSE(a->dispatcher()
+                      ->register_udf(session, make_parity<true>(a->dispatcher()->resource(), "a_parity"))
                       .contains_error());
-    REQUIRE_FALSE(b->dispatcher()->register_udf(session, make_parity<false>(b->dispatcher()->resource(), "b_parity"))
+    REQUIRE_FALSE(b->dispatcher()
+                      ->register_udf(session, make_parity<false>(b->dispatcher()->resource(), "b_parity"))
                       .contains_error());
 
     CHECK(rows_where(a->dispatcher(), "a_parity") == 3);
@@ -85,13 +88,14 @@ TEST_CASE("integration::cpp::function_registry_per_engine::an_unregister_in_one_
     seed(b->dispatcher());
 
     const otterbrix::session_id_t session;
-    REQUIRE_FALSE(a->dispatcher()->register_udf(session, make_parity<true>(a->dispatcher()->resource(), "shared"))
+    REQUIRE_FALSE(a->dispatcher()
+                      ->register_udf(session, make_parity<true>(a->dispatcher()->resource(), "shared"))
                       .contains_error());
-    REQUIRE_FALSE(b->dispatcher()->register_udf(session, make_parity<true>(b->dispatcher()->resource(), "shared"))
+    REQUIRE_FALSE(b->dispatcher()
+                      ->register_udf(session, make_parity<true>(b->dispatcher()->resource(), "shared"))
                       .contains_error());
 
-    REQUIRE_FALSE(a->dispatcher()
-                      ->unregister_udf(session, "shared", {components::types::logical_type::BIGINT})
-                      .contains_error());
+    REQUIRE_FALSE(
+        a->dispatcher()->unregister_udf(session, "shared", {components::types::logical_type::BIGINT}).contains_error());
     CHECK(rows_where(b->dispatcher(), "shared") == 3);
 }

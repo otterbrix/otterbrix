@@ -1,10 +1,10 @@
 #pragma once
 #include <atomic>
-#include <map>
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/vector.hpp>
+#include <map>
 
 #include "column_data.hpp"
 #include "row_version_manager.hpp"

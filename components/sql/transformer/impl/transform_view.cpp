@@ -5,8 +5,8 @@
 #include <components/sql/transformer/utils.hpp>
 
 namespace components::sql::transform {
-    core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_view(ViewStmt& node,
-                                                                                     logical_plan::execution_plan_t* plan) {
+    core::result_wrapper_t<logical_plan::node_ptr>
+    transformer::transform_create_view(ViewStmt& node, logical_plan::execution_plan_t* plan) {
         // Column aliases aren't propagated below, so a later `SELECT x FROM v` would
         // see mismatched names — refuse rather than half-support them.
         if (node.aliases != nullptr && list_length(node.aliases) > 0) {

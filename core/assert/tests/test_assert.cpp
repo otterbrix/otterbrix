@@ -4,14 +4,16 @@
 #include <components/log/log.hpp>
 #include <core/assert/assert.hpp>
 
+#include <components/log/test/test_log.hpp>
 #include <csignal>
 #include <filesystem>
 #include <string>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <components/log/test/test_log.hpp>
 
-TEST_CASE("core::assert::test_ok") { REQUIRE_NOTHROW([&]() { assertion_log_msg(nullptr, true, "ok"); }()); }
+TEST_CASE("core::assert::test_ok") {
+    REQUIRE_NOTHROW([&]() { assertion_log_msg(nullptr, true, "ok"); }());
+}
 
 TEST_CASE("core::assert::test_string_view") {
     std::string_view message = "Testing";

@@ -27,15 +27,15 @@ namespace components::operators {
         // Always disk-backed (plan-gen guarantees non-empty inferred columns). is_computed
         // explicitly false — a matview is relkind='m', never a dynamic-schema table.
         {
-            auto [_, f] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                      &services::disk::manager_disk_t::create_storage_disk,
-                                                      ctx->session,
-                                                      mv_oid_,
-                                                      namespace_oid_,
-                                                      std::vector<table::column_definition_t>(
-                                                          std::make_move_iterator(columns_.begin()),
-                                                          std::make_move_iterator(columns_.end())),
-                                                      /*is_computed=*/false);
+            auto [_, f] = actor_zeta::otterbrix::send(
+                ctx->disk_address,
+                &services::disk::manager_disk_t::create_storage_disk,
+                ctx->session,
+                mv_oid_,
+                namespace_oid_,
+                std::vector<table::column_definition_t>(std::make_move_iterator(columns_.begin()),
+                                                        std::make_move_iterator(columns_.end())),
+                /*is_computed=*/false);
             co_await std::move(f);
         }
 

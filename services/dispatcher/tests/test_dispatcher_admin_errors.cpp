@@ -16,16 +16,16 @@
 #include <components/catalog/oid_batch.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/context.hpp>
+#include <components/log/test/test_log.hpp>
 #include <components/session/session.hpp>
 #include <components/types/types.hpp>
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <core/result_wrapper.hpp>
-#include <services/disk/manager_disk.hpp>
-#include <services/wal/manager_wal_replicate.hpp>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
 #include <core/tests/wait_ready.hpp>
+#include <services/disk/manager_disk.hpp>
+#include <services/disk/tests/test_directory.hpp>
+#include <services/wal/manager_wal_replicate.hpp>
 
 // Pins that the pool-admin API answers a typed error, not a bare `bool`; that an executor
 // refusing to drop an overload stops the catalog purge; and that txn_accumulate_msg on a session

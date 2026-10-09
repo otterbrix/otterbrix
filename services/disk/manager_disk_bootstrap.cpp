@@ -155,8 +155,8 @@ namespace services::disk {
                 if (table_dir_ec) {
                     return core::error_t(core::error_code_t::io_error,
                                          std::pmr::string{"bootstrap REFUSED , the directory of system table " +
-                                                              std::string(def.name) + " could not be created: " +
-                                                              table_dir_ec.message(),
+                                                              std::string(def.name) +
+                                                              " could not be created: " + table_dir_ec.message(),
                                                           resource()});
                 }
                 std::error_code exists_ec;
@@ -585,8 +585,8 @@ namespace services::disk {
         const auto listing_refused = [this](const core::error_t& why) {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"load_user_table_storages_sync: the tables under " +
-                                                      config_.path.string() + " cannot be loaded: " +
-                                                      std::string(why.what.c_str()),
+                                                      config_.path.string() +
+                                                      " cannot be loaded: " + std::string(why.what.c_str()),
                                                   resource()});
         };
         std::error_code ec;
@@ -638,11 +638,11 @@ namespace services::disk {
                 std::error_code exists_ec;
                 if (!std::filesystem::exists(otbx, exists_ec)) {
                     if (exists_ec) {
-                        return listing_refused(core::error_t(
-                            core::error_code_t::io_error,
-                            std::pmr::string{"the file " + otbx.string() + " could not be examined: " +
-                                                 exists_ec.message(),
-                                             resource()}));
+                        return listing_refused(
+                            core::error_t(core::error_code_t::io_error,
+                                          std::pmr::string{"the file " + otbx.string() +
+                                                               " could not be examined: " + exists_ec.message(),
+                                                           resource()}));
                     }
                     continue;
                 }
@@ -776,18 +776,18 @@ namespace services::disk {
             std::error_code file_ec;
             const bool present = std::filesystem::exists(otbx, file_ec);
             if (file_ec) {
-                return core::error_t(core::error_code_t::io_error,
-                                     std::pmr::string{"rehydrate_missing_user_storages_sync: the file " +
-                                                          otbx.string() + " of alive table oid=" +
-                                                          std::to_string(static_cast<unsigned>(oid)) +
-                                                          " could not be examined: " + file_ec.message(),
-                                                      resource()});
+                return core::error_t(
+                    core::error_code_t::io_error,
+                    std::pmr::string{"rehydrate_missing_user_storages_sync: the file " + otbx.string() +
+                                         " of alive table oid=" + std::to_string(static_cast<unsigned>(oid)) +
+                                         " could not be examined: " + file_ec.message(),
+                                     resource()});
             }
             if (present) {
                 // The CREATE-time root is the on-disk signature of a never-checkpointed file, whatever its size.
-                auto young = components::table::storage::single_file_block_manager_t::file_is_never_checkpointed(
-                    otbx.string(),
-                    resource());
+                auto young =
+                    components::table::storage::single_file_block_manager_t::file_is_never_checkpointed(otbx.string(),
+                                                                                                        resource());
                 if (!young.has_error() && young.value()) {
                     trace(log_,
                           "manager_disk_t::rehydrate_missing_user_storages_sync: oid={} has a never-checkpointed "
@@ -1454,13 +1454,13 @@ namespace services::disk {
                               static_cast<unsigned>(row.oid),
                               static_cast<unsigned>(row.table_oid),
                               std::string(indtype_v.data(), indtype_v.size()));
-                        return core::error_t(core::error_code_t::data_corruption,
-                                             std::pmr::string{"pg_index row (indexrelid=" +
-                                                                  std::to_string(static_cast<unsigned>(row.oid)) +
-                                                                  ") has unknown indtype '" +
-                                                                  std::string(indtype_v.data(), indtype_v.size()) +
-                                                                  "' — catalog is corrupt, refusing to start",
-                                                              resource_});
+                        return core::error_t(
+                            core::error_code_t::data_corruption,
+                            std::pmr::string{
+                                "pg_index row (indexrelid=" + std::to_string(static_cast<unsigned>(row.oid)) +
+                                    ") has unknown indtype '" + std::string(indtype_v.data(), indtype_v.size()) +
+                                    "' — catalog is corrupt, refusing to start",
+                                resource_});
                     }
                     std::pmr::string raw_indkey{resource_};
                     if (!chunk.is_null(2, i)) {

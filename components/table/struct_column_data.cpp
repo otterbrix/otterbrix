@@ -189,9 +189,9 @@ namespace components::table {
 
     core::result_wrapper_t<bool> struct_column_data_t::revert_append(cut_cursor_t& cut) {
         if (cut.exhausted()) {
-            return core::error_t(core::error_code_t::data_corruption,
-                                 std::pmr::string("struct revert: the cut names fewer columns than the table holds",
-                                                  resource_));
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string("struct revert: the cut names fewer columns than the table holds", resource_));
         }
         const uint64_t kept = cut.take();
         auto v = validity.revert_append(cut);

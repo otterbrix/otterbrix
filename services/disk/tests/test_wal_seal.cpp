@@ -17,13 +17,13 @@
 #include "disk_test_helpers.hpp"
 
 #include <algorithm>
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <limits>
+#include <services/disk/tests/test_directory.hpp>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
 
 // checkpoint_all's WAL floor is min(prev_checkpoint_wal_id) over every entry the agents own, so a deferred
 // entry's unchanged prev pins the floor below its unpersisted records (see test_checkpoint_dirty.cpp).

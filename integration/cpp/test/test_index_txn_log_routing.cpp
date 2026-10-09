@@ -10,12 +10,12 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <thread>
-#include <core/tests/wait_ready.hpp>
 
 // index_type::hashed (bitcask) journals every committed statement (bitcask.txn.log/.applied); every other
 // index_type takes the bulk path and journals nothing. Row counts can't tell the routes apart -- both end
@@ -183,9 +183,9 @@ TEST_CASE("integration::cpp::test_index_txn_log_routing::the_meter_reads_zero_on
     REQUIRE(size_or_zero(txn_log) == log_before_delete);
 
     // Bounded on purpose: this asserts that something does NOT happen while the frame is unwritten.
-    const bool zero_while_parked = test_helpers::wait_until(
-        [] { return services::index::index_deferred_deletes() == 0; },
-        std::chrono::seconds(1));
+    const bool zero_while_parked =
+        test_helpers::wait_until([] { return services::index::index_deferred_deletes() == 0; },
+                                 std::chrono::seconds(1));
     INFO("the meter read zero while the erase was sent but not journalled: zero must mean applied, not sent");
     CHECK_FALSE(zero_while_parked);
 

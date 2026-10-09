@@ -111,15 +111,16 @@ namespace components::operators {
             // renumbers ids stamped below); held, never advanced, across the whole read.
             uint64_t gate_cursor_id = 0;
             {
-                auto [_g, gf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                            &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                                            ctx->session,
-                                                            table_oid_,
-                                                            uint64_t{0},
-                                                            std::unique_ptr<components::table::pushed_filter_t>(nullptr),
-                                                            int64_t{-1},
-                                                            std::vector<size_t>{0},
-                                                            ctx->txn);
+                auto [_g, gf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                ctx->session,
+                                                table_oid_,
+                                                uint64_t{0},
+                                                std::unique_ptr<components::table::pushed_filter_t>(nullptr),
+                                                int64_t{-1},
+                                                std::vector<size_t>{0},
+                                                ctx->txn);
                 auto gate_r = co_await std::move(gf);
                 if (gate_r.has_error()) {
                     set_error(gate_r.error());

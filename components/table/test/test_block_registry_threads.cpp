@@ -33,8 +33,7 @@ namespace {
     };
 } // namespace
 
-TEST_CASE("block_registry_threads: the last handle of a released block dies on another thread",
-          "[holder_tsan]") {
+TEST_CASE("block_registry_threads: the last handle of a released block dies on another thread", "[holder_tsan]") {
     using namespace components::table::storage;
     const auto path = threads_db_path();
     std::remove(path.c_str());

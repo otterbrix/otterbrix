@@ -3,8 +3,8 @@
 #include <components/sql/parser/nodes/primnodes.h>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
-#include <components/types/user_type_walk.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/types/user_type_walk.hpp>
 
 namespace components::sql::transform {
     namespace {

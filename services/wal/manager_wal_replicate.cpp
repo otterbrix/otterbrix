@@ -92,11 +92,11 @@ namespace services::wal {
         }
         if (root_ec) {
             // Unscanned, the next wal_id would reissue ids already on disk, so the refusal latches every write.
-            recovery_error_ = core::error_t(core::error_code_t::io_error,
-                                            std::pmr::string{"manager_wal_replicate: the WAL root " +
-                                                                 config_.path.string() +
-                                                                 " could not be created: " + root_ec.message(),
-                                                             resource_});
+            recovery_error_ =
+                core::error_t(core::error_code_t::io_error,
+                              std::pmr::string{"manager_wal_replicate: the WAL root " + config_.path.string() +
+                                                   " could not be created: " + root_ec.message(),
+                                               resource_});
             error(log_, "{}", recovery_error_.what);
         } else if (!config_.path.empty()) {
             wal::id_t max_recovered_id = 0;
@@ -273,9 +273,7 @@ namespace services::wal {
     // The mutex is taken between the push and the notify, so the loop either sees the message before
     // it sleeps or is already waiting when the notify comes.
     void manager_wal_replicate_t::wake_loop_() noexcept {
-        {
-            std::lock_guard<std::mutex> guard(mutex_);
-        }
+        { std::lock_guard<std::mutex> guard(mutex_); }
         pump_cv_.notify_one();
     }
 
@@ -453,9 +451,7 @@ namespace services::wal {
         auto listed = core::filesystem::list_dir(resource_, config_.path);
         if (listed.has_error()) {
             auto log = log_.clone();
-            error(log,
-                  "manager_wal_replicate::total_wal_bytes: the WAL size is undercounted: {}",
-                  listed.error().what);
+            error(log, "manager_wal_replicate::total_wal_bytes: the WAL size is undercounted: {}", listed.error().what);
             return total;
         }
         for (const auto& db_entry : listed.value()) {

@@ -1,5 +1,4 @@
 #include "manager_disk.hpp"
-#include <services/dev_pump.hpp>
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
 #include <array>
@@ -9,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <services/dev_pump.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <system_error>
@@ -463,9 +463,7 @@ namespace services::disk {
     // The mutex is taken between the push and the notify, so the loop either sees the message before
     // it sleeps or is already waiting when the notify comes.
     void manager_disk_t::wake_loop_() noexcept {
-        {
-            std::lock_guard<std::mutex> guard(mutex_);
-        }
+        { std::lock_guard<std::mutex> guard(mutex_); }
         pump_cv_.notify_one();
     }
 

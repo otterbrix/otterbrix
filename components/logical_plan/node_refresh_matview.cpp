@@ -16,8 +16,7 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_refresh_matview_ptr
-    make_node_refresh_matview(std::pmr::memory_resource* resource, bool with_data) {
+    node_refresh_matview_ptr make_node_refresh_matview(std::pmr::memory_resource* resource, bool with_data) {
         return {new node_refresh_matview_t{resource, with_data}};
     }
 

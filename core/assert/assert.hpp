@@ -15,8 +15,7 @@ namespace core::detail {
                              const char* function,
                              std::string_view msg) noexcept;
 
-    [[noreturn]] void
-    log_and_throw_invariant_error(log_t* log, std::string_view condition, std::string_view message);
+    [[noreturn]] void log_and_throw_invariant_error(log_t* log, std::string_view condition, std::string_view message);
 
 #ifdef NDEBUG
     inline constexpr bool enable_assert = false;

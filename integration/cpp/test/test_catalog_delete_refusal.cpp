@@ -69,9 +69,9 @@ namespace {
     }
 
     std::size_t pg_index_rows_for(otterbrix::wrapper_dispatcher_t* dispatcher, catalog::oid_t index_oid) {
-        auto cur = test_helpers::exec(dispatcher,
-                                      "SELECT indexrelid FROM pg_catalog.pg_index WHERE indexrelid = " +
-                                          std::to_string(index_oid) + ";");
+        auto cur = test_helpers::exec(
+            dispatcher,
+            "SELECT indexrelid FROM pg_catalog.pg_index WHERE indexrelid = " + std::to_string(index_oid) + ";");
         REQUIRE(cur->is_success());
         return cur->size();
     }
@@ -90,8 +90,7 @@ namespace {
         auto cur = test_helpers::exec(dispatcher,
                                       "SELECT attisdropped, added_at_commit_id, dropped_at_commit_id FROM "
                                       "pg_catalog.pg_attribute WHERE attrelid = " +
-                                          std::to_string(table_oid) + " AND attname = '" + std::string(attname) +
-                                          "';");
+                                          std::to_string(table_oid) + " AND attname = '" + std::string(attname) + "';");
         REQUIRE(cur->is_success());
         column_rows_t out{};
         for (const auto& chunk : cur->chunks()) {

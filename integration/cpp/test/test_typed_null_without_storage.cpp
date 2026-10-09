@@ -130,7 +130,8 @@ TEST_CASE("integration::cpp::typed_null_without_storage::matview_over_cast_null_
     run_ok(d, "CREATE DATABASE d;");
     run_ok(d, "CREATE TABLE d.src (a bigint);");
     run_ok(d, "INSERT INTO d.src (a) VALUES (1), (2);");
-    auto created = exec(d, "CREATE MATERIALIZED VIEW d.mv AS SELECT a, CAST(NULL AS blob) AS x FROM d.src WITH NO DATA;");
+    auto created =
+        exec(d, "CREATE MATERIALIZED VIEW d.mv AS SELECT a, CAST(NULL AS blob) AS x FROM d.src WITH NO DATA;");
     if (created->is_success()) {
         run_refused(d, "REFRESH MATERIALIZED VIEW d.mv;");
     }

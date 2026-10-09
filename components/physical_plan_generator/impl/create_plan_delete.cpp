@@ -91,7 +91,8 @@ namespace services::planner::impl {
                                                  const components::logical_plan::storage_parameters* params) {
             VALUE_OR_RETURN(auto sink,
                             storage_operator(context.resource, table.name, table.storage->make_delete(context)));
-            VALUE_OR_RETURN(auto scan, storage_operator(context.resource, table.name, table.storage->make_scan(context)));
+            VALUE_OR_RETURN(auto scan,
+                            storage_operator(context.resource, table.name, table.storage->make_scan(context)));
             std::pmr::vector<components::types::complex_logical_type> columns(context.resource);
             columns.reserve(table.columns.size());
             for (const auto& column : table.columns) {

@@ -8,10 +8,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <sstream>
 #include <string>
 #include <thread>
-#include <core/tests/wait_ready.hpp>
 
 // A column's position is its attnum, and a DROP leaves a tombstone holding that position, so a
 // concurrent DROP COLUMN never renumbers the columns a reader is already reading. The gate below

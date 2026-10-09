@@ -138,8 +138,8 @@ TEST_CASE("group by over node_data: integer key (control, passes)") {
     auto* resource = dispatcher->resource();
 
     sql::transform::transformer transformer(resource);
-    auto cursor = dispatcher->execute_plan(otterbrix::session_id_t(),
-                                           build_plan(resource, transformer, /*string_key=*/false));
+    auto cursor =
+        dispatcher->execute_plan(otterbrix::session_id_t(), build_plan(resource, transformer, /*string_key=*/false));
     REQUIRE(cursor);
     REQUIRE_FALSE(cursor->is_error());
     REQUIRE(cursor->size() == 2);
@@ -171,8 +171,8 @@ TEST_CASE("group by over node_data: string key (SIGSEGV before the fix)") {
     auto* resource = dispatcher->resource();
 
     sql::transform::transformer transformer(resource);
-    auto cursor = dispatcher->execute_plan(otterbrix::session_id_t(),
-                                           build_plan(resource, transformer, /*string_key=*/true));
+    auto cursor =
+        dispatcher->execute_plan(otterbrix::session_id_t(), build_plan(resource, transformer, /*string_key=*/true));
     REQUIRE(cursor);
     REQUIRE_FALSE(cursor->is_error());
     REQUIRE(cursor->size() == 2);

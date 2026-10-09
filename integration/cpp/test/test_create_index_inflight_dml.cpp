@@ -8,9 +8,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <string>
 #include <thread>
-#include <core/tests/wait_ready.hpp>
 
 namespace services::collection::executor {
     void dev_set_dml_pre_drive_hook(void (*hook)(uint64_t session_data)) noexcept;

@@ -9,6 +9,8 @@
 #include <services/index/manager_index.hpp>
 
 #include <chrono>
+#include <core/tests/skip_under_root.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -19,8 +21,6 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <core/tests/skip_under_root.hpp>
-#include <core/tests/wait_ready.hpp>
 
 // A crash between compacting a table and rebuilding its indexes can leave a POST-COMPACT TABLE
 // UNDER PRE-COMPACT INDEXES that SURVIVES restart; closing this needs a durable fact — "these

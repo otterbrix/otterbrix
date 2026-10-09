@@ -124,7 +124,8 @@ namespace {
         return std::make_unique<data_table_t>(resource, bm, std::move(columns), "checkpoint_refusal");
     }
 
-    void append_mixed_rows(data_table_t& table, std::pmr::memory_resource* resource, uint64_t first_row, uint64_t rows) {
+    void
+    append_mixed_rows(data_table_t& table, std::pmr::memory_resource* resource, uint64_t first_row, uint64_t rows) {
         auto types = table.copy_types();
         data_chunk_t chunk(resource, types, rows);
         chunk.set_cardinality(rows);
@@ -320,7 +321,7 @@ TEST_CASE("checkpoint: the columns of a small table share one data block, a one-
     checkpoint(table, bm);
     const uint64_t blocks_after_first = bm.total_blocks();
     INFO("[checkpoint_blocks] first checkpoint: " << blocks_after_first << " blocks, " << file_bytes(path)
-                                                   << " B file, " << live_data_blocks(table) << " live data blocks");
+                                                  << " B file, " << live_data_blocks(table) << " live data blocks");
     // The payload (root copy and live copy alike) fits one shared block; the rest is the root's
     // metadata and the free list.
     CHECK(live_data_blocks(table) <= 1);
@@ -331,9 +332,9 @@ TEST_CASE("checkpoint: the columns of a small table share one data block, a one-
     append_rows(table, &resource, 100, 1);
     checkpoint(table, bm);
     const uint64_t blocks_after_second = bm.total_blocks();
-    INFO("[checkpoint_blocks] second checkpoint (+1 row): " << blocks_after_second << " blocks, "
-                                                           << file_bytes(path) << " B file, "
-                                                           << live_data_blocks(table) << " live data blocks");
+    INFO("[checkpoint_blocks] second checkpoint (+1 row): " << blocks_after_second << " blocks, " << file_bytes(path)
+                                                            << " B file, " << live_data_blocks(table)
+                                                            << " live data blocks");
     CHECK(live_data_blocks(table) <= 2);
     CHECK(blocks_after_second - blocks_after_first <= 4);
     REQUIRE(table.calculate_size() == 101);

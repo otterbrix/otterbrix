@@ -20,12 +20,12 @@
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <limits>
 #include <map>
-#include <vector>
-#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
+#include <vector>
 
 using namespace services::disk;
 using namespace pushdown_reduce_test;

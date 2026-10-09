@@ -62,8 +62,8 @@ namespace {
     }
 
     // One statement: a single append state fed 1024-row chunks, finalized with `txn`.
-    void append_rows(data_table_t& table, env_t& env, uint64_t start, uint64_t count, uint64_t width,
-                     transaction_data txn) {
+    void
+    append_rows(data_table_t& table, env_t& env, uint64_t start, uint64_t count, uint64_t width, transaction_data txn) {
         auto types = table.copy_types();
         table_append_state state(&env.resource);
         REQUIRE_FALSE(table.append_lock(state).has_error());
@@ -176,10 +176,8 @@ namespace {
 
     // committed rows; a transaction appends and is rolled back; another commit; checkpoint. Returns the
     // blocks the revert freed while a surviving segment still named them.
-    std::set<uint64_t> rolled_back_table(env_t& env,
-                                         tstorage::single_file_block_manager_t& bm,
-                                         data_table_t& table,
-                                         uint64_t width) {
+    std::set<uint64_t>
+    rolled_back_table(env_t& env, tstorage::single_file_block_manager_t& bm, data_table_t& table, uint64_t width) {
         append_rows(table, env, 0, COMMITTED, width, transaction_data::committed());
         append_rows(table, env, COMMITTED, TXN_ROWS, width, transaction_data{7, 7});
         const auto freed_before = bm.dev_freed_ids().size();

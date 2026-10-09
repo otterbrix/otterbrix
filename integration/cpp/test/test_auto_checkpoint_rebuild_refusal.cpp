@@ -13,6 +13,8 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <core/tests/skip_under_root.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <filesystem>
 #include <map>
@@ -23,8 +25,6 @@
 #include <system_error>
 #include <thread>
 #include <vector>
-#include <core/tests/skip_under_root.hpp>
-#include <core/tests/wait_ready.hpp>
 
 // A refused rebuild must abandon run_auto_checkpoint's round instead of falling through to
 // truncation, since nothing rebuilds an index at startup or during replay. Truncation is detected

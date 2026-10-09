@@ -55,7 +55,8 @@ namespace services::wal {
         core::error_t refusal(core::error_code_t::io_error,
                               std::pmr::string{"wal_reader: the directory " + dir.string() +
                                                    " could not be listed, replay refuses rather than coming up "
-                                                   "without what it holds: " + ec.message(),
+                                                   "without what it holds: " +
+                                                   ec.message(),
                                                resource_});
         error(log_, "{}", refusal.what);
         return refusal;

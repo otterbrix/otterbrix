@@ -427,8 +427,7 @@ namespace components::sql::transform {
                     return std::holds_alternative<expressions::expression_ptr>(arg);
                 });
                 for (const auto& expr : context.group->expressions()) {
-                    if (const auto* found =
-                            find_call(expr.get(), called, args, args_comparable, func->agg_distinct)) {
+                    if (const auto* found = find_call(expr.get(), called, args, args_comparable, func->agg_distinct)) {
                         return found->key();
                     }
                 }

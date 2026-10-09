@@ -37,19 +37,18 @@ namespace components::operators {
         , behavior_(behavior) {}
 
     actor_zeta::unique_future<void> operator_unregister_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
-
         // 1. The overload the master registry holds, if any: its pg_proc rows are the rows of its signatures. A
         //    function a previous process registered has its rows only; they are the rows these inputs match.
         const auto live_uid = ctx->function_registry->find_overload(function_name_, inputs_);
         const components::compute::function* live = live_uid == components::compute::invalid_function_uid
-                                                         ? nullptr
-                                                         : ctx->function_registry->get_function(live_uid);
+                                                        ? nullptr
+                                                        : ctx->function_registry->get_function(live_uid);
 
 #ifdef DEV_MODE
         if (g_unregister_udf_purge_refusal.load()) {
-            set_error(core::error_t{core::error_code_t::io_error,
-                                    std::pmr::string{"unregister_udf: the pg_proc purge was refused (test seam)",
-                                                     resource_}});
+            set_error(core::error_t{
+                core::error_code_t::io_error,
+                std::pmr::string{"unregister_udf: the pg_proc purge was refused (test seam)", resource_}});
             mark_failed();
             co_return;
         }
@@ -80,8 +79,7 @@ namespace components::operators {
                         return row == m.signature;
                     });
                 } else {
-                    auto parameters =
-                        components::catalog::decode_proargmatchers(resource_, m.signature.proargmatchers);
+                    auto parameters = components::catalog::decode_proargmatchers(resource_, m.signature.proargmatchers);
                     if (parameters.has_error()) {
                         set_error(parameters.error());
                         mark_failed();

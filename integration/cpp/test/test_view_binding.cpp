@@ -14,11 +14,11 @@
 #include <services/disk/manager_disk.hpp>
 
 #include <algorithm>
+#include <core/tests/wait_ready.hpp>
 #include <limits>
 #include <set>
 #include <string>
 #include <thread>
-#include <core/tests/wait_ready.hpp>
 
 using namespace test_helpers;
 using components::cursor::cursor_t_ptr;
@@ -213,17 +213,12 @@ namespace {
                         logical_type output) {
         const components::compute::parameter_type inputs[] = {components::compute::parameter_type::exact(input)};
         const components::compute::output_type outputs[] = {components::compute::output_type::fixed(output)};
-        forge_proc_row(space,
-                       oid,
-                       name,
-                       catalog::encode_proargmatchers(inputs),
-                       catalog::encode_prorettype(outputs));
+        forge_proc_row(space, oid, name, catalog::encode_proargmatchers(inputs), catalog::encode_prorettype(outputs));
     }
 
     // No statement writes a pg_depend row without a deptype; this does, to see a DROP refuse the corrupt catalog.
-    void forge_depend_row_without_deptype(catalog_forging_spaces_t& space,
-                                          catalog::oid_t objid,
-                                          catalog::oid_t refobjid) {
+    void
+    forge_depend_row_without_deptype(catalog_forging_spaces_t& space, catalog::oid_t objid, catalog::oid_t refobjid) {
         auto* resource = space.dispatcher()->resource();
         components::table::transaction_data td{0, 0};
         td.snapshot_horizon = std::numeric_limits<uint64_t>::max();
@@ -473,8 +468,7 @@ TEST_CASE("integration::cpp::view_binding::unregister_udf_the_view_calls_is_refu
     REQUIRE_FALSE(d->register_udf(otterbrix::session_id_t(), make_twice(d->resource())).contains_error());
     run_ok(d, "CREATE VIEW vb.v AS SELECT twice(a) AS t2 FROM vb.t;");
 
-    auto refused =
-        d->unregister_udf(otterbrix::session_id_t(), "twice", {components::types::logical_type::BIGINT});
+    auto refused = d->unregister_udf(otterbrix::session_id_t(), "twice", {components::types::logical_type::BIGINT});
     INFO("error: " << refused.what);
     CHECK(refused.contains_error());
     CHECK(bigints(run_ok(d, "SELECT t2 FROM vb.v;")) == std::set<std::int64_t>{2, 4});

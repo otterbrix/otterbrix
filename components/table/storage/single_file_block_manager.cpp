@@ -110,10 +110,10 @@ namespace components::table::storage {
         });
         const auto* active = slots.active();
         if (active == nullptr) {
-            return core::error_t(core::error_code_t::data_corruption,
-                                 std::pmr::string{"No recoverable root in " + path +
-                                                      ": neither database header slot is usable",
-                                                  resource});
+            return core::error_t(
+                core::error_code_t::data_corruption,
+                std::pmr::string{"No recoverable root in " + path + ": neither database header slot is usable",
+                                 resource});
         }
         return active->meta_block == INVALID_INDEX;
     }
@@ -279,8 +279,7 @@ namespace components::table::storage {
                                      ": the selected root is at iteration 0 with no metadata pointer, which is "
                                      "legal only for the CREATE-time header, but this header claims block_count " +
                                      std::to_string(active.block_count) + " and free_list " +
-                                     std::to_string(active.free_list) + " (file size " +
-                                     std::to_string(file_bytes) +
+                                     std::to_string(active.free_list) + " (file size " + std::to_string(file_bytes) +
                                      " bytes). The file is left byte-identical for offline inspection.",
                                  buffer_manager.resource()});
         }

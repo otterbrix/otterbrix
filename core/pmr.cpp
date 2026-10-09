@@ -97,8 +97,6 @@ namespace core::pmr {
 
     void arena_resource_t::do_deallocate(void*, std::size_t, std::size_t) {}
 
-    bool arena_resource_t::do_is_equal(const std::pmr::memory_resource& other) const noexcept {
-        return this == &other;
-    }
+    bool arena_resource_t::do_is_equal(const std::pmr::memory_resource& other) const noexcept { return this == &other; }
 
 } // namespace core::pmr

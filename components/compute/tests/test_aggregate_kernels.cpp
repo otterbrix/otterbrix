@@ -334,8 +334,7 @@ TEST_CASE("components::compute::aggregate::nulls_are_skipped") {
 TEST_CASE("components::compute::aggregate::unsigned_integers_widen_like_signed_ones") {
     aggregate_registry_fixture fx;
 
-    for (auto type :
-         {logical_type::UTINYINT, logical_type::USMALLINT, logical_type::UINTEGER, logical_type::UBIGINT}) {
+    for (auto type : {logical_type::UTINYINT, logical_type::USMALLINT, logical_type::UINTEGER, logical_type::UBIGINT}) {
         CAPTURE(type);
         auto sum = fx.result_type("sum", {type});
         REQUIRE_FALSE(sum.has_error());
@@ -378,8 +377,7 @@ TEST_CASE("components::compute::aggregate::errors_name_the_function_that_refused
     aggregate_registry_fixture fx;
 
     auto origin_of = [](const core::error_t& error) {
-        return std::pair<std::string, std::string>{error.error_origin.file_name(),
-                                                   error.error_origin.function_name()};
+        return std::pair<std::string, std::string>{error.error_origin.file_name(), error.error_origin.function_name()};
     };
 
     auto sum_type = fx.result_type("sum", {logical_type::INTEGER, logical_type::INTEGER});

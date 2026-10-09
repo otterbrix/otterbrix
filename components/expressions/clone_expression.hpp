@@ -19,7 +19,8 @@ namespace components::expressions {
     // side's tree, which is why this is move-only and not an expression_ptr.
     class detached_expression_t final {
     public:
-        [[nodiscard]] static detached_expression_t detach(std::pmr::memory_resource* target, const expression_ptr& expr);
+        [[nodiscard]] static detached_expression_t detach(std::pmr::memory_resource* target,
+                                                          const expression_ptr& expr);
 
         detached_expression_t(detached_expression_t&&) noexcept = default;
         detached_expression_t& operator=(detached_expression_t&&) noexcept = default;

@@ -67,8 +67,9 @@ namespace {
     cursor_ptr error_cursor(otterbrix_t* engine, core::error_code_t code, std::string_view text) noexcept {
         try {
             auto* resource = engine->dispatcher()->resource();
-            return store_cursor(engine,
-                                components::cursor::make_cursor(resource, core::error_t(code, std::pmr::string{text, resource})));
+            return store_cursor(
+                engine,
+                components::cursor::make_cursor(resource, core::error_t(code, std::pmr::string{text, resource})));
         } catch (const std::bad_alloc&) {
             out_of_memory();
         }
@@ -179,8 +180,9 @@ execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_param_t* pa
                     return error_cursor(engine, core::error_code_t::invalid_parameter, "sql_param_t: unknown kind");
             }
         }
-        auto cursor =
-            engine->dispatcher()->execute_sql_with_params(otterbrix::session_id_t(), std::string{to_view(query)}, bound);
+        auto cursor = engine->dispatcher()->execute_sql_with_params(otterbrix::session_id_t(),
+                                                                    std::string{to_view(query)},
+                                                                    bound);
         return store_cursor(engine, std::move(cursor));
     } catch (const std::bad_alloc&) {
         out_of_memory();
@@ -191,9 +193,7 @@ execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_param_t* pa
     }
 }
 
-extern "C" void release_cursor(cursor_ptr ptr) {
-    delete convert_cursor(ptr);
-}
+extern "C" void release_cursor(cursor_ptr ptr) { delete convert_cursor(ptr); }
 
 extern "C" int32_t cursor_size(cursor_ptr ptr) {
     auto storage = convert_cursor(ptr);
@@ -264,9 +264,9 @@ extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t
 
     try {
         // value() spans the result batch — it locates the chunk owning the global row.
-        std::unique_ptr<value_storage_t> value_storage{new value_storage_t{
-            storage->engine,
-            cursor.value(static_cast<uint64_t>(column_index), static_cast<uint64_t>(row_index))}};
+        std::unique_ptr<value_storage_t> value_storage{
+            new value_storage_t{storage->engine,
+                                cursor.value(static_cast<uint64_t>(column_index), static_cast<uint64_t>(row_index))}};
         return reinterpret_cast<value_ptr>(value_storage.release());
     } catch (const std::bad_alloc&) {
         out_of_memory();
@@ -286,9 +286,7 @@ extern "C" value_ptr cursor_get_value_by_name(cursor_ptr ptr, int32_t row_index,
     return nullptr;
 }
 
-extern "C" void release_value(value_ptr ptr) {
-    delete convert_value(ptr);
-}
+extern "C" void release_value(value_ptr ptr) { delete convert_value(ptr); }
 
 extern "C" bool value_is_null(value_ptr ptr) {
     auto storage = convert_value(ptr);

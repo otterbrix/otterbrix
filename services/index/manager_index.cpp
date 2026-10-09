@@ -1,6 +1,6 @@
 #include "manager_index.hpp"
-#include <services/dev_pump.hpp>
 #include "index_types.hpp"
+#include <services/dev_pump.hpp>
 
 #include <actor-zeta/spawn.hpp>
 #include <algorithm>
@@ -389,9 +389,7 @@ namespace services::index {
     // The mutex is taken between the push and the notify, so the loop either sees the message before
     // it sleeps or is already waiting when the notify comes.
     void manager_index_t::wake_loop_() noexcept {
-        {
-            std::lock_guard<std::mutex> guard(mutex_);
-        }
+        { std::lock_guard<std::mutex> guard(mutex_); }
         pump_cv_.notify_one();
     }
 

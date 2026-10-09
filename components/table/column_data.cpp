@@ -420,9 +420,9 @@ namespace components::table {
             case types::physical_type::UNKNOWN:
             case types::physical_type::INVALID:
             case types::physical_type::BIT:
-                return core::error_t(core::error_code_t::invalid_parameter,
-                                     std::pmr::string("a table column cannot be built from a type without storage",
-                                                      resource));
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string("a table column cannot be built from a type without storage", resource));
             default:
                 break;
         }

@@ -22,7 +22,6 @@
 #include "block_reachability_walker.hpp"
 #include "fault_injection_file.hpp"
 
-
 using namespace components::types;
 using namespace components::vector;
 using namespace components::table;
@@ -160,8 +159,7 @@ namespace {
 
 } // namespace
 
-TEST_CASE("tail_reuse: segments filled by successive appends share one block until a root names it",
-          "[tailreuse]") {
+TEST_CASE("tail_reuse: segments filled by successive appends share one block until a root names it", "[tailreuse]") {
     const auto path = tr_db_path("shared");
     remove_file(path);
     tr_env_t env;
@@ -205,8 +203,7 @@ TEST_CASE("tail_reuse: segments filled by successive appends share one block unt
     remove_file(path);
 }
 
-TEST_CASE("tail_reuse: a resident copy of a reused block serves the rows appended after it was loaded",
-          "[tailreuse]") {
+TEST_CASE("tail_reuse: a resident copy of a reused block serves the rows appended after it was loaded", "[tailreuse]") {
     const auto path = tr_db_path("resident");
     remove_file(path);
     tr_env_t env;
@@ -292,4 +289,3 @@ TEST_CASE("tail_reuse: a crash while a tail block is being rewritten loses only 
     }
     remove_file(path);
 }
-

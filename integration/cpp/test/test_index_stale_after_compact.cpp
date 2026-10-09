@@ -9,11 +9,11 @@
 #include <services/index/manager_index.hpp>
 
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <string>
 #include <string_view>
 #include <thread>
-#include <core/tests/wait_ready.hpp>
 
 // compact() renumbers every surviving row's physical id; a stale index entry then silently
 // returns the wrong row or none. Two call paths reach compact() (CHECKPOINT statement, WAL
@@ -238,12 +238,11 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
         ++doomed;
     }
     // MEASURED: index_repopulations() lands 41-69 ms after table_checkpoints() becomes non-zero.
-    const bool round_rebuilt = test_helpers::wait_until([] {
-        return services::disk::table_checkpoints() != 0 && services::index::index_repopulations() != 0;
-    });
+    const bool round_rebuilt = test_helpers::wait_until(
+        [] { return services::disk::table_checkpoints() != 0 && services::index::index_repopulations() != 0; });
     INFO("the automatic round: table_checkpoints=" << services::disk::table_checkpoints()
-                                                    << " index_repopulations=" << services::index::index_repopulations()
-                                                    << (round_rebuilt ? "" : " when the wait ran out"));
+                                                   << " index_repopulations=" << services::index::index_repopulations()
+                                                   << (round_rebuilt ? "" : " when the wait ran out"));
 
     INFO("NOT VACUOUS: without an automatic checkpoint round this case tests nothing");
     REQUIRE(services::disk::table_checkpoints() > 0);

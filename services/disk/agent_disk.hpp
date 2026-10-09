@@ -309,8 +309,7 @@ namespace services::disk {
                                                   std::uint64_t commit_id);
 
         unique_future<core::result_wrapper_t<std::uint64_t>>
-        compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
-                                                                     std::set<std::string> live_attnames);
+        compact_relkind_g_storage_inner(components::catalog::oid_t table_oid, std::set<std::string> live_attnames);
 
         // NAMES the column instead of taking the live set: no set to re-derive, so no gap that
         // could drop a surviving column instead.

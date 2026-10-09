@@ -18,12 +18,12 @@
 #include "disk_test_helpers.hpp"
 
 #include <algorithm>
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
+#include <services/disk/tests/test_directory.hpp>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
 
 // storage_fetch_next_batch mints a cursor in active_scans_ and erases it only along the drain
 // paths, so a source that stops early (error mid-pump, satisfied LIMIT, dropped sub-plan) leaves

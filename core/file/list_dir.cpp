@@ -12,7 +12,7 @@ namespace core::filesystem {
     } // namespace
 
     core::result_wrapper_t<std::pmr::vector<dir_entry_t>> list_dir(std::pmr::memory_resource* resource,
-                                                                    const std::filesystem::path& directory) {
+                                                                   const std::filesystem::path& directory) {
         std::pmr::vector<dir_entry_t> entries(resource);
         std::error_code ec;
         std::filesystem::directory_iterator it(directory, ec);

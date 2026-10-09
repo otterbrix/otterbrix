@@ -79,12 +79,7 @@ namespace components::operators {
         // whose ordinals a key indexes directly whatever side it resolved to — so there is no
         // second chunk to pair and no offset to apply.
         auto result =
-            evaluate_projection(resource_,
-                                columns_,
-                                &input,
-                                ctx->parameters,
-                                ctx->execution_context,
-                                &graph_);
+            evaluate_projection(resource_, columns_, &input, ctx->parameters, ctx->execution_context, &graph_);
         if (result.has_error()) {
             return result.error();
         }

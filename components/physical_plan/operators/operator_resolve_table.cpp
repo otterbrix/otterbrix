@@ -191,10 +191,10 @@ namespace components::operators {
                         const auto oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                         const bool has_ns = chunk.column_count() > catalog::pg_class_col::relnamespace &&
                                             !chunk.is_null(catalog::pg_class_col::relnamespace, i);
-                        const auto ns = has_ns ? static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(
-                                                     catalog::pg_class_col::relnamespace,
-                                                     i))
-                                               : catalog::INVALID_OID;
+                        const auto ns =
+                            has_ns ? static_cast<catalog::oid_t>(
+                                         chunk.get_value<std::uint32_t>(catalog::pg_class_col::relnamespace, i))
+                                   : catalog::INVALID_OID;
                         if (std::none_of(candidates.begin(), candidates.end(), [oid](const candidate_t& cand) {
                                 return cand.oid == oid;
                             })) {
@@ -362,10 +362,10 @@ namespace components::operators {
                         binding.dbname = text(chunk, col::dbname, i);
                         binding.schema = text(chunk, col::schema, i);
                         binding.relname = text(chunk, col::relname, i);
-                        binding.refobjid = chunk.is_null(col::refobjid, i)
-                                               ? catalog::INVALID_OID
-                                               : static_cast<catalog::oid_t>(
-                                                     chunk.get_value<std::uint32_t>(col::refobjid, i));
+                        binding.refobjid =
+                            chunk.is_null(col::refobjid, i)
+                                ? catalog::INVALID_OID
+                                : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(col::refobjid, i));
                         binding.proargmatchers = text(chunk, col::proargmatchers, i);
                         binding.prorettype = text(chunk, col::prorettype, i);
                         view_bindings.push_back(std::move(binding));

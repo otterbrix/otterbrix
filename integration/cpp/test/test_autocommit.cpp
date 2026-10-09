@@ -8,11 +8,11 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
-#include <core/tests/wait_ready.hpp>
 
 using namespace components;
 using namespace components::cursor;

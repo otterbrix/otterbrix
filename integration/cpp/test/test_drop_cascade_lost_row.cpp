@@ -9,10 +9,10 @@
 
 #include <unistd.h>
 
+#include <core/tests/wait_ready.hpp>
 #include <limits>
 #include <string>
 #include <thread>
-#include <core/tests/wait_ready.hpp>
 
 // A DROP CASCADE step's own-row delete ({classid, col 0, objid}) must count nonzero: a zero means
 // the catalog never held the planned object, so proceeding would push storage/index drops over a

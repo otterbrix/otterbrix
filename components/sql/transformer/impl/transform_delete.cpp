@@ -63,12 +63,9 @@ namespace components::sql::transform {
             where_expr = make_compare_expression(resource_, compare_type::all_true);
         }
         VALUE_OR_RETURN(auto del_limit, build_dml_limit(node.limitCount, plan));
-        auto del = logical_plan::make_node_delete(
-            resource_,
-            logical_plan::make_node_match(resource_,
-                                          names.left_name,
-                                          where_expr),
-            del_limit);
+        auto del = logical_plan::make_node_delete(resource_,
+                                                  logical_plan::make_node_match(resource_, names.left_name, where_expr),
+                                                  del_limit);
         // The target identity stays ON the node: enrich binds it to a resolved
         // entry by name and stamps table_oid() + table_metadata() from there.
         set_target(*del, names.left_name, target_slots::relation_with_schema);

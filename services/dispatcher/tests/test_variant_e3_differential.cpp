@@ -6,6 +6,7 @@
 #include <services/dispatcher/dispatcher.hpp>
 
 #include <actor-zeta/spawn.hpp>
+#include <components/log/test/test_log.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -13,13 +14,12 @@
 #include <components/types/types.hpp>
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/catalog_probe.hpp>
+#include <services/disk/tests/test_directory.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
 
 // Same SQL fixture drives dispatcher::execute_plan; each case compares the cursor against pg_catalog state.
 

@@ -125,9 +125,8 @@ namespace services::collection {
         }
 
         // "twice(int8)": the function as a pg_rewrite_ref 'f' row or a pg_proc row records it.
-        core::result_wrapper_t<std::string> describe_function(std::pmr::memory_resource* resource,
-                                                              std::string_view name,
-                                                              std::string_view proargmatchers) {
+        core::result_wrapper_t<std::string>
+        describe_function(std::pmr::memory_resource* resource, std::string_view name, std::string_view proargmatchers) {
             auto matchers = describe_matchers(resource, proargmatchers);
             if (matchers.has_error()) {
                 return matchers.error();
@@ -195,7 +194,10 @@ namespace services::collection {
             case catalog::relkind::view:
                 return wrong_kind(resource, name, expected, "Use DROP VIEW to remove a view.");
             case catalog::relkind::materialized_view:
-                return wrong_kind(resource, name, expected, "Use DROP MATERIALIZED VIEW to remove a materialized view.");
+                return wrong_kind(resource,
+                                  name,
+                                  expected,
+                                  "Use DROP MATERIALIZED VIEW to remove a materialized view.");
             case catalog::relkind::sequence:
                 return wrong_kind(resource, name, expected, "Use DROP SEQUENCE to remove a sequence.");
             default:
@@ -223,8 +225,8 @@ namespace services::collection {
         for (std::size_t i = 0; i < existing.columns.size(); ++i) {
             const auto& before = existing.columns[i];
             if (columns[i].name() != before.attname) {
-                return refuse("cannot change name of view column \"" + before.attname + "\" to \"" +
-                              columns[i].name() + "\"");
+                return refuse("cannot change name of view column \"" + before.attname + "\" to \"" + columns[i].name() +
+                              "\"");
             }
             if (!(columns[i].type() == before.type)) {
                 return refuse("cannot change data type of view column \"" + before.attname + "\" from " +
@@ -331,9 +333,8 @@ namespace services::collection {
                 return core::error_on(resource, described.error());
             }
             const std::string& pinned = described.value();
-            const auto row = std::find_if(rows.begin(), rows.end(), [&binding](const auto& r) {
-                return r.oid == binding.refobjid;
-            });
+            const auto row =
+                std::find_if(rows.begin(), rows.end(), [&binding](const auto& r) { return r.oid == binding.refobjid; });
             const std::string created_over =
                 "function " + pinned + " it was created over (oid " + std::to_string(binding.refobjid) + ")";
             if (row == rows.end()) {
@@ -368,10 +369,10 @@ namespace services::collection {
                 }
             }
             if (!found) {
-                return core::error_t{core::error_code_t::unrecognized_function,
-                                     std::pmr::string{"function " + pinned + " used by view \"" + view.name +
-                                                          "\" is not registered",
-                                                      resource}};
+                return core::error_t{
+                    core::error_code_t::unrecognized_function,
+                    std::pmr::string{"function " + pinned + " used by view \"" + view.name + "\" is not registered",
+                                     resource}};
             }
         }
         if (pins.empty()) {
@@ -405,10 +406,10 @@ namespace services::collection {
             const auto type = view_column_type(output[i].type);
             const std::string name = type.has_alias() ? type.alias() : std::string{};
             if (name.empty()) {
-                return core::error_t{core::error_code_t::schema_error,
-                                     std::pmr::string{"view column " + std::to_string(i + 1) +
-                                                          " has no name; name it with AS",
-                                                      resource}};
+                return core::error_t{
+                    core::error_code_t::schema_error,
+                    std::pmr::string{"view column " + std::to_string(i + 1) + " has no name; name it with AS",
+                                     resource}};
             }
             if (std::any_of(columns.begin(), columns.end(), [&](const auto& c) { return c.name() == name; })) {
                 return core::error_t{core::error_code_t::duplicate_field,

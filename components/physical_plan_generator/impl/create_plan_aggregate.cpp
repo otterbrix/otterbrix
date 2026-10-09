@@ -1,8 +1,8 @@
-#include <components/expressions/clone_expression.hpp>
 #include "create_plan_aggregate.hpp"
 #include "create_plan_match.hpp"
 #include "create_plan_select.hpp"
 #include "create_plan_sort.hpp"
+#include <components/expressions/clone_expression.hpp>
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/compute/function.hpp>
@@ -115,7 +115,8 @@ namespace services::planner::impl {
                 const auto& expr = group->expressions()[i];
                 if (expr->group() == ce::expression_group::scalar) {
                     if (output_key_of[i] != SIZE_MAX) {
-                        out.outputs.push_back(ce::detached_expression_t::detach(resource, expr)); // the target list naming this key
+                        out.outputs.push_back(
+                            ce::detached_expression_t::detach(resource, expr)); // the target list naming this key
                     }
                     continue; // the key itself was added in pass 1
                 }

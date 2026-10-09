@@ -3,9 +3,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/table_storage.hpp>
 #include <components/physical_plan/operators/operator.hpp>
-#include <services/collection/context_storage.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <services/collection/context_storage.hpp>
 
 #include <unordered_map>
 
@@ -121,9 +121,8 @@ namespace {
         return answers;
     }
 
-    cursor::cursor_t_ptr run_with_externals(otterbrix::wrapper_dispatcher_t* dispatcher,
-                                            const std::string& sql,
-                                            chunks_by_name_t chunks) {
+    cursor::cursor_t_ptr
+    run_with_externals(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql, chunks_by_name_t chunks) {
         current_chunks() = std::move(chunks);
         return dispatcher->execute_sql(otterbrix::session_id_t(), sql);
     }

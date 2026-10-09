@@ -407,8 +407,7 @@ namespace components::operators {
             if (deleted.value()[i] == 0) {
                 co_return core::error_t{core::error_code_t::other_error,
                                         std::pmr::string{"register_udf: no pg_proc row was deleted for '" +
-                                                             function_name +
-                                                             "' — the function is still in the catalog",
+                                                             function_name + "' — the function is still in the catalog",
                                                          resource}};
             }
         }

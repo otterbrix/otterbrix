@@ -25,13 +25,13 @@
 #include "catalog_probe.hpp"
 #include "disk_test_helpers.hpp"
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <limits>
+#include <services/disk/tests/test_directory.hpp>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
 
 // append_pg_catalog_row calls write_physical_insert before the storage append — WAL-then-storage.
 
@@ -84,7 +84,7 @@ namespace {
                   log,
                   wire_wal ? disk->address() : components::pipeline::no_mailbox(),
                   components::pipeline::no_mailbox(),
-                                                                            configuration::pump_intervals_t{})) {
+                  configuration::pump_intervals_t{})) {
             std::filesystem::create_directories(dir);
             if (wire_wal) {
                 disk->set_manager_wal_sync(wal->address());

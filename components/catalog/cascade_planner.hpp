@@ -44,6 +44,7 @@ namespace components::catalog {
 
     // The RESTRICT refusal in PostgreSQL 18 words (dependency.c reportDependentObjects), without a catalog read:
     // `target` as the statement wrote it ("table db.t") and the oid of the dependent that blocks.
-    core::error_t dependent_objects_error(std::pmr::memory_resource* resource, std::string_view target, oid_t blocking_oid);
+    core::error_t
+    dependent_objects_error(std::pmr::memory_resource* resource, std::string_view target, oid_t blocking_oid);
 
 } // namespace components::catalog

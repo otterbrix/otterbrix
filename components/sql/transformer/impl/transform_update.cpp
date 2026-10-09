@@ -75,15 +75,11 @@ namespace components::sql::transform {
         if (node.whereClause) {
             VALUE_OR_RETURN(auto where_res, transform_predicate(node.whereClause, names, plan));
             expressions::expression_ptr where_expr = std::move(where_res);
-            match =
-                logical_plan::make_node_match(resource_,
-                                              names.left_name,
-                                              where_expr);
+            match = logical_plan::make_node_match(resource_, names.left_name, where_expr);
         } else {
-            match =
-                logical_plan::make_node_match(resource_,
-                                              names.left_name,
-                                              make_compare_expression(resource_, compare_type::all_true));
+            match = logical_plan::make_node_match(resource_,
+                                                  names.left_name,
+                                                  make_compare_expression(resource_, compare_type::all_true));
         }
 
         VALUE_OR_RETURN(auto upd_limit_res, build_dml_limit(node.limitCount, plan));

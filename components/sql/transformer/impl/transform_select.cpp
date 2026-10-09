@@ -1155,10 +1155,7 @@ namespace components::sql::transform {
                         not_expr->append_child(std::move(exists_eq));
                         where_expr = std::move(not_expr);
                     }
-                    agg->append_child(logical_plan::make_node_match(
-                        resource_,
-                        agg->target(),
-                        std::move(where_expr)));
+                    agg->append_child(logical_plan::make_node_match(resource_, agg->target(), std::move(where_expr)));
                 }
                 where_consumed_by_semi_anti = true;
             }
@@ -1168,10 +1165,7 @@ namespace components::sql::transform {
             VALUE_OR_RETURN(auto expr_res, transform_predicate(node.whereClause, names, plan));
             expression_ptr expr = std::move(expr_res);
             if (expr) {
-                agg->append_child(
-                    logical_plan::make_node_match(resource_,
-                                                  agg->target(),
-                                                  expr));
+                agg->append_child(logical_plan::make_node_match(resource_, agg->target(), expr));
             }
         }
 

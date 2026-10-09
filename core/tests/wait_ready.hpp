@@ -11,9 +11,8 @@ namespace test_helpers {
 
     // For actors on a scheduler the test drives itself.
     template<typename Future, typename Scheduler>
-    [[nodiscard]] bool wait_ready(Future& future,
-                                  Scheduler* scheduler,
-                                  std::chrono::steady_clock::duration limit = reply_deadline) {
+    [[nodiscard]] bool
+    wait_ready(Future& future, Scheduler* scheduler, std::chrono::steady_clock::duration limit = reply_deadline) {
         const auto deadline = std::chrono::steady_clock::now() + limit;
         while (!future.is_ready() && std::chrono::steady_clock::now() < deadline) {
             scheduler->run(1000);

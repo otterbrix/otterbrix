@@ -16,6 +16,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/context.hpp>
+#include <components/log/test/test_log.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
@@ -24,13 +25,12 @@
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <core/result_wrapper.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <services/collection/executor.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/catalog_probe.hpp>
-#include <services/wal/manager_wal_replicate.hpp>
-#include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
+#include <services/wal/manager_wal_replicate.hpp>
 
 // operator_register_udf_t (pg_proc), operator_register_cast_t (pg_cast) and
 // operator_alter_column_add_t (pg_attribute) each run their own one-OID round at execute time.

@@ -6,20 +6,20 @@
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <core/pmr.hpp>
-#include <services/dispatcher/dispatcher.hpp>
 #include <services/dev_pump.hpp>
+#include <services/dispatcher/dispatcher.hpp>
 #include <services/engine/engine.hpp>
 
 #include <chrono>
+#include <components/log/test/test_log.hpp>
+#include <core/tests/skip_under_root.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <fstream>
 #include <optional>
 #include <string>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test/test_log.hpp>
-#include <core/tests/skip_under_root.hpp>
-#include <core/tests/wait_ready.hpp>
 
 using namespace services::engine;
 
@@ -58,8 +58,8 @@ namespace {
             std::pmr::monotonic_buffer_resource arena(&resource);
             auto* tree = raw_parser(&arena, sql.c_str());
             components::sql::transform::transformer transformer(&resource, sql.c_str());
-            auto plan = transformer.transform(components::sql::transform::pg_cell_to_node_cast(linitial(tree)))
-                            .finalize();
+            auto plan =
+                transformer.transform(components::sql::transform::pg_cell_to_node_cast(linitial(tree))).finalize();
             REQUIRE_FALSE(plan.has_error());
             auto [_, future] = actor_zeta::otterbrix::send(engine->dispatcher_address(),
                                                            &services::dispatcher::manager_dispatcher_t::execute_plan,
@@ -121,10 +121,9 @@ TEST_CASE("services::engine::factory::a_failed_bootstrap_hands_out_no_engine") {
     // The pg_catalog directory is a file, so bootstrap cannot lay out a single system table.
     std::filesystem::create_directories(host.config.disk.path);
     {
-        std::ofstream blocker(
-            (host.config.disk.path /
-             std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::main_database)))
-                .string());
+        std::ofstream blocker((host.config.disk.path / std::to_string(static_cast<unsigned>(
+                                                           components::catalog::well_known_oid::main_database)))
+                                  .string());
         blocker << "x";
     }
     auto refusal = host.open();

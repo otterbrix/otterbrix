@@ -18,7 +18,8 @@ using namespace components::table;
 namespace {
 
     std::string table_db_path(const std::string& name) {
-        std::string path = "/tmp/test_otterbrix_add_column_null_fill_" + name + "_" + std::to_string(::getpid()) + ".otbx";
+        std::string path =
+            "/tmp/test_otterbrix_add_column_null_fill_" + name + "_" + std::to_string(::getpid()) + ".otbx";
         std::remove(path.c_str());
         return path;
     }

@@ -6,10 +6,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <string>
 #include <thread>
-#include <core/tests/wait_ready.hpp>
 
 // The byte threshold is checked only inside commit_txn (manager_wal_replicate.cpp), and with the
 // WAL switched off commit_txn short-circuits before the trigger -- so the 16 MB default, and any

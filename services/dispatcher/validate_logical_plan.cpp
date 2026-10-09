@@ -14,7 +14,6 @@
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
-#include <components/table/column_data.hpp>
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
 #include <components/expressions/aggregate_expression.hpp>
@@ -48,6 +47,7 @@
 #include <components/logical_plan/node_recursive_cte.hpp>
 #include <components/logical_plan/node_select.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <components/table/column_data.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/type_spec_codec.hpp>
 #include <list>

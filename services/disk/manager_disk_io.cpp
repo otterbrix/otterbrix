@@ -410,9 +410,9 @@ namespace services::disk {
         // knew the table; defer, since the post-replay walk revisits it.
         {
             // An unreadable root is not answered here: the probe below refuses it with the full per-slot diagnostics.
-            auto young = components::table::storage::single_file_block_manager_t::file_is_never_checkpointed(
-                otbx_path.string(),
-                resource());
+            auto young =
+                components::table::storage::single_file_block_manager_t::file_is_never_checkpointed(otbx_path.string(),
+                                                                                                    resource());
             if (!young.has_error() && young.value()) {
                 if (sidecar_id > wal::id_t{0}) {
                     return core::error_t(
@@ -466,9 +466,9 @@ namespace services::disk {
         const std::string wal_id_tmp_name = wal_id_name + ".tmp";
         auto listed = core::filesystem::list_dir(resource, dir);
         if (listed.has_error()) {
-            return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"verify_otbx_sidecars: " + std::string(listed.error().what.c_str()),
-                                                  resource});
+            return core::error_t(
+                core::error_code_t::io_error,
+                std::pmr::string{"verify_otbx_sidecars: " + std::string(listed.error().what.c_str()), resource});
         }
         for (const auto& entry : listed.value()) {
             const auto name = entry.path.filename().string();

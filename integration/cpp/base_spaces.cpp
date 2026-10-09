@@ -16,8 +16,9 @@ namespace otterbrix {
         actor_zeta::scheduler_ptr scheduler_exec{new actor_zeta::shared_work(3, 1000)};
         actor_zeta::scheduler_ptr scheduler_disk{new actor_zeta::shared_work(3, 1000)};
         std::optional<services::engine::engine_t> engine;
-        std::unique_ptr<wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper{nullptr,
-                                                                                  actor_zeta::pmr::deleter_t(&resource)};
+        std::unique_ptr<wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper{
+            nullptr,
+            actor_zeta::pmr::deleter_t(&resource)};
     };
 
     void base_otterbrix_t::host_deleter_t::operator()(host_t* host) const noexcept { delete host; }

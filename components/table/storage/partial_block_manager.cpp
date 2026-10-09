@@ -172,11 +172,10 @@ namespace components::table::storage {
         if (partial_blocks_.size() <= MAX_OPEN_TAILS) {
             return;
         }
-        std::stable_sort(partial_blocks_.begin(),
-                         partial_blocks_.end(),
-                         [](const partial_block_t& a, const partial_block_t& b) {
-                             return a.free_space() > b.free_space();
-                         });
+        std::stable_sort(
+            partial_blocks_.begin(),
+            partial_blocks_.end(),
+            [](const partial_block_t& a, const partial_block_t& b) { return a.free_space() > b.free_space(); });
         partial_blocks_.erase(partial_blocks_.begin() + static_cast<int64_t>(MAX_OPEN_TAILS), partial_blocks_.end());
     }
 

@@ -540,9 +540,9 @@ namespace {
                 }
                 break;
             default:
-                return core::error_t(core::error_code_t::kernel_error,
-                                     std::pmr::string{"avg does not accumulate the type it was given",
-                                                      ctx.exec_context().resource()});
+                return core::error_t(
+                    core::error_code_t::kernel_error,
+                    std::pmr::string{"avg does not accumulate the type it was given", ctx.exec_context().resource()});
         }
         if (!fits) {
             return core::error_t(core::error_code_t::arithmetics_failure,
@@ -841,11 +841,12 @@ namespace {
 namespace components::compute {
     // WARNING: array size, names order and uid has to be the same as in DEFAULT_FUNCTIONS
     void register_default_functions(function_registry_t& r) {
-        r.add_builtin(make_sum_func(r.resource(),
-                                    "sum",
-                                    "Add all numeric values",
-                                    "BIGINT over signed integers, UBIGINT over unsigned, DECIMAL(38, s) over DECIMAL(p, s), "
-                                    "else the input type"));
+        r.add_builtin(
+            make_sum_func(r.resource(),
+                          "sum",
+                          "Add all numeric values",
+                          "BIGINT over signed integers, UBIGINT over unsigned, DECIMAL(38, s) over DECIMAL(p, s), "
+                          "else the input type"));
         r.add_builtin(make_min_func(r.resource(),
                                     "min",
                                     "Selects minimal value",

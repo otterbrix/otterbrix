@@ -22,13 +22,13 @@
 #include <services/disk/tests/catalog_probe.hpp>
 #include <services/disk/tests/disk_test_helpers.hpp>
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <limits>
+#include <services/disk/tests/test_directory.hpp>
 #include <thread>
 #include <unistd.h>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
 
 using namespace services::disk;
 using namespace components::catalog;

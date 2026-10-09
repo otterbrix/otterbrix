@@ -61,7 +61,6 @@ namespace components::operators {
         bool opened_{false};
         std::size_t emit_idx_{0};
         std::pmr::vector<vector::data_chunk_t> reduced_{resource_};
-
     };
 
 } // namespace components::operators

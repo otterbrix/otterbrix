@@ -125,10 +125,11 @@ TEST_CASE("create_plan: pushdown stamp over an extension source child does not l
     components::compute::function_registry_t registry(&resource);
 
     auto node = build_agg(&resource, /*pushdown=*/true);
-    node->append_child(node_ptr{new node_extension_t(&resource,
-                                                     "host_source",
-                                                     std::pmr::vector<components::types::complex_logical_type>{&resource},
-                                                     &host_source_operator)});
+    node->append_child(
+        node_ptr{new node_extension_t(&resource,
+                                      "host_source",
+                                      std::pmr::vector<components::types::complex_logical_type>{&resource},
+                                      &host_source_operator)});
     auto plan_planned =
         services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
     REQUIRE_FALSE(plan_planned.has_error());

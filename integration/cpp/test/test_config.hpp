@@ -90,7 +90,7 @@ test_create_collection(otterbrix::wrapper_dispatcher_t* dispatcher,
 
 // Fatal to the case when the engine refuses to start; a test that expects a refusal calls open() itself.
 inline otterbrix::base_otterbrix_t::host_ptr test_open_engine(const configuration::config& config,
-                                                             components::planner::primitives_t primitives = {}) {
+                                                              components::planner::primitives_t primitives = {}) {
     auto host = otterbrix::base_otterbrix_t::open(config, primitives);
     if (host.has_error()) {
         FAIL("the engine refused to start at '" << config.main_path.string() << "': " << host.error().what);

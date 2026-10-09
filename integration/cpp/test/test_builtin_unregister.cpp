@@ -65,8 +65,7 @@ TEST_CASE("integration::cpp::builtin_unregister::an_unregister_of_a_builtin_is_r
     auto* d = space.dispatcher();
     seed(d);
 
-    auto refused =
-        d->unregister_udf(otterbrix::session_id_t(), "abs", {components::types::logical_type::BIGINT});
+    auto refused = d->unregister_udf(otterbrix::session_id_t(), "abs", {components::types::logical_type::BIGINT});
     INFO("unregister of abs: " << refused.what.c_str());
     REQUIRE(refused.contains_error());
     CHECK(refused.type == core::error_code_t::invalid_parameter);

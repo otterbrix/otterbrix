@@ -17,17 +17,17 @@
 #include "disk_test_helpers.hpp"
 
 #include <algorithm>
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <services/disk/tests/test_directory.hpp>
 #include <string>
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
 
 // Without the gate an empty round took 205.7 ms against 124.4 ms for one that wrote: doing
 // nothing cost more than doing everything. With it, 15.4 ms against 151.5 (100 tables x 100

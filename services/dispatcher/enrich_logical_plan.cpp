@@ -289,7 +289,7 @@ namespace services::dispatcher { namespace {
         node->set_array_size_reqs(collect_array_size_reqs(*md));
     }
 
-}} // namespace services::dispatcher
+}} // namespace services::dispatcher::
 
 namespace services::catalog_resolve {
 
@@ -1232,7 +1232,7 @@ namespace services::dispatcher { namespace {
         }
         co_return core::error_t::no_error();
     }
-}} // namespace services::dispatcher
+}} // namespace services::dispatcher::
 
 namespace services::dispatcher {
     namespace {

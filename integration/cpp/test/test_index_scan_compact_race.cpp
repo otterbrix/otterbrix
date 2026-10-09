@@ -10,10 +10,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <string>
 #include <string_view>
 #include <thread>
-#include <core/tests/wait_ready.hpp>
 
 // An index scan's matched row ids cross two actor hops (search, then storage_fetch); a compact
 // landing between them renumbers every survivor (rebuilt at id 0), so index_scan holds

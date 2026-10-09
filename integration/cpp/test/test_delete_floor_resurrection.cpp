@@ -8,10 +8,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <string>
 #include <thread>
-#include <core/tests/wait_ready.hpp>
 
 // WAL-first let a delete's WAL id count into a checkpoint boundary before its storage mark was
 // applied, so a racing checkpoint could advance the table's durable WAL floor (.otbx.wal_id) past

@@ -1778,10 +1778,7 @@ namespace services::disk {
                 all_predicate->append_child(std::move(tuple_predicate));
             }
             auto key_built =
-                expr::build_condition_graph(resource(),
-                                            key_parameters,
-                                            key_predicate.get(),
-                                            entry->storage->types());
+                expr::build_condition_graph(resource(), key_parameters, key_predicate.get(), entry->storage->types());
             if (key_built.has_error()) {
                 co_return key_built.error();
             }
@@ -1798,10 +1795,7 @@ namespace services::disk {
             scan_filter = std::move(key_filters.front());
         } else {
             auto all_built =
-                expr::build_condition_graph(resource(),
-                                            all_parameters,
-                                            all_predicate.get(),
-                                            entry->storage->types());
+                expr::build_condition_graph(resource(), all_parameters, all_predicate.get(), entry->storage->types());
             if (all_built.has_error()) {
                 co_return all_built.error();
             }

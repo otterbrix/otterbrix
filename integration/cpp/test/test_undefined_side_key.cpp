@@ -12,9 +12,9 @@
 
 namespace {
     using namespace components;
+    using expressions::compare_type;
     using test_helpers::exec;
     using test_helpers::ok;
-    using expressions::compare_type;
     using key = expressions::key_t;
 
     template<typename D>

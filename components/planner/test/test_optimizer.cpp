@@ -1055,10 +1055,11 @@ TEST_CASE("optimizer::pushdown_aggregate::extension_child_is_skipped") {
     auto resource = core::pmr::otterbrix_resource();
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
-    agg->append_child(node_ptr{new node_extension_t(&resource,
-                                                    collection_name,
-                                                    std::pmr::vector<components::types::complex_logical_type>{&resource},
-                                                    &no_host_operator)});
+    agg->append_child(
+        node_ptr{new node_extension_t(&resource,
+                                      collection_name,
+                                      std::pmr::vector<components::types::complex_logical_type>{&resource},
+                                      &no_host_operator)});
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
 

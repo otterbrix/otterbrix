@@ -53,7 +53,7 @@ namespace {
             REQUIRE(cur->value(3, 0).value<int64_t>() == 10);
             REQUIRE(cur->value(4, 0).value<int64_t>() == 50);
             REQUIRE(cur->value(5, 0).value<double>() == Catch::Approx(30.0)); // 150 / 5
-            REQUIRE(services::disk::pushdown_reply_rows() > 0); // was-actually-pushed proof
+            REQUIRE(services::disk::pushdown_reply_rows() > 0);               // was-actually-pushed proof
         }
 
         INFO("scalar aggregates WITH a builtin WHERE (v >= 30 -> rows 30,50,40)");

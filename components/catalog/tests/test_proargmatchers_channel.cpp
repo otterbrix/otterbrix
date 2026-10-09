@@ -15,11 +15,11 @@ TEST_CASE("catalog::proargmatchers::exact_and_variable_matchers_round_trip") {
     core::pmr::otterbrix_resource resource;
     std::vector<parameter_type> parameters;
     parameters.push_back(parameter_type::exact(complex_logical_type{logical_type::BIGINT}));
-    parameters.push_back(parameter_type::variable(
-        0,
-        std::pmr::vector<complex_logical_type>{{complex_logical_type{logical_type::INTEGER},
-                                                complex_logical_type{logical_type::DOUBLE}},
-                                               &resource}));
+    parameters.push_back(
+        parameter_type::variable(0,
+                                 std::pmr::vector<complex_logical_type>{{complex_logical_type{logical_type::INTEGER},
+                                                                         complex_logical_type{logical_type::DOUBLE}},
+                                                                        &resource}));
     parameters.push_back(parameter_type::variable(1));
     const auto encoded = encode_proargmatchers(parameters);
 
@@ -30,7 +30,8 @@ TEST_CASE("catalog::proargmatchers::exact_and_variable_matchers_round_trip") {
     const components::compute::kernel_signature_t stored(components::compute::function_type_t::vector,
                                                          std::move(decoded.value()),
                                                          std::pmr::vector<components::compute::output_type>{&resource});
-    CHECK(stored.matches_inputs({{logical_type::BIGINT, logical_type::DOUBLE, logical_type::STRING_LITERAL}, &resource}));
+    CHECK(
+        stored.matches_inputs({{logical_type::BIGINT, logical_type::DOUBLE, logical_type::STRING_LITERAL}, &resource}));
     CHECK_FALSE(stored.matches_inputs({{logical_type::BIGINT, logical_type::BIGINT, logical_type::BIGINT}, &resource}));
 }
 

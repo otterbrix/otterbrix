@@ -23,6 +23,7 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/context.hpp>
+#include <components/log/test/test_log.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/session/session.hpp>
@@ -33,12 +34,11 @@
 #include <components/types/types.hpp>
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <services/disk/manager_disk.hpp>
+#include <services/disk/tests/test_directory.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
-#include <components/log/test/test_log.hpp>
-#include <services/disk/tests/test_directory.hpp>
-#include <core/tests/wait_ready.hpp>
 
 // dispatcher_dir() carries ::getpid() so parallel ctest shards never share a disk directory.
 
@@ -135,15 +135,15 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
                                                                   wire_index ? manager_index_->address()
                                                                              : components::pipeline::no_mailbox(),
                                                                   configuration::pump_intervals_t{}))
-        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
-                                                                      scheduler_,
-                                                                      log_,
-                                                                      manager_wal_->address(),
-                                                                      manager_disk_->address(),
-                                                                      wire_index ? manager_index_->address()
-                                                                                 : components::pipeline::no_mailbox(),
-                                                                      configuration::config_execution{},
-                                                                      components::planner::primitives_t{optimizer_rules, {}})) {
+        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(
+              resource,
+              scheduler_,
+              log_,
+              manager_wal_->address(),
+              manager_disk_->address(),
+              wire_index ? manager_index_->address() : components::pipeline::no_mailbox(),
+              configuration::config_execution{},
+              components::planner::primitives_t{optimizer_rules, {}})) {
         manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
         manager_disk_->set_manager_wal_sync(manager_wal_->address());
         manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());

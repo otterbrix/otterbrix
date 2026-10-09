@@ -16,7 +16,7 @@ namespace core::filesystem {
 
     // Every entry of `directory`. A directory that cannot be listed and an entry whose kind cannot be
     // read are both io_error: a caller would otherwise skip what it cannot see.
-    [[nodiscard]] core::result_wrapper_t<std::pmr::vector<dir_entry_t>> list_dir(std::pmr::memory_resource* resource,
-                                                                                  const std::filesystem::path& directory);
+    [[nodiscard]] core::result_wrapper_t<std::pmr::vector<dir_entry_t>>
+    list_dir(std::pmr::memory_resource* resource, const std::filesystem::path& directory);
 
 } // namespace core::filesystem

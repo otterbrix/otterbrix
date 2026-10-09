@@ -40,9 +40,7 @@ namespace core::numbers {
                  typename std::enable_if_t<(std::is_same_v<int32_t, T> && is_supported_representation_type<Rep>())>* =
                      nullptr>
         inline Rep ipow(T exponent) {
-            assertion_log_msg(nullptr,
-                              exponent >= 0,
-                              "integer exponentiation with negative exponent is not possible.");
+            assertion_log_msg(nullptr, exponent >= 0, "integer exponentiation with negative exponent is not possible.");
             if (exponent == 0) {
                 return static_cast<Rep>(1);
             }

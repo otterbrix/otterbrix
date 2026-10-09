@@ -38,12 +38,12 @@ namespace services::wal {
         std::filesystem::create_directories(database_dir_, dir_ec);
 
         // A refusal here is latched, not dropped: a constructor has no caller to answer, but every handler below does.
-        recovery_error_ = dir_ec ? core::error_t(core::error_code_t::io_error,
-                                                 std::pmr::string{"wal_worker: the journal directory " +
-                                                                      database_dir_.string() +
-                                                                      " could not be created: " + dir_ec.message(),
-                                                                  this->resource()})
-                                 : recover_from_disk();
+        recovery_error_ =
+            dir_ec ? core::error_t(core::error_code_t::io_error,
+                                   std::pmr::string{"wal_worker: the journal directory " + database_dir_.string() +
+                                                        " could not be created: " + dir_ec.message(),
+                                                    this->resource()})
+                   : recover_from_disk();
         if (recovery_error_.contains_error()) {
             error(log_,
                   "wal_worker::create , db_oid={} , the journal could not be read at startup , "

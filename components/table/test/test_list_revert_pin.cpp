@@ -50,9 +50,8 @@ namespace {
     std::vector<tstorage::buffer_handle_t> exhaust_pool(env_t& env) {
         std::vector<tstorage::buffer_handle_t> held;
         while (true) {
-            auto allocated = env.buffer_manager.allocate(tstorage::memory_tag::BASE_TABLE,
-                                                         env.buffer_manager.block_size(),
-                                                         true);
+            auto allocated =
+                env.buffer_manager.allocate(tstorage::memory_tag::BASE_TABLE, env.buffer_manager.block_size(), true);
             if (allocated.has_error()) {
                 break;
             }
@@ -199,7 +198,8 @@ namespace {
         return chunk;
     }
 
-    logical_value_t list_of(env_t& env, const complex_logical_type& list_type, const std::vector<std::string>& elements) {
+    logical_value_t
+    list_of(env_t& env, const complex_logical_type& list_type, const std::vector<std::string>& elements) {
         std::vector<logical_value_t> values;
         for (const auto& e : elements) {
             values.emplace_back(&env.resource, std::string_view{e});
@@ -318,8 +318,7 @@ namespace {
 // R1. LIST<STRING> reloaded: its offsets segment is disk-loaded. 40 x 1000-byte elements fill the
 // element column's first transient segment; the second one is refused. Reading row 0's end offset
 // in the unwind would need a pin of the evicted offsets segment, which the pool refuses as well.
-TEST_CASE("list_revert_pin: R1 LIST<STRING> reloaded, refused append under pool exhaustion",
-          "[list_revert_pin][r1]") {
+TEST_CASE("list_revert_pin: R1 LIST<STRING> reloaded, refused append under pool exhaustion", "[list_revert_pin][r1]") {
     const auto list_type = complex_logical_type::create_list(logical_type::STRING_LITERAL);
     refused_after_reload(
         "r1",
@@ -484,7 +483,8 @@ TEST_CASE("list_revert_pin: R4 LIST<STRING> two statements reverted in reverse o
         auto held = exhaust(env);
         INFO("held whole-block pins: " << held.blocks.size() << ", 4 KiB pins: " << held.small.size());
         auto second_reverted = table->revert_append(2, 1);
-        INFO("second revert: " << (second_reverted.has_error() ? second_reverted.error().what : std::pmr::string{"ok"}));
+        INFO(
+            "second revert: " << (second_reverted.has_error() ? second_reverted.error().what : std::pmr::string{"ok"}));
         CHECK_FALSE(second_reverted.has_error());
         auto first_reverted = table->revert_append(1, 1);
         INFO("first revert: " << (first_reverted.has_error() ? first_reverted.error().what : std::pmr::string{"ok"}));
@@ -523,8 +523,7 @@ TEST_CASE("list_revert_pin: R4 LIST<STRING> two statements reverted in reverse o
 // R5. STRING: a committed row and an uncommitted row share one transient segment. The revert cuts
 // inside the segment; rolling the dictionary back through a pin of its block would need memory, the
 // block being spilled under the exhaustion.
-TEST_CASE("list_revert_pin: R5 STRING transaction revert inside a spilled transient segment",
-          "[list_revert_pin][r5]") {
+TEST_CASE("list_revert_pin: R5 STRING transaction revert inside a spilled transient segment", "[list_revert_pin][r5]") {
     const std::string path = db_path("r5");
     std::remove(path.c_str());
     env_t env;
@@ -537,7 +536,8 @@ TEST_CASE("list_revert_pin: R5 STRING transaction revert inside a spilled transi
         auto pending = one_row(env, *table, 7, logical_value_t(&env.resource, std::string_view{"rolled-back"}));
         transaction_append(*table, pending, env, 5);
         // A NULL row too: its cleared validity bit must be valid again before the row is reused.
-        auto pending_null = one_row(env, *table, 7, logical_value_t(&env.resource, complex_logical_type{logical_type::STRING_LITERAL}));
+        auto pending_null =
+            one_row(env, *table, 7, logical_value_t(&env.resource, complex_logical_type{logical_type::STRING_LITERAL}));
         transaction_append(*table, pending_null, env, 5);
         REQUIRE(column_of(*table, 1).count() == 3);
 
@@ -625,8 +625,9 @@ namespace {
 
     // A committed seed row, then an uncommitted 4-row session at row 1: what the transaction will
     // revert after its own ALTER.
-    std::unique_ptr<data_table_t>
-    table_with_open_session(env_t& env, tstorage::single_file_block_manager_t& bm, const complex_logical_type& list_type) {
+    std::unique_ptr<data_table_t> table_with_open_session(env_t& env,
+                                                          tstorage::single_file_block_manager_t& bm,
+                                                          const complex_logical_type& list_type) {
         auto table = make_table(env, bm, list_type);
         auto seed = one_row(env, *table, 1, list_of(env, list_type, {"seed"}));
         committed_append(*table, seed, env);
@@ -730,4 +731,3 @@ TEST_CASE("list_revert_pin: a session begun before DROP COLUMN reverts after it"
     }
     std::remove(path.c_str());
 }
-

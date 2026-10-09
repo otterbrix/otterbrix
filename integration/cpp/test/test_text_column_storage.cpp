@@ -174,12 +174,12 @@ namespace {
             REQUIRE(m.payload_bytes > 0);
             REQUIRE(m.table_bytes > 0);
             const double amplification = static_cast<double>(m.table_bytes) / static_cast<double>(m.payload_bytes);
-            const double bound_bytes = c.max_amplification * static_cast<double>(m.payload_bytes) +
-                                       static_cast<double>(kCheckpointFixedBytes);
+            const double bound_bytes =
+                c.max_amplification * static_cast<double>(m.payload_bytes) + static_cast<double>(kCheckpointFixedBytes);
             INFO(c.name << ": payload " << (m.payload_bytes / 1024) << " KiB, table " << (m.table_bytes / 1024)
                         << " KiB, amplification " << amplification << "x, bound " << c.max_amplification
-                        << "x + fixed = " << (static_cast<uint64_t>(bound_bytes) / 1024)
-                        << " KiB (whole fixture root " << (m.root_bytes / 1024) << " KiB)");
+                        << "x + fixed = " << (static_cast<uint64_t>(bound_bytes) / 1024) << " KiB (whole fixture root "
+                        << (m.root_bytes / 1024) << " KiB)");
 
             CHECK(static_cast<double>(m.table_bytes) < bound_bytes);
         }

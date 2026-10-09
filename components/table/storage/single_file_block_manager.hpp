@@ -72,8 +72,8 @@ namespace components::table::storage {
         // Reads the newest CRC-valid root without opening the table (no WRITE_LOCK) and answers whether it names no
         // checkpointed content (meta_block INVALID), the same notion table_storage_t::never_checkpointed() uses.
         // An unreadable file is an error, not "never checkpointed".
-        [[nodiscard]] static core::result_wrapper_t<bool> file_is_never_checkpointed(const std::string& path,
-                                                                                    std::pmr::memory_resource* resource);
+        [[nodiscard]] static core::result_wrapper_t<bool>
+        file_is_never_checkpointed(const std::string& path, std::pmr::memory_resource* resource);
 
         single_file_block_manager_t(buffer_manager_t& buffer_manager,
                                     core::filesystem::local_file_system_t& fs,

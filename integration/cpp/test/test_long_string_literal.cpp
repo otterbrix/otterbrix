@@ -42,9 +42,9 @@ TEST_CASE("integration::cpp::long_string_literal::round_trips_whole") {
             INFO("literal of " << length << " bytes");
             const auto text = letters(length);
             ++id;
-            auto inserted = test_helpers::exec(dispatcher,
-                                               "INSERT INTO d.t (id, s) VALUES (" + std::to_string(id) + ", '" +
-                                                   text + "');");
+            auto inserted =
+                test_helpers::exec(dispatcher,
+                                   "INSERT INTO d.t (id, s) VALUES (" + std::to_string(id) + ", '" + text + "');");
             INFO((inserted->is_error() ? std::string{inserted->get_error().what} : std::string{"ok"}));
             REQUIRE(inserted->is_success());
             auto read = test_helpers::exec(dispatcher, "SELECT s FROM d.t WHERE id = " + std::to_string(id) + ";");

@@ -1,6 +1,6 @@
 #include "dispatcher.hpp"
-#include <services/dev_pump.hpp>
 #include <atomic>
+#include <services/dev_pump.hpp>
 
 #include <components/casts/default_casts.hpp>
 #include <components/context/context.hpp>
@@ -243,9 +243,7 @@ namespace services::dispatcher {
     // The mutex is taken between the push and the notify, so the loop either sees the message before
     // it sleeps or is already waiting when the notify comes.
     void manager_dispatcher_t::wake_loop_() noexcept {
-        {
-            std::lock_guard<std::mutex> guard(mutex_);
-        }
+        { std::lock_guard<std::mutex> guard(mutex_); }
         pump_cv_.notify_one();
     }
 
@@ -446,8 +444,9 @@ namespace services::dispatcher {
         if (shutting_down_ && plan.sub_queries.back()->type() != components::logical_plan::node_type::checkpoint_t) {
             co_return components::cursor::make_cursor(
                 resource(),
-                core::error_t{core::error_code_t::connection_closed,
-                              std::pmr::string{"the engine is shutting down: only CHECKPOINT is admitted", resource()}});
+                core::error_t{
+                    core::error_code_t::connection_closed,
+                    std::pmr::string{"the engine is shutting down: only CHECKPOINT is admitted", resource()}});
         }
         const auto control = transaction_control_of(plan);
         co_await take_turn_(session, control);

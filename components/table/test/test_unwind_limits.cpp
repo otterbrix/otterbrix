@@ -41,9 +41,8 @@ namespace {
     std::vector<tstorage::buffer_handle_t> exhaust_pool(env_t& env) {
         std::vector<tstorage::buffer_handle_t> held;
         while (true) {
-            auto allocated = env.buffer_manager.allocate(tstorage::memory_tag::BASE_TABLE,
-                                                         env.buffer_manager.block_size(),
-                                                         true);
+            auto allocated =
+                env.buffer_manager.allocate(tstorage::memory_tag::BASE_TABLE, env.buffer_manager.block_size(), true);
             if (allocated.has_error()) {
                 break;
             }

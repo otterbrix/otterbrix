@@ -48,4 +48,3 @@ TEST_CASE("integration::cpp::join_key_width::smallint_int32") {
 
     CHECK(rows(d, "SELECT * FROM m.s JOIN m.i ON m.s.k = m.i.k;") == 2);
 }
-

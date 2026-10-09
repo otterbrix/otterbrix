@@ -130,11 +130,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <memory>
 #include <thread>
 #include <vector>
-#include <core/tests/wait_ready.hpp>
 
 using namespace actor_zeta;
 

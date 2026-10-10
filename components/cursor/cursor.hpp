@@ -56,7 +56,7 @@ namespace components::cursor {
         // fresh copies per call would span two unrelated buffers.
         const core::error_t& get_error() const noexcept;
 
-        // The rows an INSERT / UPDATE / DELETE wrote; 0 for a statement that is not a write (is_write() tells).
+        // INSERT / UPDATE / DELETE without RETURNING return only that
         [[nodiscard]] std::uint64_t affected_rows() const noexcept;
         [[nodiscard]] bool is_write() const noexcept;
         void set_written(std::uint64_t rows) noexcept;

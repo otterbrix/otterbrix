@@ -457,7 +457,7 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_no_where_respects_source"
     auto empty = dispatcher->execute_sql(session, "DELETE FROM s.tgt USING s.src;");
     INFO("error: " << (empty->is_error() ? empty->get_error().what.c_str() : "none"));
     REQUIRE(empty->is_success());
-    REQUIRE(empty->size() == 0);
+    REQUIRE(empty->affected_rows() == 0);
     auto survived = dispatcher->execute_sql(session, "SELECT id FROM s.tgt;");
     REQUIRE(survived->size() == 5);
 
@@ -488,7 +488,7 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_empty_join_preser
         "DELETE FROM s.tgt USING s.src, LATERAL generate_series(src.lo, src.hi) WHERE tgt.id = generate_series;");
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
-    REQUIRE(cur->size() == 0);
+    REQUIRE(cur->affected_rows() == 0);
     auto check = dispatcher->execute_sql(session, "SELECT id FROM s.tgt;");
     REQUIRE(check->size() == 3);
 }
@@ -538,7 +538,7 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_empty_join_no_chan
         "WHERE tgt.id = a.k;");
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
-    REQUIRE(cur->size() == 0);
+    REQUIRE(cur->affected_rows() == 0);
     auto check = dispatcher->execute_sql(session, "SELECT id, val FROM s.tgt;");
     REQUIRE(check->size() == 3);
     for (uint64_t r = 0; r < check->size(); ++r) {

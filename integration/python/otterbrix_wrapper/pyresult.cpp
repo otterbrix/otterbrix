@@ -11,7 +11,8 @@ namespace otterbrix {
     std::vector<components::table::column_definition_t>
     py_result_t::columns_of(const components::cursor::cursor_t_ptr& cursor) {
         std::vector<components::table::column_definition_t> defs;
-        if (!cursor) {
+        // A write without RETURNING has no result set; its count is rowcount.
+        if (!cursor || cursor->is_write()) {
             return defs;
         }
         const auto& types = cursor->type_data();
@@ -127,7 +128,7 @@ namespace otterbrix {
         return df;
     }
 
-    std::size_t py_result_t::size() const { return result ? result->size() : 0u; }
+    std::size_t py_result_t::size() const { return result && !result->is_write() ? result->size() : 0u; }
 
     int64_t py_result_t::rowcount() const {
         if (!result) {

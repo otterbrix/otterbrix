@@ -24,7 +24,7 @@ namespace {
         if (!cur || !cur->is_success()) {
             return {false, 0};
         }
-        return {true, cur->size()};
+        return {true, cur->is_write() ? cur->affected_rows() : cur->size()};
     }
 
     template<typename Dispatcher>

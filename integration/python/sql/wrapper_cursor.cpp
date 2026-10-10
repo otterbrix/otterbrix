@@ -109,7 +109,8 @@ wrapper_cursor& wrapper_cursor::next() {
 
 wrapper_cursor& wrapper_cursor::iter() { return *this; }
 
-std::size_t wrapper_cursor::size() { return ptr_->size(); }
+// A write without RETURNING has no result rows; its count is rowcount.
+std::size_t wrapper_cursor::size() { return ptr_->is_write() ? 0 : ptr_->size(); }
 
 py::object wrapper_cursor::get(py::object key) {
     if (py::isinstance<py::str>(key)) {
@@ -173,7 +174,7 @@ py::tuple wrapper_cursor::get_error() const {
 }
 
 std::string wrapper_cursor::print() {
-    if (ptr_->size() > 0) {
+    if (size() > 0) {
         auto dict = row_to_dict(*ptr_, 0);
         return py::str(dict).cast<std::string>();
     }
@@ -187,7 +188,7 @@ void wrapper_cursor::execute(std::string& query) {
 }
 
 py::object wrapper_cursor::get_(const std::string& key) const {
-    if (ptr_->size() == 0) {
+    if (ptr_->is_write() || ptr_->size() == 0) {
         return py::none();
     }
     auto row = ptr_->current_index();
@@ -204,7 +205,7 @@ py::object wrapper_cursor::get_(const std::string& key) const {
 }
 
 py::object wrapper_cursor::get_(std::size_t index) const {
-    if (index >= ptr_->size()) {
+    if (ptr_->is_write() || index >= ptr_->size()) {
         return py::none();
     }
     return row_to_dict(*ptr_, index);
@@ -245,7 +246,7 @@ py::list wrapper_cursor::fetchall() {
 }
 
 py::object wrapper_cursor::description() const {
-    if (ptr_->size() == 0 && ptr_->column_count() == 0) {
+    if (ptr_->is_write() || (ptr_->size() == 0 && ptr_->column_count() == 0)) {
         return py::none();
     }
     const auto& types = ptr_->type_data();

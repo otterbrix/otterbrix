@@ -1,5 +1,5 @@
 // A write reports the rows it changed as the cursor's affected_rows(), not as rows of the result: without
-// RETURNING the result has no rows at all; with RETURNING it has the returned rows and the count.
+// RETURNING the result has no rows at all; with RETURNING it is the returned rows, like a SELECT, and no count.
 
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
@@ -34,8 +34,6 @@ namespace {
     void check_written(const components::cursor::cursor_t_ptr& cursor, std::uint64_t rows) {
         CHECK(cursor->is_write());
         CHECK(cursor->affected_rows() == rows);
-        CHECK(cursor->size() == 0);
-        CHECK(cursor->column_count() == 0);
     }
 
 } // namespace
@@ -68,22 +66,22 @@ TEST_CASE("integration::cpp::dml_affected_rows::plain_writes") {
     }
 }
 
-TEST_CASE("integration::cpp::dml_affected_rows::returning_gives_rows_and_count") {
+TEST_CASE("integration::cpp::dml_affected_rows::returning") {
     fixture_t db("test_dml_affected_rows/returning");
     db.run("CREATE DATABASE ar;");
     db.run("CREATE TABLE ar.t (id BIGINT, v BIGINT);");
 
     auto inserted = db.run("INSERT INTO ar.t (id, v) VALUES (1, 10), (2, 20) RETURNING id;");
-    CHECK(inserted->affected_rows() == 2);
+    CHECK_FALSE(inserted->is_write());
     CHECK(inserted->size() == 2);
 
     auto updated = db.run("UPDATE ar.t SET v = 0 WHERE id = 2 RETURNING v;");
-    CHECK(updated->affected_rows() == 1);
+    CHECK_FALSE(updated->is_write());
     REQUIRE(updated->size() == 1);
     CHECK(updated->value(0, 0).value<int64_t>() == 0);
 
     auto deleted = db.run("DELETE FROM ar.t WHERE id = 99 RETURNING id;");
-    CHECK(deleted->affected_rows() == 0);
+    CHECK_FALSE(deleted->is_write());
     CHECK(deleted->size() == 0);
 }
 
@@ -106,7 +104,7 @@ TEST_CASE("integration::cpp::dml_affected_rows::writes_under_constraints") {
 
     SECTION("RETURNING under a cascading FK returns the projection, not the matched parent rows") {
         auto deleted = db.run("DELETE FROM ar.parent WHERE id = 2 RETURNING id;");
-        CHECK(deleted->affected_rows() == 1);
+        CHECK_FALSE(deleted->is_write());
         REQUIRE(deleted->size() == 1);
         CHECK(deleted->column_count() == 1);
         CHECK(deleted->value(0, 0).value<int64_t>() == 2);

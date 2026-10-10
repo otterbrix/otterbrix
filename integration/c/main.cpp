@@ -197,6 +197,9 @@ extern "C" void release_cursor(cursor_ptr ptr) { delete convert_cursor(ptr); }
 
 extern "C" int32_t cursor_size(cursor_ptr ptr) {
     auto storage = convert_cursor(ptr);
+    if (storage->cursor->is_write()) {
+        return 0;
+    }
     return static_cast<int32_t>(storage->cursor->size());
 }
 
@@ -212,11 +215,17 @@ extern "C" bool cursor_affected_rows(cursor_ptr ptr, uint64_t* rows) {
 
 extern "C" int32_t cursor_column_count(cursor_ptr ptr) {
     auto storage = convert_cursor(ptr);
+    if (storage->cursor->is_write()) {
+        return 0;
+    }
     return static_cast<int32_t>(storage->cursor->column_count());
 }
 
 extern "C" int32_t cursor_column_logical_type(cursor_ptr ptr, int32_t column_index) {
     auto storage = convert_cursor(ptr);
+    if (storage->cursor->is_write()) {
+        return -1;
+    }
     const auto& types = storage->cursor->type_data();
     if (column_index < 0 || static_cast<size_t>(column_index) >= types.size()) {
         return -1;
@@ -246,6 +255,9 @@ extern "C" error_message cursor_get_error(cursor_ptr ptr) {
 
 extern "C" char* cursor_column_name(cursor_ptr ptr, int32_t column_index) {
     auto storage = convert_cursor(ptr);
+    if (storage->cursor->is_write()) {
+        return nullptr;
+    }
     const auto& types = storage->cursor->type_data();
     if (static_cast<size_t>(column_index) >= types.size()) {
         return nullptr;
@@ -257,7 +269,7 @@ extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t
     auto storage = convert_cursor(ptr);
     auto& cursor = *storage->cursor;
 
-    if (row_index < 0 || column_index < 0 || static_cast<size_t>(row_index) >= cursor.size() ||
+    if (cursor.is_write() || row_index < 0 || column_index < 0 || static_cast<size_t>(row_index) >= cursor.size() ||
         static_cast<size_t>(column_index) >= cursor.column_count()) {
         return nullptr;
     }
@@ -275,6 +287,9 @@ extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t
 
 extern "C" value_ptr cursor_get_value_by_name(cursor_ptr ptr, int32_t row_index, string_view_t column_name) {
     auto storage = convert_cursor(ptr);
+    if (storage->cursor->is_write()) {
+        return nullptr;
+    }
     const auto& types = storage->cursor->type_data();
 
     const std::string_view name = to_view(column_name);

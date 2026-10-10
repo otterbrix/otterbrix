@@ -204,6 +204,8 @@ TEST_CASE("c-api: cursor_affected_rows reports the rows a write changed", "[c-ap
         REQUIRE(cursor_is_success(cur));
         const bool wrote = cursor_affected_rows(cur, rows);
         CHECK(cursor_size(cur) == 0);
+        CHECK(cursor_column_count(cur) == 0);
+        CHECK(cursor_get_value(cur, 0, 0) == nullptr);
         release_cursor(cur);
         return wrote;
     };

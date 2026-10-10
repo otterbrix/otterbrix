@@ -79,8 +79,8 @@ cursor_ptr execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_
 
 void release_cursor(cursor_ptr ptr);
 int32_t cursor_size(cursor_ptr ptr);
-// The rows an INSERT / UPDATE / DELETE wrote go to *rows; false (and *rows untouched) for a statement that writes no
-// rows. cursor_size() counts result rows only: 0 for a write without RETURNING.
+// The rows an INSERT / UPDATE / DELETE without RETURNING wrote go to *rows; false (and *rows untouched) for any other
+// statement. A RETURNING result is data
 bool cursor_affected_rows(cursor_ptr ptr, uint64_t* rows);
 int32_t cursor_column_count(cursor_ptr ptr);
 int32_t cursor_column_logical_type(cursor_ptr ptr, int32_t column_index);

@@ -33,7 +33,7 @@ TEST_CASE("integration::cpp::delete_affected_count::txn_re_delete_reports_zero",
     {
         auto cur = exec(txn, "DELETE FROM dc.t WHERE id <= 2;");
         REQUIRE(cur->is_success());
-        CHECK(cur->size() == 0);
+        CHECK(cur->affected_rows() == 0);
     }
     REQUIRE(exec(txn, "COMMIT;")->is_success());
 

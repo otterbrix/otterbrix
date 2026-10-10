@@ -1060,7 +1060,6 @@ TEST_CASE("integration::cpp::host_names::insert_into_a_storage_table") {
         INFO(error_of(inserted));
         REQUIRE(inserted->is_success());
         CHECK(inserted->affected_rows() == 2);
-        CHECK(inserted->size() == 0);
         CHECK(write_log() == std::vector<std::string>{"insert m2.shop.orders id:bigint,amount:bigint"});
         auto read = run(dispatcher, "SELECT id, amount FROM m2.shop.orders;");
         REQUIRE(read->is_success());
@@ -1128,7 +1127,6 @@ TEST_CASE("integration::cpp::host_names::a_simple_update_or_delete_is_one_remote
     INFO(error_of(updated));
     REQUIRE(updated->is_success());
     CHECK(updated->affected_rows() == 1);
-    CHECK(updated->size() == 0);
 
     auto deleted = run(dispatcher, "DELETE FROM m2.shop.orders WHERE id = 1;");
     INFO(error_of(deleted));

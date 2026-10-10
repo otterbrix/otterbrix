@@ -361,7 +361,7 @@ TEST_CASE("integration::cpp::test_engine_lifecycle::concurrent_insert_scan_evict
             return "error cursor: code " + std::to_string(static_cast<int>(error.type)) + ", what: '" +
                    std::string(error.what.begin(), error.what.end()) + "'";
         }
-        if (cursor->size() < expected_size) {
+        if (!cursor->is_write() && cursor->size() < expected_size) {
             return "short result: got " + std::to_string(cursor->size()) + ", expected at least " +
                    std::to_string(expected_size);
         }

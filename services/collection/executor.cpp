@@ -150,6 +150,20 @@ namespace services::collection::executor {
             }
         };
 
+        bool has_returning(const components::logical_plan::node_t* node) {
+            using components::logical_plan::node_type;
+            switch (node->type()) {
+                case node_type::insert_t:
+                    return !static_cast<const components::logical_plan::node_insert_t*>(node)->returning().empty();
+                case node_type::update_t:
+                    return !static_cast<const components::logical_plan::node_update_t*>(node)->returning().empty();
+                case node_type::delete_t:
+                    return !static_cast<const components::logical_plan::node_delete_t*>(node)->returning().empty();
+                default:
+                    return false;
+            }
+        }
+
         void collect_inner_hash_join_oids(const components::logical_plan::node_ptr& node,
                                           std::pmr::set<components::catalog::oid_t>& out) {
             if (!node) {
@@ -983,6 +997,7 @@ namespace services::collection::executor {
             !is_plan_only_explain && (original_type == node_type::insert_t || original_type == node_type::update_t ||
                                       original_type == node_type::delete_t);
         const bool needs_commit_txn = original_type == node_type::set_setting_t || original_type == node_type::vacuum_t;
+        const bool modified_rows = needs_dml_txn && !has_returning(plan.sub_queries.back().get());
 
         auto collect_resolve_nodes = [](const components::logical_plan::catalog_resolves_t& resolves,
                                         std::pmr::vector<components::logical_plan::node_ptr>& out) {
@@ -1827,7 +1842,7 @@ namespace services::collection::executor {
                                                  session_ctx.lowest_active_start_time,
                                                  std::move(captured_subplans));
         // The type before optimize(): a host rule may have replaced the UPDATE / DELETE node with its own.
-        if (needs_dml_txn && plan.explain == components::logical_plan::explain_type::none &&
+        if (modified_rows && plan.explain == components::logical_plan::explain_type::none &&
             exec_result.cursor->is_success()) {
             exec_result.cursor->set_written(exec_result.written);
         }

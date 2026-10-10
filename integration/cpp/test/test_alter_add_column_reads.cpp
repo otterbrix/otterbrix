@@ -303,7 +303,7 @@ TEST_CASE("integration::cpp::alter_add_column_reads") {
         INFO("a DELETE that filters on the column matches nothing (NULL = 5 is UNKNOWN)");
         {
             auto cur = run_ok(dispatcher, "DELETE FROM TestDatabase.t WHERE extra = 5;");
-            CHECK(cur->size() == 0);
+            CHECK(cur->affected_rows() == 0);
         }
         {
             auto cur = run_ok(dispatcher, "SELECT COUNT(*) FROM TestDatabase.t;");

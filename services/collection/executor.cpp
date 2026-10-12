@@ -2642,10 +2642,8 @@ namespace services::collection::executor {
         sub_plan_result_t result_tracking;
 
         opened_sources_t opened{resource()};
-        {
-            auto open_context = make_pipeline_context_(session, plan_data, txn, lowest_active_start_time);
-            open_sources_(plan_data.root.get(), &open_context, opened);
-        }
+        auto open_context = make_pipeline_context_(session, plan_data, txn, lowest_active_start_time);
+        open_sources_(plan_data.root.get(), &open_context, opened);
 
         while (!plan_data.sub_plans.empty()) {
             auto plan = plan_data.sub_plans.top();

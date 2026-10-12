@@ -3,6 +3,7 @@
 #include <atomic>
 #include <components/session/session.hpp>
 #include <components/table/transaction.hpp>
+#include <map>
 #include <memory>
 #include <memory_resource>
 #include <mutex>
@@ -20,7 +21,7 @@ namespace components::table {
 
         transaction_t& resolve_transaction(session::session_id_t session, transaction_scope_t scope);
 
-        uint64_t commit(session::session_id_t session);
+        uint64_t commit(session::session_id_t session, commit_view_t* view = nullptr);
         void abort(session::session_id_t session);
 
         transaction_t* find_transaction(session::session_id_t session);
@@ -75,10 +76,10 @@ namespace components::table {
         std::atomic<uint64_t> next_transaction_id_{TRANSACTION_ID_START};
         std::atomic<uint64_t> current_timestamp_{1};
         mutable std::mutex lock_;
-        std::unordered_map<session::session_id_t, std::unique_ptr<transaction_t>> active_;
-        std::set<uint64_t> active_start_times_;
-        // commit_ids allocated by commit() but not yet visible until publish(); snapshots must reject them.
-        std::set<uint64_t> in_flight_commits_;
+        std::pmr::unordered_map<session::session_id_t, std::unique_ptr<transaction_t>> active_;
+        std::pmr::set<uint64_t> active_start_times_;
+        // commit id -> transaction id, for commits allocated by commit() and not yet published
+        std::pmr::map<uint64_t, uint64_t> in_flight_commits_;
         std::atomic<uint64_t> published_horizon_{0};
     };
 

@@ -6,7 +6,10 @@
 namespace components::table {
 
     transaction_manager_t::transaction_manager_t(std::pmr::memory_resource* resource)
-        : resource_(resource) {}
+        : resource_(resource)
+        , active_(resource)
+        , active_start_times_(resource)
+        , in_flight_commits_(resource) {}
 
     transaction_t& transaction_manager_t::begin_transaction(session::session_id_t session, transaction_scope_t scope) {
         std::lock_guard guard(lock_);
@@ -30,7 +33,11 @@ namespace components::table {
         auto start_time = current_timestamp_.fetch_add(1);
         auto txn = std::make_unique<transaction_t>(txn_id, start_time, session, scope, resource_);
         auto horizon = published_horizon_.load(std::memory_order_relaxed);
-        std::pmr::vector<uint64_t> in_flight(in_flight_commits_.begin(), in_flight_commits_.end(), resource_);
+        std::pmr::vector<uint64_t> in_flight(resource_);
+        in_flight.reserve(in_flight_commits_.size());
+        for (const auto& [commit_id, transaction_id] : in_flight_commits_) {
+            in_flight.push_back(commit_id);
+        }
         txn->set_snapshot(horizon, std::move(in_flight));
         auto& ref = *txn;
         active_[session] = std::move(txn);
@@ -38,18 +45,30 @@ namespace components::table {
         return ref;
     }
 
-    uint64_t transaction_manager_t::commit(session::session_id_t session) {
+    uint64_t transaction_manager_t::commit(session::session_id_t session, commit_view_t* view) {
         std::lock_guard guard(lock_);
         auto it = active_.find(session);
         if (it == active_.end()) {
             return 0;
+        }
+        const auto transaction_id = it->second->transaction_id();
+        if (view != nullptr) {
+            const auto data = it->second->data();
+            view->snapshot_is_current = in_flight_commits_.empty() && data.in_flight_snapshot.empty() &&
+                                        published_horizon_.load(std::memory_order_relaxed) == data.snapshot_horizon;
+            view->snapshot = transaction_data{transaction_id, data.start_time};
+            view->snapshot.committing.reserve(in_flight_commits_.size());
+            for (const auto& [commit_id, committing_id] : in_flight_commits_) {
+                view->snapshot.committing.push_back(committing_id);
+            }
+            std::sort(view->snapshot.committing.begin(), view->snapshot.committing.end());
         }
         auto commit_id = current_timestamp_.fetch_add(1);
         it->second->set_commit_id(commit_id);
         it->second->mark_committed();
         active_start_times_.erase(it->second->start_time());
         active_.erase(it);
-        in_flight_commits_.insert(commit_id);
+        in_flight_commits_.emplace(commit_id, transaction_id);
         return commit_id;
     }
 
@@ -101,7 +120,10 @@ namespace components::table {
         std::lock_guard guard(lock_);
         snapshot_t snap{resource};
         snap.snapshot_horizon = published_horizon_.load(std::memory_order_relaxed);
-        snap.in_flight_snapshot.assign(in_flight_commits_.begin(), in_flight_commits_.end());
+        snap.in_flight_snapshot.reserve(in_flight_commits_.size());
+        for (const auto& [commit_id, transaction_id] : in_flight_commits_) {
+            snap.in_flight_snapshot.push_back(commit_id);
+        }
         return snap;
     }
 
@@ -136,7 +158,7 @@ namespace components::table {
         // Must honour the procarray, not just start times (feeds cleanup_versions -> chunk_info::cleanup):
         // same two clamps as visible_to_all_locked() below, since both populations sit below the lowest start time.
         if (!in_flight_commits_.empty()) {
-            lowest = std::min(lowest, *in_flight_commits_.begin() - 1);
+            lowest = std::min(lowest, in_flight_commits_.begin()->first - 1);
         }
         for (const auto& [session, txn] : active_) {
             const auto data = txn->data();
@@ -171,7 +193,7 @@ namespace components::table {
         uint64_t watermark = published_horizon_.load(std::memory_order_relaxed);
         // Committed-but-unpublished ids stay invisible until the lowest one; ids start at 1, so -1 cannot underflow.
         if (!in_flight_commits_.empty()) {
-            watermark = std::min(watermark, *in_flight_commits_.begin() - 1);
+            watermark = std::min(watermark, in_flight_commits_.begin()->first - 1);
         }
         for (const auto& [session, txn] : active_) {
             const auto data = txn->data();

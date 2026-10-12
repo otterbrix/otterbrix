@@ -96,14 +96,14 @@ namespace {
         }
     }
 
-    void delete_row(data_table_t& table, fetch_env_t& env, int64_t row_id, uint64_t txn_id) {
+    void delete_row(data_table_t& table, fetch_env_t& env, int64_t row_id, const transaction_data& txn) {
         std::pmr::vector<complex_logical_type> id_type(&env.resource);
         id_type.emplace_back(logical_type::BIGINT);
         auto ids = data_chunk_t(&env.resource, id_type, 1);
         ids.data[0].set_value(0, row_id);
         ids.set_cardinality(1);
 
-        REQUIRE(deleted_or_fail(table.delete_rows(ids.data[0], 1, txn_id)) == 1);
+        REQUIRE(deleted_or_fail(table.delete_rows(ids.data[0], 1, txn)) == 1);
     }
 
     struct fetched_t {
@@ -167,7 +167,7 @@ TEST_CASE("components::table::fetch_visibility::uncommitted_delete_hides_only_fr
     REQUIRE(fetch_rows(storage, env, *table, one, deleter, fetch_visibility_t::SNAPSHOT).rows == 1);
     REQUIRE(fetch_rows(storage, env, *table, one, reader, fetch_visibility_t::SNAPSHOT).rows == 1);
 
-    delete_row(*table, env, kProbe, deleter.transaction_id);
+    delete_row(*table, env, kProbe, deleter);
 
     INFO("the author of the uncommitted delete must NOT read its own deleted row back");
     {
@@ -198,8 +198,9 @@ TEST_CASE("components::table::fetch_visibility::raw_still_reads_committed_delete
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    const auto txn_id = mgr.begin_transaction(session, transaction_scope_t::statement).data().transaction_id;
-    delete_row(*table, env, kProbe, txn_id);
+    const auto txn = mgr.begin_transaction(session, transaction_scope_t::statement).data();
+    const auto txn_id = txn.transaction_id;
+    delete_row(*table, env, kProbe, txn);
     const auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);
     table->commit_all_deletes(txn_id, commit_id);
@@ -235,8 +236,9 @@ TEST_CASE("components::table::fetch_visibility::the_answer_names_the_rows_it_car
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();
-    const auto txn_id = mgr.begin_transaction(session, transaction_scope_t::statement).data().transaction_id;
-    delete_row(*table, env, kProbe, txn_id);
+    const auto txn = mgr.begin_transaction(session, transaction_scope_t::statement).data();
+    const auto txn_id = txn.transaction_id;
+    delete_row(*table, env, kProbe, txn);
     const auto commit_id = mgr.commit(session);
     mgr.publish(commit_id);
     table->commit_all_deletes(txn_id, commit_id);

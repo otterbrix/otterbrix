@@ -154,10 +154,13 @@ namespace services::disk {
         [[nodiscard]] core::result_wrapper_t<components::storage::appended_range_t>
         update_sync(components::catalog::oid_t table_oid,
                     const std::pmr::vector<int64_t>& row_ids,
+                    const std::pmr::vector<components::catalog::oid_t>& attoids,
                     components::vector::data_chunk_t& new_data,
                     components::table::transaction_data txn);
         [[nodiscard]] core::error_t direct_add_column_sync(components::catalog::oid_t table_oid,
-                                                           const components::vector::data_chunk_t& schema_chunk);
+                                                           const std::pmr::vector<components::catalog::oid_t>& attoids,
+                                                           const components::vector::data_chunk_t& schema_chunk,
+                                                           uint64_t first_position);
 
         // Mutation handlers: a not-owned oid REFUSES on every leg below; only an empty request succeeds as a no-op.
         unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
@@ -178,16 +181,14 @@ namespace services::disk {
                                                          std::pmr::vector<components::catalog::oid_t> tables);
 
         unique_future<core::error_t>
-        storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges, bool tail_only);
+        storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges);
 
-        // (0, 0) means an EMPTY chunk, not "no storage".
-        unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
+        unique_future<core::result_wrapper_t<components::storage::updated_rows_t>>
         storage_update_inner(components::catalog::oid_t table_oid,
                              components::vector::vector_t row_ids,
                              std::unique_ptr<components::vector::data_chunk_t> data,
                              components::table::transaction_data txn);
 
-        // A count below what was requested is not a refusal — an already-stamped row is skipped by design.
         unique_future<core::result_wrapper_t<uint64_t>>
         storage_delete_rows_inner(components::catalog::oid_t table_oid,
                                   components::vector::vector_t row_ids,
@@ -344,6 +345,17 @@ namespace services::disk {
                                                         uint64_t commit_id,
                                                         std::pmr::vector<components::catalog::oid_t> tables);
 
+        unique_future<void> revert_column_stamps_inner(uint64_t txn_id,
+                                                       std::pmr::vector<components::catalog::oid_t> tables);
+
+        unique_future<core::error_t>
+        storage_prepare_inner(components::table::transaction_data txn,
+                              std::pmr::vector<components::catalog::oid_t> tables,
+                              std::pmr::vector<components::pg_catalog_append_range_t> appends);
+
+        unique_future<void> storage_release_prepared_inner(uint64_t txn_id,
+                                                           std::pmr::vector<components::catalog::oid_t> tables);
+
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
 
         void set_manager_wal_sync(actor_zeta::address_t address);
@@ -385,7 +397,10 @@ namespace services::disk {
                                                             &agent_disk_t::create_storage_disk_inner,
                                                             // Appended LAST — positional msg ids.
                                                             &agent_disk_t::storage_open_scan_hold_inner,
-                                                            &agent_disk_t::storage_compact_epoch_inner>;
+                                                            &agent_disk_t::storage_compact_epoch_inner,
+                                                            &agent_disk_t::revert_column_stamps_inner,
+                                                            &agent_disk_t::storage_prepare_inner,
+                                                            &agent_disk_t::storage_release_prepared_inner>;
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 

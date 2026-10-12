@@ -49,6 +49,45 @@ namespace services::wal {
             }
         }
 
+        // Layout: [attoid_count:4][attoid:4]*.
+        void serialize_attoids(buffer_t& payload_buf, const column_attoids_t& attoids) {
+            size_t start = payload_buf.size();
+            payload_buf.resize(start + 4 + attoids.size() * 4);
+            char* ptr = payload_buf.data() + start;
+            write_le32(ptr, static_cast<uint32_t>(attoids.size()));
+            ptr += 4;
+            for (const auto attoid : attoids) {
+                write_le32(ptr, attoid);
+                ptr += 4;
+            }
+        }
+
+        // Returns the bytes consumed
+        uint32_t deserialize_attoids(const char* payload, uint32_t payload_size, column_attoids_t* attoids) {
+            if (payload_size < 4) {
+                return 0;
+            }
+            uint32_t count = read_le32(payload);
+            if (count > (payload_size - 4) / 4) {
+                return 0;
+            }
+            attoids->resize(count);
+            for (uint32_t index = 0; index < count; ++index) {
+                (*attoids)[index] = read_le32(payload + 4 + index * 4);
+            }
+            return 4 + count * 4;
+        }
+
+        bool attoids_match_chunks(const column_attoids_t& attoids,
+                                  const std::pmr::vector<components::vector::data_chunk_t>& chunks) {
+            for (const auto& chunk : chunks) {
+                if (chunk.column_count() != attoids.size()) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         // Inverse of serialize_chunk_batch, producing the vector form replay consumes.
         std::pmr::vector<components::vector::data_chunk_t> deserialize_chunk_batch(const char* payload,
                                                                                    uint32_t payload_size,
@@ -167,10 +206,13 @@ namespace services::wal {
                           id_t wal_id,
                           uint64_t txn_id,
                           components::catalog::oid_t table_oid,
+                          const column_attoids_t& attoids,
                           const std::pmr::vector<components::vector::data_chunk_t>& chunks,
                           uint64_t row_start,
                           uint64_t row_count) {
+        // Payload: [attoids][chunk_batch].
         buffer_t payload_buf(buffer.get_allocator());
+        serialize_attoids(payload_buf, attoids);
         serialize_chunk_batch(payload_buf, chunks);
 
         return write_dml_record(buffer,
@@ -191,9 +233,12 @@ namespace services::wal {
                               id_t wal_id,
                               uint64_t txn_id,
                               components::catalog::oid_t table_oid,
+                              const column_attoids_t& attoids,
                               const components::vector::data_chunk_t& schema_chunk,
-                              uint64_t column_count) {
+                              uint64_t first_position) {
+        // Payload: [attoids][chunk_batch].
         buffer_t payload_buf(buffer.get_allocator());
+        serialize_attoids(payload_buf, attoids);
         // Framed as a one-element chunk batch, not bare serialize_binary, so the leading-count
         // read in deserialize_chunk_batch doesn't misfire.
         std::pmr::vector<components::vector::data_chunk_t> schema_batch{payload_buf.get_allocator().resource()};
@@ -211,8 +256,8 @@ namespace services::wal {
                                 txn_id,
                                 wal_record_type::PHYSICAL_ADD_COLUMN,
                                 table_oid,
-                                0,
-                                column_count,
+                                first_position,
+                                schema_chunk.column_count(),
                                 payload_buf.data(),
                                 static_cast<uint32_t>(payload_buf.size()));
     }
@@ -246,9 +291,10 @@ namespace services::wal {
                           uint64_t txn_id,
                           components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
+                          const column_attoids_t& attoids,
                           const std::pmr::vector<components::vector::data_chunk_t>& new_chunks,
                           uint64_t count) {
-        // Payload: [row_ids_size:4][row_ids][chunk_batch: serialize_chunk_batch's own framing].
+        // Payload: [row_ids_size:4][row_ids][attoids][chunk_batch: serialize_chunk_batch's own framing].
 
         buffer_t payload_buf(buffer.get_allocator());
 
@@ -260,6 +306,7 @@ namespace services::wal {
         p += 4;
         std::memcpy(p, row_ids, row_ids_bytes);
 
+        serialize_attoids(payload_buf, attoids);
         serialize_chunk_batch(payload_buf, new_chunks);
 
         return write_dml_record(buffer,
@@ -385,13 +432,35 @@ namespace services::wal {
         const char* payload = ptr;
 
         switch (rec.record_type) {
-            case wal_record_type::PHYSICAL_INSERT:
-            // PHYSICAL_ADD_COLUMN shares INSERT's payload shape: a serialized data_chunk (0-row for schema records).
-            case wal_record_type::PHYSICAL_ADD_COLUMN: {
-                if (payload_size > 0) {
+            case wal_record_type::PHYSICAL_INSERT: {
+                uint32_t attoid_bytes = deserialize_attoids(payload, payload_size, &rec.physical_attoids);
+                if (attoid_bytes == 0) {
+                    rec.is_corrupt = true;
+                    return rec;
+                }
+                if (payload_size > attoid_bytes) {
                     bool ok = false;
-                    rec.physical_data = deserialize_chunk_batch(payload, payload_size, resource, ok);
-                    if (!ok) {
+                    rec.physical_data =
+                        deserialize_chunk_batch(payload + attoid_bytes, payload_size - attoid_bytes, resource, ok);
+                    if (!ok || !attoids_match_chunks(rec.physical_attoids, rec.physical_data)) {
+                        rec.is_corrupt = true;
+                        return rec;
+                    }
+                }
+                break;
+            }
+            // [attoids][chunk batch]: one chunk whose columns are the new ones.
+            case wal_record_type::PHYSICAL_ADD_COLUMN: {
+                uint32_t attoid_bytes = deserialize_attoids(payload, payload_size, &rec.physical_attoids);
+                if (attoid_bytes == 0) {
+                    rec.is_corrupt = true;
+                    return rec;
+                }
+                if (payload_size > attoid_bytes) {
+                    bool ok = false;
+                    rec.physical_data =
+                        deserialize_chunk_batch(payload + attoid_bytes, payload_size - attoid_bytes, resource, ok);
+                    if (!ok || !attoids_match_chunks(rec.physical_attoids, rec.physical_data)) {
                         rec.is_corrupt = true;
                         return rec;
                     }
@@ -426,12 +495,19 @@ namespace services::wal {
                 rec.physical_row_ids.resize(id_count);
                 std::memcpy(rec.physical_row_ids.data(), row_ids_data, row_ids_bytes);
 
-                const char* chunk_data = row_ids_data + row_ids_bytes;
-                uint32_t chunk_batch_size = payload_size - 4 - row_ids_bytes;
+                const char* attoid_data = row_ids_data + row_ids_bytes;
+                uint32_t after_row_ids = payload_size - 4 - row_ids_bytes;
+                uint32_t attoid_bytes = deserialize_attoids(attoid_data, after_row_ids, &rec.physical_attoids);
+                if (attoid_bytes == 0) {
+                    rec.is_corrupt = true;
+                    return rec;
+                }
+                const char* chunk_data = attoid_data + attoid_bytes;
+                uint32_t chunk_batch_size = after_row_ids - attoid_bytes;
                 if (chunk_batch_size > 0) {
                     bool ok = false;
                     rec.physical_data = deserialize_chunk_batch(chunk_data, chunk_batch_size, resource, ok);
-                    if (!ok) {
+                    if (!ok || !attoids_match_chunks(rec.physical_attoids, rec.physical_data)) {
                         rec.is_corrupt = true;
                         return rec;
                     }

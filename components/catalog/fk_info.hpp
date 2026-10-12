@@ -18,16 +18,9 @@ namespace components::catalog {
         std::vector<std::string> child_col_names;
         // Corresponding column names in parent table for existence check.
         std::vector<std::string> parent_col_names;
-        // Pre-resolved column positions in the DML chunk (resolved at enrich time).
-        // std::numeric_limits<std::size_t>::max() = column absent from chunk (treat as NULL).
+        // Positions of the key columns among the table's live columns in attnum order
         std::vector<std::size_t> child_col_indices;
-        // Pre-resolved column positions in the deleted parent row chunk.
         std::vector<std::size_t> parent_col_indices;
-        // Positions of FK columns within child table schema (attnum order).
-        // Filled at enrich time for DELETE enrichment; used by operator_fk_cascade
-        // SET NULL / SET DEFAULT to locate FK cols in a storage_fetch result.
-        // std::numeric_limits<std::size_t>::max() = column not found in schema.
-        std::vector<std::size_t> child_col_schema_indices;
         // attdefspec strings for each FK column (parallel to child_col_names).
         // Empty string = column has no default (NULL will be used for SET DEFAULT).
         std::vector<std::string> child_col_default_specs;

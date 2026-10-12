@@ -40,6 +40,8 @@ namespace components::operators {
                     return "Limit";
                 case operator_type::insert:
                     return "Insert";
+                case operator_type::insert_on_conflict:
+                    return "Insert On Conflict";
                 case operator_type::remove:
                     return "Delete";
                 case operator_type::update:

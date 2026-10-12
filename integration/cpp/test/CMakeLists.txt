@@ -86,6 +86,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_fk_omitted_ref_columns.cpp
         test_fk_parent_column_drop.cpp
         test_fk_default_column.cpp
+        test_fk_positions_after_drop.cpp
         test_check_expr_unenforceable.cpp
         test_inline_constraints.cpp
         test_constraint_entry_lost_target.cpp
@@ -105,6 +106,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_vacuum_drop_column_seal_refusal.cpp
         test_ddl_in_transaction.cpp
         test_cursor_under_concurrent_ddl.cpp
+        test_insert_on_conflict.cpp
         test_alter_rename_column.cpp
         test_alter_rename_column_collisions.cpp
         test_alter_missing_column.cpp
@@ -235,6 +237,12 @@ set( ${PROJECT_NAME}_SOURCES
         test_join_key_width.cpp
         test_explain_host_plan.cpp
         test_undefined_side_key.cpp
+
+        concurrency/concurrency.cpp
+        concurrency/test_visibility.cpp
+        concurrency/test_row_conflicts.cpp
+        concurrency/test_constraints.cpp
+        concurrency/test_ddl.cpp
 
         # TODO: casts for dynamic schema
         # stress tests with sanitizer are incredibly slow

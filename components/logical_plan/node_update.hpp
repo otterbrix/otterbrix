@@ -66,7 +66,12 @@ namespace components::logical_plan {
         void set_unique_groups(std::vector<std::vector<std::string>> v) { unique_groups_ = std::move(v); }
         const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
 
+        // required for ON CONFLICT DO UPDATE resolution
+        void set_excluded_alias(std::string alias) { excluded_alias_ = std::move(alias); }
+        const std::string& excluded_alias() const noexcept { return excluded_alias_; }
+
     private:
+        std::string excluded_alias_;
         std::pmr::vector<expressions::expression_ptr> update_expressions_;
         std::pmr::vector<expressions::expression_ptr> returning_;
 

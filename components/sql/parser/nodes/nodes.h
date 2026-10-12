@@ -535,6 +535,8 @@ typedef enum NodeTag
     T_RowMarkClause,
     T_XmlSerialize,
     T_WithClause,
+    T_InferClause,
+    T_OnConflictClause,
     T_CommonTableExpr,
     T_ColumnReferenceStorageDirective,
 

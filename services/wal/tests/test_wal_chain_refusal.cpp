@@ -28,6 +28,7 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
+#include "wal_test_attoids.hpp"
 #include <components/log/test/test_log.hpp>
 #include <core/tests/wait_ready.hpp>
 
@@ -139,6 +140,7 @@ namespace {
                                                          &manager_wal_replicate_t::write_physical_insert,
                                                          session_id_t::generate_uid(),
                                                          kTestTableOid,
+                                                         wal_test::attoids_for(make_insert_batch(rows)),
                                                          make_insert_batch(rows),
                                                          row_start,
                                                          static_cast<uint64_t>(rows),
@@ -156,6 +158,7 @@ namespace {
                                                          &manager_wal_replicate_t::write_physical_insert,
                                                          session_id_t::generate_uid(),
                                                          kTestTableOid,
+                                                         wal_test::attoids_for(make_wide_batch(chunk_count, rows)),
                                                          make_wide_batch(chunk_count, rows),
                                                          uint64_t{0},
                                                          static_cast<uint64_t>(chunk_count * rows),

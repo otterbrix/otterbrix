@@ -15,6 +15,11 @@ namespace components::operators {
     public:
         operator_fk_cascade_t(std::pmr::memory_resource* resource, log_t log, catalog::fk_info_t fk);
 
+        actor_zeta::unique_future<core::error_t>
+        find_children(pipeline::context_t* ctx,
+                      const chunks_vector_t& in_chunks,
+                      std::pmr::vector<std::pmr::vector<std::int64_t>>* per_row_child_ids);
+
         // STREAMING CONSTRAINT SINK. fk_cascade is the PARENT of a DELETE sink in
         // the plan chain (fk_cascade -> delete -> scan). Marking it a sink with
         // needs_async_finalize lets the chain stream: the executor pumps the scan
@@ -36,6 +41,9 @@ namespace components::operators {
 
     private:
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
+        actor_zeta::unique_future<void>
+        apply_action_(pipeline::context_t* ctx,
+                      const std::pmr::vector<std::pmr::vector<std::int64_t>>& per_row_child_ids);
 
         catalog::fk_info_t fk_;
     };

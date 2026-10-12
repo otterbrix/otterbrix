@@ -210,7 +210,7 @@ TEST_CASE("integration::cpp::fixture_root::no_source_of_this_directory_names_a_s
 
     std::vector<std::string> offenders;
     std::size_t scanned = 0;
-    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(dir)) {
         if (!entry.is_regular_file()) {
             continue;
         }
@@ -226,7 +226,7 @@ TEST_CASE("integration::cpp::fixture_root::no_source_of_this_directory_names_a_s
         }
         ++scanned;
         for (std::size_t line : root_naming_literal_lines(read_file(file), root)) {
-            offenders.push_back(file.filename().string() + ":" + std::to_string(line));
+            offenders.push_back(std::filesystem::relative(file, dir).string() + ":" + std::to_string(line));
         }
     }
 

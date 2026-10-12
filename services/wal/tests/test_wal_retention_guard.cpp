@@ -24,6 +24,7 @@
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include "wal_test_attoids.hpp"
 #include <components/log/test/test_log.hpp>
 #include <core/tests/wait_ready.hpp>
 
@@ -100,6 +101,7 @@ namespace {
                                                          &manager_wal_replicate_t::write_physical_insert,
                                                          session_id_t::generate_uid(),
                                                          kTestTableOid,
+                                                         wal_test::attoids_for(make_insert_batch(rows)),
                                                          make_insert_batch(rows),
                                                          row_start,
                                                          static_cast<uint64_t>(rows),

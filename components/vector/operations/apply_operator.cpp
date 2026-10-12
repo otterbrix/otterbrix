@@ -721,12 +721,32 @@ namespace components::vector::operations {
             return left_length < right_length ? std::partial_ordering::less : std::partial_ordering::greater;
         }
 
-        core::error_t list_or_array_compare(operator_code code,
-                                            const vector_t& left,
-                                            const vector_t& right,
-                                            vector_t* output,
-                                            uint64_t count,
-                                            const bool* active) {
+        // Lexicographic over the fields, in declaration order.
+        [[nodiscard]] std::partial_ordering compare_struct_rows(const vector_t& left_vector,
+                                                                uint64_t left_row,
+                                                                const vector_t& right_vector,
+                                                                uint64_t right_row) {
+            auto [left, left_index] = resolve_row(left_vector, left_row);
+            auto [right, right_index] = resolve_row(right_vector, right_row);
+            const auto& left_fields = left->entries();
+            const auto& right_fields = right->entries();
+            assert(left_fields.size() == right_fields.size() && "compared structs must share a type");
+            for (size_t field = 0; field < left_fields.size(); field++) {
+                const std::partial_ordering ordering =
+                    compare_cells(*left_fields[field], left_index, *right_fields[field], right_index);
+                if (ordering != std::partial_ordering::equivalent) {
+                    return ordering;
+                }
+            }
+            return std::partial_ordering::equivalent;
+        }
+
+        core::error_t nested_compare(operator_code code,
+                                     const vector_t& left,
+                                     const vector_t& right,
+                                     vector_t* output,
+                                     uint64_t count,
+                                     const bool* active) {
             for (uint64_t row = 0; row < count; row++) {
                 if (skip_row(active, row)) {
                     continue;
@@ -735,7 +755,7 @@ namespace components::vector::operations {
                     output->set_null(row, true);
                     continue;
                 }
-                const std::partial_ordering ordering = compare_list_or_array_rows(left, row, right, row);
+                const std::partial_ordering ordering = compare_cells(left, row, right, row);
                 output->set_null(row, false);
                 switch (code) {
                     case operator_code::equal:
@@ -757,10 +777,9 @@ namespace components::vector::operations {
                         write<bool>(output, row, ordering != std::partial_ordering::less);
                         break;
                     default:
-                        return core::error_t(
-                            core::error_code_t::invalid_parameter,
-                            std::pmr::string{"list_or_array_compare encountered unsupported operator code",
-                                             output->resource()});
+                        return core::error_t(core::error_code_t::invalid_parameter,
+                                             std::pmr::string{"nested_compare encountered unsupported operator code",
+                                                              output->resource()});
                 }
             }
             return core::error_t::no_error();
@@ -865,6 +884,9 @@ namespace components::vector::operations {
         if (physical == types::physical_type::ARRAY || physical == types::physical_type::LIST) {
             return compare_list_or_array_rows(left, left_row, right, right_row);
         }
+        if (left.type().type() == types::logical_type::STRUCT) {
+            return compare_struct_rows(left, left_row, right, right_row);
+        }
         return types::simple_physical_type_switch<element_ordering>(physical, left, left_row, right, right_row);
     }
 
@@ -909,12 +931,13 @@ namespace components::vector::operations {
         }
         // Special cases
         if (is_comparison(code)) {
-            if (left.type().to_physical_type() == types::physical_type::STRUCT) {
-                return struct_compare(code, left, right, output, count, active_rows);
-            }
             const auto physical = left.type().to_physical_type();
-            if (physical == types::physical_type::ARRAY || physical == types::physical_type::LIST) {
-                return list_or_array_compare(code, left, right, output, count, active_rows);
+            if (left.type().type() == types::logical_type::STRUCT || physical == types::physical_type::ARRAY ||
+                physical == types::physical_type::LIST) {
+                return nested_compare(code, left, right, output, count, active_rows);
+            }
+            if (physical == types::physical_type::STRUCT) {
+                return struct_compare(code, left, right, output, count, active_rows);
             }
         } else if (is_temporal_arithmetic(left, right)) {
             return temporal_arithmetic(code, left, right, output, count, active_rows);

@@ -20,8 +20,8 @@ namespace services::planner::impl {
                                                                                     std::move(returning)));
         plan->set_table_has_indexes(node->table_has_indexes());
         // The validator resolved, per incoming column, the target it lands in and the cast
-        // that stores it there. The append is name-based, so the operator renames the
-        // streamed columns to their targets as it converts them.
+        // that stores it there. The operator puts every column at its target position, so the
+        // payload arrives in the order the writer sees the table's columns.
         components::logical_plan::insert_column_bindings_t bindings(context.resource);
         bindings.reserve(node_insert->column_bindings().size());
         for (const auto& binding : node_insert->column_bindings()) {
@@ -38,7 +38,8 @@ namespace services::planner::impl {
         fill.reserve(node_insert->fill_list().size());
         for (const auto& column : node_insert->fill_list()) {
             fill.push_back(
-                components::logical_plan::insert_fill_column_t{std::pmr::string{column.name.c_str(), context.resource},
+                components::logical_plan::insert_fill_column_t{column.target_index,
+                                                               std::pmr::string{column.name.c_str(), context.resource},
                                                                column.type,
                                                                column.value});
         }

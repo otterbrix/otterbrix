@@ -1162,6 +1162,39 @@ typedef struct CommonTableExpr {
 *		Optimizable Statements
 *****************************************************************************/
 
+/*
+* InferClause -
+*		ON CONFLICT unique index inference clause
+*
+* Exactly one of indexElems and conname is set.
+*/
+typedef struct InferClause {
+    NodeTag type;
+    List* indexElems;  /* IndexElems to infer unique index */
+    Node* whereClause; /* qualification (partial-index predicate) */
+    char* conname;     /* Constraint name, or NULL if unnamed */
+    int location;      /* token location, or -1 if unknown */
+} InferClause;
+
+typedef enum OnConflictAction
+{
+    ONCONFLICT_NOTHING, /* ON CONFLICT ... DO NOTHING */
+    ONCONFLICT_UPDATE   /* ON CONFLICT ... DO UPDATE */
+} OnConflictAction;
+
+/*
+* OnConflictClause -
+*		representation of ON CONFLICT clause
+*/
+typedef struct OnConflictClause {
+    NodeTag type;
+    OnConflictAction action; /* DO NOTHING or UPDATE? */
+    InferClause* infer;      /* Optional index inference clause */
+    List* targetList;        /* the target list (of ResTarget) */
+    Node* whereClause;       /* qualifications */
+    int location;            /* token location, or -1 if unknown */
+} OnConflictClause;
+
 /* ----------------------
 *		Insert Statement
 *
@@ -1172,11 +1205,12 @@ typedef struct CommonTableExpr {
 */
 typedef struct InsertStmt {
     NodeTag type;
-    RangeVar* relation;     /* relation to insert into */
-    List* cols;             /* optional: names of the target columns */
-    Node* selectStmt;       /* the source SELECT/VALUES, or NULL */
-    List* returningList;    /* list of expressions to return */
-    WithClause* withClause; /* WITH clause */
+    RangeVar* relation;                 /* relation to insert into */
+    List* cols;                         /* optional: names of the target columns */
+    Node* selectStmt;                   /* the source SELECT/VALUES, or NULL */
+    OnConflictClause* onConflictClause; /* ON CONFLICT clause, or NULL */
+    List* returningList;                /* list of expressions to return */
+    WithClause* withClause;             /* WITH clause */
 } InsertStmt;
 
 /* ----------------------

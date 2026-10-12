@@ -6,6 +6,7 @@
 #include <components/base/identifier_types.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/fk_info.hpp>
+#include <components/catalog/unique_key.hpp>
 #include <components/catalog/view_binding.hpp>
 #include <components/types/types.hpp>
 
@@ -105,6 +106,7 @@ namespace components::logical_plan {
         // known to exist, except in the uid form, which keeps its meaning database.name.
         std::string uid;
         std::string schema;
+        components::catalog::oid_t relation_oid{components::catalog::INVALID_OID};
         resolve_direction direction{resolve_direction::outgoing};
         // Constraint entries only: indexes the TABLE node's entries_ for the table it constrains.
         std::size_t target{no_target};
@@ -129,7 +131,7 @@ namespace components::logical_plan {
         std::vector<std::pair<std::string, std::string>> check_exprs;
         // UNIQUE/PRIMARY KEY column groups (contype 'u'/'p'); enrich stamps these for
         // operator_unique_constraint_t to enforce.
-        std::vector<std::vector<std::string>> unique_constraints;
+        std::vector<catalog::unique_key_t> unique_constraints;
         // PRIMARY KEY column names (contype 'p', flattened); pg_attribute.attnotnull is never
         // backfilled by ALTER TABLE ADD PRIMARY KEY, so enrich merges these into not_null_cols instead.
         std::vector<std::string> pk_columns;

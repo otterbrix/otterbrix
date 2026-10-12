@@ -293,6 +293,128 @@ namespace services::disk {
         co_return;
     }
 
+    manager_disk_t::unique_future<void>
+    manager_disk_t::revert_column_stamps(execution_context_t ctx, std::pmr::set<components::catalog::oid_t> tables) {
+        auto txn_id = ctx.txn.transaction_id;
+        if (txn_id == 0 || agents_.empty()) {
+            co_return;
+        }
+        std::pmr::vector<std::pmr::vector<components::catalog::oid_t>> per_agent{resource()};
+        per_agent.reserve(agents_.size());
+        for (std::size_t i = 0; i < agents_.size(); ++i) {
+            per_agent.emplace_back();
+        }
+        for (const auto& table_oid : tables) {
+            per_agent[pool_idx_for_oid(table_oid, agents_.size())].push_back(table_oid);
+        }
+        std::pmr::vector<unique_future<void>> agent_futures{resource()};
+        agent_futures.reserve(per_agent.size());
+        for (std::size_t i = 0; i < per_agent.size(); ++i) {
+            if (per_agent[i].empty() || agents_[i] == nullptr) {
+                continue;
+            }
+            auto& agent = agents_[i];
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                  &agent_disk_t::revert_column_stamps_inner,
+                                                                  txn_id,
+                                                                  std::move(per_agent[i]));
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent.get());
+            }
+            agent_futures.push_back(std::move(fut));
+        }
+        for (auto& fut : agent_futures) {
+            co_await std::move(fut);
+        }
+        co_return;
+    }
+
+    manager_disk_t::unique_future<core::error_t>
+    manager_disk_t::storage_prepare(execution_context_t ctx,
+                                    std::pmr::set<components::catalog::oid_t> tables,
+                                    std::vector<components::pg_catalog_append_range_t> appends) {
+        if (agents_.empty()) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"storage_prepare: no disk agents", resource()}};
+        }
+        std::pmr::vector<std::pmr::vector<components::catalog::oid_t>> per_agent{resource()};
+        std::pmr::vector<std::pmr::vector<components::pg_catalog_append_range_t>> appends_per_agent{resource()};
+        per_agent.reserve(agents_.size());
+        appends_per_agent.reserve(agents_.size());
+        for (std::size_t i = 0; i < agents_.size(); ++i) {
+            per_agent.emplace_back();
+            appends_per_agent.emplace_back();
+        }
+        for (const auto& table_oid : tables) {
+            per_agent[pool_idx_for_oid(table_oid, agents_.size())].push_back(table_oid);
+        }
+        for (const auto& range : appends) {
+            appends_per_agent[pool_idx_for_oid(range.table_oid, agents_.size())].push_back(range);
+        }
+        std::pmr::vector<unique_future<core::error_t>> agent_futures{resource()};
+        agent_futures.reserve(per_agent.size());
+        for (std::size_t i = 0; i < per_agent.size(); ++i) {
+            if (per_agent[i].empty()) {
+                continue;
+            }
+            auto& agent = agents_[i];
+            if (agent == nullptr) {
+                co_return core::error_t{core::error_code_t::io_error,
+                                        std::pmr::string{"storage_prepare: owning disk agent is null", resource()}};
+            }
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                  &agent_disk_t::storage_prepare_inner,
+                                                                  ctx.txn,
+                                                                  std::move(per_agent[i]),
+                                                                  std::move(appends_per_agent[i]));
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent.get());
+            }
+            agent_futures.push_back(std::move(fut));
+        }
+        auto first_refusal = core::error_t::no_error();
+        for (auto& fut : agent_futures) {
+            auto refused = co_await std::move(fut);
+            if (refused.contains_error() && !first_refusal.contains_error()) {
+                first_refusal = std::move(refused);
+            }
+        }
+        co_return first_refusal;
+    }
+
+    manager_disk_t::unique_future<void>
+    manager_disk_t::storage_release_prepared(execution_context_t ctx,
+                                             std::pmr::set<components::catalog::oid_t> tables) {
+        std::pmr::vector<std::pmr::vector<components::catalog::oid_t>> per_agent{resource()};
+        per_agent.reserve(agents_.size());
+        for (std::size_t i = 0; i < agents_.size(); ++i) {
+            per_agent.emplace_back();
+        }
+        for (const auto& table_oid : tables) {
+            per_agent[pool_idx_for_oid(table_oid, agents_.size())].push_back(table_oid);
+        }
+        std::pmr::vector<unique_future<void>> agent_futures{resource()};
+        agent_futures.reserve(per_agent.size());
+        for (std::size_t i = 0; i < per_agent.size(); ++i) {
+            if (per_agent[i].empty() || agents_[i] == nullptr) {
+                continue;
+            }
+            auto& agent = agents_[i];
+            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                                  &agent_disk_t::storage_release_prepared_inner,
+                                                                  ctx.txn.transaction_id,
+                                                                  std::move(per_agent[i]));
+            if (needs_sched) {
+                scheduler_disk_->enqueue(agent.get());
+            }
+            agent_futures.push_back(std::move(fut));
+        }
+        for (auto& fut : agent_futures) {
+            co_await std::move(fut);
+        }
+        co_return;
+    }
+
     // The storage's column name caches the catalog's, so a rename it never saw is repaired at the
     // next bootstrap rather than waiting for a restart, which would leave live appends stale.
     manager_disk_t::unique_future<core::result_wrapper_t<bool>>

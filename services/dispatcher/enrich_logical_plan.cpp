@@ -77,7 +77,9 @@ namespace services::dispatcher { namespace {
         components::logical_plan::insert_fill_list_t fill(resource);
         std::pmr::vector<uint64_t> slots(resource);
         const auto& bindings = node->column_bindings();
-        if (bindings.empty()) {
+        // A dynamic-schema table's bindings name source positions, not its columns; the storage
+        // fills what such a payload lacks by name (data_table_t::widen_by_name).
+        if (bindings.empty() || md.relkind == 'g') {
             node->set_fill_list(std::move(fill));
             node->set_column_slots(std::move(slots));
             return core::error_t::no_error();
@@ -101,6 +103,7 @@ namespace services::dispatcher { namespace {
                 }
             }
             fill.push_back(components::logical_plan::insert_fill_column_t{
+                i,
                 std::pmr::string{col.attname.c_str(), resource},
                 col.type,
                 decoded.has_value() ? std::move(*decoded)
@@ -111,28 +114,6 @@ namespace services::dispatcher { namespace {
         node->set_fill_list(std::move(fill));
         node->set_column_slots(std::move(slots));
         return core::error_t::no_error();
-    }
-
-    // FK columns resolve positionally against statement columns then DEFAULT fill-list columns, in that
-    // order; an unresolved position silently qualifies 0 rows, so `pid bigint DEFAULT 42` inserts unchecked.
-    std::vector<std::string> insert_chunk_column_names(const components::logical_plan::node_insert_t* node) {
-        std::vector<std::string> names;
-        const auto& bindings = node->column_bindings();
-        if (!bindings.empty()) {
-            names.reserve(bindings.size() + node->fill_list().size());
-            for (const auto& binding : bindings) {
-                names.emplace_back(binding.target_name.c_str());
-            }
-        } else {
-            names.reserve(node->key_translation().size() + node->fill_list().size());
-            for (const auto& key : node->key_translation()) {
-                names.emplace_back(key.as_string());
-            }
-        }
-        for (const auto& column : node->fill_list()) {
-            names.emplace_back(column.name.c_str());
-        }
-        return names;
     }
 
     std::vector<std::pair<std::string, uint64_t>>
@@ -957,21 +938,7 @@ namespace services::dispatcher { namespace {
                 const auto* constraints =
                     resolves ? resolves->constraints_for(node->table_oid(), resolve_direction::outgoing) : nullptr;
                 if (constraints) {
-                    auto fks = constraints->fks;
-                    const auto chunk_columns = insert_chunk_column_names(node);
-                    for (auto& fk : fks) {
-                        for (const auto& col_name : fk.child_col_names) {
-                            std::size_t pos = std::numeric_limits<std::size_t>::max();
-                            for (std::size_t i = 0; i < chunk_columns.size(); ++i) {
-                                if (chunk_columns[i] == col_name) {
-                                    pos = i;
-                                    break;
-                                }
-                            }
-                            fk.child_col_indices.push_back(pos);
-                        }
-                    }
-                    node->set_outgoing_fks(std::move(fks));
+                    node->set_outgoing_fks(constraints->fks);
                     node->set_check_exprs(constraints->check_exprs);
                     {
                         std::vector<std::pair<std::string, components::expressions::expression_ptr>> predicates;
@@ -984,7 +951,7 @@ namespace services::dispatcher { namespace {
                         node->set_check_predicates(std::move(predicates));
                         node->set_check_params(std::move(check_params));
                     }
-                    node->set_unique_groups(constraints->unique_constraints);
+                    node->set_unique_keys(constraints->unique_constraints);
                     if (!constraints->pk_columns.empty()) {
                         auto nn = node->not_null_cols();
                         merge_pk_not_null(constraints->pk_columns, nn);
@@ -996,27 +963,10 @@ namespace services::dispatcher { namespace {
             case node_type::update_t: {
                 auto* node = static_cast<node_update_t*>(root.get());
                 enrich_update_sync(node);
-                const auto* md = node->table_metadata();
                 const auto* constraints =
                     resolves ? resolves->constraints_for(node->table_oid(), resolve_direction::outgoing) : nullptr;
                 if (constraints) {
-                    auto fks = constraints->fks;
-                    if (md) {
-                        for (auto& fk : fks) {
-                            fk.child_col_indices.clear();
-                            for (const auto& col_name : fk.child_col_names) {
-                                std::size_t pos = std::numeric_limits<std::size_t>::max();
-                                for (const auto& col : md->columns) {
-                                    if (col.attname == col_name && col.chunk_position >= 0) {
-                                        pos = static_cast<std::size_t>(col.chunk_position);
-                                        break;
-                                    }
-                                }
-                                fk.child_col_indices.push_back(pos);
-                            }
-                        }
-                    }
-                    node->set_outgoing_fks(std::move(fks));
+                    node->set_outgoing_fks(constraints->fks);
                     node->set_check_exprs(constraints->check_exprs);
                     {
                         std::vector<std::pair<std::string, components::expressions::expression_ptr>> predicates;
@@ -1029,7 +979,7 @@ namespace services::dispatcher { namespace {
                         node->set_check_predicates(std::move(predicates));
                         node->set_check_params(std::move(check_params));
                     }
-                    node->set_unique_groups(constraints->unique_constraints);
+                    node->set_unique_groups(components::catalog::unique_key_columns(constraints->unique_constraints));
                     if (!constraints->pk_columns.empty()) {
                         auto nn = node->not_null_cols();
                         merge_pk_not_null(constraints->pk_columns, nn);
@@ -1045,20 +995,7 @@ namespace services::dispatcher { namespace {
                     const auto* constraints =
                         resolves ? resolves->constraints_for(tbl->table_oid, resolve_direction::referencing) : nullptr;
                     if (constraints) {
-                        auto fks = constraints->fks;
-                        for (auto& fk : fks) {
-                            for (const auto& col_name : fk.parent_col_names) {
-                                std::size_t pos = std::numeric_limits<std::size_t>::max();
-                                for (std::size_t i = 0; i < tbl->columns.size(); ++i) {
-                                    if (tbl->columns[i].attname == col_name) {
-                                        pos = i;
-                                        break;
-                                    }
-                                }
-                                fk.parent_col_indices.push_back(pos);
-                            }
-                        }
-                        node->set_referencing_fks(std::move(fks));
+                        node->set_referencing_fks(constraints->fks);
                     }
                 }
                 break;
@@ -1258,6 +1195,7 @@ namespace services::dispatcher {
                 case node_type::alter_table_t:
                     return "ALTER TABLE";
                 case node_type::insert_t:
+                case node_type::insert_on_conflict_t:
                     return "INSERT";
                 case node_type::update_t:
                     return "UPDATE";

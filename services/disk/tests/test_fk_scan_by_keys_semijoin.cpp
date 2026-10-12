@@ -75,8 +75,8 @@ namespace {
         update(vector_t& ids, data_chunk_t& d, transaction_data txn) override {
             return inner_.update(ids, d, txn);
         }
-        core::result_wrapper_t<uint64_t> delete_rows(vector_t& ids, uint64_t c, uint64_t txn_id) override {
-            return inner_.delete_rows(ids, c, txn_id);
+        core::result_wrapper_t<uint64_t> delete_rows(vector_t& ids, uint64_t c, const transaction_data& txn) override {
+            return inner_.delete_rows(ids, c, txn);
         }
         std::pmr::memory_resource* resource() const override { return inner_.resource(); }
 

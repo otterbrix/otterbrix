@@ -93,15 +93,17 @@ namespace components::operators {
         std::unordered_map<std::string, catalog::oid_t> namespace_cache;
 
         for (auto& entry : node_->entries()) {
-            if (ctx->disk_address == actor_zeta::address_t::empty_address() || entry.relname.empty()) {
+            if (ctx->disk_address == actor_zeta::address_t::empty_address() ||
+                (entry.relname.empty() && entry.relation_oid == catalog::INVALID_OID)) {
                 continue;
             }
 
             if (entry.pin.kind == components::logical_plan::view_pin_t::kind_t::storage) {
                 continue;
             }
-            // A pinned view body name is read by oid: no namespace, no name, no candidates.
-            catalog::oid_t table_oid = entry.pin.oid;
+            // A pinned view body name, or an entry requested by oid, is read by oid: no namespace, no name, no
+            // candidates.
+            catalog::oid_t table_oid = entry.pin.oid != catalog::INVALID_OID ? entry.pin.oid : entry.relation_oid;
             if (table_oid == catalog::INVALID_OID) {
                 auto input_namespace_oid = catalog::INVALID_OID;
                 if (entry.namespace_of != components::logical_plan::resolve_entry_t::no_target) {

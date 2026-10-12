@@ -1,3 +1,4 @@
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <components/compute/function.hpp>
 
@@ -22,7 +23,7 @@ namespace {
     struct aggregate_registry_fixture {
         core::pmr::otterbrix_resource resource;
         function_registry_t registry{&resource};
-        exec_context_t ctx{&resource, &registry};
+        exec_context_t ctx{&resource};
 
         aggregate_registry_fixture() { register_default_functions(registry); }
 
@@ -60,6 +61,28 @@ namespace {
             }
             chunk.set_cardinality(values.size());
             return chunk;
+        }
+
+        template<typename T>
+        data_chunk_t typed_chunk(logical_type type, std::initializer_list<T> values) {
+            std::pmr::vector<complex_logical_type> types(&resource);
+            types.emplace_back(type);
+            data_chunk_t chunk(&resource, types, values.size());
+            uint64_t row = 0;
+            for (T value : values) {
+                chunk.data[0].data<T>()[row++] = value;
+            }
+            chunk.set_cardinality(values.size());
+            return chunk;
+        }
+
+        core::result_wrapper_t<complex_logical_type> result_type(const std::string& name,
+                                                                 std::initializer_list<logical_type> inputs) {
+            std::pmr::vector<complex_logical_type> types(&resource);
+            for (auto type : inputs) {
+                types.emplace_back(type);
+            }
+            return get(name)->get_signatures().front().output_types.front().resolve(&resource, types);
         }
 
         // Drives an aggregate the way the execution graph does: reserve the accumulators, fold
@@ -202,9 +225,10 @@ TEST_CASE("components::compute::aggregate::accumulates_across_chunks") {
     std::vector<std::vector<uint32_t>> groups{{0, 0, 0}, {0, 0}};
 
     SECTION("sum folds every chunk") {
-        auto res = fx.run(*fx.get("sum"), chunks, groups, 1, logical_type::INTEGER);
+        // sum over INTEGER answers BIGINT
+        auto res = fx.run(*fx.get("sum"), chunks, groups, 1, logical_type::BIGINT);
         REQUIRE_FALSE(res.has_error());
-        REQUIRE(res.value().data<int32_t>()[0] == 15);
+        REQUIRE(res.value().data<int64_t>()[0] == 15);
     }
 
     SECTION("count folds every chunk") {
@@ -224,9 +248,10 @@ TEST_CASE("components::compute::aggregate::accumulates_across_chunks") {
     }
 
     SECTION("avg is computed once over the whole group") {
-        auto res = fx.run(*fx.get("avg"), chunks, groups, 1, logical_type::INTEGER);
+        // avg over INTEGER answers DOUBLE
+        auto res = fx.run(*fx.get("avg"), chunks, groups, 1, logical_type::DOUBLE);
         REQUIRE_FALSE(res.has_error());
-        REQUIRE(res.value().data<int32_t>()[0] == 3); // (1+2+3+4+5) / 5
+        REQUIRE(res.value().data<double>()[0] == Catch::Approx(3.0));
     }
 }
 
@@ -241,10 +266,10 @@ TEST_CASE("components::compute::aggregate::scatters_into_groups") {
     std::vector<std::vector<uint32_t>> groups{{0, 1, 0}, {1, 0}};
 
     SECTION("sum per group") {
-        auto res = fx.run(*fx.get("sum"), chunks, groups, 2, logical_type::INTEGER);
+        auto res = fx.run(*fx.get("sum"), chunks, groups, 2, logical_type::BIGINT);
         REQUIRE_FALSE(res.has_error());
-        REQUIRE(res.value().data<int32_t>()[0] == 6);
-        REQUIRE(res.value().data<int32_t>()[1] == 30);
+        REQUIRE(res.value().data<int64_t>()[0] == 6);
+        REQUIRE(res.value().data<int64_t>()[1] == 30);
     }
 
     SECTION("count per group") {
@@ -276,11 +301,11 @@ TEST_CASE("components::compute::aggregate::a_group_with_no_rows_among_fed_ones")
     chunks.emplace_back(fx.int_chunk({4, 6}));
     std::vector<std::vector<uint32_t>> groups{{0, 2}};
 
-    auto sum = fx.run(*fx.get("sum"), chunks, groups, 3, logical_type::INTEGER);
+    auto sum = fx.run(*fx.get("sum"), chunks, groups, 3, logical_type::BIGINT);
     REQUIRE_FALSE(sum.has_error());
-    REQUIRE(sum.value().data<int32_t>()[0] == 4);
+    REQUIRE(sum.value().data<int64_t>()[0] == 4);
     REQUIRE(sum.value().is_null(1));
-    REQUIRE(sum.value().data<int32_t>()[2] == 6);
+    REQUIRE(sum.value().data<int64_t>()[2] == 6);
 
     auto count = fx.run(*fx.get("count"), chunks, groups, 3, logical_type::UBIGINT);
     REQUIRE_FALSE(count.has_error());
@@ -296,12 +321,95 @@ TEST_CASE("components::compute::aggregate::nulls_are_skipped") {
     chunks.emplace_back(std::move(chunk));
     std::vector<std::vector<uint32_t>> groups{{0, 0, 0}};
 
-    auto sum = fx.run(*fx.get("sum"), chunks, groups, 1, logical_type::INTEGER);
+    auto sum = fx.run(*fx.get("sum"), chunks, groups, 1, logical_type::BIGINT);
     REQUIRE_FALSE(sum.has_error());
-    REQUIRE(sum.value().data<int32_t>()[0] == 6);
+    REQUIRE(sum.value().data<int64_t>()[0] == 6);
 
     // COUNT(x) counts non-null rows only.
     auto count = fx.run(*fx.get("count"), chunks, groups, 1, logical_type::UBIGINT);
     REQUIRE_FALSE(count.has_error());
     REQUIRE(count.value().data<uint64_t>()[0] == 2);
 }
+
+TEST_CASE("components::compute::aggregate::unsigned_integers_widen_like_signed_ones") {
+    aggregate_registry_fixture fx;
+
+    for (auto type : {logical_type::UTINYINT, logical_type::USMALLINT, logical_type::UINTEGER, logical_type::UBIGINT}) {
+        CAPTURE(type);
+        auto sum = fx.result_type("sum", {type});
+        REQUIRE_FALSE(sum.has_error());
+        CHECK(sum.value().type() == logical_type::UBIGINT);
+
+        auto avg = fx.result_type("avg", {type});
+        REQUIRE_FALSE(avg.has_error());
+        CHECK(avg.value().type() == logical_type::DOUBLE);
+    }
+}
+
+TEST_CASE("components::compute::aggregate::sum_of_uinteger_leaves_32_bits") {
+    aggregate_registry_fixture fx;
+
+    auto sum = fx.run_one_group(*fx.get("sum"),
+                                fx.typed_chunk<uint32_t>(logical_type::UINTEGER, {4000000000u, 4000000000u}),
+                                logical_type::UBIGINT);
+    REQUIRE_FALSE(sum.has_error());
+    REQUIRE(sum.value().data<uint64_t>()[0] == 8000000000ull);
+
+    auto avg = fx.run_one_group(*fx.get("avg"),
+                                fx.typed_chunk<uint32_t>(logical_type::UINTEGER, {4000000000u, 4000000001u}),
+                                logical_type::DOUBLE);
+    REQUIRE_FALSE(avg.has_error());
+    REQUIRE(avg.value().data<double>()[0] == Catch::Approx(4000000000.5));
+}
+
+TEST_CASE("components::compute::aggregate::sum_of_ubigint_refuses_to_wrap") {
+    aggregate_registry_fixture fx;
+
+    auto sum = fx.run_one_group(*fx.get("sum"),
+                                fx.typed_chunk<uint64_t>(logical_type::UBIGINT, {UINT64_MAX, uint64_t{1}}),
+                                logical_type::UBIGINT);
+    REQUIRE(sum.has_error());
+    REQUIRE(sum.error().type == core::error_code_t::arithmetics_failure);
+}
+
+#if not defined(NDEBUG)
+TEST_CASE("components::compute::aggregate::errors_name_the_function_that_refused") {
+    aggregate_registry_fixture fx;
+
+    auto origin_of = [](const core::error_t& error) {
+        return std::pair<std::string, std::string>{error.error_origin.file_name(), error.error_origin.function_name()};
+    };
+
+    auto sum_type = fx.result_type("sum", {logical_type::INTEGER, logical_type::INTEGER});
+    REQUIRE(sum_type.has_error());
+    auto [sum_type_file, sum_type_function] = origin_of(sum_type.error());
+    CHECK(sum_type_file.ends_with("aggregate.cpp"));
+    CHECK(sum_type_function.find("sum_result_type") != std::string::npos);
+
+    auto avg_type = fx.result_type("avg", {logical_type::INTEGER, logical_type::INTEGER});
+    REQUIRE(avg_type.has_error());
+    auto [avg_type_file, avg_type_function] = origin_of(avg_type.error());
+    CHECK(avg_type_file.ends_with("aggregate.cpp"));
+    CHECK(avg_type_function.find("avg_result_type") != std::string::npos);
+
+    auto overflow = fx.run_one_group(*fx.get("sum"),
+                                     fx.typed_chunk<int64_t>(logical_type::BIGINT, {INT64_MAX, int64_t{1}}),
+                                     logical_type::BIGINT);
+    REQUIRE(overflow.has_error());
+    REQUIRE(overflow.error().type == core::error_code_t::arithmetics_failure);
+    auto [overflow_file, overflow_function] = origin_of(overflow.error());
+    CHECK(overflow_file.ends_with("aggregate.cpp"));
+    CHECK(overflow_function.find("sum_update") != std::string::npos);
+
+    for (const std::string name : {"sum", "avg"}) {
+        CAPTURE(name);
+        auto unsupported = fx.run_one_group(*fx.get(name), fx.int_chunk({1, 2}), logical_type::BOOLEAN);
+        REQUIRE(unsupported.has_error());
+        REQUIRE(unsupported.error().type == core::error_code_t::kernel_error);
+        CHECK(std::string{unsupported.error().what} == name + " does not accumulate the type it was given");
+        auto [unsupported_file, unsupported_function] = origin_of(unsupported.error());
+        CHECK(unsupported_file.ends_with("aggregate.cpp"));
+        CHECK(unsupported_function.find(name + "_finalize") != std::string::npos);
+    }
+}
+#endif

@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <unistd.h>
+#include <vector>
 
 namespace {
     std::string test_db_path() {
@@ -54,7 +55,7 @@ TEST_CASE("single_file_block_manager: write and read blocks") {
         block_ids.push_back(id);
 
         auto blk =
-            std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
+            std::make_unique<block_t>(std::pmr::new_delete_resource(), id, static_cast<uint64_t>(bm.block_size()));
         auto* data = blk->buffer();
         auto sz = blk->size();
 
@@ -70,7 +71,7 @@ TEST_CASE("single_file_block_manager: write and read blocks") {
     REQUIRE(bm.total_blocks() == NUM_BLOCKS);
 
     for (size_t i = 0; i < NUM_BLOCKS; i++) {
-        auto blk = std::make_unique<block_t>(env.resource.upstream_resource(),
+        auto blk = std::make_unique<block_t>(std::pmr::new_delete_resource(),
                                              block_ids[i],
                                              static_cast<uint64_t>(bm.block_size()));
         REQUIRE(!bm.read(*blk).has_error());
@@ -94,7 +95,7 @@ TEST_CASE("single_file_block_manager: create, close, load existing") {
 
         uint64_t id = bm.free_block_id();
         auto blk =
-            std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
+            std::make_unique<block_t>(std::pmr::new_delete_resource(), id, static_cast<uint64_t>(bm.block_size()));
         auto* data = blk->buffer();
         for (size_t j = 0; j < blk->size(); j++) {
             data[j] = static_cast<std::byte>(42);
@@ -113,7 +114,7 @@ TEST_CASE("single_file_block_manager: create, close, load existing") {
         REQUIRE(bm.total_blocks() == 1);
 
         auto blk =
-            std::make_unique<block_t>(env.resource.upstream_resource(), 0, static_cast<uint64_t>(bm.block_size()));
+            std::make_unique<block_t>(std::pmr::new_delete_resource(), 0, static_cast<uint64_t>(bm.block_size()));
         REQUIRE(!bm.read(*blk).has_error());
 
         auto* data = blk->buffer();
@@ -195,7 +196,7 @@ TEST_CASE("single_file_block_manager: free list survives checkpoint/load") {
         for (int i = 0; i < 5; i++) {
             uint64_t id = bm.free_block_id();
             auto blk =
-                std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
+                std::make_unique<block_t>(std::pmr::new_delete_resource(), id, static_cast<uint64_t>(bm.block_size()));
             std::memset(blk->buffer(), static_cast<int>(i), blk->size());
             REQUIRE_FALSE(bm.write(*blk, id).has_error());
         }
@@ -245,7 +246,7 @@ TEST_CASE("single_file_block_manager: empty free list persistence") {
         for (int i = 0; i < 3; i++) {
             uint64_t id = bm.free_block_id();
             auto blk =
-                std::make_unique<block_t>(env.resource.upstream_resource(), id, static_cast<uint64_t>(bm.block_size()));
+                std::make_unique<block_t>(std::pmr::new_delete_resource(), id, static_cast<uint64_t>(bm.block_size()));
             std::memset(blk->buffer(), 0, blk->size());
             REQUIRE_FALSE(bm.write(*blk, id).has_error());
         }
@@ -296,7 +297,7 @@ TEST_CASE("single_file_block_manager: corrupt block payload -> data_corruption (
         REQUIRE(!bm.create_new_database().has_error());
 
         block_id = bm.free_block_id();
-        auto blk = std::make_unique<block_t>(env.resource.upstream_resource(),
+        auto blk = std::make_unique<block_t>(std::pmr::new_delete_resource(),
                                              block_id,
                                              static_cast<uint64_t>(bm.block_size()));
         auto* data = blk->buffer();
@@ -333,7 +334,7 @@ TEST_CASE("single_file_block_manager: corrupt block payload -> data_corruption (
         single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.load_existing_database().has_error());
 
-        auto blk = std::make_unique<block_t>(env.resource.upstream_resource(),
+        auto blk = std::make_unique<block_t>(std::pmr::new_delete_resource(),
                                              block_id,
                                              static_cast<uint64_t>(bm.block_size()));
         core::result_wrapper_t<bool> result = false;
@@ -598,8 +599,10 @@ TEST_CASE("block_manager: create_new_database refuses an unusable block allocati
     std::remove(path.c_str());
 }
 
-// unregister_block must check identity: a freed id can get a fresh handle while a stale one for it is still alive.
-TEST_CASE("block_manager: a stale handle's destructor must not erase the live handle's slot") {
+// The handle's destructor writes nothing on the manager: the next serialize_free_list finds the slot
+// expired and moves the id to pending_free_, and only the header committing that list lets
+// free_block_id draw it again.
+TEST_CASE("block_manager: a block freed under a live handle is given back by the checkpoint after its death") {
     using namespace components::table::storage;
     cleanup_test_file();
 
@@ -609,31 +612,72 @@ TEST_CASE("block_manager: a stale handle's destructor must not erase the live ha
 
     const uint64_t id = bm.free_block_id();
 
-    auto stale = bm.register_block(id);
-    REQUIRE(stale);
+    auto held = bm.register_block(id);
+    REQUIRE(held);
     REQUIRE(bm.registry_alive(id));
 
-    // Release the id and drop the registry entry while `stale` is still alive.
     bm.mark_as_free(id);
-    bm.unregister_block(id);
-    CHECK_FALSE(bm.registry_alive(id));
-
-    auto live = bm.register_block(id);
-    REQUIRE(live);
-    CHECK(live.get() != stale.get());
     CHECK(bm.registry_alive(id));
+    CHECK(bm.free_blocks() == 0);
+    CHECK(bm.dev_freed_while_held_snapshot().count(id) == 1);
+    CHECK(bm.dev_freed_ids().empty());
 
-    stale.reset();
-
-    INFO("after the stale handle died, the live handle's registry entry must survive");
-    CHECK(bm.registry_alive(id));
-    // register_block must still dedup onto it, not mint a second handle for the same block.
     auto again = bm.register_block(id);
-    CHECK(again.get() == live.get());
-
+    REQUIRE(again);
+    CHECK(again.get() == held.get());
     again.reset();
-    live.reset();
+    CHECK(bm.registry_alive(id));
+
+    const uint64_t fresh = bm.free_block_id();
+    CHECK(fresh != id);
+
+    held.reset();
+
+    INFO("the handle is gone, the free is still parked until the manager's own thread looks");
     CHECK_FALSE(bm.registry_alive(id));
+    CHECK(bm.dev_freed_while_held_snapshot().count(id) == 1);
+    CHECK(bm.free_blocks() == 0);
+    CHECK(bm.free_block_id() != id);
+
+    auto free_ptr = bm.serialize_free_list();
+    REQUIRE_FALSE(free_ptr.has_error());
+    CHECK(bm.dev_freed_while_held_snapshot().empty());
+    CHECK(bm.dev_pending_free_snapshot().count(id) == 1);
+    CHECK(bm.free_blocks() == 1);
+
+    // Still quarantined: a header has to commit before the id is drawn again.
+    CHECK(bm.free_block_id() != id);
+    database_header_t promoting_header{};
+    promoting_header.initialize();
+    promoting_header.free_list = free_ptr.value().block_pointer;
+    REQUIRE_FALSE(bm.write_header(promoting_header).has_error());
+    CHECK(bm.free_block_id() == id);
+
+    cleanup_test_file();
+}
+
+// The registry slot of a dead handle stays until the manager's own free list drops it: the handle's
+// destructor writes nothing on the manager.
+TEST_CASE("block_manager: a handle's death writes nothing on its manager") {
+    using namespace components::table::storage;
+    cleanup_test_file();
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
+    REQUIRE(!bm.create_new_database().has_error());
+
+    const uint64_t id = bm.free_block_id();
+    auto handle = bm.register_block(id);
+    REQUIRE(handle);
+    const uint64_t slots = bm.dev_registry_slots();
+
+    handle.reset();
+    CHECK_FALSE(bm.registry_alive(id));
+    CHECK(bm.dev_registry_slots() == slots);
+
+    auto free_ptr = bm.serialize_free_list();
+    REQUIRE_FALSE(free_ptr.has_error());
+    CHECK(bm.dev_registry_slots() == slots - 1);
 
     cleanup_test_file();
 }
@@ -646,20 +690,24 @@ TEST_CASE("partial_block_manager: every packed segment offset is 8-byte aligned"
     single_file_block_manager_t bm(env.buffer_manager, env.fs, test_db_path());
     REQUIRE(!bm.create_new_database().has_error());
 
-    partial_block_manager_t pbm(bm);
+    auto pbm = partial_block_manager_t::for_checkpoint(bm);
+    const std::vector<std::byte> bytes(4096, std::byte{0x5a});
 
     // Offsets are later dereferenced as the segment's own element type, so misalignment is UB.
-    auto first = pbm.get_block_allocation(4); // CONSTANT INT32 main segment
-    REQUIRE(first.offset_in_block % 8 == 0);
-    auto validity = pbm.get_block_allocation(128); // 1024-row validity bitmap
-    REQUIRE(validity.block_id == first.block_id);
-    REQUIRE(validity.offset_in_block % 8 == 0);
+    auto first = pbm.place(bytes.data(), 4); // CONSTANT INT32 main segment
+    REQUIRE_FALSE(first.has_error());
+    REQUIRE(first.value().offset_in_block % 8 == 0);
+    auto validity = pbm.place(bytes.data(), 128); // 1024-row validity bitmap
+    REQUIRE_FALSE(validity.has_error());
+    REQUIRE(validity.value().block_id == first.value().block_id);
+    REQUIRE(validity.value().offset_in_block % 8 == 0);
 
     // Byte-granular sizes (RLE, dictionary, big-string) must still keep every placement aligned.
     const uint64_t odd_sizes[] = {1, 3, 20, 7, 8, 9, 4096, 5, 133};
     for (auto size : odd_sizes) {
-        auto alloc = pbm.get_block_allocation(size);
-        REQUIRE(alloc.offset_in_block % 8 == 0);
+        auto alloc = pbm.place(bytes.data(), size);
+        REQUIRE_FALSE(alloc.has_error());
+        REQUIRE(alloc.value().offset_in_block % 8 == 0);
     }
 
     cleanup_test_file();

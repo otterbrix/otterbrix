@@ -1,18 +1,51 @@
 #pragma once
 
+#include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 
+#include <string>
+
 namespace components::operators {
+
+    // Drops (seed_classid, seed_objid) with everything that depends on it: RESTRICT refuses a normal dependent
+    // anywhere in the closure, CASCADE deletes the catalog rows children-first and tombstones the storage of the
+    // relations among them. The refusal names the seed: its classid, `target`, `relkind` of the relation (the
+    // column's relation for pg_attribute) and `column`. Shared by DROP, DROP COLUMN and the host API's unregister_udf.
+    actor_zeta::unique_future<core::error_t> drop_with_dependents(std::pmr::memory_resource* resource,
+                                                                  pipeline::context_t* ctx,
+                                                                  components::catalog::oid_t seed_classid,
+                                                                  components::catalog::oid_t seed_objid,
+                                                                  components::catalog::drop_behavior_t behavior,
+                                                                  const qualified_name_t& target,
+                                                                  char relkind,
+                                                                  const core::columnname_t& column);
+
+    // How the pg_proc rows of a function go. with_dependents: the way any DROP takes its dependents
+    // (unregister_udf). keep_dependents: the rows and the edges they own (objid) only; the edges of what depends on
+    // them (refobjid) stay, because register_udf writes the rows again under the same oids.
+    enum class function_rows_drop_t
+    {
+        with_dependents,
+        keep_dependents
+    };
+
+    actor_zeta::unique_future<core::error_t>
+    drop_function_rows(std::pmr::memory_resource* resource,
+                       pipeline::context_t* ctx,
+                       const std::pmr::vector<components::catalog::oid_t>& function_oids,
+                       function_rows_drop_t mode,
+                       components::catalog::drop_behavior_t behavior,
+                       const std::string& function_name);
 
     // Universal cascade-delete operator. Walks pg_depend at runtime starting
     // from a (seed_classid, seed_objid) seed and deletes the transitive
     // closure inline using catalog::plan_drop.
     //
     // Behavior:
-    //   - RESTRICT: walks pg_depend; on first 'n' (normal external) dependency,
-    //     surfaces the blocking oid via set_error and skips deletion.
+    //   - RESTRICT: walks pg_depend; on a normal dependent anywhere in the closure
+    //     (catalog::plan_drop) surfaces the refusal via set_error and skips deletion.
     //   - CASCADE:  walks pg_depend, computes topological drop order via
     //     catalog::plan_drop, then for each step deletes the matching catalog
     //     rows via disk.delete_pg_catalog_rows. For pg_class objects (relkind='r')
@@ -26,7 +59,9 @@ namespace components::operators {
                                           log_t log,
                                           components::catalog::oid_t seed_classid,
                                           components::catalog::oid_t seed_objid,
-                                          components::catalog::drop_behavior_t behavior);
+                                          components::catalog::drop_behavior_t behavior,
+                                          qualified_name_t target,
+                                          char relkind);
 
         // Sourceless SINK leaf (no data pipeline, no children): the executor
         // admits it as a streaming sink-root and drives await_async_and_resume via
@@ -40,6 +75,8 @@ namespace components::operators {
         components::catalog::oid_t seed_classid_;
         components::catalog::oid_t seed_objid_;
         components::catalog::drop_behavior_t behavior_;
+        qualified_name_t target_;
+        char relkind_;
     };
 
 } // namespace components::operators

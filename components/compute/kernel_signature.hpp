@@ -36,6 +36,10 @@ namespace components::compute {
     // One parameter of a kernel signature
     struct parameter_type {
         using variable_id = uint8_t;
+        using allocator_type = std::pmr::polymorphic_allocator<>;
+
+        parameter_type(const parameter_type& other, const allocator_type& allocator);
+        parameter_type(parameter_type&& other, const allocator_type& allocator);
 
         static parameter_type exact(types::complex_logical_type type);
         // `admissible` empty == the variable accepts any type
@@ -143,10 +147,14 @@ namespace components::compute {
     };
 
     struct kernel_signature_t {
+        using allocator_type = std::pmr::polymorphic_allocator<>;
+
         kernel_signature_t() = delete;
         kernel_signature_t(function_type_t function_type,
                            std::pmr::vector<parameter_type> input_types,
                            std::pmr::vector<struct output_type> output_types);
+        kernel_signature_t(const kernel_signature_t& other, const allocator_type& allocator);
+        kernel_signature_t(kernel_signature_t&& other, const allocator_type& allocator);
 
         function_type_t function_type;
         std::pmr::vector<parameter_type> input_types;

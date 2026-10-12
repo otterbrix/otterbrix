@@ -16,6 +16,9 @@
 #include <otterbrix_wrapper/typing.hpp>
 #include <pyconnection/pyconnection.hpp>
 
+#include <stdexcept>
+#include <string>
+
 PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
 
 #ifndef OTTERBRIX_PYTHON_LIB_NAME
@@ -23,6 +26,17 @@ PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
 #endif
 
 using namespace otterbrix;
+
+namespace {
+    // A refused start meets Python's only error channel here, as in pyconnection.cpp.
+    spaces_ptr space_or_raise(core::result_wrapper_t<spaces_ptr> space) {
+        if (space.has_error()) {
+            const auto& err = space.error();
+            throw std::runtime_error("Client: " + std::string(err.what.begin(), err.what.end()));
+        }
+        return std::move(space.value());
+    }
+} // namespace
 
 PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
     // Module's arena; the reasons for this shape are at module_arena_t
@@ -63,9 +77,10 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
     m.add_object("_clean_default_connection", pybind11::capsule(clean_default_connection));
 
     pybind11::class_<wrapper_client>(m, "Client")
-        .def(pybind11::init([]() { return new wrapper_client(spaces::get_instance()); }))
-        .def(pybind11::init(
-            [](const pybind11::str& s) { return new wrapper_client(spaces::get_instance(std::string(s))); }))
+        .def(pybind11::init([]() { return new wrapper_client(space_or_raise(spaces::get_instance())); }))
+        .def(pybind11::init([](const pybind11::str& s) {
+            return new wrapper_client(space_or_raise(spaces::get_instance(std::string(s))));
+        }))
         .def("execute", &wrapper_client::execute, pybind11::arg("query"));
 
     pybind11::class_<wrapper_connection>(m, "Connection")

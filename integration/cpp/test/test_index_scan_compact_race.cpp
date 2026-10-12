@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -54,17 +55,6 @@ namespace {
         gate_guard_t(const gate_guard_t&) = delete;
         gate_guard_t& operator=(const gate_guard_t&) = delete;
     };
-
-    bool wait_flag(const std::atomic<bool>& flag, std::chrono::seconds timeout) {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (!flag.load(std::memory_order_acquire)) {
-            if (std::chrono::steady_clock::now() > deadline) {
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        return true;
-    }
 
     std::string plan_text(const components::cursor::cursor_t_ptr& cur) {
         std::string out;
@@ -141,7 +131,7 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
             auto session = otterbrix::session_id_t();
             held_cur = d->execute_sql(session, indexed_query());
         });
-        REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
+        REQUIRE(test_helpers::wait_until([&] { return guard.gate.reached.load(); }));
         guard.gate.released.store(true, std::memory_order_release);
         reader.join();
         guard.gate.armed.store(false, std::memory_order_release);
@@ -159,7 +149,7 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
     std::thread reader([&] { raced_cur = d->execute_sql(scan_session, indexed_query()); });
 
     INFO("the scan must reach the between-awaits seam");
-    REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
+    REQUIRE(test_helpers::wait_until([&] { return guard.gate.reached.load(); }));
 
     const auto cp_session = otterbrix::session_id_t();
     REQUIRE(d->execute_sql(cp_session, "CHECKPOINT;")->is_success());

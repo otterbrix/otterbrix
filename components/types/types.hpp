@@ -535,7 +535,6 @@ namespace components::types {
             STRUCT = 4,
             DECIMAL = 5,
             ENUM = 6,
-            USER = 7,
             FUNCTION = 8,
             UNKNOWN = 9
         };

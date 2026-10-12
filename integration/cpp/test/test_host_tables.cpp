@@ -47,7 +47,11 @@ TEST_CASE("integration::cpp::host_tables::sql_insert_into_node_created_table") {
     {
         // Node-based create, exactly like KafkaManager::ensure_sources_table.
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, "kafka", "__sources", kafka_sources_columns());
+        test_create_collection(dispatcher,
+                               session,
+                               core::dbname_t{"kafka"},
+                               core::relname_t{"__sources"},
+                               kafka_sources_columns());
     }
 
     {

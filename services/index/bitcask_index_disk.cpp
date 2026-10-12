@@ -1,5 +1,7 @@
 #include "bitcask_index_disk.hpp"
 
+#include <core/file/list_dir.hpp>
+
 #include "absl/crc/crc32c.h"
 #include <components/index/logical_value_binary_codec.hpp>
 #include <components/vector/vector_operations.hpp>
@@ -881,25 +883,14 @@ namespace services::index {
             return io_failure("bitcask: the index path " + path_.string() + " is not a directory");
         }
 
-        auto entry = std::filesystem::directory_iterator(path_, ec);
-        if (ec) {
-            return listing_failure(ec);
+        auto listed = core::filesystem::list_dir(resource(), path_);
+        if (listed.has_error()) {
+            return io_failure("bitcask: " + std::string(listed.error().what.c_str()));
         }
-        const auto end = std::filesystem::directory_iterator();
-        while (entry != end) {
-            const bool regular_file = entry->is_regular_file(ec);
-            if (ec) {
-                return listing_failure(ec);
-            }
-            if (regular_file) {
-                uint64_t segment_id = 0;
-                if (parse_segment_id(entry->path(), segment_id)) {
-                    segments.push_back(segment_info_t{segment_id, entry->path(), 0});
-                }
-            }
-            entry.increment(ec);
-            if (ec) {
-                return listing_failure(ec);
+        for (const auto& entry : listed.value()) {
+            uint64_t segment_id = 0;
+            if (entry.kind == std::filesystem::file_type::regular && parse_segment_id(entry.path, segment_id)) {
+                segments.push_back(segment_info_t{segment_id, entry.path, 0});
             }
         }
 

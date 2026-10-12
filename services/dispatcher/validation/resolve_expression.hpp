@@ -33,6 +33,8 @@ namespace services::dispatcher::validation {
         const components::compute::function_registry_t& function_registry;
         const components::graph_execution_context& execution_context;
         components::compute::function_types_mask allowed_functions;
+        // CREATE VIEW's collector of the catalog columns the expression reads; null otherwise.
+        column_uses_t* column_uses;
         const named_schema* schema_right{nullptr};
         const std::pmr::vector<precomputed_column_t>* precomputed{nullptr};
         components::types::complex_logical_type required_type{components::types::logical_type::ANY};

@@ -17,8 +17,11 @@
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <limits>
+#include <services/disk/tests/test_directory.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -44,17 +47,22 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
                 c.path = err_dir();
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(err_dir());
-            manager->bootstrap_system_tables_sync();
+            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             // The manager's dtor joins its loop thread, which may still enqueue onto the scheduler; destroy it first.
@@ -67,11 +75,7 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(future.is_ready());
+            REQUIRE(test_helpers::wait_ready(future, scheduler));
             return std::move(future).take_ready();
         }
 
@@ -474,7 +478,7 @@ TEST_CASE("services::disk::error::scan_open_refusal_is_not_a_drained_cursor") {
                            session_id_t{},
                            table_oid,
                            std::uint64_t{0},
-                           std::unique_ptr<components::table::table_filter_t>(nullptr),
+                           std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                            std::int64_t{-1},
                            std::vector<size_t>{},
                            with_open_snapshot(0, 0));
@@ -489,7 +493,7 @@ TEST_CASE("services::disk::error::scan_open_refusal_is_not_a_drained_cursor") {
                            session_id_t{},
                            nowhere,
                            std::uint64_t{0},
-                           std::unique_ptr<components::table::table_filter_t>(nullptr),
+                           std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                            std::int64_t{-1},
                            std::vector<size_t>{},
                            with_open_snapshot(0, 0));
@@ -604,7 +608,7 @@ TEST_CASE("services::disk::error::fetch_limit_counts_visible_rows_not_requested_
 TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_answering_empty") {
     // No bootstrap: zero agents means no system tables to seed, and seeding isn't under test.
     core::pmr::otterbrix_resource resource;
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
     configuration::config_disk cfg;
     cfg.path = err_dir() + "/no_agents";
@@ -612,15 +616,16 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
     std::filesystem::create_directories(cfg.path);
     {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager(
-            actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, cfg, log));
+            actor_zeta::spawn<manager_disk_t>(&resource,
+                                              scheduler,
+                                              scheduler,
+                                              test_directory::created(cfg),
+                                              log,
+                                              configuration::pump_intervals_t{}));
 
         auto call = [&](auto fn, auto&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::move(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(future.is_ready());
+            REQUIRE(test_helpers::wait_ready(future, scheduler));
             return std::move(future).take_ready();
         };
 
@@ -643,7 +648,7 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
                      session_id_t{},
                      oid,
                      std::uint64_t{0},
-                     std::unique_ptr<components::table::table_filter_t>(nullptr),
+                     std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                      std::int64_t{-1},
                      std::vector<size_t>{},
                      with_open_snapshot(0, 0))

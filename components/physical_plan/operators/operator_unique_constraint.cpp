@@ -21,8 +21,6 @@
 
 namespace components::operators {
 
-    using constraint_detail::resolve_cursor_output;
-
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_unique_constraint_scan_sends{0};
@@ -59,9 +57,10 @@ namespace components::operators {
         // Same policy as operator_fk_check_t: constraint ops stack above one DML, so the immediate left_
         // may be another (empty) constraint op — walk down the left_ spine to the DML's constraint_input()
         // snapshot (single canonical source, R6; see constraint_util.hpp).
+        written_ = left_->written();
         const auto& source = constraint_detail::resolve_constraint_source(left_);
         if (!source || source->size() == 0 || unique_groups_.empty()) {
-            output_ = resolve_cursor_output(left_, source);
+            output_ = left_->output();
             mark_executed();
             co_return;
         }
@@ -307,7 +306,7 @@ namespace components::operators {
             }
         }
 
-        output_ = resolve_cursor_output(left_, source);
+        output_ = left_->output();
         mark_executed();
     }
 

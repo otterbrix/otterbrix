@@ -27,6 +27,15 @@
 // NO base class and NO std::function (R14).
 namespace components::operators::dml_detail {
 
+    // The scan's id of `row`: a dictionary-sliced batch keeps it in its first column's indexing, any other batch in
+    // row_ids. A batch without columns (a table whose last column was dropped) has only row_ids.
+    inline int64_t row_id_of(const vector::data_chunk_t& chunk, uint64_t row) {
+        if (!chunk.data.empty() && chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
+            return static_cast<int64_t>(chunk.data.front().indexing().get_index(row));
+        }
+        return chunk.row_ids.data<int64_t>()[row];
+    }
+
     // Normalized result of one operator storage op, handed to record_flush().
     struct flush_outcome_t {
         core::error_t error{core::error_t::no_error()};
@@ -77,26 +86,6 @@ namespace components::operators::dml_detail {
             }
         }
         return core::error_t::no_error();
-    }
-
-    // Build the "affected-row count" carrier for a no-RETURNING DML result: a run of chunks whose
-    // cardinalities SUM to affected_rows (the cursor totals chunk sizes), each capped at
-    // DEFAULT_VECTOR_CAPACITY rows so no oversized data_chunk_t is built. insert/update pass an
-    // EMPTY col_types (column-less carrier); delete passes the table's storage types.
-    [[nodiscard]] inline chunks_vector_t
-    make_affected_count_chunks(std::pmr::memory_resource* resource,
-                               uint64_t affected_rows,
-                               const std::pmr::vector<types::complex_logical_type>& col_types) {
-        const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
-        chunks_vector_t batches(resource);
-        batches.reserve((affected_rows + cap - 1) / cap);
-        for (uint64_t base = 0; base < affected_rows; base += cap) {
-            const uint64_t window = std::min<uint64_t>(cap, affected_rows - base);
-            vector::data_chunk_t chunk(resource, col_types, window);
-            chunk.set_cardinality(window);
-            batches.emplace_back(std::move(chunk));
-        }
-        return batches;
     }
 
 } // namespace components::operators::dml_detail

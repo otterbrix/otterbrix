@@ -88,3 +88,18 @@ def test_unimplemented_connect_arguments_are_refused():
 
     # Refused before anything was opened: no database was left behind.
     assert not os.path.exists(path)
+
+
+def test_a_second_client_on_the_same_directory_is_refused():
+    """One directory, one engine: the directory lock refuses a second one in the same process."""
+    path = _clean_dir("test_connect_persistence_locked")
+    first = Client(path)
+    with pytest.raises(RuntimeError, match="unique directory"):
+        Client(path)
+    del first
+    gc.collect()
+
+    reopened = Client(path)
+    cursor = reopened.execute("CREATE DATABASE relocked;")
+    assert not cursor.is_error(), cursor.get_error()
+    cursor.close()

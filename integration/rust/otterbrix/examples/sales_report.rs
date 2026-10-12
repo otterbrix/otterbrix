@@ -22,8 +22,8 @@ fn main() {
 
 pub fn run(data_dir: &Path) -> Result<(), Error> {
     let db = Database::open(Config::new(data_dir))?;
-    db.create_database("shop")?;
-    db.create_collection("shop", "orders")?;
+    db.execute("CREATE DATABASE shop;")?;
+    db.execute("CREATE TABLE shop.orders();")?;
 
     db.execute(
         "INSERT INTO shop.orders (id, category, amount_cents) VALUES \

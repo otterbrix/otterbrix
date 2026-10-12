@@ -85,7 +85,7 @@ TEST_CASE("integration::cpp::index_scan_limit_cap::capped_answer_is_the_uncapped
         auto s = otterbrix::session_id_t();
         auto cur = exec(dispatcher, s, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kSeedRows);
+        REQUIRE(cur->affected_rows() == kSeedRows);
     }
 
     auto reader = otterbrix::session_id_t();
@@ -100,7 +100,7 @@ TEST_CASE("integration::cpp::index_scan_limit_cap::capped_answer_is_the_uncapped
         auto writer = otterbrix::session_id_t();
         auto cur = exec(dispatcher, writer, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kLateRows);
+        REQUIRE(cur->affected_rows() == kLateRows);
     }
 
     std::stringstream where;

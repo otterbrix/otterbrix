@@ -24,6 +24,8 @@
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 
 using namespace services;
 using namespace services::wal;
@@ -45,11 +47,7 @@ namespace {
 
     template<typename F>
     decltype(auto) await_ready(F& fut) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut));
         return std::move(fut).take_ready();
     }
 
@@ -71,7 +69,7 @@ namespace {
     struct wal_env_t {
         explicit wal_env_t(const std::filesystem::path& path, size_t max_segment_size = 0, bool wipe = true)
             : path_(path)
-            , log_(initialization_logger("python", "/tmp/docker_logs/"))
+            , log_(make_test_log())
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_([&] {
                 if (wipe) {
@@ -84,7 +82,8 @@ namespace {
                                                                   config_,
                                                                   log_,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox())) {
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{})) {
             scheduler_->start();
         }
 

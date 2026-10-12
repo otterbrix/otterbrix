@@ -10,8 +10,7 @@
 
 namespace components::operators {
 
-    // Every refusable step precedes the one mutating step (mirroring into
-    // function_registry_t::get_default()), since the catalog write it depends on can still refuse.
+    // Writes pg_proc only; the dispatcher adds the function to its master registry once this succeeds.
     class operator_register_udf_t final : public read_only_operator_t {
     public:
         // One non-invalid, mutually-equal uid per executor on success; empty when there are none.
@@ -22,9 +21,6 @@ namespace components::operators {
                                 components::compute::function_ptr function,
                                 executor_uids_t executor_uids);
 
-        // True iff EVERY executor registered AND the pg_proc/pg_depend rows were appended.
-        bool success() const noexcept { return success_; }
-
         // Sourceless SINK leaf: all work runs in the single await_async_and_resume the dispatcher drives directly.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
@@ -33,7 +29,6 @@ namespace components::operators {
 
         components::compute::function_ptr function_;
         executor_uids_t executor_uids_;
-        bool success_{false};
     };
 
 } // namespace components::operators

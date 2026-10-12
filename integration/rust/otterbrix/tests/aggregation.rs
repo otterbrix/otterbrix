@@ -3,8 +3,8 @@ mod common;
 #[test]
 fn count_aggregate() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute(
         "INSERT INTO db.t (name, score) VALUES ('a', 10), ('b', 20), ('c', 30), ('a', 40), ('b', 50);",
@@ -20,8 +20,8 @@ fn count_aggregate() {
 #[test]
 fn sum_aggregate() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (val) VALUES (10), (20), (30);")
         .unwrap();
@@ -35,8 +35,8 @@ fn sum_aggregate() {
 #[test]
 fn avg_min_max_aggregates() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (val) VALUES (10), (20), (30);")
         .unwrap();
@@ -52,8 +52,8 @@ fn avg_min_max_aggregates() {
 #[test]
 fn group_by() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, score) VALUES ('a', 10), ('b', 20), ('a', 30), ('b', 40);")
         .unwrap();
@@ -79,8 +79,8 @@ fn group_by() {
 #[test]
 fn order_by_asc() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, val) VALUES ('c', 30), ('a', 10), ('b', 20);")
         .unwrap();
@@ -96,8 +96,8 @@ fn order_by_asc() {
 #[test]
 fn order_by_desc() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, val) VALUES ('c', 30), ('a', 10), ('b', 20);")
         .unwrap();

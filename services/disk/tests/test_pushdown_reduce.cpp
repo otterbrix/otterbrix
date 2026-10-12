@@ -20,13 +20,16 @@
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <limits>
 #include <map>
+#include <services/disk/tests/test_directory.hpp>
 #include <vector>
 
 using namespace services::disk;
 using namespace pushdown_reduce_test;
-using pushdown_test::sum_uid;
+using pushdown_test::stamp_sum;
 namespace catalog = components::catalog;
 namespace ops = components::operators;
 namespace types = components::types;
@@ -76,29 +79,29 @@ namespace {
             std::pmr::vector<size_t> key_path{r};
             key_path.push_back(static_cast<size_t>(group_col));
             key.set_path(std::move(key_path));
-            spec.outputs.push_back(
+            spec.outputs.push_back(components::expressions::detached_expression_t::detach(
+                r,
                 components::expressions::make_scalar_expression(r,
                                                                 components::expressions::scalar_type::get_field,
-                                                                key));
+                                                                key)));
             spec.output_types.emplace_back(types::logical_type::BIGINT); // key column
         }
         ops::pushed_aggregate_t pa{r};
         pa.function_name.assign("sum", 3);
-        pa.func_uid = sum_uid(r);
         pa.distinct = false;
         pa.alias.assign("sum_val", 7);
         pa.result_type = types::complex_logical_type{types::logical_type::BIGINT};
         pa.arg_col_path.push_back(static_cast<uint64_t>(val_col));
         components::expressions::key_t alias{r, std::string("sum_val")};
         auto reduction = components::expressions::make_aggregate_expression(r, "sum", alias);
-        reduction->add_function_uid(pa.func_uid);
+        stamp_sum(*reduction, r);
         reduction->set_result_type(pa.result_type);
         components::expressions::key_t argument{r};
         std::pmr::vector<size_t> argument_path{r};
         argument_path.push_back(static_cast<size_t>(val_col));
         argument.set_path(std::move(argument_path));
         reduction->append_param(argument);
-        spec.outputs.push_back(reduction);
+        spec.outputs.push_back(components::expressions::detached_expression_t::detach(r, reduction));
         spec.aggregates.push_back(std::move(pa));
         spec.output_types.emplace_back(types::logical_type::BIGINT); // sum column
         // input_types is the only schema description the agent's group gets when an empty slice pushes no batch.
@@ -235,7 +238,7 @@ TEST_CASE("pushdown_reduce: manager routes a storage_reduce and replies a well-f
     auto reply = fx.invoke(&manager_disk_t::storage_reduce,
                            session_id_t{},
                            table_oid,
-                           std::unique_ptr<components::table::table_filter_t>(nullptr),
+                           std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                            std::vector<size_t>{},
                            components::table::transaction_data::committed(),
                            build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0));
@@ -256,7 +259,7 @@ TEST_CASE("pushdown_reduce: a reduce over a missing slice is a refusal, not an e
     auto r = fx.invoke(&manager_disk_t::storage_reduce,
                        session_id_t{},
                        missing_oid,
-                       std::unique_ptr<components::table::table_filter_t>(nullptr),
+                       std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                        std::vector<size_t>{},
                        open_txn(88),
                        build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0));
@@ -274,12 +277,12 @@ TEST_CASE("pushdown_reduce: a re-driven pushed_reduce_scan ships an ACTIVE spec 
                                                    std::vector<size_t>{},
                                                    build_sum_spec(&resource, /*group_col=*/-1, /*val_col=*/0)};
 
-    auto first = scan.open_spec();
+    auto first = scan.open_spec(&resource);
     REQUIRE(first.active());
 
     scan.reset_for_reuse();
     scan.reset_pipeline_state();
-    auto second = scan.open_spec();
+    auto second = scan.open_spec(&resource);
     REQUIRE(second.active());
 }
 
@@ -355,7 +358,7 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
 // (which reads as "no groups produced"). Not reachable today, but pinned through the contract.
 TEST_CASE("pushdown_reduce: a manager with no agents refuses instead of folding to nothing") {
     core::pmr::otterbrix_resource resource;
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
     configuration::config_disk cfg;
     cfg.path = reduce_dir() + "/no_agents";
@@ -363,20 +366,21 @@ TEST_CASE("pushdown_reduce: a manager with no agents refuses instead of folding 
     std::filesystem::create_directories(cfg.path);
     {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager(
-            actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, cfg, log));
+            actor_zeta::spawn<manager_disk_t>(&resource,
+                                              scheduler,
+                                              scheduler,
+                                              test_directory::created(cfg),
+                                              log,
+                                              configuration::pump_intervals_t{}));
         auto [_, future] = actor_zeta::otterbrix::send(manager->address(),
                                                        &manager_disk_t::storage_reduce,
                                                        session_id_t{},
                                                        catalog::oid_t{catalog::FIRST_USER_OID},
-                                                       std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                                       std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                                                        std::vector<size_t>{},
                                                        open_txn(88),
                                                        build_sum_spec(&resource, /*group_col=*/-1, /*val_col=*/0));
-        for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
-            scheduler->run(1000);
-            std::this_thread::yield();
-        }
-        REQUIRE(future.is_ready());
+        REQUIRE(test_helpers::wait_ready(future, scheduler));
         REQUIRE(std::move(future).take_ready().has_error());
     }
     scheduler->stop();

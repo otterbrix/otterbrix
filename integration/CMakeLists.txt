@@ -9,6 +9,7 @@ add_subdirectory(cpp)
 # libotterbrix.a: the whole engine in one archive, built from the objects of the component archives
 # (tests and benchmarks keep linking the components).
 set(otterbrix_engine_targets
+        otterbrix_pmr
         otterbrix_assert
         otterbrix_b_plus_tree
         otterbrix_date
@@ -81,4 +82,26 @@ if(NOT SKBUILD)
             PATTERN "test" EXCLUDE)
     install(FILES ${PROJECT_BINARY_DIR}/components/sql/parser/gram.hpp
             DESTINATION include/components/sql/parser)
+    # conan's package_info registers it as a cmake_build_module, so find_package(otterbrix) includes it
+    install(FILES ${PROJECT_SOURCE_DIR}/cmake/otterbrix_parser_extension.cmake
+            DESTINATION lib/cmake/otterbrix)
+endif()
+
+# Off by default: every run copies this build into the local conan cache as a throwaway package.
+option(OTTERBRIX_PACKAGE_TEST "ctest: build a conan consumer of this build's package" OFF)
+if(OTTERBRIX_PACKAGE_TEST)
+    find_program(OTTERBRIX_CONAN conan REQUIRED)
+    get_filename_component(otterbrix_preset "${PROJECT_BINARY_DIR}" NAME)
+    set(OTTERBRIX_PACKAGE_TEST_PROFILE "${PROJECT_SOURCE_DIR}/profiles/${otterbrix_preset}"
+        CACHE FILEPATH "conan host profile this build was installed with")
+    add_test(NAME package::parser_extension_consumer
+             COMMAND ${CMAKE_COMMAND}
+                     -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+                     -DBINARY_DIR=${PROJECT_BINARY_DIR}
+                     -DBUILD_TYPE=${CMAKE_BUILD_TYPE}
+                     -DPROFILE=${OTTERBRIX_PACKAGE_TEST_PROFILE}
+                     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/package_consumer
+                     -DCONAN=${OTTERBRIX_CONAN}
+                     -P ${PROJECT_SOURCE_DIR}/cmake/tests/package_consumer/run.cmake)
+    set_tests_properties(package::parser_extension_consumer PROPERTIES LABELS package TIMEOUT 1800)
 endif()

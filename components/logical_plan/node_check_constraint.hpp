@@ -1,7 +1,7 @@
 #pragma once
 
-#include "identifier_types.hpp"
 #include "node.hpp"
+#include <components/base/identifier_types.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/logical_plan/param_storage.hpp>
 
@@ -46,15 +46,10 @@ namespace components::logical_plan {
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
         void set_table_oid(components::catalog::oid_t oid) noexcept { table_oid_ = oid; }
 
-        const std::string& relname() const noexcept { return relname_; }
-        const std::string& dbname() const noexcept { return dbname_; }
-
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::string dbname_;
-        std::string relname_;
         std::vector<std::string> not_null_columns_;
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
         // resolved expressions, not SQL text: text would need a hand-written recogniser

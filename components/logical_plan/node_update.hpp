@@ -10,7 +10,9 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/types/logical_value.hpp>
 
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace components::logical_plan {
 
@@ -19,19 +21,10 @@ namespace components::logical_plan {
         explicit node_update_t(std::pmr::memory_resource* resource,
                                const node_match_ptr& match,
                                const node_limit_ptr& limit,
-                               const std::pmr::vector<expressions::expression_ptr>& updates,
-                               bool upsert = false);
-
-        // The update target, as written. Kept on the node so enrich binds it to a
-        // resolved entry by name rather than inferring it from a child.
-        const std::string& dbname() const noexcept { return dbname_; }
-        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
-        const std::string& relname() const noexcept { return relname_; }
-        void set_relname(std::string relname) { relname_ = std::move(relname); }
+                               const std::pmr::vector<expressions::expression_ptr>& updates);
 
         const std::pmr::vector<expressions::expression_ptr>& updates() const;
         std::pmr::vector<expressions::expression_ptr>& updates();
-        bool upsert() const;
 
         std::pmr::vector<expressions::expression_ptr>& returning();
         const std::pmr::vector<expressions::expression_ptr>& returning() const;
@@ -74,11 +67,8 @@ namespace components::logical_plan {
         const std::vector<std::vector<std::string>>& unique_groups() const { return unique_groups_; }
 
     private:
-        std::string dbname_;
-        std::string relname_;
         std::pmr::vector<expressions::expression_ptr> update_expressions_;
         std::pmr::vector<expressions::expression_ptr> returning_;
-        bool upsert_;
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -97,7 +87,6 @@ namespace components::logical_plan {
     node_update_ptr make_node_update(std::pmr::memory_resource* resource,
                                      const node_match_ptr& match,
                                      const node_limit_ptr& limit,
-                                     const std::pmr::vector<expressions::expression_ptr>& updates,
-                                     bool upsert = false);
+                                     const std::pmr::vector<expressions::expression_ptr>& updates);
 
 } // namespace components::logical_plan

@@ -4,10 +4,8 @@
 
 namespace components::logical_plan {
 
-    node_match_t::node_match_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname)
-        : node_t(resource, node_type::match_t)
-        , dbname_(std::move(static_cast<std::string&>(dbname)))
-        , relname_(std::move(static_cast<std::string&>(relname))) {}
+    node_match_t::node_match_t(std::pmr::memory_resource* resource, qualified_name_t target)
+        : node_t(resource, node_type::match_t, std::move(target)) {}
 
     hash_t node_match_t::hash_impl() const { return 0; }
 
@@ -28,10 +26,9 @@ namespace components::logical_plan {
     }
 
     node_match_ptr make_node_match(std::pmr::memory_resource* resource,
-                                   core::dbname_t dbname,
-                                   core::relname_t relname,
+                                   qualified_name_t target,
                                    const expressions::expression_ptr& match) {
-        node_match_ptr node = new node_match_t{resource, std::move(dbname), std::move(relname)};
+        node_match_ptr node = new node_match_t{resource, std::move(target)};
         if (match) {
             node->append_expression(match);
         }

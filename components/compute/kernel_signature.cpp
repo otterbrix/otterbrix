@@ -55,6 +55,18 @@ namespace components::compute {
         return result;
     }
 
+    parameter_type::parameter_type(const parameter_type& other, const allocator_type& allocator)
+        : is_variable_(other.is_variable_)
+        , id_(other.id_)
+        , type_(other.type_)
+        , admissible_(other.admissible_, allocator) {}
+
+    parameter_type::parameter_type(parameter_type&& other, const allocator_type& allocator)
+        : is_variable_(other.is_variable_)
+        , id_(other.id_)
+        , type_(std::move(other.type_))
+        , admissible_(std::move(other.admissible_), allocator) {}
+
     bool parameter_type::admits(const types::complex_logical_type& candidate) const {
         // An entry with no extension stands for its whole family
         auto admitted_by = [&candidate](const types::complex_logical_type& entry) {
@@ -122,6 +134,16 @@ namespace components::compute {
         : function_type(function_type)
         , input_types(std::move(input_types))
         , output_types(std::move(output_types)) {}
+
+    kernel_signature_t::kernel_signature_t(const kernel_signature_t& other, const allocator_type& allocator)
+        : function_type(other.function_type)
+        , input_types(other.input_types, allocator)
+        , output_types(other.output_types, allocator) {}
+
+    kernel_signature_t::kernel_signature_t(kernel_signature_t&& other, const allocator_type& allocator)
+        : function_type(other.function_type)
+        , input_types(std::move(other.input_types), allocator)
+        , output_types(std::move(other.output_types), allocator) {}
 
     bool kernel_signature_t::matches_inputs(const std::pmr::vector<types::complex_logical_type>& types) const {
         if (types.size() != input_types.size()) {

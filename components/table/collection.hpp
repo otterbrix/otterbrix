@@ -4,9 +4,11 @@
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/vector.hpp>
+#include <map>
 
 #include "column_data.hpp"
 #include "row_version_manager.hpp"
+#include "storage/partial_block_manager.hpp"
 #include "table_state.hpp"
 
 #include "column_definition.hpp"
@@ -20,23 +22,11 @@ namespace components::table {
 
     class data_table_t;
 
-    class row_group_segment_tree_t : public segment_tree_t<row_group_t, true> {
-    public:
-        explicit row_group_segment_tree_t(collection_t& collection);
-        ~row_group_segment_tree_t() override;
-
-    protected:
-        collection_t& collection_;
-        uint64_t current_row_group_;
-        uint64_t max_row_group_;
-    };
-
     // marks blocks as free
     void release_disk_blocks(storage::block_manager_t& block_manager, std::pmr::vector<uint64_t> block_ids);
 
-    // A copy of this pointer taken before data_table_t::compact swaps in a rebuilt collection must
-    // outlive the swap — block_manager_t::unregister_block's identity check depends on it
-    // (test_root_reclaim, test_block_manager).
+    // A copy of this pointer taken before data_table_t::compact swaps in a rebuilt collection keeps its
+    // blocks: they are freed when the copy dies, not under it (test_root_reclaim [item_c]).
     class collection_t final : public boost::intrusive_ref_counter<collection_t> {
     public:
         collection_t(std::pmr::memory_resource* resource,
@@ -53,12 +43,10 @@ namespace components::table {
 
         bool is_empty() const;
 
-        void append_row_group(std::unique_lock<std::mutex>& l, int64_t start_row);
         row_group_t* append_row_group(int64_t start_row);
         row_group_t* row_group(int64_t index);
 
         void initialize_scan(collection_scan_state& state, const std::vector<storage_index_t>& column_ids);
-        void initialize_create_index_scan(create_index_scan_state& state);
         void initialize_scan_with_offset(collection_scan_state& state,
                                          const std::vector<storage_index_t>& column_ids,
                                          int64_t start_row,
@@ -93,6 +81,7 @@ namespace components::table {
         // Reverts only the table's tail: row groups past row_start go whole, the one holding it is truncated;
         // any other range is refused.
         core::result_wrapper_t<bool> revert_append(int64_t row_start, uint64_t count);
+        [[nodiscard]] core::error_t settle_unwind(std::pmr::vector<uint64_t> erased_blocks);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void revert_all_deletes(uint64_t txn_id);
         void cleanup_append(int64_t start, uint64_t count);
@@ -114,9 +103,11 @@ namespace components::table {
 
         // An ALTER successor's row groups share this collection's column objects and row-version
         // managers (row_group_t::add_column/remove_column), so the parent stays readable while it installs.
+        // Both seal this collection's append packer first (the successor's first checkpoint may name
+        // its open tails) and return that seal's io_error rather than a successor over a torn tail.
         [[nodiscard]] core::result_wrapper_t<boost::intrusive_ptr<collection_t>>
         add_column(column_definition_t& new_column);
-        boost::intrusive_ptr<collection_t> remove_column(uint64_t col_idx);
+        [[nodiscard]] core::result_wrapper_t<boost::intrusive_ptr<collection_t>> remove_column(uint64_t col_idx);
         // TODO: type casting
         // std::shared_ptr<collection_t> alter_type(uint64_t changed_idx, const types::complex_logical_type &target_type,
         // std::vector<storage_index_t> bound_columns);
@@ -127,11 +118,13 @@ namespace components::table {
 
         storage::block_manager_t& block_manager() { return block_manager_; }
 
+        storage::partial_block_manager_t& append_packer() { return append_pbm_; }
+
         uint64_t allocation_size() const { return allocation_size_; }
 
         uint64_t row_group_size() const { return row_group_size_; }
 
-        row_group_segment_tree_t* row_group_tree() { return row_groups_.get(); }
+        segment_tree_t<row_group_t>* row_group_tree() { return row_groups_.get(); }
 
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
@@ -141,16 +134,36 @@ namespace components::table {
         void set_total_rows(uint64_t total) { total_rows_ = total; }
 
     private:
-        bool is_empty(std::unique_lock<std::mutex>&) const;
+        [[nodiscard]] core::error_t unwind_append(table_append_state& state,
+                                                  row_group_t* entry_row_group,
+                                                  uint64_t entry_offset,
+                                                  const append_cut_t& entry_cut,
+                                                  uint64_t append_count,
+                                                  const core::error_t& cause);
+
+        // One cut per append session, keyed by its first row: the counts of the row group that took it,
+        // before it. commit_append drops the session's; a session appended as committed keeps its cut
+        // until the next session ends (agent_disk reverts one right after its own append); revert_append
+        // drops every cut from the reverted row on.
+        struct session_cut_t {
+            append_cut_t cut;
+            uint64_t transaction_id;
+        };
+        std::pmr::map<int64_t, session_cut_t> session_cuts_;
 
         std::pmr::memory_resource* resource_;
         storage::block_manager_t& block_manager_;
+        // Packs the segments appends fill, across statements and row groups, into shared blocks;
+        // a packer per append call gave each 16 KiB string segment its own 256 KiB block (28x
+        // file-to-payload on 64-byte strings). Its open tails are grown in place until checkpoint()
+        // or an ALTER successor seals them -- only then can a durable root name them.
+        storage::partial_block_manager_t append_pbm_;
         uint64_t row_group_size_;
         std::atomic<uint64_t> total_rows_;
         std::pmr::vector<types::complex_logical_type> types_;
         int64_t row_start_;
         // Exclusive; a shared_ptr stood here though nothing shared it -- every consumer uses .get()/operator->.
-        std::unique_ptr<row_group_segment_tree_t> row_groups_;
+        std::unique_ptr<segment_tree_t<row_group_t>> row_groups_;
         uint64_t allocation_size_;
     };
 

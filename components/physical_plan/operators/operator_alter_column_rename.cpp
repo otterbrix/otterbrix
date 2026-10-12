@@ -180,6 +180,43 @@ namespace components::operators {
             co_return;
         }
 
+        // A view's body text names the column: renaming it would leave the view reading a name that is gone.
+        {
+            std::pmr::vector<std::uint64_t> dep_keys(resource_);
+            dep_keys.emplace_back(catalog::pg_depend_col::refclassid);
+            dep_keys.emplace_back(catalog::pg_depend_col::refobjid);
+            auto [_dep, depf] =
+                actor_zeta::otterbrix::send(ctx->disk_address,
+                                            &services::disk::manager_disk_t::read_chunks_by_key,
+                                            exec_ctx,
+                                            catalog::well_known_oid::pg_depend_table,
+                                            std::move(dep_keys),
+                                            components::operators::make_key_chunk(resource_, pg_attr, attoid),
+                                            std::pmr::vector<std::uint64_t>{resource_});
+            auto dependents_r = co_await std::move(depf);
+            if (dependents_r.has_error()) {
+                set_error(dependents_r.error());
+                co_return;
+            }
+            for (const auto& chunk : dependents_r.value()) {
+                for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                    if (chunk.is_null(catalog::pg_depend_col::classid, i) ||
+                        chunk.get_value<std::uint32_t>(catalog::pg_depend_col::classid, i) !=
+                            catalog::well_known_oid::pg_class_table) {
+                        continue;
+                    }
+                    std::string msg = "cannot rename column \"";
+                    msg += old_name_;
+                    msg += "\" because view with oid ";
+                    msg += std::to_string(chunk.get_value<std::uint32_t>(catalog::pg_depend_col::objid, i));
+                    msg += " reads it: renaming a column a view reads is not supported yet (#668)";
+                    set_error(core::error_t{core::error_code_t::unimplemented_yet,
+                                            std::pmr::string{std::move(msg), resource_}});
+                    co_return;
+                }
+            }
+        }
+
         auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                     &services::disk::manager_disk_t::delete_pg_catalog_rows,
                                                     exec_ctx,

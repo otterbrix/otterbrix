@@ -16,7 +16,7 @@ concurrency:
 jobs:
   run:
     name: Run
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
       CCACHE_MAXSIZE: 5G
@@ -26,7 +26,7 @@ jobs:
 
       - name: Install system dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip curl gnupg apt-transport-https g++-12 ccache
+          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip curl gnupg apt-transport-https g++-13 ccache
           echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 
       - name: conan installation and configuration
@@ -40,15 +40,15 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.conan2/p
-          key: conan-ubuntu-22.04-tsan-${{ env.CONAN_COMPILER }}-${{ hashFiles('conanfile.py', 'profiles/**') }}
-          restore-keys: conan-ubuntu-22.04-tsan-${{ env.CONAN_COMPILER }}-
+          key: conan-ubuntu-24.04-tsan-${{ env.CONAN_COMPILER }}-${{ hashFiles('conanfile.py', 'profiles/**') }}
+          restore-keys: conan-ubuntu-24.04-tsan-${{ env.CONAN_COMPILER }}-
 
       - name: Cache ccache
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-ubuntu-22.04-tsan-${{ env.CONAN_COMPILER }}-${{ github.sha }}
-          restore-keys: ccache-ubuntu-22.04-tsan-${{ env.CONAN_COMPILER }}-
+          key: ccache-ubuntu-24.04-tsan-${{ env.CONAN_COMPILER }}-${{ github.sha }}
+          restore-keys: ccache-ubuntu-24.04-tsan-${{ env.CONAN_COMPILER }}-
 
       - name: download dependencies
         run: |
@@ -64,7 +64,7 @@ jobs:
 
       - name: build and test
         env:
-          CC: gcc-12
-          CXX: g++-12
+          CC: gcc-13
+          CXX: g++-13
         run: |
           CTEST_PARALLEL_LEVEL=$(nproc) cmake --workflow --preset tsan

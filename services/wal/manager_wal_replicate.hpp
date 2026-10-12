@@ -22,6 +22,7 @@
 #include <functional>
 #include <list>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <thread>
 #include <unordered_map>
@@ -32,6 +33,23 @@ namespace services::wal {
 #ifdef DEV_MODE
     uint64_t auto_checkpoint_rounds() noexcept;
     void reset_auto_checkpoint_rounds() noexcept;
+
+    // Test seam: a round parks at `point` for as long as the gate says so, pinging the named
+    // manager between answers so the WAL loop keeps serving every other message meanwhile.
+    // `shutdown_waits` is whether the engine's shutdown has asked to stop rounds and waits for this one to end.
+    enum class auto_checkpoint_point_t : std::uint8_t
+    {
+        round_start,
+        after_index_flush
+    };
+    enum class auto_checkpoint_park_t : std::uint8_t
+    {
+        go,
+        on_index,
+        on_dispatcher
+    };
+    using auto_checkpoint_gate_fn = auto_checkpoint_park_t (*)(auto_checkpoint_point_t, bool shutdown_waits);
+    void dev_set_auto_checkpoint_gate(auto_checkpoint_gate_fn gate); // nullptr = off
 #endif
 
     class manager_wal_replicate_t final : public actor_zeta::actor::actor_mixin<manager_wal_replicate_t> {
@@ -45,19 +63,18 @@ namespace services::wal {
             actor_zeta::behavior_t behavior{};
         };
 
-#ifdef DEV_MODE
-        // Guards against spawning a worker per storage namespace dir: test_wal_storage_namespace_dirs.
-        std::size_t active_worker_count() const noexcept { return wal_actors_.size(); }
-#endif
-
         // disk/index feed auto-checkpoint; the dispatcher's mailbox arrives later via set_manager_dispatcher_sync.
         manager_wal_replicate_t(std::pmr::memory_resource* resource,
                                 actor_zeta::scheduler_raw scheduler,
                                 configuration::config_wal config,
                                 log_t& log,
                                 actor_zeta::address_t disk_address,
-                                actor_zeta::address_t index_address);
+                                actor_zeta::address_t index_address,
+                                configuration::pump_intervals_t pump);
         ~manager_wal_replicate_t();
+        // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
+        // resume against them while they are torn down. Idempotent; the destructor calls it too.
+        void stop_loop() noexcept;
 
         std::pmr::memory_resource* resource() const noexcept;
         const char* make_type() const noexcept;
@@ -82,6 +99,8 @@ namespace services::wal {
 
         // Self-sent by commit_txn when WAL growth trips the threshold; fire-and-forget.
         unique_future<void> run_auto_checkpoint(session_id_t session);
+
+        unique_future<void> stop_auto_checkpoint(session_id_t session);
 
         unique_future<core::result_wrapper_t<wal::id_t>>
         write_physical_insert(session_id_t session,
@@ -133,6 +152,7 @@ namespace services::wal {
                                                        &manager_wal_replicate_t::truncate_before,
                                                        &manager_wal_replicate_t::current_wal_id,
                                                        &manager_wal_replicate_t::run_auto_checkpoint,
+                                                       &manager_wal_replicate_t::stop_auto_checkpoint,
                                                        &manager_wal_replicate_t::write_physical_insert,
                                                        &manager_wal_replicate_t::write_physical_delete,
                                                        &manager_wal_replicate_t::write_physical_update,
@@ -161,6 +181,9 @@ namespace services::wal {
 
     private:
         wal_worker_t* get_or_create_worker(components::catalog::oid_t database_oid);
+#ifdef DEV_MODE
+        unique_future<void> dev_park_round_(session_id_t session, auto_checkpoint_point_t point);
+#endif
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
@@ -181,6 +204,9 @@ namespace services::wal {
 
         // Single-actor state on loop_thread_ only, no atomic; prevents a commit burst from stacking checkpoints.
         bool auto_checkpoint_in_flight_{false};
+        bool auto_checkpoint_stopped_{false};
+        // Only engine shutdown stops the auto-checkpoint, once, so one waiter at most.
+        std::optional<actor_zeta::promise<void>> round_end_waiter_;
 
         std::unordered_map<components::catalog::oid_t, wal_worker_ptr> wal_actors_;
 
@@ -190,10 +216,14 @@ namespace services::wal {
         std::pmr::vector<unique_future<void>> pending_auto_checkpoint_{resource_};
         void poll_auto_checkpoint_();
 
+        std::pmr::list<in_flight_entry_t> in_flight_{resource_};
         std::thread loop_thread_;
         std::atomic<bool> loop_running_{true};
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
         std::mutex mutex_; // guards the idle wait condition only.
+        std::condition_variable pump_cv_;
+        configuration::pump_intervals_t pump_;
+        void wake_loop_() noexcept;
     };
 
 } // namespace services::wal

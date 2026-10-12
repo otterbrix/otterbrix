@@ -151,7 +151,7 @@ namespace components::planner::optimizer {
             // children. Hash selection stays in rewrite_hash_joins (runs
             // after); the re-stamp makes detect_equi_columns accept it. Use the PROMOTED
             // children so a nested inner join is carried up.
-            auto inner = make_node_join(resource, core::dbname_t{}, core::relname_t{}, join_type::inner);
+            auto inner = make_node_join(resource, join_type::inner);
             inner->append_child(new_left);
             inner->append_child(new_right);
             inner->append_expression(picked);
@@ -674,7 +674,7 @@ namespace components::planner::optimizer {
             node_ptr new_source = leaves[new_order[0]];
             for (size_t pos = 1; pos < new_order.size(); ++pos) {
                 const node_ptr& dim = leaves[new_order[pos]];
-                auto cross = make_node_join(resource, core::dbname_t{}, core::relname_t{}, join_type::cross);
+                auto cross = make_node_join(resource, join_type::cross);
                 cross->append_child(new_source);
                 cross->append_child(dim);
                 cross->append_expression(make_compare_expression(resource, compare_type::all_true));

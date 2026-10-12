@@ -207,7 +207,7 @@ namespace services::disk {
 
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_scan_inner(components::catalog::oid_t table_oid,
-                           std::unique_ptr<components::table::table_filter_t> filter,
+                           std::unique_ptr<components::table::pushed_filter_t> filter,
                            int64_t limit,
                            std::vector<size_t> projected_cols,
                            components::table::transaction_data txn);
@@ -218,7 +218,7 @@ namespace services::disk {
         storage_fetch_next_batch_inner(session_id_t session,
                                        components::catalog::oid_t table_oid,
                                        uint64_t cursor_id,
-                                       std::unique_ptr<components::table::table_filter_t> filter,
+                                       std::unique_ptr<components::table::pushed_filter_t> filter,
                                        int64_t limit,
                                        std::vector<size_t> projected_cols,
                                        components::table::transaction_data txn);
@@ -239,7 +239,7 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_reduce_inner(session_id_t session,
                              components::catalog::oid_t table_oid,
-                             std::unique_ptr<components::table::table_filter_t> filter,
+                             std::unique_ptr<components::table::pushed_filter_t> filter,
                              std::vector<size_t> projected_cols,
                              components::table::transaction_data txn,
                              components::operators::pushed_aggregate_spec_t spec);
@@ -308,8 +308,8 @@ namespace services::disk {
                                                   components::pg_attribute_commit_id_backfill_t::kind_t kind,
                                                   std::uint64_t commit_id);
 
-        unique_future<std::uint64_t> compact_relkind_g_storage_inner(components::catalog::oid_t table_oid,
-                                                                     std::set<std::string> live_attnames);
+        unique_future<core::result_wrapper_t<std::uint64_t>>
+        compact_relkind_g_storage_inner(components::catalog::oid_t table_oid, std::set<std::string> live_attnames);
 
         // NAMES the column instead of taking the live set: no set to re-derive, so no gap that
         // could drop a surviving column instead.
@@ -398,6 +398,12 @@ namespace services::disk {
                    const components::table::transaction_data& txn);
 
         void drop_storage_one_local(components::catalog::oid_t oid);
+
+        // The agent's own filter: built on its resource, for the column types of the storage it
+        // filters. No pushed filter builds none.
+        core::result_wrapper_t<std::unique_ptr<components::table::table_filter_t>>
+        build_filter_(const components::table::pushed_filter_t* filter,
+                      const std::pmr::vector<components::types::complex_logical_type>& types);
 
         void mark_storage_dropped_one_local(components::catalog::oid_t table_oid, uint64_t dropped_at_commit_id);
 

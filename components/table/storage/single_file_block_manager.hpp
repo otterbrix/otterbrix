@@ -69,6 +69,12 @@ namespace components::table::storage {
 
     class single_file_block_manager_t : public block_manager_t {
     public:
+        // Reads the newest CRC-valid root without opening the table (no WRITE_LOCK) and answers whether it names no
+        // checkpointed content (meta_block INVALID), the same notion table_storage_t::never_checkpointed() uses.
+        // An unreadable file is an error, not "never checkpointed".
+        [[nodiscard]] static core::result_wrapper_t<bool>
+        file_is_never_checkpointed(const std::string& path, std::pmr::memory_resource* resource);
+
         single_file_block_manager_t(buffer_manager_t& buffer_manager,
                                     core::filesystem::local_file_system_t& fs,
                                     const std::string& path,
@@ -150,6 +156,7 @@ namespace components::table::storage {
         }
         std::set<uint64_t> dev_reusable_snapshot() { return reusable_; }
         std::set<uint64_t> dev_pending_free_snapshot() { return pending_free_; }
+        std::set<uint64_t> dev_freed_while_held_snapshot() { return freed_while_held_; }
         std::set<uint64_t> dev_durable_root_data_snapshot() { return durable_root_data_; }
         void dev_reset_tracking() {
             dev_issued_.clear();
@@ -158,6 +165,15 @@ namespace components::table::storage {
 #endif
 
     private:
+        core::error_t write_range_impl(file_buffer_t& block,
+                                       uint64_t block_id,
+                                       uint64_t offset,
+                                       uint64_t length,
+                                       std::optional<uint32_t> covered_crc) override;
+        // CRC32C of payload [0, covered) of a block image.
+        static uint32_t range_payload_crc(file_buffer_t& buffer, uint64_t covered);
+        core::error_t write_prefix_impl(file_buffer_t& block, uint64_t block_id, uint64_t length) override;
+
         uint64_t block_location(uint64_t block_id) const;
         [[nodiscard]] core::result_wrapper_t<bool> checksum_and_write(file_buffer_t& buffer, uint64_t block_id);
         bool verify_checksum(file_buffer_t& buffer);
@@ -181,6 +197,13 @@ namespace components::table::storage {
         // merge in promote_durable_root(), once write_header and its fsync both succeed.
         std::set<uint64_t> reusable_;
         std::set<uint64_t> pending_free_;
+        // Freed while a handle still named the block (a surviving segment packed into the same block, a
+        // successor sharing the column, a held collection copy): mark_as_free parks it here instead of
+        // pending_free_, and serialize_free_list moves it on once the handle is gone. Measured without it:
+        // a held copy's 6 blocks (1 572 864 B) leave the free list for good when the holder dies. (DuckDB
+        // v1.5.6 keeps the same set, free_blocks_in_use, but drains it from the handle's destructor under a
+        // lock.)
+        std::set<uint64_t> freed_while_held_;
         std::set<uint64_t> used_blocks_;
         std::set<uint64_t> modified_blocks_;
         uint64_t max_block_{0};

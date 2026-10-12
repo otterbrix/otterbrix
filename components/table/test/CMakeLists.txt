@@ -2,6 +2,8 @@ project(test_table)
 
 set(${PROJECT_NAME}_SOURCES
         test_column.cpp
+        test_add_column_null_fill.cpp
+        test_column_type_without_storage.cpp
         test_table.cpp
         test_block_manager.cpp
         test_block_reachability.cpp
@@ -43,6 +45,16 @@ set(${PROJECT_NAME}_SOURCES
         test_string_write_through.cpp
         test_compression_byte_validation.cpp
         test_construction_error_move.cpp
+        test_append_packing.cpp
+        test_tail_reuse.cpp
+        test_append_count.cpp
+        test_unwind_limits.cpp
+        test_compact_packer_bound.cpp
+        test_checkpoint_blocks.cpp
+        test_txn_revert_blocks.cpp
+        test_block_registry_threads.cpp
+        test_list_revert_pin.cpp
+        test_scan_chunk_width.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

@@ -1,6 +1,7 @@
 #include "assert.hpp"
 
-#include <iostream>
+#include <cstdio>
+#include <cstdlib>
 
 #include <boost/stacktrace.hpp>
 #include <fmt/format.h>
@@ -15,31 +16,41 @@ namespace core::detail {
         using trace_full_exception::trace_full_exception;
     };
 
-    void failed(std::string_view expr,
+    namespace {
+        void report(log_t* log, const std::string& text) noexcept {
+            if (log != nullptr && log->is_valid()) {
+                error(*log, text);
+                (*log)->flush();
+                return;
+            }
+            std::fputs(text.c_str(), stderr);
+            std::fputc('\n', stderr);
+            std::fflush(stderr);
+        }
+    } // namespace
+
+    void failed(log_t* log,
+                std::string_view expr,
                 const char* file,
                 unsigned int line,
                 const char* function,
                 std::string_view msg) noexcept {
         auto trace = boost::stacktrace::stacktrace();
-        auto log = get_logger();
-        error(log,
-              "error at {}:{}:{}. assertion '{}' failed{}{}.\n Stacktrace:\n{}\n",
-              file,
-              line,
-              (function ? function : ""),
-              expr,
-              (msg.empty() ? std::string_view{} : std::string_view{": "}),
-              msg,
-              to_string(trace));
+        report(log,
+               fmt::format("error at {}:{}:{}. assertion '{}' failed{}{}.\n Stacktrace:\n{}\n",
+                           file,
+                           line,
+                           (function ? function : ""),
+                           expr,
+                           (msg.empty() ? std::string_view{} : std::string_view{": "}),
+                           msg,
+                           to_string(trace)));
         abort();
     }
 
-    void log_and_throw_invariant_error(std::string_view condition, std::string_view message) {
+    void log_and_throw_invariant_error(log_t* log, std::string_view condition, std::string_view message) {
         const std::string err_str = fmt::format("invariant ({}) violation: {}", condition, message);
-        auto log = get_logger();
-        if (log.is_valid()) {
-            error(log, err_str);
-        }
+        report(log, err_str);
         throw InvariantError(err_str);
     }
 

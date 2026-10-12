@@ -301,10 +301,6 @@ namespace components::sql::transform {
         return *this;
     }
 
-    logical_plan::node_ptr transform_result::node_ptr() const { return plan_.sub_queries.back(); }
-
-    logical_plan::parameter_node_ptr transform_result::params_ptr() const { return plan_.parameters; }
-
     size_t transform_result::parameter_count() const {
         if (effective_consumer_type(plan_.sub_queries.back()) == logical_plan::node_type::insert_t) {
             return param_insert_map_.size();

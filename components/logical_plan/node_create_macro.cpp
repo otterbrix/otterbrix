@@ -9,7 +9,7 @@ namespace components::logical_plan {
                                              std::vector<std::string> parameters,
                                              core::body_sql_t body_sql)
         : node_t(resource, node_type::create_macro_t)
-        , macroname_(std::move(static_cast<std::string&>(macroname)))
+        , macroname_(std::move(macroname))
         , parameters_(std::move(parameters))
         , body_sql_(std::move(static_cast<std::string&>(body_sql))) {}
 

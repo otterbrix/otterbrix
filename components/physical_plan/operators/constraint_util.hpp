@@ -35,18 +35,4 @@ namespace components::operators::constraint_detail {
         return empty;
     }
 
-    // A constraint operator is the plan ROOT, so its output_ becomes the result
-    // cursor (the executor reads plan->output() in the is_root default case).
-    // Surface the DML child's final result: its RETURNING projection
-    // (column_count > 0) when present, else the raw written rows so the cursor
-    // reports the affected-row count.
-    [[nodiscard]] inline const operator_data_ptr& resolve_cursor_output(const operator_ptr& left,
-                                                                        const operator_data_ptr& validation_source) {
-        if (left->output() && !left->output()->chunks().empty() &&
-            left->output()->chunks().front().column_count() > 0) {
-            return left->output();
-        }
-        return validation_source;
-    }
-
 } // namespace components::operators::constraint_detail

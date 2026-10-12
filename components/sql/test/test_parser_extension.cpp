@@ -171,8 +171,10 @@ TEST_CASE("components::sql::extension_transform") {
     components::sql::transform::transformer tr(&arena, nullptr, &registry);
     auto result = tr.transform(*demo_node);
     REQUIRE_FALSE(result.has_error());
-    REQUIRE(result.node_ptr() != nullptr);
-    CHECK(result.node_ptr()->type() == components::logical_plan::node_type::data_t);
+    auto plan = result.finalize();
+    REQUIRE_FALSE(plan.has_error());
+    REQUIRE(plan.value().sub_queries.back() != nullptr);
+    CHECK(plan.value().sub_queries.back()->type() == components::logical_plan::node_type::data_t);
 }
 
 TEST_CASE("components::sql::extension_error") {
@@ -252,8 +254,10 @@ TEST_CASE("components::sql::two_extensions_transform_routing") {
         components::sql::transform::transformer tr(&arena, nullptr, &registry);
         auto result = tr.transform(*node);
         REQUIRE_FALSE(result.has_error());
-        REQUIRE(result.node_ptr() != nullptr);
-        CHECK(result.node_ptr()->type() == components::logical_plan::node_type::data_t);
+        auto plan = result.finalize();
+        REQUIRE_FALSE(plan.has_error());
+        REQUIRE(plan.value().sub_queries.back() != nullptr);
+        CHECK(plan.value().sub_queries.back()->type() == components::logical_plan::node_type::data_t);
     }
 
     SECTION("demo node transform") {
@@ -262,7 +266,9 @@ TEST_CASE("components::sql::two_extensions_transform_routing") {
         components::sql::transform::transformer tr(&arena, nullptr, &registry);
         auto result = tr.transform(*node);
         REQUIRE_FALSE(result.has_error());
-        CHECK(result.node_ptr()->type() == components::logical_plan::node_type::data_t);
+        auto plan = result.finalize();
+        REQUIRE_FALSE(plan.has_error());
+        CHECK(plan.value().sub_queries.back()->type() == components::logical_plan::node_type::data_t);
     }
 
     SECTION("an unknown extension node is a transform error") {

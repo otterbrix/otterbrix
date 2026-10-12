@@ -289,6 +289,9 @@ TEST_CASE("shadow_header: the durable header carries a verifiable checksum") {
         auto table = make_table(env, bm);
         append_rows(*table, env, 0, 2000);
         checkpoint_production(bm, *table);
+        // Two generations on disk: the first checkpoint mirrors root 1 into both slots.
+        append_rows(*table, env, 2000, 100);
+        checkpoint_production(bm, *table);
     }
 
     tstorage::database_header_t s0{};
@@ -625,7 +628,7 @@ TEST_CASE("shadow_header: a never-checkpointed file opens as legitimately empty"
     remove_file(path);
 }
 
-TEST_CASE("shadow_header: a checkpointed file falling back to the initial empty root is refused") {
+TEST_CASE("shadow_header: root 1 survives the loss of its own slot through the mirror in the CREATE-time slot") {
     const std::string path = shadow_db_path("stale_initial_root");
     remove_file(path);
     shadow_env_t env;
@@ -644,9 +647,12 @@ TEST_CASE("shadow_header: a checkpointed file falling back to the initial empty 
         REQUIRE(read_slot(path, 1, s1));
         REQUIRE(s0.checksum_ok());
         REQUIRE(s0.iteration == 1);
+        // The first checkpoint overwrites the CREATE-time header with a copy of root 1: that header names no
+        // data, so nothing recoverable is lost, and the file no longer has a slot whose loss means "empty".
         REQUIRE(s1.checksum_ok());
-        REQUIRE(s1.iteration == 0);
-        REQUIRE(s1.meta_block == tstorage::INVALID_INDEX);
+        REQUIRE(s1.iteration == 1);
+        REQUIRE(s1.meta_block == s0.meta_block);
+        REQUIRE(s1.block_count == s0.block_count);
     }
 
     std::mt19937_64 rng(0xA76A76A7ULL);
@@ -658,39 +664,43 @@ TEST_CASE("shadow_header: a checkpointed file falling back to the initial empty 
         shadow_env_t env2;
         tstorage::single_file_block_manager_t bm(env2.buffer_manager, env2.fs, path);
         auto opened = bm.load_existing_database();
-        INFO("a checkpointed table must never silently reopen as an empty one");
-        REQUIRE(opened.has_error());
-        CHECK(opened.error().type == core::error_code_t::data_corruption);
+        REQUIRE_FALSE(opened.has_error());
+        REQUIRE(bm.meta_block() != tstorage::INVALID_INDEX);
+        CHECK(rows_at_root(env2, bm, bm.meta_block(), 4000) == 2000);
     }
     CHECK(same_bytes(before, read_whole_file(path)));
 
     remove_file(path);
 }
 
-TEST_CASE("shadow_header: an initial root whose header contradicts the file is refused") {
-    SECTION("the file grew past the header sectors") {
-        const std::string path = shadow_db_path("young_grown");
-        remove_file(path);
-        shadow_env_t env;
-        {
-            tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
-            REQUIRE_FALSE(bm.create_new_database().has_error());
-        }
-        {
-            std::ofstream f(path, std::ios::binary | std::ios::app);
-            REQUIRE(f.is_open());
-            std::vector<char> zeros(4096, 0);
-            f.write(zeros.data(), static_cast<std::streamsize>(zeros.size()));
-            REQUIRE(f.good());
-        }
-        shadow_env_t env2;
-        tstorage::single_file_block_manager_t bm(env2.buffer_manager, env2.fs, path);
-        auto opened = bm.load_existing_database();
-        REQUIRE(opened.has_error());
-        CHECK(opened.error().type == core::error_code_t::data_corruption);
-        remove_file(path);
+// Write-through puts data blocks into the file before any root exists, so a never-checkpointed file is any size:
+// the grown file must open as legitimately empty (its blocks are unreferenced and get reused from id 0).
+TEST_CASE("shadow_header: a never-checkpointed file that grew by write-through opens as empty") {
+    const std::string path = shadow_db_path("young_grown");
+    remove_file(path);
+    shadow_env_t env;
+    {
+        tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+        REQUIRE_FALSE(bm.create_new_database().has_error());
+        auto table = make_table(env, bm);
+        append_rows(*table, env, 0, 2000);
     }
+    REQUIRE(std::filesystem::file_size(path) > tstorage::BLOCK_START);
+    auto young = tstorage::single_file_block_manager_t::file_is_never_checkpointed(path, &env.resource);
+    REQUIRE_FALSE(young.has_error());
+    CHECK(young.value());
 
+    shadow_env_t env2;
+    tstorage::single_file_block_manager_t bm(env2.buffer_manager, env2.fs, path);
+    auto opened = bm.load_existing_database();
+    REQUIRE_FALSE(opened.has_error());
+    CHECK(bm.meta_block() == tstorage::INVALID_INDEX);
+    CHECK(bm.total_blocks() == 0);
+    CHECK(bm.peek_free_block_id() == 0);
+    remove_file(path);
+}
+
+TEST_CASE("shadow_header: an initial root whose header contradicts the file is refused") {
     SECTION("the initial slot itself claims blocks") {
         const std::string path = shadow_db_path("young_contradiction");
         remove_file(path);
@@ -715,4 +725,53 @@ TEST_CASE("shadow_header: an initial root whose header contradicts the file is r
         CHECK(opened.error().type == core::error_code_t::data_corruption);
         remove_file(path);
     }
+}
+
+// Orphaned write-through blocks are not a leak: the reopened file restarts issuance at block 0 (the CREATE-time
+// header's block_count), so the replayed rows and the first checkpoint land on the same ids a crash-free run uses.
+TEST_CASE("shadow_header: a never-checkpointed file reopened after write-through reuses its orphaned blocks") {
+    const std::string crashed = shadow_db_path("young_reuse_crashed");
+    const std::string control = shadow_db_path("young_reuse_control");
+    remove_file(crashed);
+    remove_file(control);
+
+    uint64_t control_blocks = 0;
+    {
+        shadow_env_t env;
+        tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, control);
+        REQUIRE_FALSE(bm.create_new_database().has_error());
+        auto table = make_table(env, bm);
+        append_rows(*table, env, 0, 2000);
+        checkpoint_production(bm, *table);
+        control_blocks = bm.total_blocks();
+    }
+
+    uint64_t orphan_blocks = 0;
+    {
+        shadow_env_t env;
+        tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, crashed);
+        REQUIRE_FALSE(bm.create_new_database().has_error());
+        auto table = make_table(env, bm);
+        append_rows(*table, env, 0, 2000);
+        orphan_blocks = bm.total_blocks();
+    }
+    REQUIRE(orphan_blocks > 0);
+    const auto crashed_bytes = std::filesystem::file_size(crashed);
+    REQUIRE(crashed_bytes == tstorage::BLOCK_START + orphan_blocks * tstorage::DEFAULT_BLOCK_ALLOC_SIZE);
+
+    {
+        shadow_env_t env;
+        tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, crashed);
+        REQUIRE_FALSE(bm.load_existing_database().has_error());
+        CHECK(bm.total_blocks() == 0);
+        auto table = make_table(env, bm);
+        append_rows(*table, env, 0, 2000);
+        checkpoint_production(bm, *table);
+        CHECK(bm.total_blocks() == control_blocks);
+        CHECK(scan_rows(*table, 4000) == 2000);
+    }
+    CHECK(std::filesystem::file_size(crashed) == std::filesystem::file_size(control));
+
+    remove_file(crashed);
+    remove_file(control);
 }

@@ -22,9 +22,13 @@
 
 #include "disk_test_helpers.hpp"
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/skip_under_root.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <services/disk/tests/test_directory.hpp>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -60,14 +64,19 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         explicit open_fixture(const std::filesystem::path& base)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
                 c.path = base;
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {}
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {}
 
         ~open_fixture() {
             // Destroy the manager first — its dtor joins the loop thread, which may still enqueue onto the scheduler.
@@ -79,11 +88,7 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(future.is_ready());
+            REQUIRE(test_helpers::wait_ready(future, scheduler));
             return std::move(future).take_ready();
         }
 
@@ -99,11 +104,7 @@ namespace {
                                                        session_id_t{},
                                                        wal_id,
                                                        std::numeric_limits<uint64_t>::max());
-            for (int i = 0; i < 100000 && !cf.is_ready(); ++i) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(cf.is_ready());
+            REQUIRE(test_helpers::wait_ready(cf, scheduler));
             auto sealed = std::move(cf).take_ready();
             REQUIRE(sealed <= wal_id);
         }
@@ -230,7 +231,7 @@ TEST_CASE("services::disk::open::an_unreadable_sidecar_is_not_never_checkpointed
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fx, "ns_sidecar");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -256,7 +257,7 @@ TEST_CASE("services::disk::open::an_unreadable_sidecar_is_not_never_checkpointed
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         REQUIRE_FALSE(fx.manager->has_storage(table_oid));
 
         auto peeked = fx.manager->peek_checkpoint_wal_id_from_disk(table_oid, ns_oid);
@@ -276,9 +277,9 @@ TEST_CASE("services::disk::open::an_unreadable_sidecar_is_not_never_checkpointed
     {
         open_fixture fx(base);
         REQUIRE(std::filesystem::file_size(sidecar) == 3);
-        REQUIRE_NOTHROW(fx.manager->bootstrap_system_tables_sync());
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         REQUIRE_NOTHROW(fx.manager->restore_oid_generator_sync());
-        REQUIRE_NOTHROW(fx.manager->load_user_table_storages_sync());
+        REQUIRE_FALSE(fx.manager->load_user_table_storages_sync().contains_error());
         auto unclosed = fx.manager->rehydrate_missing_user_storages_sync();
         REQUIRE_FALSE(unclosed.has_error());
         CHECK(unclosed.value() == 0);
@@ -305,7 +306,7 @@ TEST_CASE("services::disk::open::replayed_rows_with_nowhere_to_land_are_refused"
     std::filesystem::create_directories(base);
 
     open_fixture fx(base);
-    fx.manager->bootstrap_system_tables_sync();
+    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
     auto ns_oid = test_create_namespace(fx, "ns_replay");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -353,7 +354,7 @@ TEST_CASE("services::disk::open::a_create_that_failed_is_not_reported_as_a_dupli
     std::filesystem::create_directories(base);
 
     open_fixture fx(base);
-    fx.manager->bootstrap_system_tables_sync();
+    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
     auto ns_oid = test_create_namespace(fx, "ns_create");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -400,7 +401,7 @@ TEST_CASE("services::disk::open::an_unreadable_relkind_is_not_a_regular_table") 
     catalog::oid_t ns_oid = catalog::INVALID_OID;
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fx, "ns_doc");
         doc_oid = test_create_computing_table(fx, ns_oid, "t_doc");
         REQUIRE(doc_oid >= FIRST_USER_OID);
@@ -419,7 +420,7 @@ TEST_CASE("services::disk::open::an_unreadable_relkind_is_not_a_regular_table") 
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         auto unknown = fx.manager->relkind_for_oid_sync(catalog::oid_t{FIRST_USER_OID + 9911});
         REQUIRE_FALSE(unknown.has_error());
         CHECK(unknown.value() == '\0');
@@ -437,7 +438,7 @@ TEST_CASE("services::disk::open::rehydrate_states_the_divergence_it_cannot_close
     std::filesystem::create_directories(base);
 
     open_fixture fx(base);
-    fx.manager->bootstrap_system_tables_sync();
+    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
     auto ns_oid = test_create_namespace(fx, "ns_rehydrate");
 
     const auto* cls_def = find_system_table(well_known_oid::pg_class_table);
@@ -480,7 +481,7 @@ TEST_CASE("services::disk::open::rehydrate_states_the_divergence_it_cannot_close
     INFO("a table the rehydrate walk could not close must be counted, not skipped in silence");
     CHECK(unresolved.value() == 1);
 
-    REQUIRE_NOTHROW(fx.manager->load_user_table_storages_sync());
+    REQUIRE_FALSE(fx.manager->load_user_table_storages_sync().contains_error());
     REQUIRE_NOTHROW(test_drop_table(fx, orphan));
     auto closed = fx.manager->rehydrate_missing_user_storages_sync();
     REQUIRE_FALSE(closed.has_error());
@@ -502,7 +503,7 @@ TEST_CASE("services::disk::open::an_unreadable_system_table_sidecar_is_not_a_bri
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fx, "ns_sys");
         REQUIRE(ns_oid != catalog::INVALID_OID);
         fx.checkpoint(services::wal::id_t{60});
@@ -516,7 +517,7 @@ TEST_CASE("services::disk::open::an_unreadable_system_table_sidecar_is_not_a_bri
     {
         open_fixture fx(base);
         INFO("a system table whose sidecar cannot be read must not cost the database its start");
-        REQUIRE_NOTHROW(fx.manager->bootstrap_system_tables_sync());
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         REQUIRE(fx.manager->has_storage(well_known_oid::pg_class_table));
         REQUIRE(fx.manager->has_storage(well_known_oid::pg_namespace_table));
 
@@ -536,7 +537,7 @@ TEST_CASE("services::disk::open::an_unreadable_system_table_sidecar_is_not_a_bri
     cleanup_refusal_dir();
 }
 
-TEST_CASE("services::disk::open::rehydrate_does_not_create_over_a_file_that_did_not_load") {
+TEST_CASE("services::disk::open::a_table_file_that_does_not_load_refuses_the_start") {
     cleanup_refusal_dir();
     auto base = std::filesystem::path(refusal_dir());
     std::filesystem::create_directories(base);
@@ -545,7 +546,7 @@ TEST_CASE("services::disk::open::rehydrate_does_not_create_over_a_file_that_did_
     catalog::oid_t ns_oid = catalog::INVALID_OID;
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fx, "ns_rotten");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -572,17 +573,105 @@ TEST_CASE("services::disk::open::rehydrate_does_not_create_over_a_file_that_did_
     }
 
     open_fixture fx(base);
-    fx.manager->bootstrap_system_tables_sync();
-    REQUIRE_NOTHROW(fx.manager->load_user_table_storages_sync());
-    REQUIRE_FALSE(fx.manager->has_storage(table_oid));
-
-    auto unclosed = fx.manager->rehydrate_missing_user_storages_sync();
-    REQUIRE_FALSE(unclosed.has_error());
-    INFO("a table whose file is present and did not load must be counted, not rebuilt over");
-    CHECK(unclosed.value() == 1);
+    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+    auto loaded = fx.manager->load_user_table_storages_sync();
+    INFO("refusal: " << loaded.what.c_str());
+    REQUIRE(loaded.contains_error());
+    CHECK(loaded.type == core::error_code_t::data_corruption);
     CHECK_FALSE(fx.manager->has_storage(table_oid));
     CHECK(std::filesystem::exists(otbx));
     CHECK(std::filesystem::file_size(otbx) == size_before);
+
+    cleanup_refusal_dir();
+}
+
+// A table directory that cannot be examined is not a table whose file was lost: rehydrate refuses
+// instead of recreating the file over whatever the directory holds.
+TEST_CASE("services::disk::open::rehydrate_refuses_a_table_directory_it_cannot_examine") {
+    test_helpers::skip_under_root();
+    cleanup_refusal_dir();
+    auto base = std::filesystem::path(refusal_dir());
+    std::filesystem::create_directories(base);
+
+    catalog::oid_t table_oid = catalog::INVALID_OID;
+    catalog::oid_t ns_oid = catalog::INVALID_OID;
+    {
+        open_fixture fx(base);
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+        ns_oid = test_create_namespace(fx, "ns_blocked");
+        std::vector<components::table::column_definition_t> cols;
+        cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_oid = test_create_table(fx, ns_oid, "t_blocked", cols);
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  session_id_t{},
+                  table_oid,
+                  ns_oid,
+                  cols,
+                  /*is_computed=*/false);
+        append_rows(fx, table_oid, 5);
+        fx.checkpoint(services::wal::id_t{70});
+    }
+
+    const auto table_dir = otbx_at(base, ns_oid, table_oid).parent_path();
+    open_fixture fx(base);
+    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+    REQUIRE_FALSE(fx.manager->has_storage(table_oid));
+
+    std::filesystem::permissions(table_dir, std::filesystem::perms::none);
+    auto rehydrated = fx.manager->rehydrate_missing_user_storages_sync();
+    std::filesystem::permissions(table_dir, std::filesystem::perms::owner_all);
+
+    INFO("rehydrate answered " << (rehydrated.has_error() ? rehydrated.error().what.c_str() : "a count"));
+    REQUIRE(rehydrated.has_error());
+    CHECK(rehydrated.error().type == core::error_code_t::io_error);
+    CHECK_FALSE(fx.manager->has_storage(table_oid));
+
+    cleanup_refusal_dir();
+}
+
+TEST_CASE("services::disk::open::rehydrate_refuses_a_table_directory_it_cannot_create") {
+    test_helpers::skip_under_root();
+    cleanup_refusal_dir();
+    auto base = std::filesystem::path(refusal_dir());
+    std::filesystem::create_directories(base);
+
+    catalog::oid_t table_oid = catalog::INVALID_OID;
+    catalog::oid_t ns_oid = catalog::INVALID_OID;
+    {
+        open_fixture fx(base);
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+        ns_oid = test_create_namespace(fx, "ns_readonly");
+        std::vector<components::table::column_definition_t> cols;
+        cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+        table_oid = test_create_table(fx, ns_oid, "t_readonly", cols);
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  session_id_t{},
+                  table_oid,
+                  ns_oid,
+                  cols,
+                  /*is_computed=*/false);
+        append_rows(fx, table_oid, 5);
+        fx.checkpoint(services::wal::id_t{70});
+    }
+
+    // The table's directory is lost, and its namespace directory takes no new entry.
+    const auto table_dir = otbx_at(base, ns_oid, table_oid).parent_path();
+    const auto ns_dir = table_dir.parent_path();
+    std::filesystem::remove_all(table_dir);
+    open_fixture fx(base);
+    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+    REQUIRE_FALSE(fx.manager->has_storage(table_oid));
+
+    std::filesystem::permissions(ns_dir,
+                                 std::filesystem::perms::owner_read | std::filesystem::perms::owner_exec,
+                                 std::filesystem::perm_options::replace);
+    auto rehydrated = fx.manager->rehydrate_missing_user_storages_sync();
+    std::filesystem::permissions(ns_dir, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+
+    INFO("rehydrate answered " << (rehydrated.has_error() ? rehydrated.error().what.c_str() : "a count"));
+    REQUIRE(rehydrated.has_error());
+    CHECK(rehydrated.error().type == core::error_code_t::io_error);
+    CHECK_FALSE(std::filesystem::exists(table_dir));
 
     cleanup_refusal_dir();
 }
@@ -601,7 +690,7 @@ TEST_CASE("services::disk::open::a_rehydrate_walk_that_could_not_run_says_so") {
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fx, "ns_walk");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -622,7 +711,7 @@ TEST_CASE("services::disk::open::a_sidecar_that_cannot_be_located_is_not_a_sidec
     std::filesystem::create_directories(base);
 
     open_fixture fx(base);
-    fx.manager->bootstrap_system_tables_sync();
+    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
     auto ns_oid = test_create_namespace(fx, "ns_peek");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -657,7 +746,7 @@ TEST_CASE("services::disk::open::an_unreadable_relkind_does_not_open_a_document_
     catalog::oid_t ns_oid = catalog::INVALID_OID;
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fx, "ns_docload");
         doc_oid = test_create_computing_table(fx, ns_oid, "t_docload");
         REQUIRE(doc_oid >= FIRST_USER_OID);
@@ -687,7 +776,7 @@ TEST_CASE("services::disk::open::a_refused_sidecar_publish_leaves_no_staging_fil
     std::filesystem::create_directories(base);
 
     open_fixture fx(base);
-    fx.manager->bootstrap_system_tables_sync();
+    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
     auto ns_oid = test_create_namespace(fx, "ns_publish");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -726,7 +815,7 @@ TEST_CASE("services::disk::open::a_replayed_update_that_lost_a_value_restores_th
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fx, "ns_replay_upd");
         table_oid = test_create_table(fx, ns_oid, "t_upd", cols);
         const auto otbx = otbx_at(base, ns_oid, table_oid);
@@ -783,7 +872,7 @@ TEST_CASE("services::disk::open::a_replayed_update_that_lost_a_value_restores_th
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         REQUIRE_FALSE(fx.manager->load_storage_for_wal_replay_sync(table_oid, ns_oid).contains_error());
         REQUIRE(fx.manager->has_storage(table_oid));
         auto rows = read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid));
@@ -809,7 +898,7 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fx, "ns_replay_mm");
         table_oid = test_create_table(fx, ns_oid, "t_mm", cols);
         const auto otbx = otbx_at(base, ns_oid, table_oid);
@@ -885,7 +974,7 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         REQUIRE_FALSE(fx.manager->load_storage_for_wal_replay_sync(table_oid, ns_oid).contains_error());
         auto rows = read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid));
         CHECK(rows == 3);
@@ -907,7 +996,7 @@ TEST_CASE("services::disk::open::a_replayed_delete_that_deleted_less_than_named_
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fx, "ns_replay_del");
         table_oid = test_create_table(fx, ns_oid, "t_del", cols);
         const auto otbx = otbx_at(base, ns_oid, table_oid);
@@ -965,7 +1054,7 @@ TEST_CASE("services::disk::open::a_replayed_delete_that_deleted_less_than_named_
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         REQUIRE_FALSE(fx.manager->load_storage_for_wal_replay_sync(table_oid, ns_oid).contains_error());
         REQUIRE(fx.manager->has_storage(table_oid));
         REQUIRE_NOTHROW(test_drop_table(fx, table_oid));
@@ -985,7 +1074,7 @@ TEST_CASE("services::disk::open::a_commit_id_stamp_that_was_not_applied_is_refus
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fx, "ns_stamp");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("a", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -1022,7 +1111,7 @@ TEST_CASE("services::disk::open::a_commit_id_stamp_that_was_not_applied_is_refus
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         CHECK(added_at_commit_id_of(fx, attoid) == 4244);
         REQUIRE_NOTHROW(test_drop_table(fx, table_oid));
     }
@@ -1041,7 +1130,7 @@ TEST_CASE("services::disk::open::a_backfill_on_an_agent_without_pg_attribute_is_
     CHECK(err.contains_error());
     CHECK(std::string(err.what.c_str()).find("pg_attribute") != std::string::npos);
 
-    fx.manager->bootstrap_system_tables_sync();
+    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
     CHECK_FALSE(backfill(fx, {}, 8).contains_error());
 
     cleanup_refusal_dir();
@@ -1089,7 +1178,7 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fx, "ns_wal_stamp");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("a", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -1112,16 +1201,16 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
         configuration::config_wal wal_config(wal_dir);
 
         open_fixture fx(base);
-        auto wal_manager =
-            actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
-                                                                      fx.scheduler,
-                                                                      wal_config,
-                                                                      fx.log,
-                                                                      components::pipeline::no_mailbox(),
-                                                                      components::pipeline::no_mailbox());
+        auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
+                                                                                     fx.scheduler,
+                                                                                     wal_config,
+                                                                                     fx.log,
+                                                                                     components::pipeline::no_mailbox(),
+                                                                                     components::pipeline::no_mailbox(),
+                                                                                     configuration::pump_intervals_t{});
         fx.manager->set_manager_wal_sync(wal_manager->address());
 
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         REQUIRE(added_at_commit_id_of(fx, attoid) == 0);
 
         auto refused = backfill(fx, {attoid}, 5001);
@@ -1139,16 +1228,16 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
         configuration::config_wal wal_config(wal_dir);
 
         open_fixture fx(base);
-        auto wal_manager =
-            actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
-                                                                      fx.scheduler,
-                                                                      wal_config,
-                                                                      fx.log,
-                                                                      components::pipeline::no_mailbox(),
-                                                                      components::pipeline::no_mailbox());
+        auto wal_manager = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&fx.resource,
+                                                                                     fx.scheduler,
+                                                                                     wal_config,
+                                                                                     fx.log,
+                                                                                     components::pipeline::no_mailbox(),
+                                                                                     components::pipeline::no_mailbox(),
+                                                                                     configuration::pump_intervals_t{});
         fx.manager->set_manager_wal_sync(wal_manager->address());
 
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         CHECK_FALSE(backfill(fx, {attoid}, 5002).contains_error());
         CHECK(added_at_commit_id_of(fx, attoid) == 5002);
         INFO("the healthy stamp must really have travelled through the journal seam");
@@ -1159,7 +1248,7 @@ TEST_CASE("services::disk::open::a_refused_journal_record_cancels_the_backfill_p
 
     {
         open_fixture fx(base);
-        fx.manager->bootstrap_system_tables_sync();
+        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
         CHECK(added_at_commit_id_of(fx, attoid) == 5002);
         REQUIRE_NOTHROW(test_drop_table(fx, table_oid));
     }
@@ -1173,7 +1262,7 @@ TEST_CASE("services::disk::open::an_unknown_indtype_refuses_the_start_instead_of
     std::filesystem::create_directories(base);
 
     open_fixture fx(base);
-    fx.manager->bootstrap_system_tables_sync();
+    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
 
     auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
     auto bad_row = catalog::build_pg_index_row(&fx.resource, oids[0], oids[1], "1", true, 'z');
@@ -1183,14 +1272,14 @@ TEST_CASE("services::disk::open::an_unknown_indtype_refuses_the_start_instead_of
                                            std::move(bad_row)));
 
     INFO("an unknown indtype is a start refusal, not a SIGABRT");
-    REQUIRE_THROWS_AS(fx.manager->scan_alive_pg_index_sync(), std::runtime_error);
+    REQUIRE(fx.manager->scan_alive_pg_index_sync().has_error());
 
     fx.invoke(&manager_disk_t::delete_pg_catalog_rows,
               disk_test_helpers::auto_ctx(),
               catalog::well_known_oid::pg_index_table,
               std::int64_t{0},
               oids[0]);
-    REQUIRE_NOTHROW(fx.manager->scan_alive_pg_index_sync());
+    REQUIRE_FALSE(fx.manager->scan_alive_pg_index_sync().has_error());
 }
 
 TEST_CASE("services::disk::open::a_null_indtype_refuses_the_start_instead_of_killing_the_process") {
@@ -1199,7 +1288,7 @@ TEST_CASE("services::disk::open::a_null_indtype_refuses_the_start_instead_of_kil
     std::filesystem::create_directories(base);
 
     open_fixture fx(base);
-    fx.manager->bootstrap_system_tables_sync();
+    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
 
     auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
     auto bad_row = catalog::build_pg_index_row(&fx.resource, oids[0], oids[1], "1", true, 'b');
@@ -1210,5 +1299,5 @@ TEST_CASE("services::disk::open::a_null_indtype_refuses_the_start_instead_of_kil
                                            std::move(bad_row)));
 
     INFO("a NULL indtype is a start refusal, not a SIGABRT");
-    REQUIRE_THROWS_AS(fx.manager->scan_alive_pg_index_sync(), std::runtime_error);
+    REQUIRE(fx.manager->scan_alive_pg_index_sync().has_error());
 }

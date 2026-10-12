@@ -184,7 +184,7 @@ namespace services::disk {
         co_return out;
     }
 
-    manager_disk_t::unique_future<std::uint64_t>
+    manager_disk_t::unique_future<core::result_wrapper_t<std::uint64_t>>
     manager_disk_t::compact_relkind_g_storage(execution_context_t /*ctx*/,
                                               components::catalog::oid_t table_oid,
                                               std::set<std::string> live_attnames) {
@@ -203,7 +203,7 @@ namespace services::disk {
                 co_return co_await std::move(fut);
             }
         }
-        co_return 0;
+        co_return core::result_wrapper_t<std::uint64_t>(std::uint64_t{0});
     }
 
     manager_disk_t::unique_future<core::error_t>

@@ -28,6 +28,8 @@
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 
 using namespace services;
 using namespace services::wal;
@@ -74,11 +76,7 @@ namespace {
 
     template<typename F>
     decltype(auto) await_ready(F& fut) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut));
         return std::move(fut).take_ready();
     }
 
@@ -115,7 +113,7 @@ namespace {
     struct wal_env_t {
         explicit wal_env_t(const std::filesystem::path& path, size_t max_segment_size = 0)
             : path_(path)
-            , log_(initialization_logger("python", "/tmp/docker_logs/"))
+            , log_(make_test_log())
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_(make_config(path, max_segment_size))
             , manager_(actor_zeta::spawn<manager_wal_replicate_t>(&resource_,
@@ -123,7 +121,8 @@ namespace {
                                                                   config_,
                                                                   log_,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox())) {
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{})) {
             scheduler_->start();
         }
 

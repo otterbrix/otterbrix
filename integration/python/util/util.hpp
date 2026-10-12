@@ -1,14 +1,19 @@
 #pragma once
 
 #include <common/typedefs.hpp>
+#include <components/cursor/cursor.hpp>
 #include <components/types/logical_value.hpp>
 #include <pybind11/pybind_wrapper.hpp>
 
 #include <absl/numeric/int128.h>
+#include <cstdint>
 #include <string>
 
 namespace otterbrix { namespace util {
     std::string logical_value_to_string(const components::types::logical_value_t& value);
+
+    // DB-API rowcount: the rows an INSERT / UPDATE / DELETE wrote, else the rows of the result.
+    int64_t rowcount_of(const components::cursor::cursor_t& cursor);
 
     template<class T>
     T parse_to_numeric(const std::string& numeric_string) {

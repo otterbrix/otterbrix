@@ -231,14 +231,18 @@ namespace {
     }
 
     // Mirrors make_sum_func style from aggregate.cpp.
-    std::unique_ptr<vector_function> make_substring_func(std::pmr::memory_resource* resource,
-                                                         const std::string& name,
-                                                         const std::string& short_doc,
-                                                         const std::string& full_doc) {
-        function_doc doc{short_doc, full_doc, {"string", "start", "length"}, false};
+    core::pmr::polymorphic_unique_ptr<vector_function> make_substring_func(std::pmr::memory_resource* resource,
+                                                                           const std::string& name,
+                                                                           const std::string& short_doc,
+                                                                           const std::string& full_doc) {
+        function_doc doc{resource, short_doc, full_doc, {"string", "start", "length"}, false};
 
         // arity::var_args(2) — accept 2 or 3 args; two kernel slots for the overloads.
-        auto fn = std::make_unique<vector_function>(name, arity::var_args(2), doc, /*available_kernel_slots=*/2);
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                      name,
+                                                                      arity::var_args(2),
+                                                                      doc,
+                                                                      /*available_kernel_slots=*/size_t{2});
 
         // NULL-aware: a null argument is accepted at signature-match time by the string/integer
         // matchers (kernel_signature.cpp); the kernel body propagates it through the validity mask.
@@ -265,13 +269,17 @@ namespace {
         return fn;
     }
 
-    std::unique_ptr<vector_function> make_length_func(std::pmr::memory_resource* resource,
-                                                      const std::string& name,
-                                                      const std::string& short_doc,
-                                                      const std::string& full_doc) {
-        function_doc doc{short_doc, full_doc, {"string"}, false};
+    core::pmr::polymorphic_unique_ptr<vector_function> make_length_func(std::pmr::memory_resource* resource,
+                                                                        const std::string& name,
+                                                                        const std::string& short_doc,
+                                                                        const std::string& full_doc) {
+        function_doc doc{resource, short_doc, full_doc, {"string"}, false};
 
-        auto fn = std::make_unique<vector_function>(name, arity::unary(), doc, /*available_kernel_slots=*/1);
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                      name,
+                                                                      arity::unary(),
+                                                                      doc,
+                                                                      /*available_kernel_slots=*/size_t{1});
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::STRING_LITERAL)},
@@ -283,14 +291,18 @@ namespace {
         return fn;
     }
 
-    std::unique_ptr<vector_function> make_case_fold_func(std::pmr::memory_resource* resource,
-                                                         const std::string& name,
-                                                         const std::string& short_doc,
-                                                         const std::string& full_doc,
-                                                         vector_exec_fn fold) {
-        function_doc doc{short_doc, full_doc, {"string"}, false};
+    core::pmr::polymorphic_unique_ptr<vector_function> make_case_fold_func(std::pmr::memory_resource* resource,
+                                                                           const std::string& name,
+                                                                           const std::string& short_doc,
+                                                                           const std::string& full_doc,
+                                                                           vector_exec_fn fold) {
+        function_doc doc{resource, short_doc, full_doc, {"string"}, false};
 
-        auto fn = std::make_unique<vector_function>(name, arity::unary(), doc, /*available_kernel_slots=*/1);
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                      name,
+                                                                      arity::unary(),
+                                                                      doc,
+                                                                      /*available_kernel_slots=*/size_t{1});
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::STRING_LITERAL)},
@@ -302,13 +314,17 @@ namespace {
         return fn;
     }
 
-    std::unique_ptr<vector_function> make_regexp_replace_func(std::pmr::memory_resource* resource,
-                                                              const std::string& name,
-                                                              const std::string& short_doc,
-                                                              const std::string& full_doc) {
-        function_doc doc{short_doc, full_doc, {"string", "pattern", "replacement"}, false};
+    core::pmr::polymorphic_unique_ptr<vector_function> make_regexp_replace_func(std::pmr::memory_resource* resource,
+                                                                                const std::string& name,
+                                                                                const std::string& short_doc,
+                                                                                const std::string& full_doc) {
+        function_doc doc{resource, short_doc, full_doc, {"string", "pattern", "replacement"}, false};
 
-        auto fn = std::make_unique<vector_function>(name, arity::ternary(), doc, /*available_kernel_slots=*/1);
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                      name,
+                                                                      arity::ternary(),
+                                                                      doc,
+                                                                      /*available_kernel_slots=*/size_t{1});
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::STRING_LITERAL),
@@ -322,13 +338,17 @@ namespace {
         return fn;
     }
 
-    std::unique_ptr<vector_function> make_regexp_like_func(std::pmr::memory_resource* resource,
-                                                           const std::string& name,
-                                                           const std::string& short_doc,
-                                                           const std::string& full_doc) {
-        function_doc doc{short_doc, full_doc, {"string", "pattern", "flags"}, false};
+    core::pmr::polymorphic_unique_ptr<vector_function> make_regexp_like_func(std::pmr::memory_resource* resource,
+                                                                             const std::string& name,
+                                                                             const std::string& short_doc,
+                                                                             const std::string& full_doc) {
+        function_doc doc{resource, short_doc, full_doc, {"string", "pattern", "flags"}, false};
 
-        auto fn = std::make_unique<vector_function>(name, arity::var_args(2), doc, /*available_kernel_slots=*/2);
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                      name,
+                                                                      arity::var_args(2),
+                                                                      doc,
+                                                                      /*available_kernel_slots=*/size_t{2});
 
         kernel_signature_t sig2(
             function_type_t::vector,

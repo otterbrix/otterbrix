@@ -6,6 +6,7 @@ set(header_${PROJECT_NAME}
         virtual_file_system.hpp
         path_utils.hpp
         file_system.hpp
+        list_dir.hpp
         )
 
 set(source_${PROJECT_NAME}
@@ -13,6 +14,7 @@ set(source_${PROJECT_NAME}
         local_file_system.cpp
         virtual_file_system.cpp
         path_utils.cpp
+        list_dir.cpp
         )
 
 add_library(otterbrix_${PROJECT_NAME}

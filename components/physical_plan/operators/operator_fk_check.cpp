@@ -16,17 +16,16 @@ namespace components::operators {
         : read_write_operator_t(resource, log, operator_type::fk_check)
         , fk_(std::move(fk)) {}
 
-    using constraint_detail::resolve_cursor_output;
-
     actor_zeta::unique_future<void> operator_fk_check_t::await_async_and_resume(pipeline::context_t* ctx) {
         // Resolve the source here directly in await_async_and_resume (the executor
         // marks the root executed after the pump). fk_check validates the DML's
         // constraint_input() snapshot: constraint ops STACK above one DML, so walk DOWN
         // the left_ spine to the DML's snapshot (single canonical source, R6).
+        written_ = left_->written();
         const auto& source = constraint_detail::resolve_constraint_source(left_);
         if (!source || source->size() == 0) {
             // Nothing to validate; still surface the DML result as the cursor.
-            output_ = resolve_cursor_output(left_, source);
+            output_ = left_->output();
             mark_executed();
             co_return;
         }
@@ -146,7 +145,7 @@ namespace components::operators {
         }
 
         if (qcount == 0) {
-            output_ = resolve_cursor_output(left_, source);
+            output_ = left_->output();
             mark_executed();
             co_return;
         }
@@ -206,7 +205,7 @@ namespace components::operators {
                 }
             }
         }
-        output_ = resolve_cursor_output(left_, source);
+        output_ = left_->output();
         mark_executed();
     }
 

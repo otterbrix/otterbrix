@@ -23,7 +23,8 @@ namespace services::wal {
         [[nodiscard]] const core::error_t& open_error() const noexcept { return open_error_; }
 
         /// Stops at the first corrupted page (STOP-A). Refuses with io_error if unopened, so
-        /// empty means "no records here," never "unreadable."
+        /// empty means "no records here," never "unreadable"; refuses with data_corruption when
+        /// a verified page does not parse into the records its header describes.
         core::result_wrapper_t<std::vector<record_t>> read_all_records(id_t after_id);
 
         /// Page 0 is the file header, data pages start at index 1. TEST-ONLY OBSERVER: answers
@@ -65,6 +66,7 @@ namespace services::wal {
 
     private:
         bool read_page(size_t page_index, char* buf);
+        [[nodiscard]] core::error_t malformed(size_t page_index, const char* what) const;
 
         std::pmr::memory_resource* resource_;
         std::filesystem::path path_;

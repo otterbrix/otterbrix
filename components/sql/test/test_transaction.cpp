@@ -19,7 +19,9 @@ TEST_CASE("components::sql::transaction::spellings_map_to_their_operation") {
         transform::transformer local(&resource, query);
         auto result = local.transform(transform::pg_cell_to_node_cast(statement));
         REQUIRE_FALSE(result.get_error().contains_error());
-        auto node = result.node_ptr();
+        auto plan = result.finalize();
+        REQUIRE_FALSE(plan.has_error());
+        auto node = plan.value().sub_queries.back();
         REQUIRE(node->type() == node_type::transaction_t);
         return static_cast<const node_transaction_t*>(node.get())->op();
     };

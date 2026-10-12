@@ -146,10 +146,11 @@ impl ConnectOptions for OtterbrixConnectOptions {
         let cfg = self.config.clone();
         let log_settings = self.log_settings.clone();
         Box::pin(async move {
+            // A refused start is a configuration error, not a failed statement.
             let db = tokio::task::spawn_blocking(move || otterbrix::Database::open(cfg))
                 .await
                 .map_err(|e| Error::protocol(format!("task join: {e}")))?
-                .map_err(crate::convert::map_otterbrix_error)?;
+                .map_err(|e| Error::Configuration(e.to_string().into()))?;
             Ok(OtterbrixConnection {
                 inner: std::sync::Arc::new(parking_lot::Mutex::new(db)),
                 log_settings,

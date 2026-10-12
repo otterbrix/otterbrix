@@ -21,8 +21,11 @@
 #include "disk_test_helpers.hpp"
 
 #include <algorithm>
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <functional>
+#include <services/disk/tests/test_directory.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -52,7 +55,7 @@ namespace {
                                    session_id_t{},
                                    table_oid,
                                    cursor_id,
-                                   std::unique_ptr<components::table::table_filter_t>(nullptr),
+                                   std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                                    int64_t{-1},
                                    std::vector<size_t>{},
                                    components::table::transaction_data::committed());
@@ -81,17 +84,22 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
                 c.path = ddl_dir();
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(ddl_dir());
-            manager->bootstrap_system_tables_sync();
+            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             // Destroy the manager first: its dtor joins the internal loop thread, which may still
@@ -105,11 +113,7 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(future.is_ready());
+            REQUIRE(test_helpers::wait_ready(future, scheduler));
             return std::move(future).take_ready();
         }
 
@@ -589,7 +593,8 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     {
         std::set<std::string> live{"a", "c"};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage, fx.ctx(), table_oid, std::move(live));
-        REQUIRE(dropped == 1);
+        REQUIRE_FALSE(dropped.has_error());
+        REQUIRE(dropped.value() == 1);
     }
 
     {
@@ -600,13 +605,15 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     {
         std::set<std::string> live{"a", "c"};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage, fx.ctx(), table_oid, std::move(live));
-        REQUIRE(dropped == 0);
+        REQUIRE_FALSE(dropped.has_error());
+        REQUIRE(dropped.value() == 0);
     }
 
     {
         std::set<std::string> live{};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage, fx.ctx(), table_oid, std::move(live));
-        REQUIRE(dropped == 2);
+        REQUIRE_FALSE(dropped.has_error());
+        REQUIRE(dropped.value() == 2);
     }
     {
         auto types = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_types, session_id_t{}, table_oid));
@@ -617,7 +624,8 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
         const catalog::oid_t missing_oid{FIRST_USER_OID + 9999};
         std::set<std::string> live{};
         auto dropped = fx.invoke(&manager_disk_t::compact_relkind_g_storage, fx.ctx(), missing_oid, std::move(live));
-        REQUIRE(dropped == 0);
+        REQUIRE_FALSE(dropped.has_error());
+        REQUIRE(dropped.value() == 0);
     }
 }
 

@@ -79,22 +79,13 @@ namespace services::planner::impl {
                                                           const components::compute::function_registry_t&,
                                                           const components::logical_plan::node_ptr& node,
                                                           const components::logical_plan::storage_parameters*) {
-        boost::intrusive_ptr<components::operators::operator_hash_group_t> group;
-        auto table_oid = node->table_oid();
-        bool known = context.has_table_oid(table_oid);
-
         // create_plan_group is only ever dispatched with a group_t node (create_plan.cpp's
         // case group_t and the aggregate's group child), so the static_cast is safe.
         const auto* group_node = static_cast<const components::logical_plan::node_group_t*>(node.get());
 
-        if (known) {
-            group = new components::operators::operator_hash_group_t(context.resource, context.log.clone());
-        } else {
-            group = new components::operators::operator_hash_group_t(node->resource(), log_t{});
-        }
-
-        // Build group operator from node expressions
-        auto plan_resource = known ? context.resource : node->resource();
+        auto group = boost::intrusive_ptr(
+            new components::operators::operator_hash_group_t(context.resource, context.log.clone()));
+        auto* plan_resource = context.resource;
 
         // The schema the group reduces over, resolved by validation against the same incoming
         // schema its expressions were resolved against.

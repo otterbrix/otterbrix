@@ -45,7 +45,7 @@ namespace components::operators {
         // A chunk can be shorter than the window: LIMIT rides on storage_fetch's post-visibility
         // limit, not id trimming.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
-        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         source_next(pipeline::context_t* ctx) override;
 
         // A compact between the search and storage_fetch renumbers survivors (test_index_scan_compact_race),
@@ -105,7 +105,7 @@ namespace components::operators {
         std::vector<size_t> fetch_cols_;
 
         // If the scan drains having produced zero rows, it emits one schema'd 0-row guard chunk
-        // (scalar aggregate COUNT=0 / OUTER-join NULL-pad) before the 0-column drain sentinel.
+        // (scalar aggregate COUNT=0 / OUTER-join NULL-pad) before it ends the stream.
         bool opened_{false};
         bool fetched_{false};
         bool drained_{false};

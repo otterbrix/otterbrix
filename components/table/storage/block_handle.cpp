@@ -110,13 +110,9 @@ namespace components::table::storage {
     }
 
     block_handle_t::~block_handle_t() {
-        // Serialize the buffer_/state_/memory_charge_ teardown against a concurrent unload() /
-        // unload_and_take_block() running under lock_ on the eviction path of the OTHER disk-agent thread.
-        // Without this lock, the dtor's buffer_.reset() / memory_charge_.resize(0) can race a concurrent
-        // unload(), double-freeing the block buffer and corrupting the shared pmr pool freelist (BUG A).
-        // Deadlock-safe: no code path holds lock_ while dropping the last shared_ptr that triggers this dtor
-        // (the eviction / pin / reallocate paths all keep a strong reference while lock_ is held, so the
-        // refcount is >= 1 there and the dtor cannot run concurrently with the same handle's lock holder).
+        // The buffer_/state_/memory_charge_ teardown takes lock_ like unload() / unload_and_take_block()
+        // do: an unload racing it would double-free the block buffer. Deadlock-safe: no path holds lock_
+        // while dropping the last shared_ptr (pin, unload and reallocate keep a strong reference while they hold it).
         {
             std::unique_lock<std::mutex> lock(lock_);
             unswizzled_ = nullptr;
@@ -133,10 +129,9 @@ namespace components::table::storage {
                 assert(memory_charge_.size == 0);
             }
         }
-
-        if (file_manager_ != nullptr) {
-            file_manager_->unregister_block(*this);
-        }
+        // Nothing is written on the block manager: its registry keeps the expired slot until the next free
+        // list prunes it, and a free that waited for this handle is given back by that free list
+        // (single_file_block_manager_t::freed_while_held_). The manager may even be gone already.
     }
 
     std::unique_ptr<block_t>

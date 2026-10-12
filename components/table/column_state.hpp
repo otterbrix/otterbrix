@@ -5,7 +5,7 @@
 #include <core/operations_helper.hpp>
 #include <core/result_wrapper.hpp>
 #include <memory>
-#include <mutex>
+#include <memory_resource>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -35,14 +35,13 @@ namespace components::table {
         class buffer_handle_t;
         class block_handle_t;
         struct block_pointer_t;
+        class partial_block_manager_t;
     } // namespace storage
 
     class column_segment_t;
     struct column_segment_state;
 
     struct storage_index_t {
-        storage_index_t()
-            : index_(storage::INVALID_INDEX) {}
         explicit storage_index_t(uint64_t index)
             : index_(index) {}
         storage_index_t(uint64_t index, std::vector<storage_index_t> child_indexes)
@@ -59,8 +58,6 @@ namespace components::table {
         storage_index_t& child_index(uint64_t idx) { return child_indexes_[idx]; }
         const std::vector<storage_index_t>& child_indexes() const { return child_indexes_; }
         void add_child_index(storage_index_t new_index) { child_indexes_.push_back(std::move(new_index)); }
-        void set_index(uint64_t new_index) { index_ = new_index; }
-        bool is_row_id_column() const { return index_ == storage::INVALID_INDEX; }
 
     private:
         uint64_t index_;
@@ -100,11 +97,38 @@ namespace components::table {
         std::vector<uint64_t> blocks;
     };
 
+    // The row count of every column of a row group, own count first then the children's, in the order
+    // column_data_t::snapshot_counts walks them. A revert takes each column back to the count recorded
+    // here: no column reads anything to find its cut.
+    struct append_cut_t {
+        explicit append_cut_t(std::pmr::memory_resource* resource)
+            : counts(resource) {}
+        std::pmr::vector<uint64_t> counts;
+    };
+
+    struct cut_cursor_t {
+        explicit cut_cursor_t(const append_cut_t& cut)
+            : cut(cut) {}
+        bool exhausted() const { return next >= cut.counts.size(); }
+        uint64_t take() { return cut.counts[next++]; }
+        const append_cut_t& cut;
+        uint64_t next{0};
+    };
+
     struct column_append_state {
+        column_append_state() = default;
+        // The packer comes with the state: a row group's column takes the collection's, a nested
+        // column's child its parent's.
+        explicit column_append_state(storage::partial_block_manager_t* pbm)
+            : pbm(pbm) {}
+
+        void release_pins();
+
         column_segment_t* current = nullptr;
         std::vector<column_append_state> child_appends;
-        std::unique_ptr<std::unique_lock<std::mutex>> lock;
         std::unique_ptr<storage::buffer_handle_t> handle;
+        // The collection's shared packer; never null once an append starts (initialize_append asserts it).
+        storage::partial_block_manager_t* pbm = nullptr;
     };
 
     struct row_group_append_state {
@@ -115,6 +139,7 @@ namespace components::table {
         row_group_t* row_group = nullptr;
         std::unique_ptr<column_append_state[]> states;
         uint64_t offset_in_row_group = 0;
+        storage::partial_block_manager_t* pbm = nullptr;
     };
     struct column_scan_state {
         column_segment_t* current = nullptr;

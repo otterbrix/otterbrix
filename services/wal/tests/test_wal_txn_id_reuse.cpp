@@ -25,6 +25,8 @@
 #include <services/wal/wal_sync_mode.hpp>
 #include <thread>
 #include <unistd.h>
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 
 // Txn ids are reused across restarts while wal ids keep growing, so a COMMIT marker from a prior
 // process could vouch for records written under a recycled id. Fixed rule: a record at wal id r
@@ -46,11 +48,7 @@ namespace {
 
     template<typename F>
     decltype(auto) await_ready(F& fut) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut));
         return std::move(fut).take_ready();
     }
 
@@ -64,7 +62,7 @@ namespace {
     struct journal_session_t {
         explicit journal_session_t(const std::filesystem::path& path)
             : resource_()
-            , log_(initialization_logger("python", "/tmp/docker_logs/"))
+            , log_(make_test_log())
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_([&]() {
                 configuration::config_wal c(path);
@@ -75,7 +73,8 @@ namespace {
                                                                   config_,
                                                                   log_,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox())) {
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{})) {
             scheduler_->start();
         }
 
@@ -180,13 +179,13 @@ TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn
     REQUIRE(committed_insert_id < commit_marker_id);
     REQUIRE(commit_marker_id < orphan_insert_id);
 
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     core::pmr::otterbrix_resource resource;
     configuration::config_wal config(path);
 
     {
         wal_reader_t reader(&resource, config, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        auto records = reader.read_committed_records();
         REQUIRE_FALSE(records.has_error());
 
         INFO("the committed transaction of session 1 must replay");
@@ -205,7 +204,7 @@ TEST_CASE("wal::txn_reuse::bootstrap_replay_rejects_the_recycled_uncommitted_txn
     REQUIRE(second_commit_id > orphan_insert_id);
     {
         wal_reader_t reader(&resource, config, log);
-        auto records = reader.read_committed_records(services::wal::id_t{0});
+        auto records = reader.read_committed_records();
         REQUIRE_FALSE(records.has_error());
         REQUIRE(holds_wal_id(records.value(), committed_insert_id));
         REQUIRE(holds_wal_id(records.value(), orphan_insert_id));

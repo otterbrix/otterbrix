@@ -4,10 +4,8 @@
 
 namespace components::logical_plan {
 
-    node_group_t::node_group_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname)
+    node_group_t::node_group_t(std::pmr::memory_resource* resource)
         : node_t(resource, node_type::group_t)
-        , dbname_(std::move(static_cast<std::string&>(dbname)))
-        , relname_(std::move(static_cast<std::string&>(relname)))
         , input_types_(resource) {}
 
     void node_group_t::set_pushdown(bool pushdown) noexcept { pushdown_ = pushdown; }
@@ -34,25 +32,18 @@ namespace components::logical_plan {
         return stream.str();
     }
 
-    node_group_ptr
-    make_node_group(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname) {
-        return {new node_group_t{resource, std::move(dbname), std::move(relname)}};
-    }
+    node_group_ptr make_node_group(std::pmr::memory_resource* resource) { return {new node_group_t{resource}}; }
 
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
-                                   core::dbname_t dbname,
-                                   core::relname_t relname,
                                    const std::vector<expression_ptr>& expressions) {
-        auto node = new node_group_t{resource, std::move(dbname), std::move(relname)};
+        auto node = new node_group_t{resource};
         node->append_expressions(expressions);
         return node;
     }
 
     node_group_ptr make_node_group(std::pmr::memory_resource* resource,
-                                   core::dbname_t dbname,
-                                   core::relname_t relname,
                                    const std::pmr::vector<expression_ptr>& expressions) {
-        auto node = new node_group_t{resource, std::move(dbname), std::move(relname)};
+        auto node = new node_group_t{resource};
         node->append_expressions(expressions);
         return node;
     }

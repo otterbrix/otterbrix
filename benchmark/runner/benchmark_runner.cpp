@@ -1,6 +1,7 @@
 #include "benchmark_runner.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -11,7 +12,7 @@
 #include <system_error>
 
 #include <components/configuration/configuration.hpp>
-#include <integration/cpp/base_spaces.hpp>
+#include <integration/cpp/otterbrix.hpp>
 
 #include "benchmark_checkpoint.hpp"
 #include "interpreted_benchmark.hpp"
@@ -21,21 +22,14 @@ namespace otterbrix::benchmark {
 
 namespace {
 
-class benchmark_instance_t final : public base_otterbrix_t {
-public:
-    benchmark_instance_t()
-        : base_otterbrix_t(make_config()) {}
-
-private:
-    static configuration::config make_config() {
-        // One named base dir via create_config -- not bare `current_path()/"disk"` and
-        // `.../"wal"`, which scatter both into whatever directory the runner was launched from.
-        auto cfg = configuration::config::create_config(std::filesystem::current_path() /
-                                                        "otterbrix_benchmark_data");
-        cfg.log.level = log_t::level::off;
-        return cfg;
-    }
-};
+otterbrix_ptr open_instance() {
+    // One named base dir via create_config -- not bare `current_path()/"disk"` and
+    // `.../"wal"`, which scatter both into whatever directory the runner was launched from.
+    auto cfg =
+        configuration::config::create_config(std::filesystem::current_path() / "otterbrix_benchmark_data");
+    cfg.log.level = log_t::level::off;
+    return make_otterbrix_or_exit(cfg);
+}
 
 } // namespace
 
@@ -245,9 +239,9 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
             std::cout << "Load-only: --skip-load is set, nothing to load.\n";
             return;
         }
-        benchmark_instance_t instance;
+        auto instance = open_instance();
         benchmark_state_t state;
-        state.dispatcher = instance.dispatcher();
+        state.dispatcher = instance->dispatcher();
         state.session = session_id_t();
         state.io = benchmark_io_options_t::from_config(config);
 
@@ -281,9 +275,9 @@ void benchmark_runner_t::run(const benchmark_configuration_t& config) {
     // are populated for the build-side decision), then print the physical plan for each
     // selected benchmark's query via EXPLAIN. No timing.
     if (config.explain_mode) {
-        benchmark_instance_t instance;
+        auto instance = open_instance();
         benchmark_state_t state;
-        state.dispatcher = instance.dispatcher();
+        state.dispatcher = instance->dispatcher();
         state.session = session_id_t();
         state.io = benchmark_io_options_t::from_config(config);
 
@@ -344,7 +338,7 @@ benchmark_result_t benchmark_runner_t::run_single(benchmark_t& bench, const benc
 
     try {
         // Fresh persisted state per benchmark: every instance points at the same base
-        // directory (benchmark_instance_t::make_config), so without a reset each load()
+        // directory (open_instance), so without a reset each load()
         // reruns CREATE TABLE IF NOT EXISTS and appends onto the previous run's rows,
         // doubling row counts across benchmarks (60k -> 120k -> 180k ...).
         if (!config.skip_load) {
@@ -352,9 +346,9 @@ benchmark_result_t benchmark_runner_t::run_single(benchmark_t& bench, const benc
             std::filesystem::remove_all(std::filesystem::current_path() / "otterbrix_benchmark_data", ec);
         }
 
-        benchmark_instance_t instance;
+        auto instance = open_instance();
         benchmark_state_t state;
-        state.dispatcher = instance.dispatcher();
+        state.dispatcher = instance->dispatcher();
         state.session = session_id_t();
         state.io = benchmark_io_options_t::from_config(config);
 

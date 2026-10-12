@@ -20,8 +20,6 @@ namespace components::operators {
                                  catalog::oid_t source_type_oid,
                                  catalog::oid_t target_type_oid);
 
-        bool success() const noexcept { return success_; }
-
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:
@@ -29,7 +27,6 @@ namespace components::operators {
 
         catalog::oid_t source_type_oid_;
         catalog::oid_t target_type_oid_;
-        bool success_{false};
     };
 
     // Operator half of manager_dispatcher_t::unregister_cast. Resolves the cast
@@ -42,8 +39,6 @@ namespace components::operators {
                                    catalog::oid_t source_type_oid,
                                    catalog::oid_t target_type_oid);
 
-        bool success() const noexcept { return success_; }
-
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:
@@ -51,7 +46,6 @@ namespace components::operators {
 
         catalog::oid_t source_type_oid_;
         catalog::oid_t target_type_oid_;
-        bool success_{false};
     };
 
 } // namespace components::operators

@@ -2,29 +2,83 @@
 
 #include "resource_tracer.hpp"
 
+#include <cstddef>
+#include <iosfwd>
 #include <memory>
+#include <memory_resource>
 #include <string>
+#include <vector>
 
 namespace core::pmr {
 
-// Under ASAN the pool must go: a pooled sub-block overflow stays inside a block ASAN
-// considers live and is never reported; resource_tracer_t gives ASAN one redzoned block
-// per object instead. clang answers neither __SANITIZE_ADDRESS__ (GCC) nor
-// _ADDRESS_SANITIZER (MSVC) -- only __has_feature(address_sanitizer) -- so without that
-// arm an ASAN build on clang silently kept the pool.
-#if defined(__SANITIZE_ADDRESS__) || defined(_ADDRESS_SANITIZER)
-#define OTTERBRIX_ADDRESS_SANITIZER 1
-#elif defined(__has_feature)
-#if __has_feature(address_sanitizer)
-#define OTTERBRIX_ADDRESS_SANITIZER 1
-#endif
-#endif
+    // The engine's arena. One class with one layout whatever the including translation unit was
+    // compiled with; the library picks the backing store when it is built (core/pmr.cpp): a pool,
+    // resource_tracer_t under ASAN so an intra-pool overflow stays visible, the upstream itself under
+    // TSAN, every block overwritten before it is freed.
+    class otterbrix_resource final : public std::pmr::memory_resource {
+    public:
+        otterbrix_resource();
+        explicit otterbrix_resource(std::pmr::memory_resource* upstream);
+        otterbrix_resource(const otterbrix_resource&) = delete;
+        otterbrix_resource& operator=(const otterbrix_resource&) = delete;
+        ~otterbrix_resource() override;
 
-#if defined(OTTERBRIX_ADDRESS_SANITIZER)
-    using otterbrix_resource = resource_tracer_t;
-#else
-    using otterbrix_resource = std::pmr::synchronized_pool_resource;
-#endif
+    private:
+        void* do_allocate(std::size_t bytes, std::size_t alignment) override;
+        void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override;
+        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override;
+
+        std::pmr::memory_resource* upstream_;
+        std::unique_ptr<std::pmr::memory_resource> backing_;
+    };
+
+    // A monotonic arena: deallocate() is a no-op, release() and the destructor give everything back.
+    // One type and one layout in every build. Under ASAN the library (core/pmr.cpp) hands out each
+    // piece as its own upstream allocation, so a write past one piece into the next is seen.
+    class arena_resource_t final : public std::pmr::memory_resource {
+    public:
+        explicit arena_resource_t(std::pmr::memory_resource* upstream);
+        arena_resource_t(const arena_resource_t&) = delete;
+        arena_resource_t& operator=(const arena_resource_t&) = delete;
+        ~arena_resource_t() override;
+
+        void release();
+
+        // Blocks the arena itself took from its upstream: the monotonic buffer's chunks, or under
+        // ASAN one per piece plus the growth of the piece list. Never reset, release() included.
+        std::size_t upstream_allocations() const noexcept;
+
+    private:
+        struct piece_t {
+            void* pointer;
+            std::size_t bytes;
+            std::size_t alignment;
+        };
+
+        class upstream_counter_t final : public std::pmr::memory_resource {
+        public:
+            explicit upstream_counter_t(std::pmr::memory_resource* upstream) noexcept
+                : upstream_(upstream) {}
+
+            std::size_t allocations() const noexcept { return allocations_; }
+
+        private:
+            void* do_allocate(std::size_t bytes, std::size_t alignment) override;
+            void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override;
+            bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override;
+
+            std::pmr::memory_resource* upstream_;
+            std::size_t allocations_{0};
+        };
+
+        void* do_allocate(std::size_t bytes, std::size_t alignment) override;
+        void do_deallocate(void* p, std::size_t bytes, std::size_t alignment) override;
+        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override;
+
+        upstream_counter_t upstream_;
+        std::pmr::monotonic_buffer_resource buffer_;
+        std::pmr::vector<piece_t> pieces_;
+    };
 
     using pmr_string_stream =
         std::basic_stringstream<char, std::char_traits<char>, std::pmr::polymorphic_allocator<char>>;

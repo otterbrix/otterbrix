@@ -32,7 +32,7 @@ namespace {
                                                "(4, 'Sales',        80000), "
                                                "(5, 'Finance',      70000);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 5);
+            REQUIRE(cur->affected_rows() == 5);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -56,7 +56,7 @@ namespace {
                                                "(9,  'Iris',    5, 75000), "
                                                "(10, 'Jack',    5, 72000);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 10);
+            REQUIRE(cur->affected_rows() == 10);
         }
     }
 
@@ -743,7 +743,7 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
                                                "INSERT INTO TestDatabase.TopEarners (name, salary) "
                                                "SELECT name, salary FROM TestDatabase.Employees WHERE salary > 70000;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 4);
+            REQUIRE(cur->affected_rows() == 4);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -768,7 +768,7 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
                 "INSERT INTO TestDatabase.RankedEarners (name, salary) "
                 "SELECT name, salary FROM TestDatabase.Employees ORDER BY salary DESC LIMIT 3;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
     }
 
@@ -784,7 +784,7 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
                                                "  )"
                                                ");");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -804,7 +804,7 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
                                            "  SELECT id FROM TestDatabase.Departments WHERE budget = 50000"
                                            ");");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->affected_rows() == 2);
     }
 
     INFO("DELETE WHERE NOT IN subquery");
@@ -819,7 +819,7 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
                                                "  )"
                                                ");");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 6);
+            REQUIRE(cur->affected_rows() == 6);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1141,7 +1141,7 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
                                                "(2, ROW(1, 1), ARRAY[4,5,6]), "
                                                "(3, ROW(2, 2), ARRAY[7,8,9]);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1150,7 +1150,7 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
                                                "(1, ROW(0, 0), ARRAY[1,2,3]), "
                                                "(4, ROW(3, 3), ARRAY[10,11,12]);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
     }
 
@@ -1221,7 +1221,7 @@ namespace {
                                                "(4, 'Engineer', 2), "
                                                "(5, 'Designer', 3);");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 5);
+            REQUIRE(cur->affected_rows() == 5);
         }
     }
 } // namespace

@@ -28,6 +28,8 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
 #include <services/wal/wal_reader.hpp>
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 
 // A CRC break must not make the allocator forget what is on disk: recover_from_disk() took the id
 // allocator's resume point from the same replay scan, so it resumed below ids still on disk and reissued them.
@@ -52,11 +54,7 @@ namespace {
 
     template<typename F>
     decltype(auto) await_ready(F& fut) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut));
         return std::move(fut).take_ready();
     }
 
@@ -84,7 +82,7 @@ namespace {
 
     struct wal_env_t {
         explicit wal_env_t(const std::filesystem::path& path, size_t max_segment_size = 0)
-            : log_(initialization_logger("python", "/tmp/docker_logs/"))
+            : log_(make_test_log())
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_(reopen_config(path))
             , manager_(nullptr, actor_zeta::pmr::deleter_t(&resource_)) {
@@ -96,7 +94,8 @@ namespace {
                                                                   config_,
                                                                   log_,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox());
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{});
             scheduler_->start();
         }
 

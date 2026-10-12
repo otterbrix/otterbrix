@@ -138,9 +138,11 @@ namespace {
                 case LT::BIGINT:
                     return components::types::logical_value_t(resource, int128_t{val.value<int64_t>()});
                 case LT::UTINYINT:
-                    return components::types::logical_value_t(resource, int128_t{static_cast<uint32_t>(val.value<uint8_t>())});
+                    return components::types::logical_value_t(resource,
+                                                              int128_t{static_cast<uint32_t>(val.value<uint8_t>())});
                 case LT::USMALLINT:
-                    return components::types::logical_value_t(resource, int128_t{static_cast<uint32_t>(val.value<uint16_t>())});
+                    return components::types::logical_value_t(resource,
+                                                              int128_t{static_cast<uint32_t>(val.value<uint16_t>())});
                 case LT::UINTEGER:
                     return components::types::logical_value_t(resource, int128_t{val.value<uint32_t>()});
                 case LT::UBIGINT:
@@ -387,10 +389,20 @@ namespace components::sql::transform {
                 }
             }
 
+            // Without a column list the values fill the table's columns in order (PostgreSQL 18 checkInsertTargets);
+            // here they are named by position, and validation binds them to the table's columns.
             std::pmr::vector<std::string> field_names(resource_);
-            field_names.reserve(key_translation.size());
-            for (const auto& field : key_translation) {
-                field_names.emplace_back(field.as_string());
+            if (fields.empty()) {
+                const auto width = pg_ptr_cast<List>(vals.front().data)->lst.size();
+                field_names.reserve(width);
+                for (std::size_t position = 1; position <= width; ++position) {
+                    field_names.emplace_back("?column?" + std::to_string(position));
+                }
+            } else {
+                field_names.reserve(key_translation.size());
+                for (const auto& field : key_translation) {
+                    field_names.emplace_back(field.as_string());
+                }
             }
 
             logical_plan::insert_literal_digits_list_t literal_digits(resource_);
@@ -400,21 +412,23 @@ namespace components::sql::transform {
                                 size_t global_row,
                                 List* values_list) -> core::error_t {
                 auto values = values_list->lst;
-                if (values.size() != fields.size()) {
-                    return core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"INSERT has more expressions than target columns", resource_});
+                if (values.size() != field_names.size()) {
+                    const char* what = fields.empty() ? "VALUES lists must all be the same length"
+                                       : values.size() > field_names.size()
+                                           ? "INSERT has more expressions than target columns"
+                                           : "INSERT has more target columns than expressions";
+                    return core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{what, resource_});
                 }
 
-                auto it_field = key_translation.begin();
                 std::size_t field_pos = 0;
-                for (auto it_value = values.begin(); it_value != values.end(); ++it_field, ++it_value, ++field_pos) {
+                for (auto it_value = values.begin(); it_value != values.end(); ++it_value, ++field_pos) {
                     const std::string& field_name = field_names[field_pos];
                     if (nodeTag(it_value->data) == T_ParamRef) {
                         auto ref = pg_ptr_cast<ParamRef>(it_value->data);
                         auto loc = std::make_pair(global_row, field_name);
 
-                        if (auto it = parameter_insert_map_.find(static_cast<size_t>(ref->number)); it != parameter_insert_map_.end()) {
+                        if (auto it = parameter_insert_map_.find(static_cast<size_t>(ref->number));
+                            it != parameter_insert_map_.end()) {
                             it->second.emplace_back(std::move(loc));
                         } else {
                             std::pmr::vector<insert_location_t> par(resource_);
@@ -576,12 +590,8 @@ namespace components::sql::transform {
             auto* ins_node = static_cast<logical_plan::node_insert_t*>(ins.get());
             ins_node->set_literal_digits(std::move(literal_digits));
             ins_node->returning() = returning;
-            set_target(*ins_node, qn);
-            register_catalog_resolve_table(resource_,
-                                           &catalog_resolves_,
-                                           qn.database,
-                                           qn.collection,
-                                           constraint_resolve_kind::outgoing);
+            set_target(*ins_node, qn, target_slots::relation_with_schema);
+            register_write_target(qn, constraint_resolve_kind::outgoing);
             return ins;
         } else {
             auto qn = rangevar_to_qualified_name(node.relation);
@@ -590,12 +600,8 @@ namespace components::sql::transform {
             res->append_child(std::move(source));
             res->key_translation() = key_translation;
             res->returning() = returning;
-            set_target(*res, qn);
-            register_catalog_resolve_table(resource_,
-                                           &catalog_resolves_,
-                                           qn.database,
-                                           qn.collection,
-                                           constraint_resolve_kind::outgoing);
+            set_target(*res, qn, target_slots::relation_with_schema);
+            register_write_target(qn, constraint_resolve_kind::outgoing);
             return res;
         }
     }

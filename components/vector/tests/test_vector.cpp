@@ -225,7 +225,7 @@ TEST_CASE("components::vector::vector") {
             REQUIRE(value.children()[0].value<bool>() == test_data[i].flag);
             REQUIRE(value.children()[1].value<int32_t>() == test_data[i].number);
             REQUIRE(*value.children()[2].value<std::string*>() == test_data[i].name);
-            std::vector arr(*value.children()[3].value<std::vector<components::types::logical_value_t>*>());
+            std::vector arr(value.children()[3].children());
             REQUIRE(arr.size() == test_data[i].array.size());
             for (size_t j = 0; j < arr.size(); j++) {
                 REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <core/pmr.hpp>
+
 #include <cstring>
 #include <memory_resource>
 
@@ -20,6 +22,8 @@ namespace core {
 
         void reset() { arena_allocator_.release(); }
 
+        std::size_t upstream_allocations() const noexcept { return arena_allocator_.upstream_allocations(); }
+
         // Reserve room for `count` objects, left uninitialized.
         T* allocate(size_t count) { return static_cast<T*>(arena_allocator_.allocate(count * sizeof(T), alignof(T))); }
 
@@ -31,7 +35,7 @@ namespace core {
         }
 
     private:
-        std::pmr::monotonic_buffer_resource arena_allocator_;
+        core::pmr::arena_resource_t arena_allocator_;
     };
 
 } // namespace core

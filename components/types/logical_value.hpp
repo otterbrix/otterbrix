@@ -65,8 +65,6 @@ namespace components::types {
         static logical_value_t
         create_numeric(std::pmr::memory_resource* r, const complex_logical_type& type, int64_t value);
         static logical_value_t
-        create_enum(std::pmr::memory_resource* r, const complex_logical_type& enum_type, std::string_view key);
-        static logical_value_t
         create_enum(std::pmr::memory_resource* r, const complex_logical_type& enum_type, int32_t value);
         static logical_value_t
         create_decimal(std::pmr::memory_resource* r, const complex_logical_type& decimal_type, int64_t value);
@@ -104,10 +102,6 @@ namespace components::types {
                                                               const logical_value_t& value2);
         static core::result_wrapper_t<logical_value_t> modulus(const logical_value_t& value1,
                                                                const logical_value_t& value2);
-        static core::result_wrapper_t<logical_value_t> exponent(const logical_value_t& value1,
-                                                                const logical_value_t& value2);
-        static core::result_wrapper_t<logical_value_t> bit_and(const logical_value_t& value1,
-                                                               const logical_value_t& value2);
 
     private:
         complex_logical_type type_;
@@ -140,10 +134,9 @@ namespace components::types {
         }
     };
 
-    size_t hash_row(const std::pmr::vector<logical_value_t>& row) noexcept;
-
-    static const logical_value_t NULL_LOGICAL_VALUE =
-        logical_value_t{std::pmr::null_memory_resource(), complex_logical_type{logical_type::NA}};
+    // A NULL holds no heap, so the resource it names never allocates.
+    inline const logical_value_t NULL_LOGICAL_VALUE{std::pmr::null_memory_resource(),
+                                                    complex_logical_type{logical_type::NA}};
 
     template<typename T>
     logical_value_t::logical_value_t(std::pmr::memory_resource* r, T value)
@@ -261,9 +254,12 @@ namespace components::types {
         , resource_(r)
         , data_(reinterpret_cast<uint64_t>(heap_new<std::string>(value))) {}
 
+    template<typename>
+    inline constexpr bool has_value_accessor = false;
+
     template<typename T>
     T logical_value_t::value() const {
-        throw std::logic_error("logical_value_t::value<T>(): is not implemented for a given T");
+        static_assert(has_value_accessor<T>, "logical_value_t::value<T>(): there is no accessor for this T");
     }
 
     template<>
@@ -367,10 +363,6 @@ namespace components::types {
     inline std::string_view logical_value_t::value<std::string_view>() const {
         return *str_ptr();
     }
-    template<>
-    inline std::vector<logical_value_t>* logical_value_t::value<std::vector<logical_value_t>*>() const {
-        return vec_ptr();
-    }
 
     class enum_logical_type_extension : public logical_type_extension {
     public:
@@ -384,22 +376,6 @@ namespace components::types {
     private:
         std::string type_name_;
         std::vector<logical_value_t> entries_; // integer literal for value and alias for entry name
-    };
-
-    bool enum_value_matches_string(const logical_value_t& enum_val, std::string_view target);
-
-    class user_logical_type_extension : public logical_type_extension {
-    public:
-        explicit user_logical_type_extension(std::string catalog, std::vector<logical_value_t> user_type_modifiers);
-
-        const std::string& catalog() const noexcept { return catalog_; }
-        const std::vector<logical_value_t>& user_type_modifiers() const noexcept { return user_type_modifiers_; }
-
-        bool operator==(const user_logical_type_extension& rhs) const;
-
-    private:
-        std::string catalog_;
-        std::vector<logical_value_t> user_type_modifiers_;
     };
 
 } // namespace components::types

@@ -94,7 +94,7 @@ namespace components::sql::transform {
                 return std::string{};
             }
             VALUE_OR_RETURN(auto called, called_function(resource, call->funcname));
-            return std::move(called.collection);
+            return std::move(called.function.t);
         }
     } // namespace
 
@@ -102,7 +102,7 @@ namespace components::sql::transform {
     transformer::build_recursive_cte_ref(const std::string& cte_name,
                                          const std::string& effective_alias,
                                          logical_plan::execution_plan_t* plan) {
-        auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+        auto agg = logical_plan::make_node_aggregate(resource_, qualified_name_t{});
         if (transforming_recursive_member_) {
             auto scan = logical_plan::make_node_cte_scan(resource_, std::pmr::string{cte_name, resource_});
             scan->set_result_alias(effective_alias);
@@ -146,28 +146,26 @@ namespace components::sql::transform {
                 auto* table = pg_ptr_cast<RangeVar>(item);
                 auto written = rangevar_to_qualified_name(table);
                 slot_alias = construct_alias(table->alias);
-                const std::string& visible = slot_alias.empty() ? written.collection : slot_alias;
-                const bool unqualified = written.database.empty() && written.schema.empty() && written.unique_identifier.empty();
+                const std::string& visible = slot_alias.empty() ? written.collection.t : slot_alias;
+                const bool unqualified =
+                    written.database.t.empty() && written.schema.t.empty() && written.unique_identifier.t.empty();
                 if (unqualified) {
-                    if (auto cte = cte_queries_.find(written.collection); cte != cte_queries_.end()) {
-                        slot_name.collection = written.collection;
-                        auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                    if (auto cte = cte_queries_.find(written.collection.t); cte != cte_queries_.end()) {
+                        slot_name.collection = written.collection.t;
+                        auto agg = logical_plan::make_node_aggregate(resource_, qualified_name_t{});
                         VALUE_OR_RETURN(auto body, transform_select(*cte->second, plan));
                         agg->append_child(std::move(body));
                         agg->children().back()->set_result_alias(visible);
                         return agg;
                     }
-                    if (recursive_cte_queries_.count(written.collection)) {
-                        slot_name.collection = written.collection;
-                        VALUE_OR_RETURN(auto agg, build_recursive_cte_ref(written.collection, visible, plan));
+                    if (recursive_cte_queries_.count(written.collection.t)) {
+                        slot_name.collection = written.collection.t;
+                        VALUE_OR_RETURN(auto agg, build_recursive_cte_ref(written.collection.t, visible, plan));
                         return agg;
                     }
                 }
                 slot_name = std::move(written);
-                auto agg = logical_plan::make_node_aggregate(resource_,
-                                                             core::uid_t{slot_name.unique_identifier},
-                                                             core::dbname_t{slot_name.database},
-                                                             core::relname_t{slot_name.collection});
+                auto agg = logical_plan::make_node_aggregate(resource_, slot_name);
                 if (!slot_alias.empty()) {
                     agg->set_result_alias(slot_alias);
                 }
@@ -176,7 +174,7 @@ namespace components::sql::transform {
             case T_RangeSubselect: {
                 auto* sub = pg_ptr_cast<RangeSubselect>(item);
                 slot_alias = construct_alias(sub->alias);
-                auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                auto agg = logical_plan::make_node_aggregate(resource_, qualified_name_t{});
                 if (sub->lateral && node_join) {
                     node_join->set_lateral(true);
                     auto* prev_outer = lateral_outer_names_;
@@ -225,7 +223,7 @@ namespace components::sql::transform {
                 auto* func = pg_ptr_cast<RangeFunction>(item);
                 slot_alias = construct_alias(func->alias);
                 if (slot_alias.empty()) {
-                    VALUE_OR_RETURN(slot_name.collection, range_function_name(resource_, *func));
+                    VALUE_OR_RETURN(slot_name.collection.t, range_function_name(resource_, *func));
                 }
                 VALUE_OR_RETURN(auto element,
                                 node_join ? transform_from_function(*func, names, node_join, plan)
@@ -263,7 +261,7 @@ namespace components::sql::transform {
             name_collection_t inner;
             RETURN_IF_ERROR(join_dfs(resource, pg_ptr_cast<JoinExpr>(join->larg), node_join, inner, plan));
             auto carry = [&](const qualified_name_t& nm, const std::string& alias) {
-                if (!nm.collection.empty() || !alias.empty()) {
+                if (!nm.collection.t.empty() || !alias.empty()) {
                     names.extra_left.push_back({nm, alias});
                 }
             };
@@ -274,11 +272,11 @@ namespace components::sql::transform {
             }
 
             auto prev = node_join;
-            node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
+            node_join = logical_plan::make_node_join(resource, j_type);
             node_join->append_child(prev);
         } else {
             assert(!node_join);
-            node_join = logical_plan::make_node_join(resource, core::dbname_t{}, core::relname_t{}, j_type);
+            node_join = logical_plan::make_node_join(resource, j_type);
             VALUE_OR_RETURN(
                 auto left,
                 transform_from_element(join->larg, names.left_name, names.left_alias, names, node_join, plan));
@@ -322,12 +320,14 @@ namespace components::sql::transform {
         // libpg_query does not synthesize a JoinExpr for a comma FROM list; jointype_to_ql promotes
         // the synthesized quals=NULL JOIN_INNER to join_type::cross, and WHERE supplies the predicate.
         if (from_items->lst.size() > 1) {
+            // The synthesized node lives with the parse tree it joins, not on the transformer's resource.
+            std::pmr::memory_resource* parse_arena = from_items->lst.get_allocator().resource();
             auto it = from_items->lst.begin();
             Node* acc = pg_ptr_cast<Node>(it->data);
             ++it;
             for (; it != from_items->lst.end(); ++it) {
                 auto* rhs = pg_ptr_cast<Node>(it->data);
-                JoinExpr* synth = makeNode(resource_, JoinExpr);
+                JoinExpr* synth = makeNode(parse_arena, JoinExpr);
                 synth->jointype = JOIN_INNER;
                 synth->isNatural = false;
                 synth->larg = acc;
@@ -344,7 +344,7 @@ namespace components::sql::transform {
 
         auto from_first = from_items->lst.front().data;
         if (nodeTag(from_first) == T_JoinExpr) {
-            agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+            agg = logical_plan::make_node_aggregate(resource_, qualified_name_t{});
             RETURN_IF_ERROR(join_dfs(resource_, pg_ptr_cast<JoinExpr>(from_first), join, names, plan));
             RETURN_IF_ERROR(names.refuse_indistinguishable_elements(resource_));
             agg->append_child(join);
@@ -364,7 +364,7 @@ namespace components::sql::transform {
             if (element->type() == logical_plan::node_type::aggregate_t) {
                 agg = logical_plan::node_aggregate_ptr(static_cast<logical_plan::node_aggregate_t*>(element.get()));
             } else {
-                agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                agg = logical_plan::make_node_aggregate(resource_, qualified_name_t{});
                 agg->append_child(element);
             }
         }
@@ -405,11 +405,8 @@ namespace components::sql::transform {
         return core::error_t::no_error();
     }
 
-    core::result_wrapper_t<logical_plan::node_ptr> transformer::build_limit_node(Node* limit_count,
-                                                                                 Node* limit_offset,
-                                                                                 const core::dbname_t& db,
-                                                                                 const core::relname_t& rel,
-                                                                                 logical_plan::execution_plan_t* plan) {
+    core::result_wrapper_t<logical_plan::node_ptr>
+    transformer::build_limit_node(Node* limit_count, Node* limit_offset, logical_plan::execution_plan_t* plan) {
         if (!limit_count && !limit_offset) {
             return nullptr;
         }
@@ -501,8 +498,7 @@ namespace components::sql::transform {
             }
         }
 
-        auto limit_node =
-            logical_plan::make_node_limit(resource_, db, rel, logical_plan::limit_t(limit_val, offset_val));
+        auto limit_node = logical_plan::make_node_limit(resource_, logical_plan::limit_t(limit_val, offset_val));
         if (limit_param || offset_param) {
             deferred_limits_.push_back(deferred_limit_t{limit_node.get(), limit_param, offset_param});
         }
@@ -510,14 +506,11 @@ namespace components::sql::transform {
     }
 
     core::result_wrapper_t<logical_plan::node_limit_ptr>
-    transformer::build_dml_limit(Node* limit_count,
-                                 const core::dbname_t& db,
-                                 const core::relname_t& rel,
-                                 logical_plan::execution_plan_t* plan) {
+    transformer::build_dml_limit(Node* limit_count, logical_plan::execution_plan_t* plan) {
         if (!limit_count) {
-            return logical_plan::make_node_limit(resource_, db, rel, logical_plan::limit_t::unlimit());
+            return logical_plan::make_node_limit(resource_, logical_plan::limit_t::unlimit());
         }
-        VALUE_OR_RETURN(auto built, build_limit_node(limit_count, nullptr, db, rel, plan));
+        VALUE_OR_RETURN(auto built, build_limit_node(limit_count, nullptr, plan));
         if (!built) {
             return logical_plan::node_limit_ptr{nullptr};
         }
@@ -594,7 +587,7 @@ namespace components::sql::transform {
                 return union_node;
             }
 
-            auto agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+            auto agg = logical_plan::make_node_aggregate(resource_, qualified_name_t{});
             agg->append_child(std::move(union_node));
             if (has_distinct) {
                 if (nodeTag(node.distinctClause->lst.front().data) != T_List) {
@@ -639,12 +632,9 @@ namespace components::sql::transform {
                                                                  is_desc ? sort_order::desc : sort_order::asc,
                                                                  map_sortby_nulls(sortby->sortby_nulls)));
                 }
-                agg->append_child(
-                    logical_plan::make_node_sort(resource_, core::dbname_t{}, core::relname_t{}, sort_exprs));
+                agg->append_child(logical_plan::make_node_sort(resource_, sort_exprs));
             }
-            VALUE_OR_RETURN(
-                auto limit_node,
-                build_limit_node(node.limitCount, node.limitOffset, core::dbname_t{}, core::relname_t{}, plan));
+            VALUE_OR_RETURN(auto limit_node, build_limit_node(node.limitCount, node.limitOffset, plan));
             if (limit_node) {
                 agg->append_child(std::move(limit_node));
             }
@@ -664,7 +654,7 @@ namespace components::sql::transform {
         if (node.fromClause && !node.fromClause->lst.empty()) {
             VALUE_OR_RETURN(agg, transform_from_source(node.fromClause, names, plan));
         } else {
-            agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+            agg = logical_plan::make_node_aggregate(resource_, qualified_name_t{});
         }
         if (node.valuesLists) {
             const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
@@ -705,21 +695,17 @@ namespace components::sql::transform {
                     core::error_code_t::unimplemented_yet,
                     std::pmr::string{"ORDER BY over a top-level VALUES list is not yet supported", resource_});
             }
-            auto values_agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+            auto values_agg = logical_plan::make_node_aggregate(resource_, qualified_name_t{});
             values_agg->append_child(std::move(raw));
-            VALUE_OR_RETURN(
-                auto limit_node,
-                build_limit_node(node.limitCount, node.limitOffset, core::dbname_t{}, core::relname_t{}, plan));
+            VALUE_OR_RETURN(auto limit_node, build_limit_node(node.limitCount, node.limitOffset, plan));
             if (limit_node) {
                 values_agg->append_child(std::move(limit_node));
             }
             return values_agg;
         }
 
-        auto group =
-            logical_plan::make_node_group(resource_, core::dbname_t{agg->dbname()}, core::relname_t{agg->relname()});
-        auto select_node =
-            logical_plan::make_node_select(resource_, core::dbname_t{agg->dbname()}, core::relname_t{agg->relname()});
+        auto group = logical_plan::make_node_group(resource_);
+        auto select_node = logical_plan::make_node_select(resource_);
 
         // Star expressions are skipped; an empty select_node means passthrough (SELECT *).
         bool has_non_star = false;
@@ -753,7 +739,7 @@ namespace components::sql::transform {
                         if (res->name) {
                             expr_name = res->name;
                         } else {
-                            expr_name = called.collection;
+                            expr_name = called.function.t;
                         }
 
                         auto expr = make_function_expression(resource_, std::move(called), std::move(args));
@@ -800,17 +786,18 @@ namespace components::sql::transform {
                             VALUE_OR_RETURN(auto col, columnref_to_field(resource_, col_ref, names));
                             if (nodeTag(col_ref->fields->lst.back().data) == T_A_Star && col.is_qualified()) {
                                 std::pmr::vector<std::pmr::string> star_path{resource_};
-                                star_path.emplace_back(std::pmr::string{col.table.collection, resource_});
+                                star_path.emplace_back(std::pmr::string{col.table.collection.t, resource_});
                                 star_path.emplace_back(std::pmr::string{"*", resource_});
                                 if (res->name) {
                                     return core::error_t(
                                         core::error_code_t::sql_parse_error,
                                         std::pmr::string{"a column alias cannot be given to '*'", resource_});
                                 }
+                                // The qualification picked a side; the expansion must stay on it.
+                                expressions::key_t star_key{std::move(star_path)};
+                                star_key.set_side(col.field.side());
                                 select_node->append_expression(
-                                    make_scalar_expression(resource_,
-                                                           scalar_type::star_expand,
-                                                           expressions::key_t{std::move(star_path)}));
+                                    make_scalar_expression(resource_, scalar_type::star_expand, std::move(star_key)));
                                 break;
                             }
                             if (res->name) {
@@ -1110,8 +1097,7 @@ namespace components::sql::transform {
                 }
             }
             if (exists_sub && exists_sub->subselect && nodeTag(exists_sub->subselect) == T_SelectStmt) {
-                auto join =
-                    logical_plan::make_node_join(resource_, core::dbname_t{}, core::relname_t{}, semi_anti_type);
+                auto join = logical_plan::make_node_join(resource_, semi_anti_type);
                 join->set_lateral(true);
                 join->append_child(agg);
 
@@ -1142,12 +1128,12 @@ namespace components::sql::transform {
                 // A body that already appended sub-queries keeps the lateral join too (avoids a duplicate).
                 const bool correlated = !join->correlations().empty();
                 if (correlated || plan->sub_queries.size() != saved_subq) {
-                    auto inner_agg = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                    auto inner_agg = logical_plan::make_node_aggregate(resource_, qualified_name_t{});
                     inner_agg->append_child(std::move(body));
                     join->append_child(inner_agg);
                     // ON = all_true: the inner sub-plan already filters, so any inner row is a match.
                     join->append_expression(make_compare_expression(resource_, compare_type::all_true));
-                    auto container = logical_plan::make_node_aggregate(resource_, core::dbname_t{}, core::relname_t{});
+                    auto container = logical_plan::make_node_aggregate(resource_, qualified_name_t{});
                     container->append_child(join);
                     agg = container;
                 } else {
@@ -1158,13 +1144,7 @@ namespace components::sql::transform {
                     plan->sub_query_results.push_back({&vector::compact_to_bool_value, param_exists});
                     if (body && body->type() == logical_plan::node_type::aggregate_t) {
                         const auto* body_agg = static_cast<const logical_plan::node_aggregate_t*>(body.get());
-                        const auto& rel = static_cast<const std::string&>(body_agg->relname());
-                        if (!rel.empty()) {
-                            register_catalog_resolve_table(resource_,
-                                                           &catalog_resolves_,
-                                                           static_cast<const std::string&>(body_agg->dbname()),
-                                                           rel);
-                        }
+                        register_written_table(*body_agg);
                     }
                     plan->sub_queries.emplace_back(std::move(body));
                     auto exists_eq = make_compare_expression(resource_, compare_type::eq, param_true, param_exists);
@@ -1175,10 +1155,7 @@ namespace components::sql::transform {
                         not_expr->append_child(std::move(exists_eq));
                         where_expr = std::move(not_expr);
                     }
-                    agg->append_child(logical_plan::make_node_match(resource_,
-                                                                    core::dbname_t{agg->dbname()},
-                                                                    core::relname_t{agg->relname()},
-                                                                    std::move(where_expr)));
+                    agg->append_child(logical_plan::make_node_match(resource_, agg->target(), std::move(where_expr)));
                 }
                 where_consumed_by_semi_anti = true;
             }
@@ -1188,10 +1165,7 @@ namespace components::sql::transform {
             VALUE_OR_RETURN(auto expr_res, transform_predicate(node.whereClause, names, plan));
             expression_ptr expr = std::move(expr_res);
             if (expr) {
-                agg->append_child(logical_plan::make_node_match(resource_,
-                                                                core::dbname_t{agg->dbname()},
-                                                                core::relname_t{agg->relname()},
-                                                                expr));
+                agg->append_child(logical_plan::make_node_match(resource_, agg->target(), expr));
             }
         }
 
@@ -1290,10 +1264,7 @@ namespace components::sql::transform {
         if (!group->expressions().empty() || having_expr) {
             agg->append_child(group);
             if (having_expr) {
-                agg->append_child(logical_plan::make_node_having(resource_,
-                                                                 core::dbname_t{agg->dbname()},
-                                                                 core::relname_t{agg->relname()},
-                                                                 having_expr));
+                agg->append_child(logical_plan::make_node_having(resource_, having_expr));
             }
         }
 
@@ -1382,10 +1353,7 @@ namespace components::sql::transform {
                 }
                 sort_exprs.emplace_back(make_sort_expression(resource_, operand, order, null_ord));
             }
-            agg->append_child(logical_plan::make_node_sort(resource_,
-                                                           core::dbname_t{agg->dbname()},
-                                                           core::relname_t{agg->relname()},
-                                                           sort_exprs));
+            agg->append_child(logical_plan::make_node_sort(resource_, sort_exprs));
         }
 
         if (having_expr && !has_group_by) {
@@ -1434,12 +1402,7 @@ namespace components::sql::transform {
             agg->append_child(select_node);
         }
 
-        VALUE_OR_RETURN(auto limit_node,
-                        build_limit_node(node.limitCount,
-                                         node.limitOffset,
-                                         core::dbname_t{agg->dbname()},
-                                         core::relname_t{agg->relname()},
-                                         plan));
+        VALUE_OR_RETURN(auto limit_node, build_limit_node(node.limitCount, node.limitOffset, plan));
         if (limit_node) {
             agg->append_child(std::move(limit_node));
         }

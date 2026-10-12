@@ -7,7 +7,7 @@ use common::open_test_db;
 use otterbrix::{Database, SqlParam, SqlParamValue};
 
 fn ddl_setup(db: &Database) {
-    db.create_database("app").expect("create database");
+    db.execute("CREATE DATABASE app;").expect("create database");
     db.execute("CREATE TABLE app.t (k bigint, v bigint);")
         .expect("create table");
 }
@@ -160,7 +160,7 @@ fn multiple_independent_databases_in_parallel_threads() {
         .map(|_| {
             thread::spawn(move || {
                 let db = open_test_db();
-                db.create_database("app").expect("create database");
+                db.execute("CREATE DATABASE app;").expect("create database");
                 db.execute("CREATE TABLE app.t (k bigint);")
                     .expect("create table");
                 for k in 0..50_i64 {

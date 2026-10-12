@@ -19,8 +19,9 @@ pub fn open_test_db() -> Database {
 
 pub async fn open_test_proxy() -> DatabaseConnection {
     let db = open_test_db();
-    db.create_database("app").expect("create database");
-    db.create_collection("app", "t").expect("create collection");
+    db.execute("CREATE DATABASE app;").expect("create database");
+    db.execute("CREATE TABLE app.t();")
+        .expect("create collection");
 
     let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(OtterbrixProxy::new(db)));
     sea_orm::Database::connect_proxy(DbBackend::Sqlite, proxy)

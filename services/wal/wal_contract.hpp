@@ -42,6 +42,9 @@ namespace services::wal {
         // a committer's latency path. See manager_wal_replicate_t::run_auto_checkpoint.
         actor_zeta::unique_future<void> run_auto_checkpoint(session_id_t session);
 
+        // Shutdown: no round starts after this, and the answer comes once the one in flight has ended.
+        actor_zeta::unique_future<void> stop_auto_checkpoint(session_id_t session);
+
         // database_oid selects the target WAL worker: manager_wal_replicate
         // routes via wal_actors_[database_oid].
         actor_zeta::unique_future<core::result_wrapper_t<id_t>>
@@ -98,6 +101,7 @@ namespace services::wal {
                                                             &wal_contract::truncate_before,
                                                             &wal_contract::current_wal_id,
                                                             &wal_contract::run_auto_checkpoint,
+                                                            &wal_contract::stop_auto_checkpoint,
                                                             &wal_contract::write_physical_insert,
                                                             &wal_contract::write_physical_delete,
                                                             &wal_contract::write_physical_update,

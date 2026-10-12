@@ -7,11 +7,11 @@ namespace components::operators {
 
     operator_function_t::operator_function_t(std::pmr::memory_resource* resource,
                                              log_t log,
-                                             compute::function_uid uid,
+                                             compute::function_ptr function,
                                              std::pmr::vector<expressions::param_storage> args,
                                              std::string result_alias)
         : read_only_operator_t(resource, std::move(log), operator_type::function)
-        , uid_(uid)
+        , function_(std::move(function))
         , args_(std::move(args))
         , result_alias_(std::move(result_alias)) {}
 
@@ -22,11 +22,6 @@ namespace components::operators {
     }
 
     core::error_t operator_function_t::materialize_(pipeline::context_t* ctx) {
-        if (!ctx->function_registry) {
-            return core::error_t(core::error_code_t::create_physical_plan_error,
-                                 std::pmr::string{"table function: no function registry in context", resource_});
-        }
-
         // Resolve the argument values for the single (per-run) input row.
         std::pmr::vector<types::logical_value_t> arg_values(resource_);
         arg_values.reserve(args_.size());
@@ -55,12 +50,11 @@ namespace components::operators {
         }
         args.set_cardinality(1);
 
-        auto* function = ctx->function_registry->get_function(uid_);
-        if (!function) {
+        if (!function_) {
             return core::error_t(core::error_code_t::create_physical_plan_error,
-                                 std::pmr::string{"table function: uid not found in registry", resource_});
+                                 std::pmr::string{"table function: not resolved by validation", resource_});
         }
-        auto kernel_res = function->dispatch_exact(resource_, arg_types);
+        auto kernel_res = function_->dispatch_exact(resource_, arg_types);
         if (kernel_res.has_error()) {
             return kernel_res.error();
         }
@@ -73,7 +67,7 @@ namespace components::operators {
         types::complex_logical_type out_type = out_type_res.value();
         out_type.set_alias(result_alias_);
 
-        compute::exec_context_t exec_ctx(resource_, const_cast<compute::function_registry_t*>(ctx->function_registry));
+        compute::exec_context_t exec_ctx(resource_);
         compute::kernel_context kernel_ctx(exec_ctx, kernel);
         std::pmr::vector<vector::data_chunk_t> produced(resource_);
         if (auto err = kernel.execute(kernel_ctx, args, produced); err.contains_error()) {
@@ -100,16 +94,11 @@ namespace components::operators {
         return core::error_t::no_error();
     }
 
-    vector::data_chunk_t operator_function_t::make_drain_chunk() {
-        std::pmr::vector<types::complex_logical_type> empty_types(resource_);
-        return vector::data_chunk_t{resource_, empty_types, 0};
-    }
-
-    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+    actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
     operator_function_t::source_next(pipeline::context_t* ctx) {
         if (!materialized_) {
             if (auto err = materialize_(ctx); err.contains_error()) {
-                co_return core::result_wrapper_t<vector::data_chunk_t>(err);
+                co_return err;
             }
         }
 
@@ -117,9 +106,9 @@ namespace components::operators {
         if (cursor_ < chunks.size()) {
             const auto& chunk = chunks[cursor_];
             ++cursor_;
-            co_return core::result_wrapper_t<vector::data_chunk_t>(chunk.partial_copy(resource_, 0, chunk.size()));
+            co_return chunk.partial_copy(resource_, 0, chunk.size());
         }
-        co_return core::result_wrapper_t<vector::data_chunk_t>(make_drain_chunk());
+        co_return std::nullopt;
     }
 
 } // namespace components::operators

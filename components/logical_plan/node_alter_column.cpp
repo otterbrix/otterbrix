@@ -38,7 +38,7 @@ namespace components::logical_plan {
                     return out;
                 }
                 case alter_column_op::drop:
-                    return "$computed_field_unregister[" + column_name_ + "]";
+                    return "$computed_field_unregister[" + column_name_.t + "]";
                 case alter_column_op::rename:
                     break; // never emitted — see create_plan's computed rename case
             }
@@ -47,9 +47,9 @@ namespace components::logical_plan {
             case alter_column_op::add:
                 return "$alter_column_add[" + column_.name() + "]";
             case alter_column_op::rename:
-                return "$alter_column_rename[" + old_name_ + " -> " + new_name_ + "]";
+                return "$alter_column_rename[" + old_name_.t + " -> " + new_name_.t + "]";
             case alter_column_op::drop:
-                return "$alter_column_drop[" + column_name_ + "]";
+                return "$alter_column_drop[" + column_name_.t + "]";
         }
         return "$alter_column";
     }

@@ -22,7 +22,8 @@ namespace services::planner::impl {
         return boost::intrusive_ptr(new components::operators::operator_unregister_udf_t(context.resource,
                                                                                          context.log.clone(),
                                                                                          n->function_name(),
-                                                                                         std::move(inputs)));
+                                                                                         std::move(inputs),
+                                                                                         n->behavior()));
     }
 
 } // namespace services::planner::impl

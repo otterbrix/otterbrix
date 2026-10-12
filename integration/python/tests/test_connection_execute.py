@@ -20,8 +20,6 @@ These tests assert on CONTENT -- the rows themselves and the engine's own error
 text -- not merely on the type that comes back.
 """
 
-import os
-import shutil
 import subprocess
 import sys
 
@@ -30,16 +28,9 @@ import pytest
 import otterbrix
 
 
-def _clean_dir(name):
-    path = os.path.join(os.getcwd(), name)
-    if os.path.exists(path):
-        shutil.rmtree(path)
-    return path
-
-
 @pytest.fixture(scope="module")
-def conn():
-    connection = otterbrix.connect(_clean_dir("test_connection_execute_db"))
+def conn(tmp_path_factory):
+    connection = otterbrix.connect(str(tmp_path_factory.mktemp("connection_execute_db")))
     connection.execute("CREATE DATABASE ex;")
     connection.execute("CREATE TABLE ex.rows (id INTEGER, name TEXT);")
     connection.execute("INSERT INTO ex.rows (id, name) VALUES (1, 'a'), (2, 'b'), (3, 'c');")
@@ -62,7 +53,8 @@ def test_select_rows_are_reachable_one_at_a_time(conn):
 def test_a_write_reports_how_many_rows_it_wrote(conn):
     conn.execute("CREATE TABLE ex.writes (id INTEGER);")
     written = conn.execute("INSERT INTO ex.writes (id) VALUES (7), (8);")
-    assert len(written) == 2
+    assert written.rowcount == 2
+    assert len(written) == 0
     assert conn.execute("SELECT id FROM ex.writes ORDER BY id;").fetchall() == [(7,), (8,)]
 
 
@@ -95,11 +87,11 @@ def test_execute_refuses_a_query_that_is_not_a_string(conn):
         conn.execute(["SELECT 1;"])
 
 
-def test_a_result_outlives_the_connection_that_produced_it():
+def test_a_result_outlives_the_connection_that_produced_it(tmp_path):
     """The rows must still be readable after the connection is closed: the
     result owns the batch it was handed, not a borrowed view into a space that
     `close()` may have been the last reference to."""
-    connection = otterbrix.connect(_clean_dir("test_connection_execute_outlive"))
+    connection = otterbrix.connect(str(tmp_path / "outlive_db"))
     connection.execute("CREATE DATABASE ol;")
     connection.execute("CREATE TABLE ol.rows (id INTEGER);")
     connection.execute("INSERT INTO ol.rows (id) VALUES (11), (12);")
@@ -109,12 +101,12 @@ def test_a_result_outlives_the_connection_that_produced_it():
     assert result.fetchall() == [(11,), (12,)]
 
 
-def _run_probe(body, dirname):
+def _run_probe(body, database):
     """A crash cannot be asserted from inside the process it kills, so the two
     statements below run in a child and the parent inspects its exit code."""
     script = "import sys\nimport otterbrix\nconn = otterbrix.connect(sys.argv[1])\n" + body
     proc = subprocess.run(
-        [sys.executable, "-c", script, _clean_dir(dirname)],
+        [sys.executable, "-c", script, str(database)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         universal_newlines=True,
@@ -132,18 +124,18 @@ _REFUSE = (
 )
 
 
-def test_an_empty_query_is_refused_instead_of_taking_the_process_down():
+def test_an_empty_query_is_refused_instead_of_taking_the_process_down(tmp_path):
     """`execute_internal` called `linitial()` on the parse list without checking
     it, so an empty statement dereferenced nothing and the process died with
     SIGSEGV -- after `execute` had already told the caller all was well."""
-    proc = _run_probe(_REFUSE % '""' + "conn.close()\n", "test_connection_execute_empty")
+    proc = _run_probe(_REFUSE % '""' + "conn.close()\n", tmp_path / "empty_db")
     assert proc.returncode == 0, "process died with %s\n%s" % (proc.returncode, proc.stderr[-2000:])
     assert "REFUSED:" in proc.stdout, proc.stdout
 
 
-def test_a_statement_on_a_closed_connection_is_refused_instead_of_aborting():
+def test_a_statement_on_a_closed_connection_is_refused_instead_of_aborting(tmp_path):
     """`close()` drops the space; `execute_internal` then called
     `space->dispatcher()` on a null intrusive_ptr and the process aborted."""
-    proc = _run_probe("conn.close()\n" + _REFUSE % '"SELECT 1;"', "test_connection_execute_closed")
+    proc = _run_probe("conn.close()\n" + _REFUSE % '"SELECT 1;"', tmp_path / "closed_db")
     assert proc.returncode == 0, "process died with %s\n%s" % (proc.returncode, proc.stderr[-2000:])
     assert "REFUSED:" in proc.stdout, proc.stdout

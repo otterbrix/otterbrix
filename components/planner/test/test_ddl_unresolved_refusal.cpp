@@ -25,9 +25,11 @@ namespace {
 
 TEST_CASE("components::planner::ddl_unresolved::create_index_on_a_missing_table_is_refused") {
     auto resource = core::pmr::otterbrix_resource();
-    auto node = components::logical_plan::make_node_create_index(&resource, core::indexname_t{std::string{"idx"}});
-    node->set_dbname(std::string{"db"});
-    node->set_relname(std::string{"no_such_table"});
+    auto node = components::logical_plan::make_node_create_index(&resource,
+                                                                 core::indexname_t{std::string{"idx"}},
+                                                                 components::logical_plan::index_type::single);
+    node->set_target(
+        qualified_name_t{core::dbname_t{std::string{"db"}}, core::relname_t{std::string{"no_such_table"}}});
     // enrich left namespace_oid()/table_oid() at INVALID_OID: the table is not in the catalog.
 
     const std::size_t need = components::planner::compute_oid_demand(node.get());
@@ -44,9 +46,8 @@ TEST_CASE("components::planner::ddl_unresolved::create_index_on_a_missing_table_
 TEST_CASE("components::planner::ddl_unresolved::drop_index_on_a_missing_index_is_refused") {
     auto resource = core::pmr::otterbrix_resource();
     auto node = components::logical_plan::make_node_drop(&resource, components::logical_plan::drop_target_kind::index);
-    node->set_dbname(std::string{"db"});
-    node->set_relname(std::string{"t"});
-    node->set_index_name(std::string{"no_such_index"});
+    node->set_target(qualified_name_t{core::dbname_t{std::string{"db"}}, core::relname_t{std::string{"t"}}});
+    node->set_index_name(core::indexname_t{"no_such_index"});
     // enrich left index_oid() at INVALID_OID: no pg_class row answered to the name.
 
     const std::size_t need = components::planner::compute_oid_demand(node.get());
@@ -60,21 +61,17 @@ TEST_CASE("components::planner::ddl_unresolved::drop_index_on_a_missing_index_is
     REQUIRE(rewritten.error().type == core::error_code_t::index_not_exists);
 }
 
+// IF EXISTS rides the DROP node (node_drop_t::if_exists): the planner refuses a missing index either way, and
+// the executor turns exactly that refusal into success (integration: test_drop_index_repeat).
 TEST_CASE("components::planner::ddl_unresolved::drop_index_if_exists_on_a_missing_index_is_a_noop_success") {
     auto resource = core::pmr::otterbrix_resource();
     auto node = components::logical_plan::make_node_drop(&resource, components::logical_plan::drop_target_kind::index);
-    node->set_dbname(std::string{"db"});
-    node->set_relname(std::string{"t"});
-    node->set_index_name(std::string{"no_such_index"});
-    node->set_missing_ok(true); // `DROP INDEX IF EXISTS ...`
+    node->set_target(qualified_name_t{core::dbname_t{std::string{"db"}}, core::relname_t{std::string{"t"}}});
+    node->set_index_name(core::indexname_t{"no_such_index"});
 
     components::planner::planner_t planner;
     auto rewritten = planner.create_plan(&resource, node, std::vector<oid_t>{}, 0);
 
-    INFO("IF EXISTS is the ONE form PostgreSQL lets pass on a missing index: an empty "
-         "sequence — nothing to scrub, nothing to tear down, success");
-    REQUIRE_FALSE(rewritten.has_error());
-    REQUIRE(rewritten.value() != nullptr);
-    REQUIRE(rewritten.value()->type() == components::logical_plan::node_type::sequence_t);
-    REQUIRE(rewritten.value()->children().empty());
+    REQUIRE(rewritten.has_error());
+    REQUIRE(rewritten.error().type == core::error_code_t::index_not_exists);
 }

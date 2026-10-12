@@ -45,7 +45,7 @@ namespace {
             auto cur = exec(dispatcher, q.str());
             INFO("batch insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == static_cast<std::size_t>(end - start));
+            REQUIRE(cur->affected_rows() == static_cast<std::size_t>(end - start));
         }
     }
 } // namespace
@@ -126,7 +126,7 @@ TEST_CASE("integration::cpp::large_aggregate_dml::delete_using_secondary_table_o
                     "WHERE AggDb.target.k = AggDb.using_tbl.k;");
     INFO("DELETE USING error: " << (cur->is_error() ? cur->get_error().what : "none"));
     REQUIRE(cur->is_success());
-    REQUIRE(cur->size() == static_cast<std::size_t>(kUsing));
+    REQUIRE(cur->affected_rows() == static_cast<std::size_t>(kUsing));
 
     {
         auto rem = exec(dispatcher, "SELECT COUNT(*) AS c FROM AggDb.target;");

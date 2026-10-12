@@ -25,9 +25,14 @@ namespace components::expressions {
         const expression_ptr& child() const noexcept { return child_; }
 
         const std::string& function_name() const;
-        const qualified_name_t& full_name() const;
-        void add_function_uid(compute::function_uid uid);
+        const function_qualified_name_t& full_name() const;
+        void set_pin(compute::function_pin_t pin) noexcept;
+        const compute::function_pin_t& pin() const noexcept;
         compute::function_uid function_uid() const;
+        void set_function(compute::function_ptr function) noexcept;
+        const compute::function* function() const noexcept;
+        void set_pins(std::pmr::vector<compute::function_pin_t> pins);
+        const std::pmr::vector<compute::function_pin_t>& pins() const noexcept;
         std::pmr::vector<param_storage>& params();
         const std::pmr::vector<param_storage>& params() const;
 

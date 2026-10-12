@@ -16,17 +16,25 @@ namespace components::expressions {
         function_expression_t(function_expression_t&&) noexcept = default;
         ~function_expression_t() override = default;
 
-        function_expression_t(std::pmr::memory_resource* resource, qualified_name_t&& name);
+        function_expression_t(std::pmr::memory_resource* resource, function_qualified_name_t&& name);
         function_expression_t(std::pmr::memory_resource* resource,
-                              qualified_name_t&& name,
+                              function_qualified_name_t&& name,
                               std::pmr::vector<param_storage>&& args);
 
         const std::string& name() const noexcept;
-        const qualified_name_t& full_name() const noexcept;
+        const function_qualified_name_t& full_name() const noexcept;
         std::pmr::vector<param_storage>& args() noexcept;
         const std::pmr::vector<param_storage>& args() const noexcept;
-        void add_function_uid(compute::function_uid uid);
+        // The function and the kernel signature (index into get_signatures()) the validation chose.
+        void set_pin(compute::function_pin_t pin) noexcept;
+        const compute::function_pin_t& pin() const noexcept;
         compute::function_uid function_uid() const;
+        // The pinned function itself, owned as a cast_expression_t owns its cast: graphs build without a registry.
+        void set_function(compute::function_ptr function) noexcept;
+        const compute::function* function() const noexcept;
+        // A view read: the call resolves among these alone, not among every function of its name.
+        void set_pins(std::pmr::vector<compute::function_pin_t> pins);
+        const std::pmr::vector<compute::function_pin_t>& pins() const noexcept;
 
         void set_key(const key_t& key);
 
@@ -37,19 +45,22 @@ namespace components::expressions {
         bool has_star_argument() const noexcept;
 
     private:
-        qualified_name_t name_;
+        function_qualified_name_t name_;
         std::pmr::vector<param_storage> args_;
         bool distinct_{false};
         bool star_argument_{false};
-        compute::function_uid function_uid_{compute::invalid_function_uid};
+        compute::function_pin_t pin_;
+        compute::function_ptr function_{compute::no_function()};
+        std::pmr::vector<compute::function_pin_t> pins_;
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
         bool equal_impl(const expression_i* rhs) const override;
     };
 
-    function_expression_ptr make_function_expression(std::pmr::memory_resource* resource, qualified_name_t&& name);
     function_expression_ptr make_function_expression(std::pmr::memory_resource* resource,
-                                                     qualified_name_t&& name,
+                                                     function_qualified_name_t&& name);
+    function_expression_ptr make_function_expression(std::pmr::memory_resource* resource,
+                                                     function_qualified_name_t&& name,
                                                      std::pmr::vector<param_storage>&& args);
 } // namespace components::expressions

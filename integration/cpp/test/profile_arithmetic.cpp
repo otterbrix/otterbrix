@@ -7,8 +7,8 @@
 #include <components/tests/generaty.hpp>
 #include <iostream>
 
-static const database_name_t database_name = "testdatabase";
-static const collection_name_t collection_name = "testcollection";
+static const core::dbname_t database_name{"testdatabase"};
+static const core::relname_t collection_name{"testcollection"};
 
 using namespace components;
 
@@ -30,7 +30,7 @@ int main() {
     // Setup
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE " + database_name + ";");
+        dispatcher->execute_sql(s, "CREATE DATABASE " + database_name.t + ";");
     }
     {
         auto s = otterbrix::session_id_t();

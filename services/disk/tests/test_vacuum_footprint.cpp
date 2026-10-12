@@ -18,8 +18,11 @@
 #include "../../../components/table/test/fault_injection_file.hpp"
 #include "disk_test_helpers.hpp"
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <limits>
+#include <services/disk/tests/test_directory.hpp>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -47,17 +50,22 @@ namespace {
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
 
         fixture()
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
                 configuration::config_disk c;
                 c.path = vacuum_dir();
                 return c;
             }())
-            , manager(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log)) {
+            , manager(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                        scheduler,
+                                                        scheduler,
+                                                        test_directory::created(disk_config),
+                                                        log,
+                                                        configuration::pump_intervals_t{})) {
             std::filesystem::remove_all(vacuum_dir());
             std::filesystem::create_directories(vacuum_dir());
-            manager->bootstrap_system_tables_sync();
+            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             manager.reset();
@@ -69,12 +77,7 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(manager->address(), fn, std::forward<Args>(args)...);
-            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
-            while (!future.is_ready() && std::chrono::steady_clock::now() < deadline) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(future.is_ready());
+            REQUIRE(test_helpers::wait_ready(future, scheduler));
             return std::move(future).take_ready();
         }
 

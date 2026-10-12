@@ -164,11 +164,10 @@ namespace components::operators {
     }
 
     // Awaits live in this nested coroutine, not a behavior() handler — no lost-wakeup between them.
-    actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+    actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
     index_scan::source_next(pipeline::context_t* ctx) {
         if (drained_) {
-            co_return core::result_wrapper_t<vector::data_chunk_t>(
-                vector::data_chunk_t{resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 0});
+            co_return std::nullopt;
         }
 
         if (!opened_) {
@@ -182,7 +181,7 @@ namespace components::operators {
                                                        resource_}};
                 set_error(unwired);
                 mark_failed();
-                co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(unwired));
+                co_return std::move(unwired);
             }
             // Compact-hold first, search second: defers compaction so minted row ids stay valid, not already stale.
             if (hold_id_ == 0) {
@@ -194,14 +193,14 @@ namespace components::operators {
                 if (hold_r.has_error()) {
                     set_error(hold_r.error());
                     mark_failed();
-                    co_return hold_r.convert_error<vector::data_chunk_t>();
+                    co_return hold_r.convert_error<std::optional<vector::data_chunk_t>>();
                 }
                 hold_id_ = hold_r.value();
             }
             if (auto search_error = co_await open_index_window(ctx); search_error.contains_error()) {
                 set_error(search_error);
                 mark_failed();
-                co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(search_error));
+                co_return std::move(search_error);
             }
             auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                         &services::disk::manager_disk_t::storage_types,
@@ -211,7 +210,7 @@ namespace components::operators {
             if (types_result.has_error()) {
                 set_error(types_result.error());
                 mark_failed();
-                co_return types_result.convert_error<vector::data_chunk_t>();
+                co_return types_result.convert_error<std::optional<vector::data_chunk_t>>();
             }
             guard_types_ = std::move(types_result.value());
         }
@@ -240,7 +239,7 @@ namespace components::operators {
             if (batch_r.has_error()) {
                 set_error(batch_r.error());
                 mark_failed();
-                co_return batch_r.convert_error<vector::data_chunk_t>();
+                co_return batch_r.convert_error<std::optional<vector::data_chunk_t>>();
             }
             batch_ = std::move(batch_r.value());
             batch_pos_ = 0;
@@ -250,7 +249,7 @@ namespace components::operators {
                 batch_.clear();
                 set_error(stale);
                 mark_failed();
-                co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(stale));
+                co_return std::move(stale);
             }
         }
 
@@ -258,17 +257,16 @@ namespace components::operators {
         if (batch_pos_ < batch_.size()) {
             auto chunk = std::move(batch_[batch_pos_++]);
             emitted_any_ = true;
-            co_return core::result_wrapper_t<vector::data_chunk_t>(std::move(chunk));
+            co_return std::move(chunk);
         }
 
         drained_ = true;
         if (!emitted_any_) {
             // 0-row guard: lets a scalar aggregate emit COUNT=0 / OUTER join NULL-pad.
             emitted_any_ = true;
-            co_return core::result_wrapper_t<vector::data_chunk_t>(vector::data_chunk_t{resource_, guard_types_, 0});
+            co_return vector::data_chunk_t{resource_, guard_types_, 0};
         }
-        co_return core::result_wrapper_t<vector::data_chunk_t>(
-            vector::data_chunk_t{resource_, std::pmr::vector<types::complex_logical_type>{resource_}, 0});
+        co_return std::nullopt;
     }
 
 } // namespace components::operators

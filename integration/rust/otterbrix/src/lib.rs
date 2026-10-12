@@ -34,8 +34,8 @@
 //! let cfg = Config::new("./data");
 //! let db = Database::open(cfg).expect("open database");
 //!
-//! db.create_database("app").unwrap();
-//! db.create_collection("app", "t").unwrap();
+//! db.execute("CREATE DATABASE app;").unwrap();
+//! db.execute("CREATE TABLE app.t();").unwrap();
 //!
 //! db.execute("INSERT INTO app.t (id, name) VALUES (1, 'alice');").unwrap();
 //!
@@ -74,7 +74,7 @@
 //! [`Error`] are categorised by origin so callers can distinguish C++ engine
 //! errors from wrapper-side validation errors:
 //!
-//! - [`Error::Query`] / [`Error::NullPointer`] — produced by the engine; the
+//! - [`Error::Engine`] — produced by the engine; the
 //!   `Display` text starts with `otterbrix core ...`;
 //! - [`Error::InvalidPath`] / [`Error::TypeMismatch`] — produced by the
 //!   wrapper; the `Display` text starts with `otterbrix ...`.

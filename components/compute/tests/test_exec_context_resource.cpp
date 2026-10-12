@@ -36,7 +36,11 @@ TEST_CASE("components::compute::exec_context::executing_a_function_never_touches
     // count below measures compute's behaviour, not this fixture's.
     core::pmr::otterbrix_resource resource;
 
-    auto fn = std::make_unique<vector_function>("ctx_probe", arity::unary(), function_doc{}, 1);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                                  "ctx_probe",
+                                                                  arity::unary(),
+                                                                  function_doc{&resource},
+                                                                  size_t{1});
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
                            {output_type::fixed(logical_type::INTEGER)});
@@ -62,4 +66,32 @@ TEST_CASE("components::compute::exec_context::executing_a_function_never_touches
     INFO("allocations taken from the process-global default resource: " << probe.allocations() << " ("
                                                                         << probe.allocated_bytes() << " bytes)");
     REQUIRE(probe.allocations() == 0);
+}
+
+TEST_CASE("components::compute::function::a_copy_takes_and_gives_back_only_through_the_resource_it_is_given") {
+    core::pmr::otterbrix_resource home;
+    function_registry_t registry(&home);
+    register_default_functions(registry);
+    REQUIRE_FALSE(registry.builtin_registration_error().contains_error());
+
+    core::pmr::counting_resource_t target{std::pmr::new_delete_resource()};
+    auto& probe = process_default_probe();
+    probe.reset();
+
+    size_t copied = 0;
+    {
+        default_resource_window_t window{&probe};
+        for (const auto& [name, uid] : DEFAULT_FUNCTIONS) {
+            auto copy = registry.get_function(uid)->get_copy(&target);
+            if (copy != nullptr && copy->name() == name && copy->num_kernels() > 0) {
+                ++copied;
+            }
+        }
+    }
+
+    REQUIRE(copied == DEFAULT_FUNCTIONS.size());
+    INFO("allocations taken from the process-global default resource: " << probe.allocations());
+    REQUIRE(probe.allocations() == 0);
+    REQUIRE(target.allocations() > 0);
+    REQUIRE(target.outstanding() == 0);
 }

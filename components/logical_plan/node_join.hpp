@@ -1,6 +1,5 @@
 #pragma once
 
-#include "identifier_types.hpp"
 #include "node.hpp"
 
 #include <components/expressions/key.hpp>
@@ -35,23 +34,16 @@ namespace components::logical_plan {
             hash
         };
 
-        explicit node_join_t(std::pmr::memory_resource* resource,
-                             core::dbname_t dbname,
-                             core::relname_t relname,
-                             join_type type);
+        explicit node_join_t(std::pmr::memory_resource* resource, join_type type);
 
         join_type type() const;
 
         join_algo algo() const noexcept;
-        void set_algo(join_algo algo) noexcept;
         std::size_t left_col() const noexcept;
         std::size_t right_col() const noexcept;
         // Records the detected equi-key column indices (into each side's input chunk)
         // and switches algo() to hash. Called by rewrite_hash_joins.
         void set_equi_columns(std::size_t left, std::size_t right) noexcept;
-
-        const std::string& relname() const noexcept { return relname_; }
-        const std::string& dbname() const noexcept { return dbname_; }
 
         using correlation_t = std::pair<core::parameter_id_t, expressions::key_t>;
 
@@ -63,8 +55,6 @@ namespace components::logical_plan {
         }
 
     private:
-        std::string dbname_;
-        std::string relname_;
         join_type type_;
         join_algo algo_{join_algo::nested};
         std::size_t left_col_{0};
@@ -78,7 +68,6 @@ namespace components::logical_plan {
 
     using node_join_ptr = boost::intrusive_ptr<node_join_t>;
 
-    node_join_ptr
-    make_node_join(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname, join_type type);
+    node_join_ptr make_node_join(std::pmr::memory_resource* resource, join_type type);
 
 } // namespace components::logical_plan

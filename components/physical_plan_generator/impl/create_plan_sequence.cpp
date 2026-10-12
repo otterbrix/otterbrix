@@ -28,11 +28,10 @@ namespace services::planner::impl {
         }
     } // namespace
 
-    components::operators::operator_ptr
-    create_plan_sequence(const context_storage_t& context,
-                         const components::compute::function_registry_t& function_registry,
-                         const components::logical_plan::node_ptr& node,
-                         const components::logical_plan::storage_parameters* params) {
+    plan_result_t create_plan_sequence(const context_storage_t& context,
+                                       const components::compute::function_registry_t& function_registry,
+                                       const components::logical_plan::node_ptr& node,
+                                       const components::logical_plan::storage_parameters* params) {
         using namespace components::logical_plan;
 
         // DDL create-table sequence: sequence_t(create_collection_t, catalog-write node_insert_t×N).
@@ -131,13 +130,9 @@ namespace services::planner::impl {
                     // COLUMNs decide their attnum order by who runs first.
                     components::operators::operator_ptr head;
                     for (const auto& child : node->children()) {
-                        auto op = create_plan(context, function_registry, child, {}, params);
-                        if (!op) {
-                            // A child that fails to lower refuses the whole statement:
-                            // a null root maps to create_physical_plan_error in the
-                            // executor. Chaining past it would run a truncated ALTER.
-                            return {};
-                        }
+                        // A child that fails to lower refuses the whole statement: chaining past it would run
+                        // a truncated ALTER.
+                        VALUE_OR_RETURN(auto op, create_plan(context, function_registry, child, {}, params));
                         if (head) {
                             // op wraps `head` (op runs after head's chain executes).
                             op->set_children(head, nullptr);
@@ -157,12 +152,7 @@ namespace services::planner::impl {
         if (!node->children().empty()) {
             components::operators::operator_ptr head;
             for (const auto& child : node->children()) {
-                auto op = create_plan(context, function_registry, child, {}, params);
-                if (!op) {
-                    // Unchecked, the loop would silently drop a null first child (statement runs with a step
-                    // missing) or dereference a null later child via op->left() outright.
-                    return {};
-                }
+                VALUE_OR_RETURN(auto op, create_plan(context, function_registry, child, {}, params));
                 if (head) {
                     // op consumes left_ as its data source for catalog-write chains (e.g. operator_insert reads
                     // left_->output()), so clobbering left_ with the chain predecessor would drop the row

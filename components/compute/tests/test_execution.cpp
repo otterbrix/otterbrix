@@ -121,7 +121,9 @@ static core::error_t vec_double(kernel_context&, const data_chunk_t& inputs, vec
     return core::error_t::no_error();
 }
 
-inline function_doc function_doc_with_options() { return function_doc{"", "", {}, true}; }
+inline function_doc function_doc_with_options(std::pmr::memory_resource* resource) {
+    return function_doc{resource, "", "", {}, true};
+}
 
 TEST_CASE("components::compute::vector::single") {
     core::pmr::otterbrix_resource resource;
@@ -129,7 +131,11 @@ TEST_CASE("components::compute::vector::single") {
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
-    auto fn = std::make_unique<vector_function>("vec_test", arity::unary(), function_doc_with_options(), 1);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                                  "vec_test",
+                                                                  arity::unary(),
+                                                                  function_doc_with_options(&resource),
+                                                                  size_t{1});
 
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
@@ -152,7 +158,11 @@ TEST_CASE("components::compute::vector::batch") {
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
-    auto fn = std::make_unique<vector_function>("vec_batch", arity::unary(), function_doc_with_options(), 1);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                                  "vec_batch",
+                                                                  arity::unary(),
+                                                                  function_doc_with_options(&resource),
+                                                                  size_t{1});
 
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
@@ -185,7 +195,11 @@ TEST_CASE("components::compute::vector::output_resolver_refusal_reaches_the_call
     test_options opts;
     opts.multiplier = MAGIC_MULTIPLIER;
 
-    auto fn = std::make_unique<vector_function>("vec_bad_output", arity::unary(), function_doc_with_options(), 1);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                                  "vec_bad_output",
+                                                                  arity::unary(),
+                                                                  function_doc_with_options(&resource),
+                                                                  size_t{1});
 
     kernel_signature_t sig(
         function_type_t::vector,
@@ -209,10 +223,16 @@ static data_chunk_t two_ints(std::pmr::memory_resource* resource, int first, int
     return chunk;
 }
 
-static std::unique_ptr<aggregate_function> counting_aggregate(std::pmr::memory_resource* resource,
-                                                              const std::string& name,
-                                                              aggregate_update_fn update = agg_update) {
-    auto fn = std::make_unique<aggregate_function>(name, arity::unary(), function_doc{}, 1);
+static core::pmr::polymorphic_unique_ptr<aggregate_function>
+counting_aggregate(std::pmr::memory_resource* resource,
+                   const std::string& name,
+                   aggregate_update_fn update = agg_update) {
+    auto fn = core::pmr::make_polymorphic_unique<aggregate_function>(resource,
+                                                                     name,
+                                                                     arity::unary(),
+                                                                     function_doc{resource},
+                                                                     size_t{1},
+                                                                     false);
     kernel_signature_t sig(function_type_t::aggregate,
                            {parameter_type::exact(logical_type::INTEGER)},
                            {output_type::fixed(logical_type::INTEGER)});
@@ -267,7 +287,11 @@ TEST_CASE("components::compute::aggregate::per_group") {
 TEST_CASE("components::compute::vector::plain::chunk") {
     core::pmr::otterbrix_resource resource;
     exec_context_t ctx(&resource);
-    auto fn = std::make_unique<vector_function>("plain_chunk", arity::unary(), function_doc{}, 1);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                                  "plain_chunk",
+                                                                  arity::unary(),
+                                                                  function_doc{&resource},
+                                                                  size_t{1});
 
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
@@ -293,7 +317,11 @@ TEST_CASE("components::compute::vector::plain::chunk") {
 TEST_CASE("components::compute::vector::plain::batch") {
     core::pmr::otterbrix_resource resource;
     exec_context_t ctx(&resource);
-    auto fn = std::make_unique<vector_function>("plain_batch", arity::unary(), function_doc{}, 1);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                                  "plain_batch",
+                                                                  arity::unary(),
+                                                                  function_doc{&resource},
+                                                                  size_t{1});
 
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
@@ -333,7 +361,9 @@ TEST_CASE("components::compute::vector::plain::batch") {
 TEST_CASE("components::compute::expand::generate_series") {
     core::pmr::otterbrix_resource resource;
 
-    auto* reg = function_registry_t::get_default();
+    function_registry_t builtins(&resource);
+    register_default_functions(builtins);
+    auto* reg = &builtins;
     function_uid uid = invalid_function_uid;
     for (const auto& [n, u] : reg->get_functions()) {
         if (n == "generate_series") {
@@ -358,7 +388,7 @@ TEST_CASE("components::compute::expand::generate_series") {
     const auto* expand = dynamic_cast<const expand_kernel*>(&kres.value().get());
     REQUIRE(expand != nullptr);
 
-    exec_context_t exec_ctx(&resource, reg);
+    exec_context_t exec_ctx(&resource);
     kernel_context kctx(exec_ctx, *expand);
     std::pmr::vector<data_chunk_t> outputs(&resource);
     REQUIRE_FALSE(expand->execute(kctx, args, outputs).contains_error());
@@ -380,7 +410,11 @@ TEST_CASE("components::compute::expand::generate_series") {
 TEST_CASE("components::compute::options_required") {
     core::pmr::otterbrix_resource resource;
     exec_context_t ctx(&resource);
-    auto fn = std::make_unique<vector_function>("opts", arity::unary(), function_doc_with_options(), 1);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                                  "opts",
+                                                                  arity::unary(),
+                                                                  function_doc_with_options(&resource),
+                                                                  size_t{1});
 
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
@@ -403,7 +437,11 @@ TEST_CASE("components::compute::errors") {
     data_chunk_t chunk(&resource, {logical_type::INTEGER});
 
     SECTION("arity mismatch") {
-        auto fn = std::make_unique<vector_function>("vec", arity::unary(), function_doc{}, 1);
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                                      "vec",
+                                                                      arity::unary(),
+                                                                      function_doc{&resource},
+                                                                      size_t{1});
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::INTEGER), parameter_type::exact(logical_type::NA)},
@@ -413,7 +451,11 @@ TEST_CASE("components::compute::errors") {
     }
 
     SECTION("type mismatch") {
-        auto fn = std::make_unique<vector_function>("bad_types", arity::unary(), function_doc{}, 1);
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                                      "bad_types",
+                                                                      arity::unary(),
+                                                                      function_doc{&resource},
+                                                                      size_t{1});
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::INTEGER)},
@@ -432,7 +474,11 @@ TEST_CASE("components::compute::errors") {
 
     SECTION("faulty vector exec") {
         test_options opts;
-        auto fn = std::make_unique<vector_function>("vec", arity::unary(), function_doc{}, 1);
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(&resource,
+                                                                      "vec",
+                                                                      arity::unary(),
+                                                                      function_doc{&resource},
+                                                                      size_t{1});
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::INTEGER)},
@@ -463,7 +509,7 @@ namespace {
         function_registry_t registry{&resource};
         // Explicit, because function::execute has no defaulted context: without one the calls
         // below would run on the process-global default resource.
-        exec_context_t ctx{&resource, &registry};
+        exec_context_t ctx{&resource};
 
         // The full builtin set, not register_string_functions alone: the registration helpers
         // are ordered stages of register_default_functions, and calling one alone now poisons
@@ -852,9 +898,13 @@ TEST_CASE("components::compute::string::length_null_row_within_chunk") {
     REQUIRE(res.value().data[0].data<int64_t>()[2] == 4);
 }
 
-static std::unique_ptr<vector_function> multiplying_vector_function(std::pmr::memory_resource* resource,
-                                                                    const std::string& name) {
-    auto fn = std::make_unique<vector_function>(name, arity::unary(), function_doc_with_options(), 1);
+static core::pmr::polymorphic_unique_ptr<vector_function>
+multiplying_vector_function(std::pmr::memory_resource* resource, const std::string& name) {
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                  name,
+                                                                  arity::unary(),
+                                                                  function_doc_with_options(resource),
+                                                                  size_t{1});
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
                            {output_type::fixed(logical_type::INTEGER)});

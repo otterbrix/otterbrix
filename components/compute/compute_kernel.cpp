@@ -22,6 +22,14 @@ namespace components::compute {
         : signature_(std::move(signature))
         , init_(init) {}
 
+    compute_kernel::compute_kernel(const compute_kernel& other, const allocator_type& allocator)
+        : signature_(other.signature_, allocator)
+        , init_(other.init_) {}
+
+    compute_kernel::compute_kernel(compute_kernel&& other, const allocator_type& allocator)
+        : signature_(std::move(other.signature_), allocator)
+        , init_(other.init_) {}
+
     core::result_wrapper_t<kernel_state_ptr> compute_kernel::init(kernel_context& ctx,
                                                                   const kernel_init_args& args) const {
         if (init_) {
@@ -37,6 +45,16 @@ namespace components::compute {
         : compute_kernel(std::move(signature), init)
         , exec_(exec)
         , finalize_(finalize) {}
+
+    vector_kernel::vector_kernel(const vector_kernel& other, const allocator_type& allocator)
+        : compute_kernel(other, allocator)
+        , exec_(other.exec_)
+        , finalize_(other.finalize_) {}
+
+    vector_kernel::vector_kernel(vector_kernel&& other, const allocator_type& allocator)
+        : compute_kernel(std::move(other), allocator)
+        , exec_(other.exec_)
+        , finalize_(other.finalize_) {}
 
     core::error_t vector_kernel::execute(kernel_context& ctx, const data_chunk_t& inputs, vector_t& output) const {
         return exec_(ctx, inputs, output);
@@ -62,6 +80,18 @@ namespace components::compute {
         }
     }
 
+    aggregate_kernel::aggregate_kernel(const aggregate_kernel& other, const allocator_type& allocator)
+        : compute_kernel(other, allocator)
+        , layout_(other.layout_)
+        , update_(other.update_)
+        , finalize_(other.finalize_) {}
+
+    aggregate_kernel::aggregate_kernel(aggregate_kernel&& other, const allocator_type& allocator)
+        : compute_kernel(std::move(other), allocator)
+        , layout_(other.layout_)
+        , update_(other.update_)
+        , finalize_(other.finalize_) {}
+
     aggregate_state_layout_t
     aggregate_kernel::state_layout(const std::pmr::vector<types::complex_logical_type>& inputs) const {
         return layout_(inputs);
@@ -85,6 +115,14 @@ namespace components::compute {
     expand_kernel::expand_kernel(kernel_signature_t signature, expand_exec_fn exec)
         : compute_kernel(std::move(signature))
         , exec_(exec) {}
+
+    expand_kernel::expand_kernel(const expand_kernel& other, const allocator_type& allocator)
+        : compute_kernel(other, allocator)
+        , exec_(other.exec_) {}
+
+    expand_kernel::expand_kernel(expand_kernel&& other, const allocator_type& allocator)
+        : compute_kernel(std::move(other), allocator)
+        , exec_(other.exec_) {}
 
     core::error_t expand_kernel::execute(kernel_context& ctx,
                                          const vector::data_chunk_t& inputs,

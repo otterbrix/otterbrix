@@ -17,6 +17,7 @@ set(${PROJECT_NAME}_SOURCES
         test_type_spec_error_channel.cpp
         test_type_spec_encoder_domains.cpp
         test_prorettype_channel.cpp
+        test_proargmatchers_channel.cpp
         test_constraint_write_gate.cpp
         test_cascade_plan_steps.cpp
         test_settings.cpp

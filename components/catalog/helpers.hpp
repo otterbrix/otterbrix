@@ -1,7 +1,10 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/results/resolve_result.hpp>
 #include <components/types/logical_value.hpp>
+#include <components/vector/data_chunk.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <cstdint>
 #include <string>
@@ -105,6 +108,16 @@ namespace components::catalog {
         constexpr std::uint64_t ev_type = 3;
         constexpr std::uint64_t ev_action = 4;
     } // namespace pg_rewrite_col
+    namespace pg_rewrite_ref_col {
+        constexpr std::uint64_t ev_class = 0;
+        constexpr std::uint64_t refkind = 1;
+        constexpr std::uint64_t dbname = 2;
+        constexpr std::uint64_t schema = 3;
+        constexpr std::uint64_t relname = 4;
+        constexpr std::uint64_t refobjid = 5;
+        constexpr std::uint64_t proargmatchers = 6;
+        constexpr std::uint64_t prorettype = 7;
+    } // namespace pg_rewrite_ref_col
     namespace pg_depend_col {
         constexpr std::uint64_t classid = 0;
         constexpr std::uint64_t objid = 1;
@@ -112,13 +125,22 @@ namespace components::catalog {
         constexpr std::uint64_t refobjid = 3;
         constexpr std::uint64_t deptype = 4;
     } // namespace pg_depend_col
+
+    // pg_depend.deptype of a row read with every column. Every edge is written with one; NULL or empty text is a
+    // corrupt catalog (data_corruption), never read as a normal edge. The message lives on the chunk's resource.
+    core::result_wrapper_t<char> deptype_of(const vector::data_chunk_t& chunk, std::uint64_t row);
     namespace pg_proc_col {
         constexpr std::uint64_t oid = 0;
         constexpr std::uint64_t proname = 1;
         constexpr std::uint64_t pronamespace = 2;
         constexpr std::uint64_t pronargs = 3;
         constexpr std::uint64_t prouid = 4;
+        constexpr std::uint64_t proargmatchers = 5;
+        constexpr std::uint64_t prorettype = 6;
     } // namespace pg_proc_col
+
+    // One pg_proc row of a chunk read with every column.
+    services::disk::resolve_function_result_t decode_pg_proc_row(const vector::data_chunk_t& chunk, std::uint64_t row);
     namespace pg_sequence_col {
         constexpr std::uint64_t seqrelid = 0;
         constexpr std::uint64_t seqstart = 1;

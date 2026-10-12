@@ -10,6 +10,7 @@ set(SOURCE_${PROJECT_NAME}
         validity_column_data.cpp
         column_segment.cpp
         column_state.cpp
+        pushed_filter.cpp
         row_group.cpp
         table_state.cpp
         collection.cpp

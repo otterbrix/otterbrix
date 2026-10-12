@@ -101,13 +101,7 @@ namespace components::operators {
             if (decisions != nullptr && (decisions->is_null(i) || !decisions->get_value<bool>(i))) {
                 continue;
             }
-            int64_t abs_id;
-            if (chunk.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                abs_id = static_cast<int64_t>(chunk.data.front().indexing().get_index(i));
-            } else {
-                abs_id = chunk.row_ids.data<int64_t>()[i];
-            }
-            batch_ids.data<int64_t>()[index] = abs_id;
+            batch_ids.data<int64_t>()[index] = dml_detail::row_id_of(chunk, i);
             matched_indexing.set_index(index, i);
             index++;
         }
@@ -231,13 +225,7 @@ namespace components::operators {
                         continue;
                     }
                     // Keys on the absolute row id, not the loop index — they diverge with gaps or row groups.
-                    int64_t abs_id;
-                    if (chunk_left.data.front().get_vector_type() == vector::vector_type::DICTIONARY) {
-                        abs_id = static_cast<int64_t>(chunk_left.data.front().indexing().get_index(i));
-                    } else {
-                        abs_id = chunk_left.row_ids.data<int64_t>()[i];
-                    }
-                    batch_ids.data<int64_t>()[index] = abs_id;
+                    batch_ids.data<int64_t>()[index] = dml_detail::row_id_of(chunk_left, i);
                     matched_indexing.set_index(index, i);
                     if (collect_returning) {
                         for (size_t k = 0; k < chunk_right.column_count(); ++k) {
@@ -340,8 +328,37 @@ namespace components::operators {
             co_return;
         }
 
-        // DELETE writes its own WAL, unlike INSERT where the disk agent owns it.
-        if (modified_ && modified_->size() > 0) {
+        if (storage_sink_) {
+            if (modified_ && modified_->size() > 0) {
+                chunks_vector_t ignored{resource_};
+                std::size_t next_id = 0;
+                for (auto& matched : index_old_chunks_) {
+                    const uint64_t rows = matched.size();
+                    for (uint64_t row = 0; row < rows; ++row) {
+                        matched.row_ids.data<int64_t>()[row] = index_old_row_ids_[next_id++];
+                    }
+                    if (rows == 0) {
+                        continue;
+                    }
+                    if (auto error = storage_sink_->push(ctx, std::move(matched), ignored); error.contains_error()) {
+                        set_error(error);
+                        mark_failed();
+                        co_return;
+                    }
+                    written_ += rows;
+                }
+                modified_ = operators::make_operator_write_data(resource_);
+                index_old_chunks_.clear();
+                index_old_row_ids_.clear();
+                co_await storage_sink_->await_async_and_resume(ctx);
+                if (storage_sink_->has_error()) {
+                    set_error(storage_sink_->get_error());
+                    mark_failed();
+                    co_return;
+                }
+            }
+        } else if (modified_ && modified_->size() > 0) {
+            // DELETE writes its own WAL, unlike INSERT where the disk agent owns it.
             const bool mirror_index = table_has_indexes_ &&
                                       ctx->index_address != actor_zeta::address_t::empty_address() &&
                                       !index_old_chunks_.empty();
@@ -438,7 +455,7 @@ namespace components::operators {
                     }
                 }
 
-                affected_rows_ += static_cast<uint64_t>(modified_size);
+                written_ += static_cast<uint64_t>(modified_size);
                 co_return dml_detail::flush_outcome_t{core::error_t::no_error(), false, 0, 0};
             };
 
@@ -474,21 +491,27 @@ namespace components::operators {
             co_return;
         }
 
-        // A 0-affected DELETE without RETURNING leaves output_ null, emitting no result rows.
+        // Without RETURNING output_ stays null: the count is written().
         if (!returning_.empty()) {
             if (returning_staged_.empty()) {
                 // Nothing matched, but we still have to return correct columns
-                auto [_rt, rtf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                              &services::disk::manager_disk_t::storage_types,
-                                                              ctx->session,
-                                                              table_oid_);
-                auto returning_types = co_await std::move(rtf);
-                if (returning_types.has_error()) {
-                    set_error(returning_types.error());
-                    mark_failed();
-                    co_return;
+                std::pmr::vector<types::complex_logical_type> columns{resource_};
+                if (storage_sink_) {
+                    columns = storage_columns_;
+                } else {
+                    auto [_rt, rtf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                  &services::disk::manager_disk_t::storage_types,
+                                                                  ctx->session,
+                                                                  table_oid_);
+                    auto returning_types = co_await std::move(rtf);
+                    if (returning_types.has_error()) {
+                        set_error(returning_types.error());
+                        mark_failed();
+                        co_return;
+                    }
+                    columns = std::move(returning_types.value());
                 }
-                data_chunk_t empty(resource_, returning_types.value(), 0);
+                data_chunk_t empty(resource_, columns, 0);
                 empty.set_cardinality(0);
                 auto proj = evaluate_projection(resource_,
                                                 returning_,
@@ -504,20 +527,6 @@ namespace components::operators {
                 returning_staged_.emplace_back(std::move(proj.value()));
             }
             set_output(make_operator_data(resource_, std::move(returning_staged_)));
-        } else if (affected_rows_ > 0) {
-            auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::storage_types,
-                                                        ctx->session,
-                                                        table_oid_);
-            auto types_r = co_await std::move(tf);
-            if (types_r.has_error()) {
-                set_error(types_r.error());
-                mark_failed();
-                co_return;
-            }
-            auto types = std::move(types_r.value());
-            set_output(make_operator_data(resource_,
-                                          dml_detail::make_affected_count_chunks(resource_, affected_rows_, types)));
         }
         mark_executed();
     }

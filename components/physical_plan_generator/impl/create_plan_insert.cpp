@@ -1,17 +1,17 @@
 #include "create_plan_insert.hpp"
 
 #include "create_plan_select.hpp"
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/physical_plan/operators/operator_insert.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr
-    create_plan_insert(const context_storage_t& context,
-                       const components::compute::function_registry_t& function_registry,
-                       const components::logical_plan::node_ptr& node,
-                       const components::logical_plan::storage_parameters* params) {
+    plan_result_t create_plan_insert(const context_storage_t& context,
+                                     const components::compute::function_registry_t& function_registry,
+                                     const components::logical_plan::node_ptr& node,
+                                     const components::logical_plan::storage_parameters* params) {
         const auto* node_insert = static_cast<const components::logical_plan::node_insert_t*>(node.get());
         auto returning = build_returning_columns(context.resource, node_insert->returning());
         auto plan = boost::intrusive_ptr(new components::operators::operator_insert(context.resource,
@@ -43,11 +43,25 @@ namespace services::planner::impl {
                                                                column.value});
         }
         plan->set_fill_list(std::move(fill));
-        plan->set_children(create_plan(context,
-                                       function_registry,
-                                       node->children().front(),
-                                       components::logical_plan::limit_t::unlimit(),
-                                       params));
+        if (const auto* table = node->table_metadata(); table != nullptr && table->storage != nullptr) {
+            VALUE_OR_RETURN(auto sink,
+                            storage_operator(context.resource, table->name, table->storage->make_insert(context)));
+            std::pmr::vector<components::types::complex_logical_type> columns(context.resource);
+            columns.reserve(table->columns.size());
+            for (const auto& column : table->columns) {
+                columns.push_back(column.type);
+            }
+            plan->set_storage_sink(std::move(sink),
+                                   std::move(columns),
+                                   std::pmr::vector<uint64_t>{node_insert->column_slots(), context.resource});
+        }
+        VALUE_OR_RETURN(auto child,
+                        create_plan(context,
+                                    function_registry,
+                                    node->children().front(),
+                                    components::logical_plan::limit_t::unlimit(),
+                                    params));
+        plan->set_children(std::move(child));
 
         return plan;
     }

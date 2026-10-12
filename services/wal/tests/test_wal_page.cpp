@@ -238,7 +238,7 @@ TEST_CASE("read_back_all_records") {
         for (uint64_t i = 1; i <= 20; ++i) {
             encoded_record_info rec;
             uint64_t txn_id = 200 + i;
-            wal_record_type type;
+            wal_record_type type{};
 
             switch (i % 4) {
                 case 0:

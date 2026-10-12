@@ -1,6 +1,7 @@
 #include "resolve_function.hpp"
 
 #include <components/catalog/system_table_schemas.hpp>
+#include <components/sql/transformer/utils.hpp>
 
 #include <algorithm>
 #include <optional>
@@ -27,21 +28,17 @@ namespace services::dispatcher {
         };
 
         core::result_wrapper_t<function_scope> scope_of(std::pmr::memory_resource* resource,
-                                                        const qualified_name_t& name) {
-            if (!name.unique_identifier.empty() || !name.schema.empty()) {
-                return core::error_t(core::error_code_t::invalid_parameter,
-                                     std::pmr::string{"function '" + name.to_string() +
-                                                          "' names a uid or schema segment, which this catalog has no "
-                                                          "place for: call it as [namespace.]name",
-                                                      resource});
+                                                        const function_qualified_name_t& name) {
+            if (!name.schema.t.empty()) {
+                return components::sql::transform::refuse_function_segment(resource, name.to_string());
             }
-            if (name.database.empty()) {
+            if (name.database.t.empty()) {
                 return function_scope::any;
             }
-            if (name.database == "pg_catalog") {
+            if (name.database.t == "pg_catalog") {
                 return function_scope::builtins;
             }
-            if (name.database == "public") {
+            if (name.database.t == "public") {
                 return function_scope::client;
             }
             return core::error_t(core::error_code_t::unimplemented_yet,
@@ -279,9 +276,10 @@ namespace services::dispatcher {
                      const cast_registry_t& cast_registry,
                      const graph_execution_context& context,
                      const function_registry_t& function_registry,
-                     const qualified_name_t& name,
+                     const function_qualified_name_t& name,
                      const std::pmr::vector<complex_logical_type>& arguments,
-                     components::compute::function_types_mask allowed_function_types) {
+                     components::compute::function_types_mask allowed_function_types,
+                     std::span<const components::compute::function_pin_t> pins) {
         VALUE_OR_RETURN(const auto scope, scope_of(resource, name));
         const std::string written = name.to_string();
 
@@ -291,16 +289,27 @@ namespace services::dispatcher {
         std::optional<resolved_function_t> best;
         std::optional<total_cost_t> best_cost;
 
-        for (const auto uid : function_registry.find_functions(name.collection)) {
+        for (const auto uid : function_registry.find_functions(name.function.t)) {
             if (!in_scope(scope, uid)) {
                 continue;
             }
-            name_exists = true;
+            const auto pinned = [&pins, uid](size_t index) {
+                return pins.empty() || std::any_of(pins.begin(), pins.end(), [uid, index](const auto& pin) {
+                           return pin.uid == uid && pin.signature == index;
+                       });
+            };
+            name_exists = name_exists || pins.empty() ||
+                          std::any_of(pins.begin(), pins.end(), [uid](const auto& pin) { return pin.uid == uid; });
             auto* function = function_registry.get_function(uid);
             if (!function) {
                 continue;
             }
-            for (const auto& signature : function->get_signatures()) {
+            const auto signatures = function->get_signatures();
+            for (size_t index = 0; index < signatures.size(); ++index) {
+                const auto& signature = signatures[index];
+                if (!pinned(index)) {
+                    continue;
+                }
                 if (!components::compute::check_mask(allowed_function_types, signature.function_type)) {
                     rejected_by_context = true;
                     continue;
@@ -317,7 +326,7 @@ namespace services::dispatcher {
                     continue;
                 }
                 resolved_function_t resolved{resource};
-                resolved.uid = uid;
+                resolved.pin = components::compute::function_pin_t{uid, index};
                 resolved.arguments = std::move(candidate->arguments);
                 resolved.result = std::move(candidate->result);
                 resolved.function_type = signature.function_type;

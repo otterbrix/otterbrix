@@ -37,18 +37,19 @@ class OtterbrixConan(ConanFile):
     )
 
     def requirements(self):
-        self.requires("boost/1.88.0")
-        self.requires("fmt/11.1.3")
-        self.requires("spdlog/1.15.1")
+        # transitive_headers: the installed otterbrix headers include these, so a consumer needs their include dirs
+        self.requires("boost/1.88.0", transitive_headers=True)
+        self.requires("fmt/11.1.3", transitive_headers=True)
+        self.requires("spdlog/1.15.1", transitive_headers=True)
         if self.options.build_python:
             self.requires("pybind11/2.13.6")
         self.requires("catch2/3.15.1")
         # force: re2's recipe pins an older abseil range; override it so re2 and the
         # rest of the tree share the single abseil binary we already depend on.
-        self.requires("abseil/20260107.1", force=True)
+        self.requires("abseil/20260107.1", force=True, transitive_headers=True)
         self.requires("re2/20240702")
         self.requires("benchmark/1.6.1")
-        self.requires("actor-zeta/2.0.0")
+        self.requires("actor-zeta/2.0.0", transitive_headers=True)
 
     def build_requirements(self):
         self.tool_requires("bison/3.8.2")
@@ -107,5 +108,8 @@ class OtterbrixConan(ConanFile):
         self.cpp_info.set_property("cmake_file_name", "otterbrix")
         self.cpp_info.set_property("cmake_target_name", "otterbrix::otterbrix")
         self.cpp_info.libs = ["otterbrix"]
+        # otterbrix_add_parser_extension() is defined by find_package(otterbrix) itself.
+        self.cpp_info.set_property("cmake_build_modules",
+                                   [os.path.join("lib", "cmake", "otterbrix", "otterbrix_parser_extension.cmake")])
         if self.settings.os in ("Linux", "FreeBSD"):
             self.cpp_info.system_libs = ["dl", "pthread"]

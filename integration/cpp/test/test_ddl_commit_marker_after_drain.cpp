@@ -32,7 +32,7 @@ TEST_CASE("integration::cpp::ddl_commit_marker::carries_the_drained_commit_id") 
     std::pmr::synchronized_pool_resource pool;
     log_t quiet; // null logger: every log macro null-checks through should_log
     services::wal::wal_reader_t reader(&pool, config.wal, quiet);
-    auto records = reader.read_committed_records(services::wal::id_t{0});
+    auto records = reader.read_committed_records();
     REQUIRE_FALSE(records.has_error());
 
     std::size_t markers_total = 0;

@@ -32,12 +32,13 @@ namespace services::wal {
         /// REFUSES when a segment cannot be opened — an empty list would be indistinguishable from
         /// "nothing to replay" (see base_spaces.cpp's caller for why that stops startup).
         core::result_wrapper_t<std::vector<record_t>>
-        read_committed_records(id_t after_wal_id, std::set<std::uint64_t>* committed_out = nullptr);
+        read_committed_records(std::set<std::uint64_t>* committed_out = nullptr);
 
     private:
+        core::error_t listing_refused(const std::filesystem::path& dir, const std::error_code& ec);
+
         /// committed_out, when non-null, receives this database's committed COMMIT IDS.
         core::result_wrapper_t<std::vector<record_t>> read_database_segments(const std::filesystem::path& db_dir,
-                                                                             id_t after_wal_id,
                                                                              std::set<std::uint64_t>* committed_out);
 
         std::pmr::memory_resource* resource_;

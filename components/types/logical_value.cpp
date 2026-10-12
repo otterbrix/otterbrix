@@ -653,8 +653,16 @@ namespace components::types {
 
     void logical_value_t::set_alias(const std::string& alias) { type_.set_alias(alias); }
 
+    // Equal values (operator==) hash equally: a value held in children hashes them, never their storage
+    // pointer, and LIST and ARRAY, which compare equal to each other, share one tag.
     size_t logical_value_t::hash() const noexcept {
-        size_t h = std::hash<uint8_t>{}(static_cast<uint8_t>(type_.type()));
+        const auto tag = type_.type() == logical_type::ARRAY ? logical_type::LIST : type_.type();
+        size_t h = std::hash<uint8_t>{}(static_cast<uint8_t>(tag));
+        const auto hash_children = [this, &h] {
+            for (const auto& child : *vec_ptr()) {
+                boost::hash_combine(h, child.hash());
+            }
+        };
         switch (type_.type()) {
             case logical_type::NA:
                 break;
@@ -671,17 +679,31 @@ namespace components::types {
                 boost::hash_combine(h, static_cast<uint64_t>(udata128_));
                 boost::hash_combine(h, static_cast<uint64_t>(udata128_ >> 64));
                 break;
+            case logical_type::DECIMAL:
+                if (type_.to_physical_type() == physical_type::INT128) {
+                    boost::hash_combine(h, static_cast<uint64_t>(data128_));
+                    boost::hash_combine(h, static_cast<uint64_t>(data128_ >> 64));
+                } else {
+                    boost::hash_combine(h, data_);
+                }
+                break;
+            case logical_type::TIME_TZ:
+            case logical_type::INTERVAL:
+            case logical_type::LIST:
+            case logical_type::ARRAY:
+            case logical_type::MAP:
+            case logical_type::STRUCT:
+                hash_children();
+                break;
+            case logical_type::UNION:
+            case logical_type::VARIANT:
+                if (data_) {
+                    hash_children();
+                }
+                break;
             default:
                 boost::hash_combine(h, data_);
                 break;
-        }
-        return h;
-    }
-
-    size_t hash_row(const std::pmr::vector<logical_value_t>& row) noexcept {
-        size_t h = 0;
-        for (const auto& val : row) {
-            boost::hash_combine(h, val.hash());
         }
         return h;
     }
@@ -949,23 +971,6 @@ namespace components::types {
                 // Invariant violation, not user input: must not throw through the noexcept executor coroutine.
                 assert(false && "logical_value_t::create_numeric: Numeric requires numeric type");
                 std::abort();
-        }
-    }
-
-    logical_value_t logical_value_t::create_enum(std::pmr::memory_resource* r,
-                                                 const complex_logical_type& enum_type,
-                                                 std::string_view key) {
-        const auto& enum_values =
-            reinterpret_cast<const enum_logical_type_extension*>(enum_type.extension())->entries();
-        auto it = std::find_if(enum_values.begin(), enum_values.end(), [key](const logical_value_t& v) {
-            return v.type().alias() == key;
-        });
-        if (it == enum_values.end()) {
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
-        } else {
-            logical_value_t result(r, enum_type);
-            result.data_ = static_cast<uint64_t>(it->value<int32_t>());
-            return result;
         }
     }
 
@@ -1620,116 +1625,6 @@ namespace components::types {
             default:
                 return unsupported_operands("logical_value_t::modulus", value1, value2);
         }
-    }
-
-    core::result_wrapper_t<logical_value_t> logical_value_t::exponent(const logical_value_t& value1,
-                                                                      const logical_value_t& value2) {
-        if (value1.is_null() || value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
-        }
-
-        if (needs_numeric_promotion(value1, value2)) {
-            auto promoted = promote_numeric_operands(value1, value2);
-            if (promoted.has_error()) {
-                return promoted.error();
-            }
-            return exponent(promoted.value().lhs, promoted.value().rhs);
-        }
-        const auto type = value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
-        switch (type) {
-            case logical_type::BOOLEAN:
-                return op<pow<>>(value1, value2, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<pow<>>(value1, value2, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<pow<>>(value1, value2, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<pow<>>(value1, value2, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<pow<>>(value1, value2, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<pow<>>(value1, value2, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<pow<>>(value1, value2, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<pow<>>(value1, value2, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<pow<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            // case logical_type::HUGEINT:
-            // return op<pow<>>(value1, value2, &logical_value_t::value<int128_t>);
-            // case logical_type::UHUGEINT:
-            // return op<pow<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            default:
-                return unsupported_operands("logical_value_t::exponent", value1, value2);
-        }
-    }
-
-    core::result_wrapper_t<logical_value_t> logical_value_t::bit_and(const logical_value_t& value1,
-                                                                     const logical_value_t& value2) {
-        if (value1.is_null() || value2.is_null()) {
-            auto* r = value1.resource() ? value1.resource() : value2.resource();
-            return logical_value_t{r, complex_logical_type{logical_type::NA}};
-        }
-
-        if (needs_numeric_promotion(value1, value2)) {
-            auto promoted = promote_numeric_operands(value1, value2);
-            if (promoted.has_error()) {
-                return promoted.error();
-            }
-            return bit_and(promoted.value().lhs, promoted.value().rhs);
-        }
-        const auto type = value1.type().type() == value2.type().type() ? value1.type().type() : logical_type::INVALID;
-        switch (type) {
-            case logical_type::BOOLEAN:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<bool>);
-            case logical_type::TINYINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<int8_t>);
-            case logical_type::UTINYINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint8_t>);
-            case logical_type::SMALLINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<int16_t>);
-            case logical_type::USMALLINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint16_t>);
-            case logical_type::INTEGER:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<int32_t>);
-            case logical_type::UINTEGER:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint32_t>);
-            case logical_type::BIGINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<int64_t>);
-            case logical_type::UBIGINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint64_t>);
-            case logical_type::HUGEINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<int128_t>);
-            case logical_type::UHUGEINT:
-                return op<std::bit_and<>>(value1, value2, &logical_value_t::value<uint128_t>);
-            default:
-                return unsupported_operands("logical_value_t::bit_and", value1, value2);
-        }
-    }
-
-    bool serialize_type_matches(const complex_logical_type& expected_type, const complex_logical_type& actual_type) {
-        if (expected_type.type() != actual_type.type()) {
-            return false;
-        }
-        if (expected_type.is_nested()) {
-            return true;
-        }
-        return expected_type == actual_type;
-    }
-
-    bool enum_value_matches_string(const logical_value_t& enum_val, std::string_view target) {
-        const auto* ext = static_cast<const enum_logical_type_extension*>(enum_val.type().extension());
-        if (ext == nullptr) {
-            return false;
-        }
-        const auto stored = enum_val.value<int32_t>();
-        for (const auto& entry : ext->entries()) {
-            if (entry.value<int32_t>() == stored) {
-                return entry.type().alias() == target;
-            }
-        }
-        return false;
     }
 
 } // namespace components::types

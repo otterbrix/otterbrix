@@ -29,7 +29,6 @@ namespace components::operators {
                         log_t log,
                         components::catalog::oid_t table_oid,
                         std::pmr::vector<expressions::expression_ptr> updates,
-                        bool upsert,
                         std::pmr::vector<projected_column_t> returning,
                         expressions::expression_ptr expr = nullptr,
                         // Matched-row bound for the UPDATE ... FROM source path
@@ -47,6 +46,13 @@ namespace components::operators {
         // False skips the index mirror entirely. Defaults to true: an unstamped plan must
         // behave as before, because guessing "no index" leaves a stale index behind.
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
+
+        // A table with external storage: the changed rows, numbered by its scan in row_ids, go to the storage's update
+        // sink instead of the disk, the WAL, the index and the MVCC marker.
+        void set_storage_sink(operator_ptr sink, std::pmr::vector<types::complex_logical_type> columns) {
+            storage_sink_ = std::move(sink);
+            storage_columns_ = std::move(columns);
+        }
 
         // STREAMING DML (STEP 3b). Both UPDATE shapes are SINKs on the LEFT (target)
         // scan input:
@@ -79,6 +85,14 @@ namespace components::operators {
         uint64_t buffered_rows() const noexcept override { return output_ ? output_->size() : 0; }
 
     private:
+        // EXPLAIN labels a write into external storage the way its sink does, like postgres_fdw's "Foreign Update on".
+        std::pmr::string explain_label_impl() const override {
+            return storage_sink_ ? storage_sink_->explain_label() : std::pmr::string{resource_};
+        }
+        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
+            return storage_sink_ ? storage_sink_->explain_details() : std::pmr::vector<std::pmr::string>{resource_};
+        }
+
         // Shared SIMPLE-path core. Matches expr_ (all-true when null — the scan
         // already filtered) over ONE scan chunk; builds the updated out_chunk
         // (matched rows, SET applied), appends it to output_ and stages the matched
@@ -107,7 +121,6 @@ namespace components::operators {
         expressions::condition_kind condition_;
         std::unique_ptr<execution_dag::execution_dag_t> graph_;
         std::unique_ptr<execution_dag::execution_dag_t> updates_graph_;
-        bool upsert_;
         std::pmr::vector<projected_column_t> returning_;
         bool table_has_indexes_{true};
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;
@@ -123,19 +136,19 @@ namespace components::operators {
         // Bounded-sink accumulators — persist ACROSS incremental flushes (each
         // flush clears output_/index_old_chunks_/returning_from_chunks_, but these
         // must span the whole statement). returning_accum_ gathers the projected
-        // RETURNING chunks from every flush; affected_rows_ totals the storage_update
-        // counts when there is NO RETURNING (output_ is cleared per flush, so it
-        // cannot double as the affected-count carrier); delete_marker_recorded_
-        // guards the single MVCC delete tombstone (one per txn/table, not per flush).
+        // RETURNING chunks from every flush; written_ totals the storage_update
+        // counts; delete_marker_recorded_ guards the single MVCC delete tombstone
+        // (one per txn/table, not per flush).
         chunks_vector_t returning_accum_{resource_};
-        uint64_t affected_rows_{0};
         bool delete_marker_recorded_{false};
         // UPDATE ... FROM matched-row bound (UPDATE ... LIMIT n); -1 = unbounded.
         // matched_total_ counts MATCHED left rows at MATCH time (in consume_join_batch_)
-        // and persists across mid-pump flushes — output_/affected_rows_ are cleared/lag
+        // and persists across mid-pump flushes — output_/written_ are cleared/lag
         // per flush, so a flush-derived count would miss already-flushed matches.
         std::int64_t affected_bound_{-1};
         uint64_t matched_total_{0};
+        operator_ptr storage_sink_;
+        std::pmr::vector<types::complex_logical_type> storage_columns_{resource_};
     };
 
 } // namespace components::operators

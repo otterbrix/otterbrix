@@ -20,7 +20,9 @@ namespace services::collection {
     // re-anchor to get_default_resource(), so nodes are built with `mr` and moved into
     // their parent's children.
     struct explain_plan_node {
-        components::operators::operator_type type{components::operators::operator_type::unused};
+        // The operator's own line and the lines under it (explain_label / explain_details).
+        std::pmr::string label;
+        std::pmr::vector<std::pmr::string> details;
         std::pmr::string relation; // scans only (resolved oid->name; empty = none)
         uint64_t rows{0};
         std::chrono::nanoseconds time{std::chrono::nanoseconds::zero()};
@@ -34,7 +36,9 @@ namespace services::collection {
         uint32_t subplan_returns{0};
 
         explicit explain_plan_node(std::pmr::memory_resource* mr)
-            : relation(mr)
+            : label(mr)
+            , details(mr)
+            , relation(mr)
             , children(mr)
             , subplans(mr) {}
         explain_plan_node(const explain_plan_node&) = delete;
@@ -56,17 +60,8 @@ namespace services::collection {
         components::operators::explain_sink sink() noexcept { return {&node_cb, &end_cb, this}; }
 
     private:
-        void node(components::operators::operator_type,
-                  components::catalog::oid_t oid,
-                  uint64_t,
-                  std::chrono::nanoseconds,
-                  uint64_t);
-        static void node_cb(void* c,
-                            components::operators::operator_type t,
-                            components::catalog::oid_t o,
-                            uint64_t r,
-                            std::chrono::nanoseconds ti,
-                            uint64_t l);
+        void node(const components::operators::explain_entry_t& entry);
+        static void node_cb(void* c, const components::operators::explain_entry_t& entry);
         static void end_cb(void*) {}
 
         const context_storage_t& cs_;
@@ -95,18 +90,9 @@ namespace services::collection {
         explain_plan_node release() { return std::move(root_); }
 
     private:
-        void node(components::operators::operator_type t,
-                  components::catalog::oid_t oid,
-                  uint64_t rows,
-                  std::chrono::nanoseconds time,
-                  uint64_t loops);
+        void node(const components::operators::explain_entry_t& entry);
         void end();
-        static void node_cb(void* c,
-                            components::operators::operator_type t,
-                            components::catalog::oid_t o,
-                            uint64_t r,
-                            std::chrono::nanoseconds ti,
-                            uint64_t l);
+        static void node_cb(void* c, const components::operators::explain_entry_t& entry);
         static void end_cb(void* c);
 
         std::pmr::memory_resource* mr_;

@@ -22,7 +22,7 @@ namespace components::operators {
         // Awaits live in this nested coroutine, not a behavior() handler, so N cross-actor awaits
         // don't lost-wakeup; a no-table sentinel scan emits ONE placeholder row instead of draining empty.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
-        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         source_next(pipeline::context_t* ctx) override;
 
         // Lets a re-driven sub-plan re-OPEN from the stream head (recursive-CTE fixpoint re-run).
@@ -45,10 +45,8 @@ namespace components::operators {
             s.end();
         }
 
-        vector::data_chunk_t make_drain_chunk(const std::pmr::vector<types::complex_logical_type>& types);
-
         // OFFSET is applied by operator_limit above; every scan receives offset()==0 here.
-        actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         emit_or_skip(pipeline::context_t* ctx, std::unique_ptr<vector::data_chunk_t> batch);
 
         components::catalog::oid_t table_oid_;

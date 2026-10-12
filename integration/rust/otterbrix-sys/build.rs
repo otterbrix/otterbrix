@@ -39,10 +39,7 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", abs_lib_dir.display());
     println!("cargo:rustc-link-lib=dylib=otterbrix");
-    println!(
-        "cargo:rustc-link-arg-tests=-Wl,-rpath,{}",
-        abs_lib_dir.display()
-    );
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", abs_lib_dir.display());
 
     println!("cargo:lib_dir={}", abs_lib_dir.display());
     println!("cargo:include_dir={}", abs_include_dir.display());

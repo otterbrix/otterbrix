@@ -77,7 +77,7 @@ TEST_CASE("integration::cpp::test_returning::insert") {
                                            "INSERT INTO TestDatabase.TestCollection (id, name, qty) VALUES "
                                            "(5, 'Eve', 50);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->affected_rows() == 1);
     }
 }
 
@@ -503,7 +503,7 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, ins);
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
         {
             auto session = otterbrix::session_id_t();

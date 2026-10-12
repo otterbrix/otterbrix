@@ -8,8 +8,10 @@
 #include <core/date/date_parse.hpp>
 #include <core/operations_helper.hpp>
 
-static const database_name_t database_name = "testdatabase";
-static const collection_name_t collection_name = "testcollection";
+#include <map>
+
+static const core::dbname_t database_name{"testdatabase"};
+static const core::relname_t collection_name{"testcollection"};
 
 using namespace components;
 using namespace components::cursor;
@@ -33,7 +35,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -54,7 +56,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kNumInserts);
+            REQUIRE(cur->affected_rows() == kNumInserts);
         }
     }
 
@@ -374,9 +376,8 @@ TEST_CASE("integration::cpp::test_arithmetic") {
                                            R"_(FROM TestDatabase.TestCollection;)_");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        // AVG might return int or double depending on implementation
-        auto val = cur->chunks().front().data[0].data<int64_t>()[0];
-        REQUIRE(val == 505);
+        // AVG over an integer expression answers DOUBLE
+        REQUIRE(core::is_equals(cur->chunks().front().data[0].data<double>()[0], 505.0));
     }
 
     INFO("C4. MIN/MAX of expression");
@@ -591,7 +592,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
                                                R"_(UPDATE TestDatabase.TestCollection )_"
                                                R"_(SET count = count * 2 WHERE count <= 10;)_");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 10);
+            REQUIRE(cur->affected_rows() == 10);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -646,7 +647,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
                                            R"_(  (count, count_str, count_double, count_bool) )_"
                                            R"_(VALUES (10 * 5, '50', 50.5, true);)_");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->affected_rows() == 1);
     }
 
     INFO("I2. INSERT with expressions in multiple VALUES");
@@ -658,7 +659,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
                                            R"_(VALUES (100 + 1, '101', 101.1, false), )_"
                                            R"_(       (100 + 2, '102', 102.1, true);)_");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->affected_rows() == 2);
     }
 }
 
@@ -679,7 +680,7 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -704,7 +705,7 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kNumInserts);
+            REQUIRE(cur->affected_rows() == kNumInserts);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -718,7 +719,7 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
             query << ";";
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 10);
+            REQUIRE(cur->affected_rows() == 10);
         }
     }
 
@@ -765,7 +766,7 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -785,7 +786,7 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
             dispatcher->execute_plan(session,
                                      components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kNumInserts);
+        REQUIRE(cur->affected_rows() == kNumInserts);
     }
 
     INFO("K1. basic HAVING");
@@ -843,7 +844,7 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -863,7 +864,7 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
             dispatcher->execute_plan(session,
                                      components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kNumInserts);
+        REQUIRE(cur->affected_rows() == kNumInserts);
     }
 
     INFO("L1. CASE in SELECT with arithmetic in THEN");
@@ -949,7 +950,7 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -969,7 +970,7 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
             dispatcher->execute_plan(session,
                                      components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kNumInserts);
+        REQUIRE(cur->affected_rows() == kNumInserts);
     }
 
     INFO("M1. division by zero returns error (PostgreSQL behavior)");
@@ -1015,7 +1016,7 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1032,7 +1033,7 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
                                     R"_(('east','A',10), ('east','A',20), ('east','B',30), )_"
                                     R"_(('west','A',40), ('west','B',50), ('west','B',60);)_");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 6);
+        REQUIRE(cur->affected_rows() == 6);
     }
 
     INFO("E6a. SELECT region, SUM(amount)*2, category, COUNT(*)");
@@ -1114,7 +1115,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1134,7 +1135,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
             dispatcher->execute_plan(session,
                                      components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kNumInserts);
+        REQUIRE(cur->affected_rows() == kNumInserts);
     }
 
     INFO("I1. WHERE with constant true: 5 = 5");
@@ -1763,7 +1764,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                                "SET d = d + INTERVAL '7 days' "
                                                "WHERE d = DATE '2024-01-01';");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
         {
             auto session = otterbrix::session_id_t();

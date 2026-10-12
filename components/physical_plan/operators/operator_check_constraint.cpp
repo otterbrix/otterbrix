@@ -145,6 +145,7 @@ namespace components::operators {
     void operator_check_constraint_t::validate_() {
         if (!left_)
             return;
+        written_ = left_->written();
 
         // The DML's constraint_input() snapshot of the just-written rows. Constraint
         // ops STACK above one DML (this check sits OUTERMOST, above the per-FK
@@ -153,8 +154,7 @@ namespace components::operators {
         // see constraint_util.hpp). An empty snapshot means an empty write-set.
         operator_data_ptr data_src = constraint_detail::resolve_constraint_source(left_);
 
-        // check_constraint is the plan ROOT, so output_ becomes the result cursor:
-        // surface the DML child's final result (RETURNING / affected-count chunk).
+        // check_constraint is the plan ROOT, so output_ becomes the result cursor: the DML's RETURNING rows.
         output_ = left_->output();
 
         if (!data_src || data_src->size() == 0)

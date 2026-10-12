@@ -45,6 +45,9 @@ namespace components::casts {
     core::error_t cast_registry_t::add(const types::complex_logical_type& source,
                                        const types::complex_logical_type& target,
                                        cast_entry&& entry) {
+        assert(source.type() != types::logical_type::INVALID);
+        assert(target.type() != types::logical_type::INVALID);
+        assert(target.type() != types::logical_type::NA);
         auto [source_iterator, _] = entries_.try_emplace(source, resource_);
         target_entries_t& targets = source_iterator->second;
 
@@ -81,6 +84,9 @@ namespace components::casts {
     core::error_t cast_registry_t::add(const types::complex_logical_type& source,
                                        const types::complex_logical_type& target,
                                        complex_cast_entry&& cast) {
+        assert(source.type() != types::logical_type::INVALID);
+        assert(target.type() != types::logical_type::INVALID);
+        assert(target.type() != types::logical_type::NA);
         auto [source_iterator, _] = complex_entries_.try_emplace(source, resource_);
         complex_target_entries_t& targets = source_iterator->second;
         for (const auto& registered : targets) {

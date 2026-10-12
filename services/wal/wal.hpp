@@ -173,7 +173,7 @@ namespace services::wal {
         std::filesystem::path segment_path(uint32_t seg_index) const;
 
         /// Collect all segment file paths sorted by index.
-        std::vector<std::filesystem::path> discover_segments() const;
+        [[nodiscard]] core::result_wrapper_t<std::pmr::vector<std::filesystem::path>> discover_segments();
 
         /// Rotates when full; refuses if the segment can't open or the pre-rotation flush missed disk.
         [[nodiscard]] core::error_t ensure_writer();

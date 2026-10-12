@@ -5,6 +5,7 @@
 #include "dml_util.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -76,6 +77,20 @@ namespace components::operators {
                     input.data.emplace_back(std::move(filled));
                 }
             }
+            if (storage_sink_) {
+                // Every declared column is here: written by the statement or filled above.
+                assert(storage_slots_.size() == storage_columns_.size());
+                vector::data_chunk_t ordered(resource_,
+                                             std::pmr::vector<types::complex_logical_type>{resource_},
+                                             input.capacity());
+                ordered.data.reserve(storage_slots_.size());
+                for (const auto slot : storage_slots_) {
+                    assert(slot < input.data.size());
+                    ordered.data.push_back(std::move(input.data[slot]));
+                }
+                ordered.set_cardinality(input.size());
+                input = std::move(ordered);
+            }
             output_->append_chunk(std::move(input));
         }
         return core::error_t::no_error();
@@ -123,7 +138,44 @@ namespace components::operators {
         // register_collection always creates an index engine; enrich's table-has-index flag is the real signal.
         const bool mirror_index = table_has_indexes_ && ctx->index_address != actor_zeta::address_t::empty_address();
 
-        if (output_ && output_->size() > 0) {
+        if (storage_sink_) {
+            if (output_ && output_->size() > 0) {
+                chunks_vector_t ignored{resource_};
+                for (auto& out_chunk : output_->chunks()) {
+                    if (out_chunk.size() == 0) {
+                        continue;
+                    }
+                    if (!returning_.empty()) {
+                        auto proj = evaluate_projection(resource_,
+                                                        returning_,
+                                                        &out_chunk,
+                                                        ctx->parameters,
+                                                        ctx->execution_context,
+                                                        &returning_graph_);
+                        if (proj.has_error()) {
+                            set_error(proj.error());
+                            mark_failed();
+                            co_return;
+                        }
+                        returning_accum_.emplace_back(std::move(proj.value()));
+                    }
+                    const uint64_t rows = out_chunk.size();
+                    if (auto error = storage_sink_->push(ctx, std::move(out_chunk), ignored); error.contains_error()) {
+                        set_error(error);
+                        mark_failed();
+                        co_return;
+                    }
+                    written_ += rows;
+                }
+                output_->chunks().clear();
+                co_await storage_sink_->await_async_and_resume(ctx);
+                if (storage_sink_->has_error()) {
+                    set_error(storage_sink_->get_error());
+                    mark_failed();
+                    co_return;
+                }
+            }
+        } else if (output_ && output_->size() > 0) {
             auto op = [&]([[maybe_unused]] std::pmr::memory_resource* res)
                 -> actor_zeta::unique_future<dml_detail::flush_outcome_t> {
                 auto copy_of = [this](const data_chunk_t& src) {
@@ -178,9 +230,8 @@ namespace components::operators {
                     }
                 }
 
-                if (returning_.empty()) {
-                    affected_rows_ += count;
-                } else if (count > 0) {
+                written_ += count;
+                if (!returning_.empty() && count > 0) {
                     // A point read: the reply range IS the ids just written (generated columns need it).
                     vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);
                     auto* ids = row_ids.data<int64_t>();
@@ -246,26 +297,27 @@ namespace components::operators {
         }
 
         if (returning_.empty()) {
-            if (affected_rows_ != 0) {
-                set_output(make_operator_data(resource_,
-                                              dml_detail::make_affected_count_chunks(resource_, affected_rows_, {})));
-            } else {
-                set_output(nullptr);
-            }
+            set_output(nullptr);
         } else {
             if (returning_accum_.empty()) {
                 // Nothing inserted, but we still have to return correct columns
-                auto [_rt, rtf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                              &services::disk::manager_disk_t::storage_types,
-                                                              ctx->session,
-                                                              table_oid_);
-                auto returning_types = co_await std::move(rtf);
-                if (returning_types.has_error()) {
-                    set_error(returning_types.error());
-                    mark_failed();
-                    co_return;
+                std::pmr::vector<types::complex_logical_type> columns{resource_};
+                if (storage_sink_) {
+                    columns = storage_columns_;
+                } else {
+                    auto [_rt, rtf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                  &services::disk::manager_disk_t::storage_types,
+                                                                  ctx->session,
+                                                                  table_oid_);
+                    auto returning_types = co_await std::move(rtf);
+                    if (returning_types.has_error()) {
+                        set_error(returning_types.error());
+                        mark_failed();
+                        co_return;
+                    }
+                    columns = std::move(returning_types.value());
                 }
-                vector::data_chunk_t empty(resource_, returning_types.value(), 0);
+                vector::data_chunk_t empty(resource_, columns, 0);
                 empty.set_cardinality(0);
                 auto proj = evaluate_projection(resource_,
                                                 returning_,

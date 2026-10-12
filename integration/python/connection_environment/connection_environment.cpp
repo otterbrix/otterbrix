@@ -29,7 +29,7 @@ namespace otterbrix {
         }
 
         // No engine resource to borrow here: the engine's arena is a member of the space
-        // (base_otterbrix_t::resource, integration/cpp/base_spaces.hpp) and every refusal
+        // (base_otterbrix_t::host_t::resource, integration/cpp/base_spaces.cpp) and every refusal
         // below returns before make_otterbrix builds one. `resource` is owned by the module
         // (main.cpp's PYBIND11_MODULE body) and passed in by `connect`; unused on success.
         core::error_t

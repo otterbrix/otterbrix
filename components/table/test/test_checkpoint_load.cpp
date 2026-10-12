@@ -1504,7 +1504,8 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
     auto column = column_data_t::create_column(&env.resource, bm, 0, 0, list_type);
     {
         // Must not outlive the checkpoint: checkpointing drops the block_handle its pin refers to.
-        column_append_state append_state;
+        auto append_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(bm);
+        column_append_state append_state{&append_pbm};
         REQUIRE_FALSE(column->initialize_append(append_state).has_error());
 
         std::pmr::vector<complex_logical_type> types(&env.resource);
@@ -1515,9 +1516,10 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
             input.set_value(0, i, std::vector<uint64_t>{});
         }
         REQUIRE_FALSE(column->append(append_state, input.data[0], NUM_ROWS).has_error());
+        REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
     }
 
-    partial_block_manager_t pbm(bm);
+    auto pbm = partial_block_manager_t::for_checkpoint(bm);
     auto persistent = column->checkpoint(pbm);
     REQUIRE_FALSE(persistent.has_error());
     REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());

@@ -43,13 +43,11 @@ namespace {
         auto* resource = d->resource();
         auto node = components::logical_plan::make_node_create_constraint(
             resource,
-            db,
-            child_rel,
+            qualified_name_t{core::dbname_t{db}, core::relname_t{child_rel}},
             core::constraint_name_t{con_name},
             components::logical_plan::constraint_kind::foreign_key,
-            db);
+            qualified_name_t{core::dbname_t{db}, core::relname_t{parent_rel}});
         node->set_local_col_names({"pid"});
-        node->set_ref_relname(parent_rel);
         node->set_ref_col_names({"id"});
         node->set_del_action(del_action);
         components::logical_plan::execution_plan_t plan{resource,

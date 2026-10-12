@@ -18,8 +18,11 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <limits>
+#include <services/disk/tests/test_directory.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -44,7 +47,7 @@ namespace {
         std::unique_ptr<services::wal::manager_wal_replicate_t, actor_zeta::pmr::deleter_t> wal;
 
         explicit recovery_fixture(const std::string& dir, bool bootstrap = true)
-            : log(initialization_logger("python", "/tmp/docker_logs/"))
+            : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , wal_config([&]() {
                 configuration::config_wal c;
@@ -56,17 +59,23 @@ namespace {
                 c.path = dir;
                 return c;
             }())
-            , disk(actor_zeta::spawn<manager_disk_t>(&resource, scheduler, scheduler, disk_config, log))
+            , disk(actor_zeta::spawn<manager_disk_t>(&resource,
+                                                     scheduler,
+                                                     scheduler,
+                                                     test_directory::created(disk_config),
+                                                     log,
+                                                     configuration::pump_intervals_t{}))
             , wal(actor_zeta::spawn<services::wal::manager_wal_replicate_t>(&resource,
                                                                             scheduler,
                                                                             wal_config,
                                                                             log,
                                                                             disk->address(),
-                                                                            components::pipeline::no_mailbox())) {
+                                                                            components::pipeline::no_mailbox(),
+                                                                            configuration::pump_intervals_t{})) {
             std::filesystem::create_directories(dir);
             disk->set_manager_wal_sync(wal->address());
             if (bootstrap) {
-                disk->bootstrap_system_tables_sync();
+                REQUIRE_FALSE(disk->bootstrap_system_tables_sync().contains_error());
             }
         }
         ~recovery_fixture() {
@@ -80,11 +89,7 @@ namespace {
         template<typename Fn, typename... Args>
         auto invoke(Fn fn, Args&&... args) {
             auto [_, future] = actor_zeta::otterbrix::send(disk->address(), fn, std::forward<Args>(args)...);
-            for (int i = 0; i < 100000 && !future.is_ready(); ++i) {
-                scheduler->run(1000);
-                std::this_thread::yield();
-            }
-            REQUIRE(future.is_ready());
+            REQUIRE(test_helpers::wait_ready(future, scheduler));
             return std::move(future).take_ready();
         }
 
@@ -110,7 +115,7 @@ TEST_CASE("test_recovery_system_wal_before_user") {
 
     {
         recovery_fixture fx(dir, /*bootstrap=*/false);
-        REQUIRE_NOTHROW(fx.disk->bootstrap_system_tables_sync());
+        REQUIRE_FALSE(fx.disk->bootstrap_system_tables_sync().contains_error());
         REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
     }
     cleanup_dir(dir);
@@ -147,7 +152,7 @@ TEST_CASE("test_recovery_ddl_then_dml") {
 
     {
         recovery_fixture fx(dir, /*bootstrap=*/false);
-        REQUIRE_NOTHROW(fx.disk->bootstrap_system_tables_sync());
+        REQUIRE_FALSE(fx.disk->bootstrap_system_tables_sync().contains_error());
         REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
 
         const auto post_ns_oid = disk_test_helpers::test_create_namespace(fx, std::string("post_recovery_ns"));
@@ -177,7 +182,7 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
 
     {
         recovery_fixture fx(dir, /*bootstrap=*/false);
-        REQUIRE_NOTHROW(fx.disk->bootstrap_system_tables_sync());
+        REQUIRE_FALSE(fx.disk->bootstrap_system_tables_sync().contains_error());
         REQUIRE_NOTHROW(fx.disk->restore_oid_generator_sync());
 
         auto res = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("orphaned_ns"));
@@ -226,7 +231,7 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
 
     {
         recovery_fixture fx_reopen(dir, /*bootstrap=*/false);
-        REQUIRE_NOTHROW(fx_reopen.disk->bootstrap_system_tables_sync());
+        REQUIRE_FALSE(fx_reopen.disk->bootstrap_system_tables_sync().contains_error());
         REQUIRE_NOTHROW(fx_reopen.disk->restore_oid_generator_sync());
 
         constexpr components::catalog::oid_t pg_cc = components::catalog::well_known_oid::pg_computed_column_table;

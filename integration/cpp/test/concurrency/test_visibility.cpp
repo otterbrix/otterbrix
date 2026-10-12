@@ -1,7 +1,10 @@
 #include "concurrency.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
+#include <algorithm>
 #include <set>
 #include <tuple>
 
@@ -114,6 +117,82 @@ TEST_CASE("integration::cpp::concurrency::visibility::interleaved", "[interleave
         });
         CHECK(values(writer) == ints{10, 21, 30, 50});
     }
+
+    SECTION("complex types") {
+        const auto& type = column_types()[GENERATE(range(std::size_t{0}, column_types().size()))];
+        INFO("payload type: " << type.name);
+        auto insert = [&](int64_t id, int64_t payload) {
+            return "INSERT INTO db.typed (id, v, payload) VALUES (" + std::to_string(id) + ", " + std::to_string(id) +
+                   ", " + type.literal(payload) + ");";
+        };
+        auto set_payload = [&](int64_t id, int64_t payload) {
+            return "UPDATE db.typed SET payload = " + type.literal(payload) + " WHERE id = " + std::to_string(id) + ";";
+        };
+        auto payloads = [&](session_t& session) {
+            return decoded(type, session.run("SELECT payload FROM db.typed ORDER BY id;"));
+        };
+        create_payload_table(writer, type, "db.typed");
+        for (int64_t id = 1; id <= 3; ++id) {
+            require_ok(writer, insert(id, 10 * id));
+        }
+
+        SECTION("open writes are invisible, committed ones visible") {
+            std::string write;
+            ints written;
+            SECTION("insert") {
+                write = insert(4, 40);
+                written = {10, 20, 30, 40};
+            }
+            SECTION("update") {
+                write = set_payload(2, 99);
+                written = {10, 99, 30};
+            }
+            SECTION("delete") {
+                write = "DELETE FROM db.typed WHERE id = 2;";
+                written = {10, 30};
+            }
+            require_ok(writer, "BEGIN;");
+            require_ok(writer, write);
+            CHECK(payloads(writer) == written);
+            CHECK(payloads(reader) == ints{10, 20, 30});
+            require_ok(writer, "COMMIT;");
+            CHECK(payloads(reader) == written);
+        }
+
+        SECTION("rolled-back writes never show, and leave the rows writable") {
+            require_ok(writer, "BEGIN;");
+            require_ok(writer, insert(4, 40));
+            require_ok(writer, set_payload(2, 99));
+            require_ok(writer, "DELETE FROM db.typed WHERE id = 3;");
+            require_ok(writer, "ROLLBACK;");
+            CHECK(payloads(reader) == ints{10, 20, 30});
+            require_ok(reader, set_payload(2, 21));
+            require_ok(reader, insert(5, 51));
+            CHECK(payloads(writer) == ints{10, 21, 30, 51});
+        }
+
+        SECTION("a snapshot does not move") {
+            require_ok(reader, "BEGIN;");
+            CHECK(payloads(reader) == ints{10, 20, 30});
+            require_ok(writer, insert(4, 40));
+            require_ok(writer, set_payload(2, 99));
+            require_ok(writer, "DELETE FROM db.typed WHERE id = 3;");
+            CHECK(payloads(reader) == ints{10, 20, 30});
+            require_ok(reader, "COMMIT;");
+            CHECK(payloads(reader) == ints{10, 99, 40});
+        }
+
+        SECTION("an update of another column keeps the value") {
+            interleaved({
+                {writer, "BEGIN;"},
+                {writer, "UPDATE db.typed SET v = v + 100 WHERE id >= 2;"},
+                {reader, "SELECT payload FROM db.typed;"},
+                {writer, "COMMIT;"},
+            });
+            CHECK(payloads(reader) == ints{10, 20, 30});
+            CHECK(column<int64_t>(reader.run("SELECT v FROM db.typed ORDER BY id;")) == ints{1, 102, 103});
+        }
+    }
 }
 
 TEST_CASE("integration::cpp::concurrency::visibility::overlapping", "[overlapping]") {
@@ -158,6 +237,30 @@ TEST_CASE("integration::cpp::concurrency::visibility::overlapping", "[overlappin
         REQUIRE(remove.still_running());
         CHECK(remove.release()->size() == all_rows);
         CHECK(column<int64_t>(second.run("SELECT id FROM db.big;")) == ints{PAUSABLE_TABLE_ROWS});
+    }
+    SECTION("complex types") {
+        const auto& type = column_types()[GENERATE(range(std::size_t{0}, column_types().size()))];
+        INFO("payload type: " << type.name);
+        create_payload_table(first, type, "db.typed");
+        insert_payload_rows(first, type, "db.typed", PAUSABLE_TABLE_ROWS);
+
+        SECTION("a paused read keeps its snapshot while writes commit") {
+            paused_statement_t read(first, "SELECT id, payload FROM db.typed;");
+            REQUIRE(read.paused());
+            require_ok(second,
+                       "UPDATE db.typed SET payload = " + type.literal(PAUSABLE_TABLE_ROWS) + " WHERE id >= 0;");
+            require_ok(second, "DELETE FROM db.typed WHERE id < 100;");
+            require_ok(second,
+                       "INSERT INTO db.typed (id, v, payload) VALUES (" + std::to_string(PAUSABLE_TABLE_ROWS) +
+                           ", 0, " + type.literal(0) + ");");
+            REQUIRE(read.still_running());
+
+            auto result = read.release();
+            auto ids = column<int64_t>(result, 0);
+            CHECK(ids.size() == all_rows);
+            CHECK(std::set<int64_t>(ids.begin(), ids.end()).size() == ids.size());
+            CHECK(decoded(type, result, 1) == ids);
+        }
     }
 }
 
@@ -236,5 +339,98 @@ TEST_CASE("integration::cpp::concurrency::visibility::parallel", "[parallel]") {
         }
         const auto stored = column<int64_t>(admin.run("SELECT id FROM db.t;"));
         CHECK(std::multiset<int64_t>(stored.begin(), stored.end()) == expected);
+    }
+
+    SECTION("complex types") {
+        const auto& type = column_types()[GENERATE(range(std::size_t{0}, column_types().size()))];
+        INFO("payload type: " << type.name);
+        constexpr int TRANSACTIONS = 13;
+        auto insert = [&](int64_t id) {
+            return "INSERT INTO db.typed (id, v, payload) VALUES (" + std::to_string(id) + ", " + std::to_string(id) +
+                   ", " + type.literal(id) + ");";
+        };
+        create_payload_table(admin, type, "db.typed");
+
+        SECTION("a reader never sees part of a transaction or a torn value") {
+            // Writers commit 7 rows at a time and rewrite earlier ones; a reader checks the count and every value.
+            constexpr std::size_t WRITERS = 3;
+            constexpr std::size_t READERS = 5;
+            std::atomic<std::size_t> writing{WRITERS};
+            std::atomic<int> torn_reads{0};
+            std::atomic<int> failed_reads{0};
+            in_parallel(engine, WRITERS + READERS, [&](std::size_t index, session_t& session) {
+                if (index >= WRITERS) {
+                    while (writing.load() > 0) {
+                        auto read = session.run("SELECT id, payload FROM db.typed;");
+                        if (!read->is_success()) {
+                            ++failed_reads;
+                            continue;
+                        }
+                        bool whole = read->size() % 7 == 0;
+                        for (std::size_t row = 0; row < read->size() && whole; ++row) {
+                            int64_t id = read->value(0, row).value<int64_t>();
+                            int64_t number = type.decode(read->value(1, row));
+                            whole = number == id || number == id + 1;
+                        }
+                        torn_reads += whole ? 0 : 1;
+                    }
+                    return;
+                }
+                for (int transaction = 0; transaction < TRANSACTIONS; ++transaction) {
+                    std::ignore = session.run("BEGIN;");
+                    for (int row = 0; row < 7; ++row) {
+                        int64_t id = 100'000 * static_cast<int64_t>(index + 1) + 7 * transaction + row;
+                        std::ignore = session.run(insert(id));
+                    }
+                    if (transaction > 0) {
+                        int64_t previous = 100'000 * static_cast<int64_t>(index + 1) + 7 * (transaction - 1);
+                        std::ignore = session.run("UPDATE db.typed SET payload = " + type.literal(previous + 1) +
+                                                  " WHERE id = " + std::to_string(previous) + ";");
+                    }
+                    std::ignore = session.run("COMMIT;");
+                }
+                --writing;
+            });
+            CHECK(engine.most_calls_at_once() >= 2);
+            CHECK(torn_reads.load() == 0);
+            CHECK(failed_reads.load() == 0);
+            CHECK(admin.run("SELECT id FROM db.typed;")->size() == WRITERS * TRANSACTIONS * 7);
+        }
+
+        SECTION("commits and rollbacks keep exactly the committed rows") {
+            // Every third transaction rolls back on purpose; nothing else may fail.
+            constexpr std::size_t SESSIONS = 8;
+            std::vector<std::vector<int64_t>> committed(SESSIONS);
+            std::atomic<int> unexpected_failures{0};
+            in_parallel(engine, SESSIONS, [&](std::size_t index, session_t& session) {
+                for (int transaction = 0; transaction < TRANSACTIONS; ++transaction) {
+                    std::vector<int64_t> written;
+                    bool ok = session.run("BEGIN;")->is_success();
+                    for (int row = 0; row < 3 && ok; ++row) {
+                        int64_t id = 1000 * static_cast<int64_t>(index + 1) + 3 * transaction + row;
+                        ok = session.run(insert(id))->is_success();
+                        written.push_back(id);
+                    }
+                    if (transaction % 3 == 2 || !ok) {
+                        std::ignore = session.run("ROLLBACK;");
+                        unexpected_failures += ok ? 0 : 1;
+                    } else if (session.run("COMMIT;")->is_success()) {
+                        committed[index].insert(committed[index].end(), written.begin(), written.end());
+                    } else {
+                        ++unexpected_failures;
+                    }
+                }
+            });
+            CHECK(engine.most_calls_at_once() >= 2);
+            CHECK(unexpected_failures.load() == 0);
+            ints expected;
+            for (const auto& ids : committed) {
+                expected.insert(expected.end(), ids.begin(), ids.end());
+            }
+            std::sort(expected.begin(), expected.end());
+            const auto stored = admin.run("SELECT id, payload FROM db.typed ORDER BY id;");
+            CHECK(column<int64_t>(stored, 0) == expected);
+            CHECK(decoded(type, stored, 1) == expected);
+        }
     }
 }

@@ -115,6 +115,31 @@ namespace concurrency {
     // Rows (id, v) = (i, i) for i in [0, count), in INSERTs of a bounded size.
     void insert_numbered_rows(session_t& session, const std::string& table, int64_t count);
 
+    // A column type whose every cell encodes one number, so a reader can tell the exact version it got.
+    struct column_type_t {
+        std::string name;
+        std::string sql_type;
+        // The statement creating sql_type; empty for a built-in one.
+        std::string setup;
+        std::function<std::string(int64_t)> literal;
+        std::function<int64_t(const components::types::logical_value_t&)> decode;
+    };
+
+    // What decode returns for a cell that is torn, mixed from two versions, or of the wrong shape.
+    constexpr int64_t MALFORMED = -1;
+
+    // Text stored inline and out of line, a fixed array, lists of numbers and of text, a struct.
+    const std::vector<column_type_t>& column_types();
+
+    // The number in each cell of column `index`.
+    std::vector<int64_t> decoded(const column_type_t& type, const cursor_ptr& cursor, std::size_t index = 0);
+
+    // Table (id bigint, v bigint, payload <type>), creating the type first when it is not a built-in.
+    void create_payload_table(session_t& session, const column_type_t& type, const std::string& table);
+
+    // Rows (id, v, payload) = (i, i, i) for i in [0, count), in INSERTs of a bounded size.
+    void insert_payload_rows(session_t& session, const column_type_t& type, const std::string& table, int64_t count);
+
     // Enough rows for a scan to pause in: several batches, and not a multiple of one.
     constexpr int64_t PAUSABLE_TABLE_ROWS =
         static_cast<int64_t>(static_cast<double>(components::vector::DEFAULT_VECTOR_CAPACITY) * 3.4);

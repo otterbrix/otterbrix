@@ -3,6 +3,7 @@
 #include <core/date/date_parse.hpp>
 #include <cstdio>
 
+#include "enrich_logical_plan.hpp"
 #include "expressions/function_expression.hpp"
 #include "logical_plan/node_create_index.hpp"
 #include "logical_plan/node_insert.hpp"
@@ -699,6 +700,31 @@ namespace services::dispatcher {
         }
         return core::error_t(core::error_code_t::schema_error,
                              std::pmr::string{"type: \'" + alias + "\' is not registered in catalog", resource});
+    }
+
+    core::error_t resolve_column_type(std::pmr::memory_resource* resource,
+                                      const catalog_resolves_t* resolves,
+                                      components::types::complex_logical_type* type,
+                                      std::span<const std::string> search_dbnames) {
+        if (type->type() != components::types::logical_type::UNKNOWN) {
+            return core::error_t::no_error();
+        }
+        std::string name{type->type_name()};
+        auto builtin = components::catalog::pg_name_to_logical_type(name);
+        components::types::complex_logical_type resolved{builtin};
+        if (builtin == components::types::logical_type::UNKNOWN) {
+            const auto* md = services::catalog_resolve::probe_type_in_path(*resolves, name, search_dbnames);
+            if (md == nullptr) {
+                return core::error_t(core::error_code_t::schema_error,
+                                     std::pmr::string{"type: \'" + name + "\' is not registered in catalog", resource});
+            }
+            resolved = md->type;
+        }
+        if (type->has_alias()) {
+            resolved.set_alias(type->alias());
+        }
+        *type = std::move(resolved);
+        return core::error_t::no_error();
     }
 
     core::error_t convert_column_defaults(std::pmr::memory_resource* resource,

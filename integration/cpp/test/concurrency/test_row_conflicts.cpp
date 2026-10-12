@@ -2,6 +2,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <random>
 #include <tuple>
@@ -101,6 +102,32 @@ TEST_CASE("integration::cpp::concurrency::row_conflicts::interleaved", "[interle
         });
         CHECK(values(first) == ints{12, 20, 30});
     }
+
+    SECTION("complex types") {
+        const auto& type = column_types()[GENERATE(range(std::size_t{0}, column_types().size()))];
+        INFO("payload type: " << type.name);
+        const auto set_payload = [&](int64_t id, int64_t payload) {
+            return "UPDATE db.typed SET payload = " + type.literal(payload) + " WHERE id = " + std::to_string(id) + ";";
+        };
+        create_payload_table(first, type, "db.typed");
+        for (int64_t id = 1; id <= 3; ++id) {
+            require_ok(first,
+                       "INSERT INTO db.typed (id, v, payload) VALUES (" + std::to_string(id) + ", " +
+                           std::to_string(id) + ", " + type.literal(10 * id) + ");");
+        }
+
+        SECTION("the second writer of a row is refused") {
+            interleaved({
+                {first, "BEGIN;"},
+                {second, "BEGIN;"},
+                {first, set_payload(1, 11)},
+                {second, set_payload(1, 12), fails},
+                {first, "COMMIT;"},
+                {second, "COMMIT;", fails},
+            });
+            CHECK(decoded(type, second.run("SELECT payload FROM db.typed ORDER BY id;")) == ints{11, 20, 30});
+        }
+    }
 }
 
 TEST_CASE("integration::cpp::concurrency::row_conflicts::overlapping", "[overlapping]") {
@@ -113,28 +140,60 @@ TEST_CASE("integration::cpp::concurrency::row_conflicts::overlapping", "[overlap
 
     const int64_t contested = GENERATE(int64_t{0}, PAUSABLE_TABLE_ROWS - 1);
     INFO("contested row " << contested << (contested == 0 ? ", already scanned" : ", not scanned yet"));
-    std::string whole_table;
-    SECTION("update") { whole_table = "UPDATE db.big SET v = v + 1;"; }
-    SECTION("delete") { whole_table = "DELETE FROM db.big WHERE id >= 0;"; }
+    SECTION("a paused whole-table statement against an update of one row") {
+        std::string whole_table;
+        SECTION("update") { whole_table = "UPDATE db.big SET v = v + 1;"; }
+        SECTION("delete") { whole_table = "DELETE FROM db.big WHERE id >= 0;"; }
 
-    paused_statement_t paused(first, whole_table);
-    REQUIRE(paused.paused());
-    const bool row_written =
-        second.run("UPDATE db.big SET v = -1 WHERE id = " + std::to_string(contested) + ";")->is_success();
-    REQUIRE(paused.still_running());
-    const bool table_written = paused.release()->is_success();
+        paused_statement_t paused(first, whole_table);
+        REQUIRE(paused.paused());
+        bool row_written =
+            second.run("UPDATE db.big SET v = -1 WHERE id = " + std::to_string(contested) + ";")->is_success();
+        REQUIRE(paused.still_running());
+        bool table_written = paused.release()->is_success();
 
-    INFO("the whole-table statement " << (table_written ? "committed" : "failed") << ", the row update "
-                                      << (row_written ? "committed" : "failed"));
-    CHECK(table_written != row_written);
-    const auto row_value =
-        column<int64_t>(second.run("SELECT v FROM db.big WHERE id = " + std::to_string(contested) + ";"));
-    if (row_written) {
-        CHECK(row_value == ints{-1});
-    } else if (whole_table.starts_with("UPDATE")) {
-        CHECK(row_value == ints{contested + 1});
-    } else {
-        CHECK(row_value.empty());
+        INFO("the whole-table statement " << (table_written ? "committed" : "failed") << ", the row update "
+                                          << (row_written ? "committed" : "failed"));
+        CHECK(table_written != row_written);
+        auto row_value =
+            column<int64_t>(second.run("SELECT v FROM db.big WHERE id = " + std::to_string(contested) + ";"));
+        if (row_written) {
+            CHECK(row_value == ints{-1});
+        } else if (whole_table.starts_with("UPDATE")) {
+            CHECK(row_value == ints{contested + 1});
+        } else {
+            CHECK(row_value.empty());
+        }
+    }
+
+    SECTION("complex types") {
+        const auto& type = column_types()[GENERATE(range(std::size_t{0}, column_types().size()))];
+        INFO("payload type: " << type.name);
+        create_payload_table(first, type, "db.typed");
+        insert_payload_rows(first, type, "db.typed", PAUSABLE_TABLE_ROWS);
+
+        SECTION("a paused whole-table update against an update of one row") {
+            paused_statement_t update(first, "UPDATE db.typed SET payload = " + type.literal(1) + ";");
+            REQUIRE(update.paused());
+            bool row_written = second
+                                   .run("UPDATE db.typed SET payload = " + type.literal(2) +
+                                        " WHERE id = " + std::to_string(contested) + ";")
+                                   ->is_success();
+            REQUIRE(update.still_running());
+            bool table_written = update.release()->is_success();
+
+            CHECK(table_written != row_written);
+            auto all = decoded(type, second.run("SELECT payload FROM db.typed ORDER BY id;"));
+            REQUIRE(all.size() == static_cast<std::size_t>(PAUSABLE_TABLE_ROWS));
+            for (int64_t id = 0; id < PAUSABLE_TABLE_ROWS; ++id) {
+                int64_t expected = id == contested ? (row_written ? 2 : 1) : (table_written ? 1 : id);
+                if (all[static_cast<std::size_t>(id)] != expected) {
+                    INFO("id " << id);
+                    CHECK(all[static_cast<std::size_t>(id)] == expected);
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -271,5 +330,38 @@ TEST_CASE("integration::cpp::concurrency::row_conflicts::parallel", "[parallel]"
         CHECK(engine.most_calls_at_once() >= 2);
         CHECK(deleted.load() == static_cast<std::size_t>(ROWS));
         CHECK(values(admin).empty());
+    }
+
+    SECTION("complex types") {
+        const auto& type = column_types()[GENERATE(range(std::size_t{0}, column_types().size()))];
+        INFO("payload type: " << type.name);
+        create_payload_table(admin, type, "db.typed");
+
+        SECTION("read-modify-write of one row loses no commit") {
+            require_ok(admin, "INSERT INTO db.typed (id, v, payload) VALUES (1, 1, " + type.literal(0) + ");");
+            std::atomic<int> committed{0};
+            std::atomic<int> malformed_reads{0};
+            in_parallel(engine, SESSIONS, [&](std::size_t, session_t& session) {
+                for (int iteration = 0; iteration < ITERATIONS; ++iteration) {
+                    bool ok = session.run("BEGIN;")->is_success();
+                    auto read = session.run("SELECT payload FROM db.typed WHERE id = 1;");
+                    ok = ok && read->is_success() && read->size() == 1;
+                    int64_t number = ok ? type.decode(read->value(0, 0)) : MALFORMED;
+                    malformed_reads += ok && number == MALFORMED ? 1 : 0;
+                    ok = ok && number != MALFORMED &&
+                         session.run("UPDATE db.typed SET payload = " + type.literal(number + 1) + " WHERE id = 1;")
+                             ->is_success();
+                    ok = ok && session.run("COMMIT;")->is_success();
+                    if (!ok) {
+                        std::ignore = session.run("ROLLBACK;");
+                    }
+                    committed += ok ? 1 : 0;
+                }
+            });
+            CHECK(engine.most_calls_at_once() >= 2);
+            CHECK(malformed_reads.load() == 0);
+            CHECK(committed.load() > 0);
+            CHECK(decoded(type, admin.run("SELECT payload FROM db.typed;")) == ints{committed.load()});
+        }
     }
 }

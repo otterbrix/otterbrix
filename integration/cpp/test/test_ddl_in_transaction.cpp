@@ -163,6 +163,36 @@ TEST_CASE("integration::cpp::ddl_in_transaction") {
         }
     }
 
+    SECTION("add column of an unknown type is rejected") {
+        auto writer = otterbrix::session_id_t();
+        SECTION("explicit transaction") {
+            REQUIRE(run(dispatcher, writer, "BEGIN;")->is_success());
+            REQUIRE(run(dispatcher,
+                        writer,
+                        "INSERT INTO TestDatabase.t (a, b) VALUES (" + std::to_string(A_BASE + 3) + ", " +
+                            std::to_string(B_BASE + 3) + ");")
+                        ->is_success());
+            REQUIRE(run(dispatcher, writer, "ALTER TABLE TestDatabase.t ADD COLUMN d no_such_type;")->is_error());
+            REQUIRE(run(dispatcher, writer, "ROLLBACK;")->is_success());
+        }
+        SECTION("autocommit") {
+            REQUIRE(run(dispatcher, writer, "ALTER TABLE TestDatabase.t ADD COLUMN d no_such_type;")->is_error());
+        }
+
+        REQUIRE(run(dispatcher, writer, "SELECT d FROM TestDatabase.t;")->is_error());
+        REQUIRE_FALSE(another_session_sees_column_d(dispatcher));
+
+        INFO("the name is still free, and the table holds only its committed row");
+        REQUIRE(run(dispatcher, writer, "ALTER TABLE TestDatabase.t ADD COLUMN d BIGINT;")->is_success());
+        {
+            auto cur = run(dispatcher, writer, "SELECT a, d FROM TestDatabase.t;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->value(0, 0).value<std::int64_t>() == A_BASE);
+            REQUIRE(cur->value(1, 0).is_null());
+        }
+    }
+
     SECTION("a snapshot older than a committed drop still reads the column") {
         // The reader's transaction starts, and reads b, BEFORE anything drops it: from here on its answers
         // are fixed to that snapshot, which is the half of the stamp rule the other sections never exercise

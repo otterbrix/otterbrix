@@ -545,14 +545,7 @@ namespace components::execution_dag {
                 core::error_code_t::invalid_parameter,
                 std::pmr::string{"execution graph: parameter is not in the bound parameter map", resource()});
         }
-        // logical_value_t cannot carry a NULL with a type of its own; since the output type is already
-        // resolved, a freshly typed null is placed here instead.
-        if (value->second.is_null()) {
-            output(0).reference(types::logical_value_t(resource(), output(0).type()));
-            output(0).set_null(true);
-        } else {
-            output(0).reference(value->second);
-        }
+        output(0).reference(value->second);
         placed_ = true;
         return core::error_t::no_error();
     }

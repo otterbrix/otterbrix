@@ -140,32 +140,37 @@ namespace components::vector {
     }
 
     void vector_t::reference(const types::logical_value_t& value) {
-        assert(type_.type() == value.type().type());
+        // A NULL carries no type of its own: it becomes a NULL of this vector's type.
+        assert(value.is_null() || type_.type() == value.type().type());
         this->vector_type_ = vector_type::CONSTANT;
         if (type_.type() == types::logical_type::NA) {
             return;
         }
-        buffer_ = std::make_unique<vector_buffer_t>(resource(), value.type(), 1);
-        auto internal_type = value.type().to_physical_type();
+        const auto& type = value.is_null() ? type_ : value.type();
+        buffer_ = std::make_unique<vector_buffer_t>(resource(), type, 1);
+        auto internal_type = type.to_physical_type();
         if (internal_type == types::physical_type::STRUCT) {
             auxiliary_ = std::make_unique<struct_vector_buffer_t>(resource());
-            auto& child_types = value.type().child_types();
+            auto& child_types = type.child_types();
             auto& child_vectors = static_cast<struct_vector_buffer_t*>(auxiliary_.get())->entries();
             for (uint64_t i = 0; i < child_types.size(); i++) {
-                auto vector = std::make_unique<vector_t>(
-                    resource(),
-                    value.is_null() ? types::logical_value_t(resource(), child_types[i]) : value.children()[i]);
-                child_vectors.push_back(std::move(vector));
+                if (value.is_null()) {
+                    auto vector = std::make_unique<vector_t>(resource(), child_types[i], 1);
+                    vector->reference(value);
+                    child_vectors.push_back(std::move(vector));
+                } else {
+                    child_vectors.push_back(std::make_unique<vector_t>(resource(), value.children()[i]));
+                }
             }
             if (value.is_null()) {
                 set_value(0, value);
             }
         } else if (internal_type == types::physical_type::LIST) {
-            auxiliary_ = std::make_shared<list_vector_buffer_t>(resource(), value.type());
+            auxiliary_ = std::make_shared<list_vector_buffer_t>(resource(), type);
             data_ = buffer_->data();
             set_value(0, value);
         } else if (internal_type == types::physical_type::ARRAY) {
-            auxiliary_ = std::make_shared<array_vector_buffer_t>(resource(), value.type());
+            auxiliary_ = std::make_shared<array_vector_buffer_t>(resource(), type);
             set_value(0, value);
         } else {
             auxiliary_.reset();

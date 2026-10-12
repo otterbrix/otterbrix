@@ -66,6 +66,11 @@ namespace services::dispatcher {
                                                   const std::string& alias,
                                                   std::span<const std::string> search_dbnames = {});
 
+    [[nodiscard]] core::error_t resolve_column_type(std::pmr::memory_resource* resource,
+                                                    const catalog_resolves_t* resolves,
+                                                    components::types::complex_logical_type* type,
+                                                    std::span<const std::string> search_dbnames);
+
     // Validate plan node types against the plan's resolved catalog entries.
     [[nodiscard]] core::error_t validate_types(std::pmr::memory_resource* resource,
                                                const catalog_resolves_t* resolves,

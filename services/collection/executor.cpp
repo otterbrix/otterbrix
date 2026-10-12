@@ -799,41 +799,17 @@ namespace services::collection::executor {
                     const auto str_path = services::catalog_resolve::build_type_search_path_str(target_db);
                     auto* n = static_cast<node_create_collection_t*>(plan.sub_queries.back().get());
                     for (auto& col_def : n->column_definitions()) {
-                        if (col_def.type().type() == logical_type::UNKNOWN) {
-                            if (col_def.type().type_name().empty()) {
-                                break;
-                            }
-                            const auto lt = components::catalog::pg_name_to_logical_type(col_def.type().type_name());
-                            if (lt != logical_type::UNKNOWN) {
-                                std::string alias = col_def.type().has_alias() ? col_def.type().alias() : std::string{};
-                                col_def.type() = components::types::complex_logical_type{lt};
-                                if (!alias.empty()) {
-                                    col_def.type().set_alias(alias);
-                                }
-                                continue;
-                            }
-                            if (auto err =
-                                    services::dispatcher::check_type_exists(resource(),
-                                                                            &plan.catalog_resolves,
-                                                                            col_def.type().type_name(),
-                                                                            std::span<const std::string>(str_path));
-                                err.contains_error()) {
-                                error = make_cursor(resource(), err);
-                            }
-                            if (!error) {
-                                const auto* md = services::catalog_resolve::probe_type_in_path(
-                                    plan.catalog_resolves,
-                                    std::string_view(col_def.type().type_name()),
-                                    std::span<const std::string>(str_path));
-                                if (md) {
-                                    std::string alias =
-                                        col_def.type().has_alias() ? col_def.type().alias() : std::string{};
-                                    col_def.type() = md->type;
-                                    if (!alias.empty()) {
-                                        col_def.type().set_alias(alias);
-                                    }
-                                }
-                            }
+                        if (col_def.type().type() == logical_type::UNKNOWN && col_def.type().type_name().empty()) {
+                            break;
+                        }
+                        if (auto err =
+                                services::dispatcher::resolve_column_type(resource(),
+                                                                          &plan.catalog_resolves,
+                                                                          &col_def.type(),
+                                                                          std::span<const std::string>(str_path));
+                            err.contains_error()) {
+                            error = make_cursor(resource(), err);
+                            break;
                         }
                     }
                     if (!error) {
@@ -1010,8 +986,8 @@ namespace services::collection::executor {
             case node_type::create_macro_t:
                 break;
             case node_type::alter_table_t: {
-                const auto* alter_node =
-                    static_cast<const components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
+                auto* alter_node =
+                    static_cast<components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
                 if (components::catalog::is_catalog_table(alter_node->table_oid())) {
                     // System catalog shape is fixed at bootstrap; altering it desyncs positional column readers.
                     error =
@@ -1020,9 +996,18 @@ namespace services::collection::executor {
                                                   std::pmr::string{"cannot alter a system catalog table", resource()}});
                     break;
                 }
-                for (const auto& cmd : alter_node->subcommands()) {
+                auto str_path = services::catalog_resolve::build_type_search_path_str(id.database());
+                for (auto& cmd : alter_node->subcommands()) {
                     if (cmd.kind != components::logical_plan::alter_table_kind::add_column) {
                         continue;
+                    }
+                    if (auto err = services::dispatcher::resolve_column_type(resource(),
+                                                                             &plan.catalog_resolves,
+                                                                             &cmd.column.type(),
+                                                                             std::span<const std::string>(str_path));
+                        err.contains_error()) {
+                        error = make_cursor(resource(), err);
+                        break;
                     }
                     if (auto type_err =
                             services::dispatcher::gate_persistable_type(resource(),

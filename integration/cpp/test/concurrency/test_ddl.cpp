@@ -1,6 +1,8 @@
 #include "concurrency.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <atomic>
 #include <thread>
@@ -86,6 +88,25 @@ TEST_CASE("integration::cpp::concurrency::ddl_visibility::interleaved", "[interl
         CHECK(values(other) == ints{10, 21, 30, 40, 50});
         CHECK(column<int64_t>(other.run("SELECT id FROM db.t WHERE " + filled + " ORDER BY id;")) == ints{1, 2, 3, 5});
         CHECK(column<int64_t>(other.run("SELECT extra FROM db.t WHERE id = 4;")) == ints{400});
+    }
+    SECTION("rows written beside ADD COLUMN are defaulted") {
+        const auto& type = column_types()[GENERATE(range(std::size_t{0}, column_types().size()))];
+        INFO("column type: " << type.name);
+        if (!type.setup.empty()) {
+            require_ok(alterer, type.setup);
+        }
+        interleaved({
+            {alterer, "BEGIN;"},
+            {alterer, "ALTER TABLE db.t ADD COLUMN extra " + type.sql_type + ";"},
+            {alterer, "INSERT INTO db.t (id, v, extra) VALUES (4, 40, " + type.literal(400) + ");"},
+            {other, "INSERT INTO db.t (id, v) VALUES (5, 50);"},
+            {other, "UPDATE db.t SET v = 21 WHERE id = 2;"},
+            {other, "SELECT extra FROM db.t;", fails},
+            {alterer, "COMMIT;"},
+        });
+        CHECK(values(other) == ints{10, 21, 30, 40, 50});
+        CHECK(column<int64_t>(other.run("SELECT id FROM db.t WHERE extra IS NULL ORDER BY id;")) == ints{1, 2, 3, 5});
+        CHECK(decoded(type, other.run("SELECT extra FROM db.t WHERE id = 4;")) == ints{400});
     }
 }
 

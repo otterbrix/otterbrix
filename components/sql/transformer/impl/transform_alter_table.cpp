@@ -4,6 +4,7 @@
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/types/user_type_walk.hpp>
 
 namespace components::sql::transform {
     namespace {
@@ -340,6 +341,10 @@ namespace components::sql::transform {
                             core::error_code_t::sql_parse_error,
                             std::pmr::string{"ALTER TABLE ... ADD COLUMN requires a column definition", resource_});
                     }
+                    std::vector<std::string> type_names;
+                    types::walk_user_type_refs(cols.front().type(),
+                                               [&](std::string_view name) { type_names.emplace_back(name); });
+                    register_catalog_resolve_types(resource_, &catalog_resolves_, type_names);
                     logical_plan::alter_table_subcommand_t sub;
                     sub.kind = logical_plan::alter_table_kind::add_column;
                     sub.column_name = cols.front().name();

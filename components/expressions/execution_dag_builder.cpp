@@ -249,8 +249,7 @@ namespace components::expressions {
         // SQL LIKE / ILIKE / regexp: a match call over (subject, pattern, flags).
         core::result_wrapper_t<slot_id_t>
         builder_t::match_slot(const compare_expression_t* expression, slot_id_t subject, slot_id_t pattern) {
-            const auto* function =
-                compute::function_registry_t::get_default()->get_function(expression->function_uid());
+            const auto* function = expression->function();
             if (function == nullptr) {
                 return core::error_t(
                     core::error_code_t::invalid_parameter,
@@ -268,7 +267,7 @@ namespace components::expressions {
             graph_->set_slot_type(flags_slot, flags->second.type());
 
             execution_dag::slot_list_t inputs({subject, pattern, flags_slot}, resource());
-            auto node = graph_->add_function(function, inputs, 1);
+            auto node = graph_->add_function(function->get_copy(resource()), inputs, 1);
             graph_->set_slot_type(graph_->output_slot(node), complex_logical_type{logical_type::BOOLEAN});
             return graph_->output_slot(node);
         }
@@ -434,7 +433,8 @@ namespace components::expressions {
         }
 
         core::result_wrapper_t<slot_id_t> builder_t::aggregate_slot(const aggregate_expression_t* expression) {
-            if (expression->function_uid() == compute::invalid_function_uid) {
+            const auto* function = expression->function();
+            if (function == nullptr) {
                 return core::error_t(
                     core::error_code_t::invalid_parameter,
                     std::pmr::string{"execution graph builder: aggregate was not resolved by validation", resource()});
@@ -443,13 +443,6 @@ namespace components::expressions {
                 return core::error_t(
                     core::error_code_t::invalid_parameter,
                     std::pmr::string{"execution graph builder: aggregate was not stamped by validation", resource()});
-            }
-            const auto* function =
-                compute::function_registry_t::get_default()->get_function(expression->function_uid());
-            if (function == nullptr) {
-                return core::error_t(
-                    core::error_code_t::invalid_parameter,
-                    std::pmr::string{"execution graph builder: resolved aggregate is not registered", resource()});
             }
             execution_dag::slot_list_t inputs(resource());
             inputs.reserve(expression->params().size());
@@ -460,13 +453,14 @@ namespace components::expressions {
                 }
                 inputs.push_back(slot.value());
             }
-            auto node = graph_->add_aggregate(function, inputs, expression->is_distinct());
+            auto node = graph_->add_aggregate(function->get_copy(resource()), inputs, expression->is_distinct());
             graph_->set_slot_type(graph_->output_slot(node), expression->result_type());
             return graph_->output_slot(node);
         }
 
         core::result_wrapper_t<slot_id_t> builder_t::function_slot(const function_expression_t* expression) {
-            if (expression->function_uid() == compute::invalid_function_uid) {
+            const auto* function = expression->function();
+            if (function == nullptr) {
                 return core::error_t(
                     core::error_code_t::invalid_parameter,
                     std::pmr::string{"execution graph builder: function was not resolved by validation", resource()});
@@ -475,13 +469,6 @@ namespace components::expressions {
                 return core::error_t(
                     core::error_code_t::invalid_parameter,
                     std::pmr::string{"execution graph builder: function was not stamped by validation", resource()});
-            }
-            const auto* function =
-                compute::function_registry_t::get_default()->get_function(expression->function_uid());
-            if (function == nullptr) {
-                return core::error_t(
-                    core::error_code_t::invalid_parameter,
-                    std::pmr::string{"execution graph builder: resolved function is not registered", resource()});
             }
             execution_dag::slot_list_t inputs(resource());
             inputs.reserve(expression->args().size());
@@ -492,7 +479,7 @@ namespace components::expressions {
                 }
                 inputs.push_back(slot.value());
             }
-            auto node = graph_->add_function(function, inputs, 1);
+            auto node = graph_->add_function(function->get_copy(resource()), inputs, 1);
             graph_->set_slot_type(graph_->output_slot(node), expression->result_type());
             return graph_->output_slot(node);
         }

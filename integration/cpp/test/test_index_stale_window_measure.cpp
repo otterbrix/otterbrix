@@ -10,6 +10,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -68,17 +69,6 @@ namespace {
         gate_guard_t(const gate_guard_t&) = delete;
         gate_guard_t& operator=(const gate_guard_t&) = delete;
     };
-
-    bool wait_flag(const std::atomic<bool>& flag, std::chrono::seconds timeout) {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (!flag.load(std::memory_order_acquire)) {
-            if (std::chrono::steady_clock::now() > deadline) {
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        return true;
-    }
 
     struct probe_outcome_t {
         bool success{false};
@@ -300,7 +290,7 @@ TEST_CASE("integration::cpp::index_stale_window::natural_timing_30k", "[.][stale
     run_natural_leg(d, st, 36, "natural-30k");
 }
 
-TEST_CASE("integration::cpp::index_stale_window::seam_between_compact_and_rebuild") {
+TEST_CASE("integration::cpp::index_stale_window::seam_between_compact_and_rebuild", "[.][stalewindow]") {
     auto config = make_config("seam");
     gate_guard_t guard;
     test_spaces space(config);
@@ -343,7 +333,7 @@ TEST_CASE("integration::cpp::index_stale_window::seam_between_compact_and_rebuil
             std::thread checkpointer([&] { cp_cur = d->execute_sql(cp_session, "CHECKPOINT;"); });
 
             INFO("the round must reach the between-phases seam");
-            REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
+            REQUIRE(test_helpers::wait_until([&] { return guard.gate.reached.load(); }));
 
             // The round is parked: compaction is BEHIND, the index rebuild is AHEAD. This reader
             // arrives inside the window.

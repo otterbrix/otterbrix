@@ -1,22 +1,13 @@
 use otterbrix::Error;
 
 #[test]
-fn display_null_pointer() {
-    let msg = Error::NullPointer.to_string();
-    assert!(
-        msg.contains("null pointer"),
-        "unexpected Display for NullPointer: {msg:?}"
-    );
-}
-
-#[test]
-fn display_query_error() {
-    let msg = Error::Query {
+fn display_engine_error() {
+    let msg = Error::Engine {
         code: 42,
         message: "boom".to_string(),
     }
     .to_string();
-    assert!(msg.contains("query error"), "missing prefix: {msg:?}");
+    assert!(msg.contains("core error"), "missing prefix: {msg:?}");
     assert!(msg.contains("42"), "missing code: {msg:?}");
     assert!(msg.contains("boom"), "missing message: {msg:?}");
 }
@@ -43,5 +34,5 @@ fn display_type_mismatch() {
 #[test]
 fn error_implements_std_error_trait() {
     fn assert_std_error<E: std::error::Error>(_: &E) {}
-    assert_std_error(&Error::NullPointer);
+    assert_std_error(&Error::InvalidPath(String::new()));
 }

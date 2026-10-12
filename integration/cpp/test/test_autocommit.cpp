@@ -3,10 +3,12 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <services/disk/agent_disk.hpp>
+#include <services/dispatcher/dispatcher.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -103,17 +105,6 @@ namespace {
         scan_pause_guard_t& operator=(const scan_pause_guard_t&) = delete;
     };
 
-    bool wait_until_reached(const std::atomic<bool>& flag) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-        while (!flag.load(std::memory_order_acquire)) {
-            if (std::chrono::steady_clock::now() > deadline) {
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        return true;
-    }
-
     struct overlap_result_t {
         cursor_t_ptr held;
         std::vector<cursor_t_ptr> while_held;
@@ -127,7 +118,7 @@ namespace {
         overlap_result_t out;
         scan_pause_guard_t guard;
         std::thread held([&] { out.held = dispatcher->execute_sql(session, held_sql); });
-        out.reached = wait_until_reached(guard.gate.reached);
+        out.reached = test_helpers::wait_until([&] { return guard.gate.reached.load(); });
         if (out.reached) {
             for (const auto& sql : while_held_sql) {
                 out.while_held.push_back(dispatcher->execute_sql(session, sql));
@@ -142,6 +133,7 @@ namespace {
         cursor_t_ptr held;
         cursor_t_ptr queued;
         bool reached{false};
+        bool waited_its_turn{false};
         bool finished_while_held{false};
     };
 
@@ -152,15 +144,18 @@ namespace {
         queued_result_t out;
         scan_pause_guard_t guard;
         std::thread held([&] { out.held = dispatcher->execute_sql(session, held_sql); });
-        out.reached = wait_until_reached(guard.gate.reached);
+        out.reached = test_helpers::wait_until([&] { return guard.gate.reached.load(); });
+        const auto waited_before = services::dispatcher::dev_statements_waited_turn();
         std::atomic<bool> queued_finished{false};
         std::thread queued([&] {
             out.queued = dispatcher->execute_sql(session, queued_sql);
             queued_finished.store(true, std::memory_order_release);
         });
         if (out.reached) {
-            // Ample for a statement that is not held back to run to completion.
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            // Either the queued statement waits for its turn, or it is not held back and finishes.
+            const auto waited = [&] { return services::dispatcher::dev_statements_waited_turn() > waited_before; };
+            const bool settled = test_helpers::wait_until([&] { return waited() || queued_finished.load(); });
+            out.waited_its_turn = settled && waited();
             out.finished_while_held = queued_finished.load(std::memory_order_acquire);
         }
         guard.gate.released.store(true, std::memory_order_release);
@@ -433,6 +428,7 @@ TEST_CASE("integration::cpp::autocommit::a_second_transaction_on_a_busy_session_
                                     "INSERT INTO TestDatabase.marks (id) VALUES (1);");
     REQUIRE(result.reached);
     // Neither refused nor run beside the transaction ahead of it: it waited, then ran.
+    REQUIRE(result.waited_its_turn);
     REQUIRE_FALSE(result.finished_while_held);
     REQUIRE(result.queued->is_success());
     REQUIRE(result.held->is_success());
@@ -502,6 +498,7 @@ TEST_CASE("integration::cpp::autocommit::commit_waits_for_its_transactions_runni
                                     "COMMIT;");
     REQUIRE(result.reached);
     // A COMMIT that overtook the INSERT would publish the transaction without it.
+    REQUIRE(result.waited_its_turn);
     REQUIRE_FALSE(result.finished_while_held);
     REQUIRE(result.held->is_success());
     REQUIRE(result.queued->is_success());

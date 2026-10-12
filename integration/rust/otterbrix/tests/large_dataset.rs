@@ -17,7 +17,7 @@ fn count_rows(db: &Database, table: &str) -> i64 {
 #[test]
 fn insert_many_rows_in_batches() {
     let db = open_test_db();
-    db.create_database("app").expect("create database");
+    db.execute("CREATE DATABASE app;").expect("create database");
     db.execute("CREATE TABLE app.t (k bigint, v bigint);")
         .expect("create table");
 
@@ -53,7 +53,7 @@ fn insert_many_rows_in_batches() {
 #[test]
 fn large_select_returns_all_rows() {
     let db = open_test_db();
-    db.create_database("app").expect("create database");
+    db.execute("CREATE DATABASE app;").expect("create database");
     db.execute("CREATE TABLE app.t (k bigint);")
         .expect("create table");
 
@@ -82,7 +82,7 @@ fn large_select_returns_all_rows() {
 fn many_open_close_iterations_do_not_leak_resources() {
     for _ in 0..50 {
         let db = open_test_db();
-        db.create_database("app").expect("create database");
+        db.execute("CREATE DATABASE app;").expect("create database");
         db.execute("CREATE TABLE app.t (k bigint);")
             .expect("create table");
         for k in 0..20_i64 {
@@ -96,7 +96,7 @@ fn many_open_close_iterations_do_not_leak_resources() {
 #[test]
 fn many_moderate_strings_round_trip() {
     let db = open_test_db();
-    db.create_database("app").expect("create database");
+    db.execute("CREATE DATABASE app;").expect("create database");
     db.execute("CREATE TABLE app.t (k bigint, v string);")
         .expect("create table");
 
@@ -128,7 +128,7 @@ fn many_moderate_strings_round_trip() {
 #[test]
 fn many_repeated_point_queries() {
     let db = open_test_db();
-    db.create_database("app").expect("create database");
+    db.execute("CREATE DATABASE app;").expect("create database");
     db.execute("CREATE TABLE app.t (k bigint, v bigint);")
         .expect("create table");
 

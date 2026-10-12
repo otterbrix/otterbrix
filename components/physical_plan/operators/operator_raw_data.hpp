@@ -20,11 +20,8 @@ namespace components::operators {
         // INSERT sink folds the VALUES batches via push() instead of adopting
         // left_->output() wholesale) rather than forcing the legacy materialize path.
         //
-        // A VALUES literal ALWAYS carries real columns (the value schema), so a
-        // schema'd 0-row chunk is NOT the drain sentinel — only the 0-column chunk
-        // returned past the cursor end is. A 0-row VALUES still emits its one schema'd
-        // 0-row chunk first (so an OUTER join NULL-pads / a COUNT over it sees 0),
-        // then drains.
+        // A 0-row VALUES still emits its one schema'd 0-row chunk first (so an OUTER
+        // join NULL-pads / a COUNT over it sees 0), then ends the stream.
         //
         // source_next does NO cross-actor await (the data is in-process); it resolves
         // the future synchronously with a co_return.
@@ -35,14 +32,10 @@ namespace components::operators {
         // join/update/delete with a VALUES right side reads the materialized output_,
         // not source_next.
         [[nodiscard]] pipeline_role role() const noexcept override { return pipeline_role::source; }
-        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<vector::data_chunk_t>>
+        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         source_next(pipeline::context_t* ctx) override;
 
     private:
-        // Build the 0-column drain sentinel that tells execute_pipeline's pump to
-        // stop (mirrors the scan sources' drain chunk).
-        vector::data_chunk_t make_drain_chunk();
-
         // Cursor over output_->chunks(): index of the next chunk to emit. When it
         // passes the chunk count the source is drained. output_ always carries the
         // VALUES schema chunk (>=1 chunk), so the schema'd 0-row guard a 0-row VALUES

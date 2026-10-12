@@ -6,12 +6,14 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr create_plan_function(const context_storage_t& context,
-                                                             const components::logical_plan::node_ptr& node) {
+    components::operators::operator_ptr
+    create_plan_function(const context_storage_t& context,
+                         const components::compute::function_registry_t& function_registry,
+                         const components::logical_plan::node_ptr& node) {
         const auto* function_node = static_cast<const components::logical_plan::node_function_t*>(node.get());
 
-        auto* resource = context.has_table_oid(node->table_oid()) ? context.resource : node->resource();
-        auto log = context.has_table_oid(node->table_oid()) ? context.log.clone() : log_t{};
+        auto* resource = context.resource;
+        auto log = context.log.clone();
 
         // Moved into the operator (lives on `resource`) after the logical plan's own arena is gone,
         // so every key must be placed on `resource` too.
@@ -28,11 +30,14 @@ namespace services::planner::impl {
         const std::string& alias =
             function_node->result_alias().empty() ? function_node->name() : function_node->result_alias();
 
-        return boost::intrusive_ptr(new components::operators::operator_function_t(resource,
-                                                                                   std::move(log),
-                                                                                   function_node->function_uid(),
-                                                                                   std::move(args),
-                                                                                   alias));
+        // Validation resolved the uid against this same registry, so the operator owns a copy and runs without one.
+        const auto* function = function_registry.get_function(function_node->function_uid());
+        return boost::intrusive_ptr(new components::operators::operator_function_t(
+            resource,
+            std::move(log),
+            function == nullptr ? components::compute::no_function() : function->get_copy(resource),
+            std::move(args),
+            alias));
     }
 
 } // namespace services::planner::impl

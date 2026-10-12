@@ -130,10 +130,10 @@ TEST_CASE("group operator contracts: aggregator error on empty-input global aggr
     // NULL row instead.
     auto resource = core::pmr::otterbrix_resource();
 
-    auto* registry = compute::function_registry_t::get_default();
-    REQUIRE(registry != nullptr);
+    compute::function_registry_t builtins(&resource);
+    compute::register_default_functions(builtins);
     compute::function_uid avg_uid = compute::invalid_function_uid;
-    for (const auto& [name, uid] : registry->get_functions()) {
+    for (const auto& [name, uid] : builtins.get_functions()) {
         if (name == "avg") {
             avg_uid = uid;
             break;
@@ -144,12 +144,13 @@ TEST_CASE("group operator contracts: aggregator error on empty-input global aggr
     boost::intrusive_ptr<operators::operator_hash_group_t> group(
         new operators::operator_hash_group_t(&resource, log_t{}));
     // The reduce IS an aggregate node in the group's graph, so the OUTPUT carries the aggregate
-    // expression; add_value only records that a reduction exists. Both stamps the builder demands
-    // of validation (uid + result type) are applied here by hand.
+    // expression; add_value only records that a reduction exists. The stamps the builder demands
+    // of validation (the function + result type) are applied here by hand.
     const components::types::complex_logical_type double_type{components::types::logical_type::DOUBLE};
     expressions::key_t agg_key{&resource, "a"};
     auto aggregate = expressions::make_aggregate_expression(&resource, "avg", agg_key);
-    aggregate->add_function_uid(avg_uid);
+    aggregate->set_pin(components::compute::function_pin_t{avg_uid});
+    aggregate->set_function(builtins.get_function(avg_uid)->get_copy(&resource));
     aggregate->set_result_type(double_type);
     aggregate->append_param(core::parameter_id_t(1)); // AVG($1), $1 bound to a string below
     group->add_value(std::pmr::string("a", &resource), double_type);

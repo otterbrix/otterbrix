@@ -22,17 +22,6 @@ using namespace test_helpers;
 
 namespace {
 
-    // base_otterbrix_t's manager_wal_ is protected, so a thin subclass is the only way to read the
-    // live worker count.
-    class wal_probe_spaces_t final : public otterbrix::base_otterbrix_t {
-    public:
-        explicit wal_probe_spaces_t(const configuration::config& config)
-            : otterbrix::base_otterbrix_t(config) {
-            components::compute::function_registry_t::reset_default();
-        }
-        std::size_t wal_worker_count() const { return manager_wal_->active_worker_count(); }
-    };
-
     bool dir_has_wal_segment(const std::filesystem::path& dir) {
         for (const auto& f : std::filesystem::directory_iterator(dir)) {
             if (!f.is_regular_file()) {
@@ -83,9 +72,12 @@ TEST_CASE("integration::cpp::wal_storage_namespace_dirs::no_worker_for_a_storage
     INFO("there must be a real database WAL directory to spawn a worker for");
     REQUIRE_FALSE(db_dirs.empty());
 
-    wal_probe_spaces_t space(config);
-    const auto workers = space.wal_worker_count();
-    INFO("db dirs (should each get a worker): " << db_dirs.size() << "; storage namespace dirs (should get none): "
-                                                << storage_dirs.size() << "; workers spawned: " << workers);
-    REQUIRE(workers == db_dirs.size());
+    // A worker opens a writable wal_ segment in its directory as it is spawned, so a worker raised for a
+    // storage namespace directory leaves a segment behind there.
+    { test_spaces space(config); }
+    for (const auto oid : storage_dirs) {
+        const auto dir = config.wal.path / std::to_string(static_cast<unsigned>(oid));
+        INFO("storage namespace directory " << dir.string() << " must not get a WAL worker on restart");
+        CHECK_FALSE(dir_has_wal_segment(dir));
+    }
 }

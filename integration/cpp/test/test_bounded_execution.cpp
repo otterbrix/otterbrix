@@ -29,7 +29,7 @@ TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", 
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, bounded_db, bounded_coll);
+        test_create_collection(dispatcher, session, core::dbname_t{bounded_db}, core::relname_t{bounded_coll});
     }
 
     {

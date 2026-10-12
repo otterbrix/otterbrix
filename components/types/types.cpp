@@ -126,10 +126,6 @@ namespace components::types {
                     extension_ = std::make_unique<enum_logical_type_extension>(
                         *static_cast<enum_logical_type_extension*>(other.extension_.get()));
                     break;
-                case logical_type_extension::extension_type::USER:
-                    extension_ = std::make_unique<user_logical_type_extension>(
-                        *static_cast<user_logical_type_extension*>(other.extension_.get()));
-                    break;
                 case logical_type_extension::extension_type::FUNCTION:
                     extension_ = std::make_unique<function_logical_type_extension>(
                         *static_cast<function_logical_type_extension*>(other.extension_.get()));
@@ -174,10 +170,6 @@ namespace components::types {
                 case logical_type_extension::extension_type::ENUM:
                     extension_ = std::make_unique<enum_logical_type_extension>(
                         *static_cast<enum_logical_type_extension*>(other.extension_.get()));
-                    break;
-                case logical_type_extension::extension_type::USER:
-                    extension_ = std::make_unique<user_logical_type_extension>(
-                        *static_cast<user_logical_type_extension*>(other.extension_.get()));
                     break;
                 case logical_type_extension::extension_type::FUNCTION:
                     extension_ = std::make_unique<function_logical_type_extension>(
@@ -820,16 +812,6 @@ namespace components::types {
         return type_name_ == rhs.type_name_ && entries_ == rhs.entries_;
     }
 
-    user_logical_type_extension::user_logical_type_extension(std::string catalog,
-                                                             std::vector<logical_value_t> user_type_modifiers)
-        : logical_type_extension(extension_type::USER)
-        , catalog_(std::move(catalog))
-        , user_type_modifiers_(std::move(user_type_modifiers)) {}
-
-    bool user_logical_type_extension::operator==(const user_logical_type_extension& rhs) const {
-        return catalog_ == rhs.catalog_ && user_type_modifiers_ == rhs.user_type_modifiers_;
-    }
-
     function_logical_type_extension::function_logical_type_extension(complex_logical_type return_type,
                                                                      std::pmr::vector<complex_logical_type> arguments)
         : logical_type_extension(extension_type::FUNCTION)
@@ -873,9 +855,6 @@ namespace components::types {
             case logical_type_extension::extension_type::ENUM:
                 return static_cast<const enum_logical_type_extension&>(lhs) ==
                        static_cast<const enum_logical_type_extension&>(rhs);
-            case logical_type_extension::extension_type::USER:
-                return static_cast<const user_logical_type_extension&>(lhs) ==
-                       static_cast<const user_logical_type_extension&>(rhs);
             case logical_type_extension::extension_type::FUNCTION:
                 return static_cast<const function_logical_type_extension&>(lhs) ==
                        static_cast<const function_logical_type_extension&>(rhs);

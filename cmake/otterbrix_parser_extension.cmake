@@ -4,7 +4,7 @@
 #
 # Builds a parser extension (its own flex+bison grammar) as a static library
 # named otterbrix_<lib_name>, aliased otterbrix::<lib_name>, linked against
-# otterbrix::sql. It hides the per-extension bison/flex wiring.
+# otterbrix::otterbrix. It hides the per-extension bison/flex wiring.
 #
 # Layout expected in calling directory:
 #   <prefix>_gram.y   — bison grammar, %name-prefix="<prefix>_yy"
@@ -41,5 +41,5 @@ function(otterbrix_add_parser_extension lib_name)
     target_include_directories(otterbrix_${lib_name} PUBLIC
             ${CMAKE_CURRENT_SOURCE_DIR}   # <lib_name>.hpp, <prefix>_ast.hpp
             ${CMAKE_CURRENT_BINARY_DIR})  # generated <prefix>_gram.hpp
-    target_link_libraries(otterbrix_${lib_name} PUBLIC otterbrix::sql)
+    target_link_libraries(otterbrix_${lib_name} PUBLIC otterbrix::otterbrix)
 endfunction()

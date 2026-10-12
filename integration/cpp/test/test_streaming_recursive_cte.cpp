@@ -26,7 +26,7 @@ namespace {
                         "(4, 'Engineer', 2), "
                         "(5, 'Designer', 3);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 5);
+        REQUIRE(cur->affected_rows() == 5);
     }
 } // namespace
 

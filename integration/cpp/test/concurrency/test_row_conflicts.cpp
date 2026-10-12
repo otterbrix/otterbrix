@@ -322,7 +322,7 @@ TEST_CASE("integration::cpp::concurrency::row_conflicts::parallel", "[parallel]"
             std::ignore = session.run("BEGIN;");
             const auto removed = session.run("DELETE FROM db.t WHERE id >= 0;");
             if (removed->is_success() && session.run("COMMIT;")->is_success()) {
-                deleted += removed->size();
+                deleted += removed->affected_rows();
             } else {
                 std::ignore = session.run("ROLLBACK;");
             }

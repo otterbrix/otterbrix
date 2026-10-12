@@ -21,6 +21,7 @@
 #include <components/vector/data_chunk.hpp>
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
+#include <core/tests/skip_under_root.hpp>
 
 #include <services/index/index_agent_contract.hpp>
 #include <services/index/manager_index.hpp>
@@ -34,6 +35,8 @@
 #include <vector>
 
 #include "index_fixture_path.hpp"
+#include <components/log/test/test_log.hpp>
+#include <services/disk/tests/test_directory.hpp>
 
 using components::expressions::compare_type;
 using components::session::session_id_t;
@@ -132,11 +135,18 @@ namespace {
 // A duplicate (keys, type) pair is refused: it's a pure cost, maintained twice on every DML for no benefit.
 TEST_CASE("services::index::manager::bootstrap refuses a duplicate keys+type pair") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("index_manager_bootstrap_duplicate");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
-    auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
+    auto manager = actor_zeta::spawn<manager_index_t>(&resource,
+                                                      scheduler.get(),
+                                                      log,
+                                                      test_directory::created(path),
+                                                      1000,
+                                                      100,
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager
@@ -162,11 +172,18 @@ TEST_CASE("services::index::manager::bootstrap refuses a duplicate keys+type pai
 // resolve_key_column only uses the first key, so a multi-column set is refused, not silently narrowed.
 TEST_CASE("services::index::manager::a multi-column key set is refused, not narrowed") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("index_manager_multi_column_refusal");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
-    auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
+    auto manager = actor_zeta::spawn<manager_index_t>(&resource,
+                                                      scheduler.get(),
+                                                      log,
+                                                      test_directory::created(path),
+                                                      1000,
+                                                      100,
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
 
@@ -197,11 +214,18 @@ TEST_CASE("services::index::manager::a multi-column key set is refused, not narr
 // The handler's contract returns void, so a record the registry can't place must surface at commit_inserts instead.
 TEST_CASE("services::index::manager::a catchup record the registry cannot place fails the build's commit") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("index_manager_catchup_lost_record");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
-    auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
+    auto manager = actor_zeta::spawn<manager_index_t>(&resource,
+                                                      scheduler.get(),
+                                                      log,
+                                                      test_directory::created(path),
+                                                      1000,
+                                                      100,
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     const auto session = session_id_t::generate_uid();
     const uint64_t build_txn = TRANSACTION_ID_START + 31;
@@ -252,11 +276,18 @@ TEST_CASE("services::index::manager::a catchup record the registry cannot place 
 // integration/cpp/test/test_create_index_backfill_addressing.cpp).
 TEST_CASE("services::index::manager::a staging record naming an unregistered index fails the build's commit") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("index_manager_unaddressed_staging");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
-    auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
+    auto manager = actor_zeta::spawn<manager_index_t>(&resource,
+                                                      scheduler.get(),
+                                                      log,
+                                                      test_directory::created(path),
+                                                      1000,
+                                                      100,
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager
@@ -315,11 +346,18 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
 // A catchup the agent refuses must be recorded, or the build would publish an index that never took those rows.
 TEST_CASE("services::index::manager::a catchup staging the agent refused fails the build's commit") {
     auto resource = core::pmr::otterbrix_resource();
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("index_manager_catchup_refused_staging");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
-    auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
+    auto manager = actor_zeta::spawn<manager_index_t>(&resource,
+                                                      scheduler.get(),
+                                                      log,
+                                                      test_directory::created(path),
+                                                      1000,
+                                                      100,
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager
@@ -380,12 +418,20 @@ TEST_CASE("services::index::manager::a catchup staging the agent refused fails t
 
 // An entry must leave the deferred-erase queue only after the erase succeeds, or a refused erase is never retried.
 TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not forgotten") {
+    test_helpers::skip_under_root();
     auto resource = core::pmr::otterbrix_resource();
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    auto log = make_test_log();
     const auto path = fresh_index_root("index_manager_deferred_erase_requeue");
 
     auto scheduler = std::make_unique<actor_zeta::shared_work>(1, 100);
-    auto manager = actor_zeta::spawn<manager_index_t>(&resource, scheduler.get(), log, path, 1000, 100, 1000);
+    auto manager = actor_zeta::spawn<manager_index_t>(&resource,
+                                                      scheduler.get(),
+                                                      log,
+                                                      test_directory::created(path),
+                                                      1000,
+                                                      100,
+                                                      1000,
+                                                      configuration::pump_intervals_t{});
 
     manager->bootstrap_engine_sync(kTableOid);
     REQUIRE_FALSE(manager

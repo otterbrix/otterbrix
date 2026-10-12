@@ -18,11 +18,10 @@ namespace services::planner::impl {
         }
     } // namespace
 
-    components::operators::operator_ptr
-    create_plan_check_constraint(const context_storage_t& context,
-                                 const components::compute::function_registry_t& function_registry,
-                                 const components::logical_plan::node_ptr& node,
-                                 const components::logical_plan::storage_parameters* params) {
+    plan_result_t create_plan_check_constraint(const context_storage_t& context,
+                                               const components::compute::function_registry_t& function_registry,
+                                               const components::logical_plan::node_ptr& node,
+                                               const components::logical_plan::storage_parameters* params) {
         auto* n = static_cast<components::logical_plan::node_check_constraint_t*>(node.get());
         auto plan = boost::intrusive_ptr(new components::operators::operator_check_constraint_t(context.resource,
                                                                                                 context.log.clone(),
@@ -33,7 +32,7 @@ namespace services::planner::impl {
         // Child sub-plan (the DML sink, possibly under an fk_check chain).
         components::operators::operator_ptr child;
         if (!node->children().empty()) {
-            child = create_plan(context, function_registry, node->children().front(), {}, params);
+            VALUE_OR_RETURN(child, create_plan(context, function_registry, node->children().front(), {}, params));
         }
 
         // When the table carries UNIQUE / PRIMARY KEY constraints, splice an

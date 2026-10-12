@@ -428,8 +428,8 @@ TEST_CASE("root_reclaim: one transient fsync failure does not grow the file with
     remove_file(path);
 }
 
-// The candidate list is DISK BYTES: block_manager_t::unregister_block's
-// `assert(id < MAXIMUM_BLOCK)` does NOTHING under NDEBUG, letting the id wrap onto a live block.
+// The candidate list is DISK BYTES: an id past MAXIMUM_BLOCK must be refused at run time, since an
+// assert does NOTHING under NDEBUG and would let the id wrap onto a live block.
 TEST_CASE("root_reclaim: a transient-domain candidate is dropped and latched, not asserted", "[a7.3]") {
     const auto path = reclaim_db_path("domain");
     remove_file(path);
@@ -546,9 +546,12 @@ TEST_CASE("root_reclaim: a failed reclaim latches degraded and stops the file gr
     remove_file(path);
 }
 
-// row_group() hands out COUNTED collection copies BY VALUE, so a held copy outlives compact();
-// its destructor erasing blocks_[id] by ID after reissue would take the LIVE handle's slot with it.
-TEST_CASE("root_reclaim: a collection held across compact does not strip a reused block's registry entry",
+// row_group() hands out COUNTED collection copies BY VALUE, so a held copy outlives compact(). Its blocks
+// stay its own while it lives (nothing frees or reissues a block under a reader): the manager parks the
+// free (freed_while_held_), the first checkpoint after the copy dies publishes the ids, and the round
+// after reissues them. Measured without the hand-back: 6 blocks, 1 572 864 B stranded per held copy, in
+// memory and in the file, surviving a restart.
+TEST_CASE("root_reclaim: a collection held across compact keeps its blocks and gives them back when it dies",
           "[a7.3][item_c]") {
     const auto path = reclaim_db_path("stale_holder");
     remove_file(path);
@@ -562,42 +565,78 @@ TEST_CASE("root_reclaim: a collection held across compact does not strip a reuse
 
     auto stale = table->row_group();
     REQUIRE(stale);
-
-    // Round 1 releases the stale ids into pending_free_; round 2 is the first that may reissue them.
-    REQUIRE(table->compact(WATERMARK));
-    checkpoint_production(bm, *table);
-    REQUIRE(table->compact(WATERMARK));
-    checkpoint_production(bm, *table);
-
-    // The premise, asserted rather than assumed: at least one stale-held id is now live-registered.
     std::pmr::vector<uint64_t> stale_ids{&env.resource};
     stale->collect_disk_block_ids(stale_ids);
     std::sort(stale_ids.begin(), stale_ids.end());
     stale_ids.erase(std::unique(stale_ids.begin(), stale_ids.end()), stale_ids.end());
-    std::set<uint64_t> reused;
-    for (auto id : stale_ids) {
-        if (bm.registry_alive(id)) {
-            reused.insert(id);
+    REQUIRE_FALSE(stale_ids.empty());
+
+    // Round 1 releases the copy's ids; round 2 is the first that could reissue them, were they free.
+    bm.dev_reset_tracking();
+    REQUIRE(table->compact(WATERMARK));
+    checkpoint_production(bm, *table);
+    REQUIRE(table->compact(WATERMARK));
+    checkpoint_production(bm, *table);
+
+    {
+        const auto& issued = bm.dev_issued_ids();
+        const auto reusable = bm.dev_reusable_snapshot();
+        const auto pending = bm.dev_pending_free_snapshot();
+        const auto parked = bm.dev_freed_while_held_snapshot();
+        for (auto id : stale_ids) {
+            INFO("held block " << id << " of " << dump(stale_ids));
+            CHECK(bm.registry_alive(id));
+            CHECK(std::find(issued.begin(), issued.end(), id) == issued.end());
+            CHECK(reusable.count(id) == 0);
+            CHECK(pending.count(id) == 0);
+            CHECK(parked.count(id) == 1);
         }
     }
-    INFO("stale collection ids " << dump(stale_ids) << ", reused by the live table " << dump(reused));
-    REQUIRE_FALSE(reused.empty());
+    REQUIRE(stale->total_rows() == RECLAIM_ROWS);
+    REQUIRE(scan_and_count(*table, env) == RECLAIM_ROWS);
 
     stale.reset();
 
-    for (auto id : reused) {
-        INFO("reused block " << id << " must still be live table state");
-        CHECK(bm.registry_alive(id));
+    {
+        const auto pending = bm.dev_pending_free_snapshot();
+        const auto parked = bm.dev_freed_while_held_snapshot();
+        for (auto id : stale_ids) {
+            INFO("released block " << id << " of " << dump(stale_ids));
+            CHECK_FALSE(bm.registry_alive(id));
+            CHECK(pending.count(id) == 0);
+            CHECK(parked.count(id) == 1);
+        }
     }
 
-    // The reclaim on top of this must not have freed anything the table is still reading.
     REQUIRE(table->compact(WATERMARK));
     checkpoint_production(bm, *table);
     auto report = otterbrix_test::walk_blocks(bm, path, &env.resource);
     REQUIRE(report.ok);
     INFO("chain=" << report.chain_blocks.size() << " durable_data=" << report.durable_data.size()
-                  << " registry=" << report.registry_live.size() << " freelist=" << report.free_list_content.size()
+                  << " registry=" << report.registry_live.size() << " freelist=" << dump(report.free_list_content)
                   << " unexplained=" << dump(report.unexplained));
+    CHECK(report.reachable_free_overlap.empty());
+    CHECK(report.unexplained.empty());
+    CHECK(bm.dev_freed_while_held_snapshot().empty());
+    for (auto id : stale_ids) {
+        INFO("published block " << id);
+        CHECK(report.free_list_content.count(id) != 0);
+    }
+
+    bm.dev_reset_tracking();
+    REQUIRE(table->compact(WATERMARK));
+    checkpoint_production(bm, *table);
+    {
+        const auto& issued = bm.dev_issued_ids();
+        bool reissued = false;
+        for (auto id : stale_ids) {
+            reissued = reissued || std::find(issued.begin(), issued.end(), id) != issued.end();
+        }
+        INFO("issued after the release " << dump(issued) << ", stale " << dump(stale_ids));
+        CHECK(reissued);
+    }
+    report = otterbrix_test::walk_blocks(bm, path, &env.resource);
+    REQUIRE(report.ok);
     CHECK(report.reachable_free_overlap.empty());
     CHECK(report.unexplained.empty());
     REQUIRE(scan_and_count(*table, env) == RECLAIM_ROWS);

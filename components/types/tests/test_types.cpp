@@ -393,18 +393,6 @@ TEST_CASE("logical_value: an unsupported operand type is a refusal, not a throw"
         CHECK(result.error().type == core::error_code_t::arithmetics_failure);
     }
 
-    SECTION("exponent has no floating arm at all") {
-        auto result = logical_value_t::exponent(two_point_oh, two_point_oh);
-        REQUIRE(result.has_error());
-        CHECK(result.error().type == core::error_code_t::arithmetics_failure);
-    }
-
-    SECTION("bit_and over a floating operand") {
-        auto result = logical_value_t::bit_and(two_point_oh, two_point_oh);
-        REQUIRE(result.has_error());
-        CHECK(result.error().type == core::error_code_t::arithmetics_failure);
-    }
-
     SECTION("a supported pair still answers with the value") {
         auto sum = logical_value_t::sum(three, three);
         REQUIRE_FALSE(sum.has_error());
@@ -543,14 +531,6 @@ TEST_CASE("components::types::logical_value::mixed_operand_arithmetic_refuses") 
     }
     SECTION("number % string refuses") {
         auto r = logical_value_t::modulus(num, str);
-        REQUIRE(r.has_error());
-    }
-    SECTION("number ^ string refuses") {
-        auto r = logical_value_t::exponent(num, str);
-        REQUIRE(r.has_error());
-    }
-    SECTION("number & string refuses") {
-        auto r = logical_value_t::bit_and(num, str);
         REQUIRE(r.has_error());
     }
     SECTION("mixed NUMERIC pairs still promote and answer") {

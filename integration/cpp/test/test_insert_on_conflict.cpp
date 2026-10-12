@@ -103,7 +103,7 @@ TEST_CASE("integration::cpp::insert_on_conflict") {
                               "INSERT INTO ocdb.items (id, v) VALUES (2, 99), (4, 40) ON CONFLICT (id) DO NOTHING;");
             INFO(why(*cursor));
             REQUIRE(cursor->is_success());
-            CHECK(cursor->size() == 1);
+            CHECK(cursor->affected_rows() == 1);
             CHECK(read_items(dispatcher) == items_t{{1, 10}, {2, 20}, {3, 30}, {4, 40}});
         }
         SECTION("a column target with RETURNING") {
@@ -120,7 +120,7 @@ TEST_CASE("integration::cpp::insert_on_conflict") {
                               "pk_items_id DO NOTHING;");
             INFO(why(*cursor));
             REQUIRE(cursor->is_success());
-            CHECK(cursor->size() == 1);
+            CHECK(cursor->affected_rows() == 1);
             CHECK(read_items(dispatcher) == items_t{{1, 10}, {2, 20}, {3, 30}, {5, 50}});
         }
         SECTION("ON CONSTRAINT with RETURNING") {
@@ -136,7 +136,7 @@ TEST_CASE("integration::cpp::insert_on_conflict") {
                               "INSERT INTO ocdb.items (id, v) VALUES (1, 99), (6, 60) ON CONFLICT DO NOTHING;");
             INFO(why(*cursor));
             REQUIRE(cursor->is_success());
-            CHECK(cursor->size() == 1);
+            CHECK(cursor->affected_rows() == 1);
             CHECK(read_items(dispatcher) == items_t{{1, 10}, {2, 20}, {3, 30}, {6, 60}});
         }
         SECTION("no target with RETURNING") {
@@ -222,7 +222,7 @@ TEST_CASE("integration::cpp::insert_on_conflict") {
                               "DO UPDATE SET v = excluded.v;");
             INFO(why(*cursor));
             REQUIRE(cursor->is_success());
-            CHECK(cursor->size() == 3);
+            CHECK(cursor->affected_rows() == 3);
             CHECK(read_items(dispatcher) == items_t{{1, 11}, {2, 20}, {3, 33}, {7, 70}});
         }
         SECTION("a constraint named by ON CONSTRAINT") {

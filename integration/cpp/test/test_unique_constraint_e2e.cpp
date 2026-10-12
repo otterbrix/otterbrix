@@ -268,7 +268,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::multi_chunk_straddle_ac
         });
         INFO("bulk insert error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRows);
+        REQUIRE(cur->affected_rows() == kRows);
 
         auto all = exec(dispatcher, "SELECT COUNT(name) AS c FROM TestDatabase.big;");
         REQUIRE(all->is_success());

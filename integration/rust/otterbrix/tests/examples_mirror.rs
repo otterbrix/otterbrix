@@ -33,8 +33,8 @@ fn lib_rs_quick_start() {
     let cfg = Config::new(&dir);
     let db = Database::open(cfg).expect("open database");
 
-    db.create_database("app").unwrap();
-    db.create_collection("app", "t").unwrap();
+    db.execute("CREATE DATABASE app;").unwrap();
+    db.execute("CREATE TABLE app.t();").unwrap();
 
     db.execute("INSERT INTO app.t (id, name) VALUES (1, 'alice');")
         .unwrap();
@@ -56,7 +56,7 @@ fn database_rs_open_example() {
 
     let cfg = Config::new(&dir);
     let db = Database::open(cfg).expect("open database");
-    db.create_database("app").unwrap();
+    db.execute("CREATE DATABASE app;").unwrap();
 }
 
 #[test]
@@ -64,8 +64,8 @@ fn database_rs_execute_with_params_example() {
     let dir = unique_dir("execute_with_params");
 
     let db = Database::open(Config::new(&dir)).unwrap();
-    db.create_database("app").unwrap();
-    db.create_collection("app", "t").unwrap();
+    db.execute("CREATE DATABASE app;").unwrap();
+    db.execute("CREATE TABLE app.t();").unwrap();
 
     let params = [
         SqlParam {

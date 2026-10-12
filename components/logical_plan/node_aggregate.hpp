@@ -1,6 +1,5 @@
 #pragma once
 
-#include "identifier_types.hpp"
 #include "node.hpp"
 #include "node_limit.hpp"
 #include "node_match.hpp"
@@ -13,11 +12,7 @@ namespace components::logical_plan {
 
     class node_aggregate_t final : public node_t {
     public:
-        explicit node_aggregate_t(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
-        explicit node_aggregate_t(std::pmr::memory_resource* resource,
-                                  core::uid_t uid,
-                                  core::dbname_t dbname,
-                                  core::relname_t relname);
+        node_aggregate_t(std::pmr::memory_resource* resource, qualified_name_t target);
 
         void set_distinct(bool d) { distinct_ = d; }
         bool is_distinct() const { return distinct_; }
@@ -29,13 +24,10 @@ namespace components::logical_plan {
         std::pmr::vector<expressions::key_t>& distinct_on_keys() { return distinct_on_keys_; }
         void set_distinct_on_keys(std::pmr::vector<expressions::key_t> keys) { distinct_on_keys_ = std::move(keys); }
 
-        // Carries table identity through the parser-window; resolved code routes via table_oid() instead.
-        const core::dbname_t& dbname() const noexcept { return dbname_; }
-        const core::relname_t& relname() const noexcept { return relname_; }
-        // Mirrors node_match_t::source(); a spliced view/CTE body clears relname_, so this reads as `none` too.
-        match_source source() const noexcept { return relname_.t.empty() ? match_source::none : match_source::table; }
-        // External identifier from a SQL `<uid>.<db>.<schema>.<rel>` form; empty when omitted (see swap_externals).
-        const core::uid_t& uid() const noexcept { return uid_; }
+        // Mirrors node_match_t::source(); a spliced view/CTE body clears the target, so this reads as `none` too.
+        match_source source() const noexcept {
+            return target_.collection.t.empty() ? match_source::none : match_source::table;
+        }
 
         // Populated by the post-validate column_pruning pass; empty means no projection (scan all columns).
         const std::vector<size_t>& projected_cols() const { return projected_cols_; }
@@ -49,17 +41,12 @@ namespace components::logical_plan {
         // Must run once the view body is spliced in as child[0], or bind_catalog_data re-stamps
         // table_oid and collect_view_references re-expands it.
         void clear_source_identity() {
-            uid_.t.clear();
-            dbname_.t.clear();
-            relname_.t.clear();
+            target_ = qualified_name_t{};
             set_table_oid(components::catalog::INVALID_OID);
             set_table_metadata(nullptr);
         }
 
     private:
-        core::uid_t uid_;
-        core::dbname_t dbname_;
-        core::relname_t relname_;
         bool distinct_{false};
         std::pmr::vector<expressions::key_t> distinct_on_keys_;
         std::vector<size_t> projected_cols_;
@@ -70,11 +57,6 @@ namespace components::logical_plan {
 
     using node_aggregate_ptr = boost::intrusive_ptr<node_aggregate_t>;
 
-    node_aggregate_ptr
-    make_node_aggregate(std::pmr::memory_resource* resource, core::dbname_t dbname, core::relname_t relname);
-    node_aggregate_ptr make_node_aggregate(std::pmr::memory_resource* resource,
-                                           core::uid_t uid,
-                                           core::dbname_t dbname,
-                                           core::relname_t relname);
+    node_aggregate_ptr make_node_aggregate(std::pmr::memory_resource* resource, qualified_name_t target);
 
 } // namespace components::logical_plan

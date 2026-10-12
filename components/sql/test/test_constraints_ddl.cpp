@@ -418,7 +418,7 @@ TEST_CASE("components::sql::if_not_exists") {
         }(transformer.transform(pg_cell_to_node_cast(stmt)).finalize()));
         auto node = ddl_consumer(result.sub_queries.back());
         auto* cc = static_cast<node_create_collection_t*>(node.get());
-        REQUIRE(cc->relname() == "tbl");
+        REQUIRE(cc->target().collection.t == "tbl");
         REQUIRE(cc->if_not_exists());
     }
 

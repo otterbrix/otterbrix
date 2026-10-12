@@ -5,11 +5,14 @@ namespace components::logical_plan {
     node_dynamic_cascade_delete_t::node_dynamic_cascade_delete_t(std::pmr::memory_resource* resource,
                                                                  components::catalog::oid_t seed_classid,
                                                                  components::catalog::oid_t seed_objid,
-                                                                 components::catalog::drop_behavior_t behavior)
-        : node_t(resource, node_type::dynamic_cascade_delete_t)
+                                                                 components::catalog::drop_behavior_t behavior,
+                                                                 qualified_name_t target,
+                                                                 char relkind)
+        : node_t(resource, node_type::dynamic_cascade_delete_t, std::move(target))
         , seed_classid_(seed_classid)
         , seed_objid_(seed_objid)
-        , behavior_(behavior) {}
+        , behavior_(behavior)
+        , relkind_(relkind) {}
 
     hash_t node_dynamic_cascade_delete_t::hash_impl() const { return 0; }
 

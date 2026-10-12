@@ -63,6 +63,11 @@ namespace components::expressions {
     void compare_expression_t::add_function_uid(compute::function_uid uid) noexcept { function_uid_ = uid; }
     compute::function_uid compare_expression_t::function_uid() const noexcept { return function_uid_; }
 
+    void compare_expression_t::set_function(compute::function_ptr function) noexcept {
+        function_ = std::move(function);
+    }
+    const compute::function* compare_expression_t::function() const noexcept { return function_.get(); }
+
     core::parameter_id_t compare_expression_t::regex_flags_param() const noexcept { return regex_flags_param_; }
     void compare_expression_t::set_regex_flags(core::parameter_id_t flags) noexcept { regex_flags_param_ = flags; }
 

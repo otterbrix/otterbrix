@@ -8,6 +8,10 @@
 #include <string_view>
 
 #include <components/catalog/catalog_oids.hpp>
+#include <core/result_wrapper.hpp>
+
+#include <filesystem>
+#include <vector>
 
 namespace services::wal {
 
@@ -34,6 +38,14 @@ namespace services::wal {
         out = static_cast<components::catalog::oid_t>(parsed);
         return true;
     }
+
+    // The journal segments of one database directory: regular files whose name starts with `prefix`, sorted by
+    // name (the zero-padded suffix sorts numerically). A missing directory holds none; one that cannot be listed,
+    // or an entry that cannot be examined, refuses.
+    [[nodiscard]] core::result_wrapper_t<std::pmr::vector<std::filesystem::path>>
+    find_wal_segments(std::pmr::memory_resource* resource,
+                      const std::filesystem::path& database_dir,
+                      std::string_view prefix);
 
     inline void next_id(atomic_id_t& id, id_t stride = 1) { id += stride; }
 

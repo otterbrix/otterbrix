@@ -23,7 +23,7 @@ namespace {
             return s.str();
         });
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
 } // namespace
 
@@ -103,7 +103,7 @@ TEST_CASE("integration::cpp::create_index_backfill::backfill_after_delete_maps_c
     {
         auto cur = exec(dispatcher, "DELETE FROM IdxDb.t WHERE id < 100;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kDeleted);
+        REQUIRE(cur->affected_rows() == kDeleted);
     }
 
     REQUIRE(exec(dispatcher, "CREATE INDEX idx_grp ON IdxDb.t (grp);")->is_success());

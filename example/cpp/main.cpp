@@ -37,7 +37,9 @@ TEST_CASE("example::sql::base") {
 
     INFO("initialization");
     {
-        otterbrix = otterbrix::make_otterbrix(config);
+        auto made = otterbrix::make_otterbrix(config);
+        REQUIRE_FALSE(made.has_error());
+        otterbrix = made.value();
         execute_sql(otterbrix, R"_(CREATE DATABASE TestDatabase;)_");
         execute_sql(otterbrix, R"_(CREATE TABLE TestDatabase.TestCollection();)_");
     }
@@ -142,7 +144,9 @@ TEST_CASE("example::sql::group_by") {
 
     INFO("initialization");
     {
-        otterbrix = otterbrix::make_otterbrix(config);
+        auto made = otterbrix::make_otterbrix(config);
+        REQUIRE_FALSE(made.has_error());
+        otterbrix = made.value();
         execute_sql(otterbrix, R"_(CREATE DATABASE TestDatabase;)_");
         execute_sql(otterbrix, R"_(CREATE TABLE TestDatabase.TestCollection();)_");
 

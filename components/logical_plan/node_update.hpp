@@ -10,7 +10,9 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/types/logical_value.hpp>
 
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace components::logical_plan {
 
@@ -20,13 +22,6 @@ namespace components::logical_plan {
                                const node_match_ptr& match,
                                const node_limit_ptr& limit,
                                const std::pmr::vector<expressions::expression_ptr>& updates);
-
-        // The update target, as written. Kept on the node so enrich binds it to a
-        // resolved entry by name rather than inferring it from a child.
-        const std::string& dbname() const noexcept { return dbname_; }
-        void set_dbname(std::string dbname) { dbname_ = std::move(dbname); }
-        const std::string& relname() const noexcept { return relname_; }
-        void set_relname(std::string relname) { relname_ = std::move(relname); }
 
         const std::pmr::vector<expressions::expression_ptr>& updates() const;
         std::pmr::vector<expressions::expression_ptr>& updates();
@@ -76,8 +71,6 @@ namespace components::logical_plan {
         const std::string& excluded_alias() const noexcept { return excluded_alias_; }
 
     private:
-        std::string dbname_;
-        std::string relname_;
         std::string excluded_alias_;
         std::pmr::vector<expressions::expression_ptr> update_expressions_;
         std::pmr::vector<expressions::expression_ptr> returning_;

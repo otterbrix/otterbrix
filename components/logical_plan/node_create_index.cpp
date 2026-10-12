@@ -45,11 +45,9 @@ namespace components::logical_plan {
                                              core::indexname_t indexname,
                                              index_type type)
         : node_t(resource, node_type::create_index_t)
-        , indexname_(std::move(static_cast<std::string&>(indexname)))
+        , indexname_(std::move(indexname))
         , keys_(resource)
         , index_type_(type) {}
-
-    const std::string& node_create_index_t::name() const noexcept { return indexname_; }
 
     index_type node_create_index_t::type() const noexcept { return index_type_; }
 

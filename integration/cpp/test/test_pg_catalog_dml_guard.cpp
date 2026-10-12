@@ -153,8 +153,7 @@ TEST_CASE("integration::cpp::pg_catalog_dml_guard::sequence_wrapped_create_index
                                                            core::indexname_t{std::string{"smuggled_seq_idx"}},
                                                            logical_plan::index_type::single);
     index_node->keys().emplace_back(resource, "relname");
-    index_node->set_dbname("pg_catalog");
-    index_node->set_relname("pg_class");
+    index_node->set_target(qualified_name_t{core::dbname_t{"pg_catalog"}, core::relname_t{"pg_class"}});
     auto sequence = boost::intrusive_ptr<logical_plan::node_t>(new logical_plan::node_sequence_t(resource));
     sequence->append_child(index_node);
 

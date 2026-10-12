@@ -21,9 +21,11 @@ async fn from_arc_shares_database_with_outside_code() {
 
     {
         let guard = shared.lock();
-        guard.create_database("app").expect("create database");
         guard
-            .create_collection("app", "t")
+            .execute("CREATE DATABASE app;")
+            .expect("create database");
+        guard
+            .execute("CREATE TABLE app.t();")
             .expect("create collection");
         guard
             .execute("CREATE TABLE app.shared_tbl (id bigint, name string);")

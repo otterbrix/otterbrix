@@ -4,6 +4,7 @@ add_definitions(-DDEV_MODE)
 
 set(${PROJECT_NAME}_SOURCES
         test_primitive.cpp
+        test_array_null_literal.cpp
         test_create_drop.cpp
         test_select.cpp
         test_delete.cpp
@@ -20,6 +21,7 @@ set(${PROJECT_NAME}_SOURCES
         test_silent_narrowing.cpp
         test_transaction.cpp
         test_parser_internals.cpp
+        test_name_bugs.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

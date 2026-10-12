@@ -42,7 +42,7 @@ TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
         auto cur =
             dispatcher->execute_sql(session, "INSERT INTO cs_testdb.t1 (id, name) VALUES (1, 'Alice'), (2, 'Bob');");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 2);
+        REQUIRE(cur->affected_rows() == 2);
     }
 
     {
@@ -57,7 +57,7 @@ TEST_CASE("integration::cpp::test_computed_schema::basic_insert_and_select") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "INSERT INTO cs_testdb.t1 (id, name) VALUES (3, 'Charlie');");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->affected_rows() == 1);
     }
 
     {
@@ -89,14 +89,14 @@ TEST_CASE("integration::cpp::test_computed_schema::evolving_schema") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "INSERT INTO cs_testdb.t2 (id) VALUES (1), (2), (3);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 3);
+        REQUIRE(cur->affected_rows() == 3);
     }
 
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "INSERT INTO cs_testdb.t2 (id, value) VALUES (4, 100);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->affected_rows() == 1);
     }
 
     {
@@ -194,7 +194,7 @@ TEST_CASE("integration::cpp::test_computed_schema::delete_rows") {
             session,
             "INSERT INTO cs_testdb.t3 (id, name) VALUES (1,'a'),(2,'b'),(3,'c'),(4,'d'),(5,'e');");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 5);
+        REQUIRE(cur->affected_rows() == 5);
     }
 
     {

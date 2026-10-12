@@ -83,6 +83,7 @@ namespace components::operators {
         constexpr catalog::oid_t kPgAttribute = catalog::well_known_oid::pg_attribute_table;
         constexpr catalog::oid_t kPgComputedColumn = catalog::well_known_oid::pg_computed_column_table;
         constexpr catalog::oid_t kPgRewrite = catalog::well_known_oid::pg_rewrite_table;
+        constexpr catalog::oid_t kPgRewriteRef = catalog::well_known_oid::pg_rewrite_ref_table;
 
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
@@ -92,14 +93,27 @@ namespace components::operators {
         std::unordered_map<std::string, catalog::oid_t> namespace_cache;
 
         for (auto& entry : node_->entries()) {
-            auto table_oid = entry.relation_oid;
             if (ctx->disk_address == actor_zeta::address_t::empty_address() ||
-                (entry.relname.empty() && table_oid == catalog::INVALID_OID)) {
+                (entry.relname.empty() && entry.relation_oid == catalog::INVALID_OID)) {
                 continue;
             }
 
+            if (entry.pin.kind == components::logical_plan::view_pin_t::kind_t::storage) {
+                continue;
+            }
+            // A pinned view body name, or an entry requested by oid, is read by oid: no namespace, no name, no
+            // candidates.
+            catalog::oid_t table_oid = entry.pin.oid != catalog::INVALID_OID ? entry.pin.oid : entry.relation_oid;
             if (table_oid == catalog::INVALID_OID) {
                 auto input_namespace_oid = catalog::INVALID_OID;
+                if (entry.namespace_of != components::logical_plan::resolve_entry_t::no_target) {
+                    // The owner entry sits earlier in this node and is resolved by now.
+                    const auto& owner = node_->entries()[entry.namespace_of];
+                    if (!owner.table_md.has_value()) {
+                        continue;
+                    }
+                    input_namespace_oid = owner.table_md->namespace_oid;
+                }
                 if (!entry.dbname.empty()) {
                     auto cached = namespace_cache.find(entry.dbname);
                     if (cached != namespace_cache.end()) {
@@ -177,12 +191,12 @@ namespace components::operators {
                             continue;
                         }
                         const auto oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                        const bool has_ns = chunk.column_count() > catalog::pg_class_col::relnamespace &&
+                                            !chunk.is_null(catalog::pg_class_col::relnamespace, i);
                         const auto ns =
-                            chunk.column_count() > catalog::pg_class_col::relnamespace &&
-                                    !chunk.is_null(catalog::pg_class_col::relnamespace, i)
-                                ? static_cast<catalog::oid_t>(
-                                      chunk.get_value<std::uint32_t>(catalog::pg_class_col::relnamespace, i))
-                                : catalog::INVALID_OID;
+                            has_ns ? static_cast<catalog::oid_t>(
+                                         chunk.get_value<std::uint32_t>(catalog::pg_class_col::relnamespace, i))
+                                   : catalog::INVALID_OID;
                         if (std::none_of(candidates.begin(), candidates.end(), [oid](const candidate_t& cand) {
                                 return cand.oid == oid;
                             })) {
@@ -317,6 +331,47 @@ namespace components::operators {
                 if (!pr_batches.empty() && pr_batches[0].size() != 0 && pr_batches[0].column_count() >= 5 &&
                     !pr_batches[0].is_null(4, 0)) {
                     view_sql.assign(pr_batches[0].get_value<std::string_view>(4, 0));
+                }
+            }
+
+            std::vector<components::logical_plan::view_binding_t> view_bindings;
+            if (relkind == catalog::relkind::view || relkind == catalog::relkind::materialized_view) {
+                std::pmr::vector<std::uint64_t> rr_keys(resource_);
+                rr_keys.emplace_back(catalog::pg_rewrite_ref_col::ev_class);
+                auto [_rr, rrf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                kPgRewriteRef,
+                                                std::move(rr_keys),
+                                                components::operators::make_key_chunk(resource_, table_oid),
+                                                std::pmr::vector<std::uint64_t>{resource_});
+                auto rr_batches_r = co_await std::move(rrf);
+                if (rr_batches_r.has_error()) {
+                    set_error(rr_batches_r.error());
+                    co_return;
+                }
+                namespace col = catalog::pg_rewrite_ref_col;
+                const auto text = [](const vector::data_chunk_t& chunk, std::uint64_t column, std::uint64_t row) {
+                    return chunk.is_null(column, row) ? std::string{}
+                                                      : std::string{chunk.get_value<std::string_view>(column, row)};
+                };
+                for (const auto& chunk : rr_batches_r.value()) {
+                    for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                        components::logical_plan::view_binding_t binding;
+                        binding.refkind =
+                            static_cast<catalog::view_refkind>(chunk.get_value<std::string_view>(col::refkind, i)[0]);
+                        binding.dbname = text(chunk, col::dbname, i);
+                        binding.schema = text(chunk, col::schema, i);
+                        binding.relname = text(chunk, col::relname, i);
+                        binding.refobjid =
+                            chunk.is_null(col::refobjid, i)
+                                ? catalog::INVALID_OID
+                                : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(col::refobjid, i));
+                        binding.proargmatchers = text(chunk, col::proargmatchers, i);
+                        binding.prorettype = text(chunk, col::prorettype, i);
+                        view_bindings.push_back(std::move(binding));
+                    }
                 }
             }
 
@@ -493,7 +548,7 @@ namespace components::operators {
                         co_return;
                     }
                 }
-            } else if (relkind != catalog::relkind::view) {
+            } else {
                 std::pmr::vector<std::uint64_t> pa_keys(resource_);
                 pa_keys.emplace_back(catalog::pg_attribute_col::attrelid);
                 auto [_pa, paf] =
@@ -578,6 +633,7 @@ namespace components::operators {
             md.relkind = relkind;
             md.name = entry.relname;
             md.view_sql = std::move(view_sql);
+            md.view_bindings = std::move(view_bindings);
             md.columns.reserve(rows.size());
             for (const auto& row : rows) {
                 components::logical_plan::resolved_column_metadata_t cm;

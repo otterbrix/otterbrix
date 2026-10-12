@@ -19,11 +19,43 @@ namespace components::compute {
     arity arity::fixed_num(size_t num) { return {num, false}; }
     arity arity::var_args(size_t min) { return {min, true}; }
 
-    function::function(std::string name, arity fn_arity, function_doc doc, const function_options* default_options)
-        : name_(std::move(name))
+    function_doc::function_doc(std::pmr::memory_resource* resource)
+        : short_summary(resource)
+        , description(resource)
+        , arg_names(resource)
+        , options_required(false) {}
+
+    function_doc::function_doc(std::pmr::memory_resource* resource,
+                               std::string_view short_summary,
+                               std::string_view description,
+                               std::initializer_list<std::string_view> arg_names,
+                               bool options_required)
+        : short_summary(short_summary, resource)
+        , description(description, resource)
+        , arg_names(arg_names.begin(), arg_names.end(), resource)
+        , options_required(options_required) {}
+
+    function_doc::function_doc(const function_doc& other, const allocator_type& allocator)
+        : short_summary(other.short_summary, allocator)
+        , description(other.description, allocator)
+        , arg_names(other.arg_names, allocator)
+        , options_required(other.options_required) {}
+
+    function::function(std::pmr::memory_resource* resource,
+                       std::string_view name,
+                       arity fn_arity,
+                       const function_doc& doc,
+                       const function_options* default_options)
+        : name_(name, resource)
         , arity_(fn_arity)
-        , doc_(std::move(doc))
+        , doc_(doc, resource)
         , default_options_(default_options) {}
+
+    function::function(std::pmr::memory_resource* resource, const function& other)
+        : name_(other.name_, resource)
+        , arity_(other.arity_)
+        , doc_(other.doc_, resource)
+        , default_options_(other.default_options_) {}
 
     core::result_wrapper_t<std::reference_wrapper<const compute_kernel>>
     function::dispatch_exact(std::pmr::memory_resource* resource,
@@ -176,10 +208,10 @@ namespace components::compute {
 
         core::error_t init_kernel(const function_options* options) {
             if (func_.doc().options_required && !options && !func_.default_options()) {
-                return core::error_t(
-                    core::error_code_t::kernel_error,
-                    std::pmr::string{"Function " + func_.name() + " cannot be executed without options",
-                                     kernel_ctx_.value().exec_context().resource()});
+                std::pmr::string what{"Function ", kernel_ctx_.value().exec_context().resource()};
+                what += func_.name();
+                what += " cannot be executed without options";
+                return core::error_t(core::error_code_t::kernel_error, std::move(what));
             }
 
             if (!options) {
@@ -282,85 +314,60 @@ namespace components::compute {
 
     const function_options* function::default_options() const { return default_options_; }
 
-    vector_function::vector_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots)
-        : function_impl<vector_kernel>(std::move(name), fn_arity, std::move(doc), available_kernel_slots) {}
+    vector_function::vector_function(std::pmr::memory_resource* resource,
+                                     std::string_view name,
+                                     arity fn_arity,
+                                     const function_doc& doc,
+                                     size_t available_kernel_slots)
+        : function_impl<vector_kernel>(resource, name, fn_arity, doc, available_kernel_slots) {}
+
+    vector_function::vector_function(std::pmr::memory_resource* resource, const vector_function& other)
+        : function_impl<vector_kernel>(resource, other) {}
 
     void vector_function::accept_visitor(compute::function_visitor& visitor) const { visitor.visit(*this); }
 
-    std::unique_ptr<function> vector_function::get_copy(std::pmr::memory_resource* resource) const {
-        auto result = std::make_unique<vector_function>(name_, arity_, doc_, kernel_slots_);
-        for (const auto& kernel : kernels_) {
-            [[maybe_unused]] auto add_res = result->add_kernel(resource, kernel);
-        }
-        return result;
+    function_ptr vector_function::get_copy(std::pmr::memory_resource* resource) const {
+        return core::pmr::make_polymorphic_unique<vector_function>(resource, *this);
     }
 
-    aggregate_function::aggregate_function(std::string name,
+    aggregate_function::aggregate_function(std::pmr::memory_resource* resource,
+                                           std::string_view name,
                                            arity fn_arity,
-                                           function_doc doc,
+                                           const function_doc& doc,
                                            size_t available_kernel_slots,
                                            bool mergeable)
-        : function_impl<aggregate_kernel>(std::move(name), fn_arity, std::move(doc), available_kernel_slots)
+        : function_impl<aggregate_kernel>(resource, name, fn_arity, doc, available_kernel_slots)
         , mergeable_(mergeable) {}
+
+    aggregate_function::aggregate_function(std::pmr::memory_resource* resource, const aggregate_function& other)
+        : function_impl<aggregate_kernel>(resource, other)
+        , mergeable_(other.mergeable_) {}
 
     void aggregate_function::accept_visitor(compute::function_visitor& visitor) const { visitor.visit(*this); }
 
-    std::unique_ptr<function> aggregate_function::get_copy(std::pmr::memory_resource* resource) const {
-        auto result = std::make_unique<aggregate_function>(name_, arity_, doc_, kernel_slots_, mergeable_);
-        for (const auto& kernel : kernels_) {
-            [[maybe_unused]] auto add_res = result->add_kernel(resource, kernel);
-        }
-        return result;
+    function_ptr aggregate_function::get_copy(std::pmr::memory_resource* resource) const {
+        return core::pmr::make_polymorphic_unique<aggregate_function>(resource, *this);
     }
 
-    expand_function::expand_function(std::string name, arity fn_arity, function_doc doc, size_t available_kernel_slots)
-        : function_impl<expand_kernel>(std::move(name), fn_arity, std::move(doc), available_kernel_slots) {}
+    expand_function::expand_function(std::pmr::memory_resource* resource,
+                                     std::string_view name,
+                                     arity fn_arity,
+                                     const function_doc& doc,
+                                     size_t available_kernel_slots)
+        : function_impl<expand_kernel>(resource, name, fn_arity, doc, available_kernel_slots) {}
+
+    expand_function::expand_function(std::pmr::memory_resource* resource, const expand_function& other)
+        : function_impl<expand_kernel>(resource, other) {}
 
     void expand_function::accept_visitor(function_visitor& visitor) const { visitor.visit(*this); }
 
-    std::unique_ptr<function> expand_function::get_copy(std::pmr::memory_resource* resource) const {
-        auto result = std::make_unique<expand_function>(name_, arity_, doc_, kernel_slots_);
-        for (const auto& kernel : kernels_) {
-            [[maybe_unused]] auto add_res = result->add_kernel(resource, kernel);
-        }
-        return result;
+    function_ptr expand_function::get_copy(std::pmr::memory_resource* resource) const {
+        return core::pmr::make_polymorphic_unique<expand_function>(resource, *this);
     }
 
     function_registry_t::function_registry_t(std::pmr::memory_resource* resource)
         : resource_(resource)
         , functions_(resource_) {}
-
-    std::once_flag function_registry_t::init_flag_;
-    std::unique_ptr<function_registry_t> function_registry_t::default_registry_;
-
-    namespace {
-        // Backing resource for the process-wide default function registry. The default
-        // registry is a lazily-created singleton torn down during static destruction, so
-        // its resource must outlive that teardown; a never-destroyed heap resource
-        // (reachable from this static pointer, hence not a leak under LSan) guarantees it
-        // without relying on std::pmr::get_default_resource(), using
-        // core::pmr::otterbrix_resource.
-        std::pmr::memory_resource* default_registry_resource() {
-            static core::pmr::otterbrix_resource* resource = new core::pmr::otterbrix_resource();
-            return resource;
-        }
-    } // namespace
-
-    function_registry_t* function_registry_t::get_default() {
-        std::call_once(init_flag_, []() {
-            default_registry_ = std::make_unique<function_registry_t>(default_registry_resource());
-            default_registry_->register_builtin_functions();
-        });
-        return default_registry_.get();
-    }
-
-    void function_registry_t::reset_default() {
-        // Ensure init_flag_ has fired (so get_default() won't later overwrite our
-        // fresh instance), then replace with a clean builtins-only registry.
-        [[maybe_unused]] auto* fired = get_default();
-        default_registry_ = std::make_unique<function_registry_t>(default_registry_resource());
-        default_registry_->register_builtin_functions();
-    }
 
     core::result_wrapper_t<function_uid> function_registry_t::add_function(function_ptr function) {
         if (builtin_error_.contains_error()) {
@@ -373,7 +380,7 @@ namespace components::compute {
         }
 
         auto uid = current_uid_++;
-        functions_[uid] = std::move(function);
+        functions_.insert_or_assign(uid, std::move(function));
         return uid;
     }
 
@@ -387,7 +394,7 @@ namespace components::compute {
             return core::error_t(core::error_code_t::function_registry_error,
                                  std::pmr::string{"Cannot add null function", resource_});
         }
-        functions_[uid] = std::move(function);
+        functions_.insert_or_assign(uid, std::move(function));
         // Keep the auto-increment counter past any caller-stamped UID so future
         // add_function() calls won't collide with already-registered entries.
         if (uid >= current_uid_) {
@@ -410,17 +417,23 @@ namespace components::compute {
     bool
     function_registry_t::remove_function_by_signature(const std::string& name,
                                                       const std::pmr::vector<types::complex_logical_type>& inputs) {
-        for (auto it = functions_.begin(); it != functions_.end(); ++it) {
-            if (!it->second || it->second->name() != name)
+        const auto uid = find_overload(name, inputs);
+        return uid != invalid_function_uid && functions_.erase(uid) == 1;
+    }
+
+    function_uid function_registry_t::find_overload(std::string_view name,
+                                                    const std::pmr::vector<types::complex_logical_type>& inputs) const {
+        for (const auto& [uid, func] : functions_) {
+            if (!func || func->name() != name) {
                 continue;
-            for (auto& sig : it->second->get_signatures()) {
+            }
+            for (const auto& sig : func->get_signatures()) {
                 if (sig.matches_inputs(inputs)) {
-                    functions_.erase(it);
-                    return true;
+                    return uid;
                 }
             }
         }
-        return false;
+        return invalid_function_uid;
     }
 
     std::vector<std::pair<std::string, function_uid>> function_registry_t::get_functions() const {
@@ -487,8 +500,6 @@ namespace components::compute {
         builtin_error_ = std::move(error);
         functions_.clear();
     }
-
-    void function_registry_t::register_builtin_functions() { register_default_functions(*this); }
 
     namespace detail {
         kernel_nth_visitor::kernel_nth_visitor(size_t n)

@@ -291,7 +291,7 @@ TEST_CASE("integration::cpp::alter_add_column_reads") {
         INFO("an UPDATE that only FILTERS on the column rewrites the rows and leaves it NULL");
         {
             auto cur = run_ok(dispatcher, "UPDATE TestDatabase.t SET a = 9 WHERE extra IS NULL;");
-            CHECK(cur->size() == 3);
+            CHECK(cur->affected_rows() == 3);
         }
         {
             auto cur = run_ok(dispatcher, "SELECT a, extra FROM TestDatabase.t;");
@@ -306,7 +306,7 @@ TEST_CASE("integration::cpp::alter_add_column_reads") {
         INFO("a DELETE that filters on the column matches nothing (NULL = 5 is UNKNOWN)");
         {
             auto cur = run_ok(dispatcher, "DELETE FROM TestDatabase.t WHERE extra = 5;");
-            CHECK(cur->size() == 0);
+            CHECK(cur->affected_rows() == 0);
         }
         {
             auto cur = run_ok(dispatcher, "SELECT COUNT(*) FROM TestDatabase.t;");
@@ -317,7 +317,7 @@ TEST_CASE("integration::cpp::alter_add_column_reads") {
         INFO("an UPDATE that WRITES the column writes it");
         {
             auto cur = run_ok(dispatcher, "UPDATE TestDatabase.t SET extra = 42 WHERE a = 9;");
-            CHECK(cur->size() == 3);
+            CHECK(cur->affected_rows() == 3);
         }
         {
             auto cur = run_ok(dispatcher, "SELECT a, extra FROM TestDatabase.t;");
@@ -332,7 +332,7 @@ TEST_CASE("integration::cpp::alter_add_column_reads") {
         INFO("the table still takes INSERTs, and one that carries the column materializes it");
         {
             auto cur = run_ok(dispatcher, "INSERT INTO TestDatabase.t (a, extra) VALUES (77, 5);");
-            CHECK(cur->size() == 1);
+            CHECK(cur->affected_rows() == 1);
         }
         {
             auto cur = run_ok(dispatcher, "SELECT a FROM TestDatabase.t WHERE extra = 5;");

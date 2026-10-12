@@ -2,11 +2,47 @@
 
 #include <algorithm>
 #include <set>
+#include <system_error>
 
+#include <core/file/list_dir.hpp>
 #include <services/wal/wal.hpp>
 #include <services/wal/wal_page_reader.hpp>
 
 namespace services::wal {
+
+    core::result_wrapper_t<std::pmr::vector<std::filesystem::path>>
+    find_wal_segments(std::pmr::memory_resource* resource,
+                      const std::filesystem::path& database_dir,
+                      std::string_view prefix) {
+        std::pmr::vector<std::filesystem::path> segments(resource);
+        const auto refused = [&](const std::string& why) {
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"wal: the journal segments of " + database_dir.string() +
+                                                      " could not be listed: " + why,
+                                                  resource});
+        };
+        std::error_code ec;
+        const bool present = std::filesystem::exists(database_dir, ec);
+        if (ec) {
+            return refused(ec.message());
+        }
+        if (!present) {
+            return segments;
+        }
+        auto listed = core::filesystem::list_dir(resource, database_dir);
+        if (listed.has_error()) {
+            return refused(listed.error().what.c_str());
+        }
+        for (auto& entry : listed.value()) {
+            const auto name = entry.path.filename().string();
+            if (entry.kind == std::filesystem::file_type::regular && name.size() >= prefix.size() &&
+                name.compare(0, prefix.size(), prefix) == 0) {
+                segments.push_back(std::move(entry.path));
+            }
+        }
+        std::sort(segments.begin(), segments.end());
+        return segments;
+    }
 
     wal_reader_t::wal_reader_t(std::pmr::memory_resource* resource, const configuration::config_wal& config, log_t& log)
         : resource_(resource)
@@ -15,21 +51,43 @@ namespace services::wal {
         trace(log_, "wal_reader::create , path : {}", config_.path.string());
     }
 
+    core::error_t wal_reader_t::listing_refused(const std::filesystem::path& dir, const std::error_code& ec) {
+        core::error_t refusal(core::error_code_t::io_error,
+                              std::pmr::string{"wal_reader: the directory " + dir.string() +
+                                                   " could not be listed, replay refuses rather than coming up "
+                                                   "without what it holds: " +
+                                                   ec.message(),
+                                               resource_});
+        error(log_, "{}", refusal.what);
+        return refusal;
+    }
+
     core::result_wrapper_t<std::vector<record_t>>
-    wal_reader_t::read_committed_records(id_t after_wal_id, std::set<std::uint64_t>* committed_out) {
+    wal_reader_t::read_committed_records(std::set<std::uint64_t>* committed_out) {
         std::vector<record_t> merged;
 
-        if (!std::filesystem::exists(config_.path)) {
+        std::error_code ec;
+        if (!std::filesystem::exists(config_.path, ec)) {
+            if (ec) {
+                return listing_refused(config_.path, ec);
+            }
             trace(log_, "wal_reader::read_committed_records , WAL path does not exist : {}", config_.path.string());
             return merged;
         }
 
-        for (const auto& entry : std::filesystem::directory_iterator(config_.path)) {
-            if (!entry.is_directory()) {
+        auto listed = core::filesystem::list_dir(resource_, config_.path);
+        if (listed.has_error()) {
+            error(log_,
+                  "wal_reader: replay refuses rather than coming up without what it cannot see: {}",
+                  listed.error().what);
+            return listed.error();
+        }
+        for (const auto& entry : listed.value()) {
+            if (entry.kind != std::filesystem::file_type::directory) {
                 continue;
             }
 
-            auto db_name = entry.path().filename().string();
+            auto db_name = entry.path.filename().string();
             // Must classify like the manager's startup scan (parse_database_dir_name, base.hpp).
             components::catalog::oid_t db_oid;
             if (!parse_database_dir_name(db_name, db_oid)) {
@@ -41,7 +99,7 @@ namespace services::wal {
             }
             trace(log_, "wal_reader::read_committed_records , scanning database '{}'", db_name);
 
-            auto db_records = read_database_segments(entry.path(), after_wal_id, committed_out);
+            auto db_records = read_database_segments(entry.path, committed_out);
             if (db_records.has_error()) {
                 return db_records.error();
             }
@@ -57,22 +115,13 @@ namespace services::wal {
     }
 
     core::result_wrapper_t<std::vector<record_t>>
-    wal_reader_t::read_database_segments(const std::filesystem::path& db_dir,
-                                         id_t after_wal_id,
-                                         std::set<std::uint64_t>* committed_out) {
-        std::vector<std::filesystem::path> segments;
-
-        for (const auto& entry : std::filesystem::directory_iterator(db_dir)) {
-            if (!entry.is_regular_file()) {
-                continue;
-            }
-            auto fname = entry.path().filename().string();
-            if (fname.size() >= 4 && fname.compare(0, 4, "wal_") == 0) {
-                segments.push_back(entry.path());
-            }
+    wal_reader_t::read_database_segments(const std::filesystem::path& db_dir, std::set<std::uint64_t>* committed_out) {
+        auto found = find_wal_segments(resource_, db_dir, "wal_");
+        if (found.has_error()) {
+            error(log_, "wal_reader: {}", found.error().what);
+            return found.error();
         }
-
-        std::sort(segments.begin(), segments.end());
+        const auto& segments = found.value();
 
         std::vector<record_t> all_records;
 
@@ -111,7 +160,7 @@ namespace services::wal {
                      scan.first_broken_page);
             }
 
-            auto seg_records = reader.read_all_records(after_wal_id);
+            auto seg_records = reader.read_all_records(id_t{0});
             if (seg_records.has_error()) {
                 return seg_records.error();
             }

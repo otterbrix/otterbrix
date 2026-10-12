@@ -40,7 +40,7 @@ def col(request):
         rows.append("('{}', {}, '{}', {}, {})".format(_id, num, count_str, count_float, count_bool))
     query += ", ".join(rows) + ";"
     c = client.execute(query)
-    assert len(c) == 100
+    assert c.rowcount == 100
     c.close()
 
     def finalize():
@@ -149,7 +149,7 @@ def test_select_order_by_desc(col):
 
 def test_delete_where(col):
     c = col.execute("DELETE FROM {}.{} WHERE count > 90;".format(database_name, collection_name))
-    assert len(c) == 9
+    assert c.rowcount == 9
     c.close()
 
     c = col.execute("SELECT * FROM {}.{};".format(database_name, collection_name))
@@ -159,7 +159,7 @@ def test_delete_where(col):
 
 def test_delete_all(col):
     c = col.execute("DELETE FROM {}.{};".format(database_name, collection_name))
-    assert len(c) == 100
+    assert c.rowcount == 100
     c.close()
 
     c = col.execute("SELECT * FROM {}.{};".format(database_name, collection_name))
@@ -170,7 +170,7 @@ def test_delete_all(col):
 def test_update_set(col):
     c = col.execute("UPDATE {}.{} SET count = 1000 WHERE count < 10;".format(
         database_name, collection_name))
-    assert len(c) == 10
+    assert c.rowcount == 10
     c.close()
 
     c = col.execute("SELECT * FROM {}.{} WHERE count = 1000;".format(
@@ -187,7 +187,7 @@ def test_update_set(col):
 def test_update_set_string(col):
     c = col.execute("UPDATE {}.{} SET count_str = 'updated' WHERE count = 50;".format(
         database_name, collection_name))
-    assert len(c) == 1
+    assert c.rowcount == 1
     c.close()
 
     c = col.execute("SELECT * FROM {}.{} WHERE count_str = 'updated';".format(
@@ -205,7 +205,7 @@ def test_insert_additional_rows(col):
         rows.append("('{}', {}, '{}', {}, TRUE)".format(_id, num, str(num), num + 0.1))
     query += ", ".join(rows) + ";"
     c = col.execute(query)
-    assert len(c) == 10
+    assert c.rowcount == 10
     c.close()
 
     c = col.execute("SELECT * FROM {}.{};".format(database_name, collection_name))

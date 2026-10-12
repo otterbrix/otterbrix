@@ -29,6 +29,8 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
 #include "wal_test_attoids.hpp"
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 
 // load's answer for (after, high_water] must be WHOLE or refused, never a subset with a silent gap in the middle.
 
@@ -52,11 +54,7 @@ namespace {
 
     template<typename F>
     decltype(auto) await_ready(F& fut) {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-            std::this_thread::yield();
-        }
-        REQUIRE(fut.is_ready());
+        REQUIRE(test_helpers::wait_ready(fut));
         return std::move(fut).take_ready();
     }
 
@@ -85,7 +83,7 @@ namespace {
     // No restart in this file: load() opens a fresh reader each call, so a live manager sees any flipped byte.
     struct wal_env_t {
         explicit wal_env_t(const std::filesystem::path& path, size_t max_segment_size = 0)
-            : log_(initialization_logger("python", "/tmp/docker_logs/"))
+            : log_(make_test_log())
             , scheduler_(new actor_zeta::shared_work(2, 1000))
             , config_(fresh_config(path))
             , manager_(nullptr, actor_zeta::pmr::deleter_t(&resource_)) {
@@ -97,7 +95,8 @@ namespace {
                                                                   config_,
                                                                   log_,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox());
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{});
             scheduler_->start();
         }
 

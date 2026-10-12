@@ -7,7 +7,7 @@ use sqlx_core::error::{DatabaseError, ErrorKind};
 /// SQLx [`DatabaseError`] implementation for Otterbrix engine errors.
 ///
 /// Wraps the integer error code and human-readable message produced by the
-/// C++ engine (see [`otterbrix::Error::Query`]). Returned through
+/// C++ engine (see [`otterbrix::Error::Engine`]). Returned through
 /// [`sqlx::Error::Database`](sqlx_core::error::Error::Database); use
 /// `Box<dyn DatabaseError>::try_downcast_ref::<OtterbrixDbError>()` if you
 /// need the raw `code`.

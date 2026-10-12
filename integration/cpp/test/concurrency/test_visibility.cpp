@@ -227,7 +227,7 @@ TEST_CASE("integration::cpp::concurrency::visibility::overlapping", "[overlappin
         REQUIRE(update.paused());
         CHECK(rows_where("v = id") == all_rows);
         REQUIRE(update.still_running());
-        CHECK(update.release()->size() == all_rows);
+        CHECK(update.release()->affected_rows() == all_rows);
         CHECK(rows_where("v = id + 1") == all_rows);
     }
     SECTION("a paused delete removes only its snapshot's rows") {
@@ -235,7 +235,7 @@ TEST_CASE("integration::cpp::concurrency::visibility::overlapping", "[overlappin
         REQUIRE(remove.paused());
         require_ok(second, "INSERT INTO db.big (id, v) VALUES (" + std::to_string(PAUSABLE_TABLE_ROWS) + ", 0);");
         REQUIRE(remove.still_running());
-        CHECK(remove.release()->size() == all_rows);
+        CHECK(remove.release()->affected_rows() == all_rows);
         CHECK(column<int64_t>(second.run("SELECT id FROM db.big;")) == ints{PAUSABLE_TABLE_ROWS});
     }
     SECTION("complex types") {

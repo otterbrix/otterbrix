@@ -42,7 +42,12 @@ namespace services::dispatcher::validation {
                 if (type.extension() != nullptr && !type.type_name().empty()) {
                     return type.type_name();
                 }
+                if (type.type() == logical_type::UNKNOWN) {
+                    return "unknown";
+                }
                 break;
+            case logical_type::NA:
+                return "unknown";
             case logical_type::LIST:
             case logical_type::ARRAY:
                 return describe_type(type.child_type()) + "[]";
@@ -70,8 +75,31 @@ namespace services::dispatcher::validation {
         return merged;
     }
 
-    core::result_wrapper_t<type_paths>
-    find_types(std::pmr::memory_resource* resource, components::expressions::key_t& key, const named_schema& schema) {
+    static core::result_wrapper_t<type_paths>
+    find_types_in(std::pmr::memory_resource* resource, components::expressions::key_t& key, const named_schema& schema);
+
+    core::result_wrapper_t<type_paths> find_types(std::pmr::memory_resource* resource,
+                                                  components::expressions::key_t& key,
+                                                  const named_schema& schema,
+                                                  column_uses_t* uses) {
+        auto found = find_types_in(resource, key, schema);
+        if (uses != nullptr && !found.has_error()) {
+            for (const auto& type_path : found.value()) {
+                if (type_path.path.empty() || type_path.path.front() >= schema.size()) {
+                    continue;
+                }
+                const auto& column = schema[type_path.path.front()];
+                if (column.origin.table_oid != components::catalog::INVALID_OID) {
+                    uses->push_back(column.origin);
+                }
+            }
+        }
+        return found;
+    }
+
+    static core::result_wrapper_t<type_paths> find_types_in(std::pmr::memory_resource* resource,
+                                                            components::expressions::key_t& key,
+                                                            const named_schema& schema) {
         assert(!key.storage().empty());
         type_paths result{resource};
         if (key.storage().at(0) == "*") {
@@ -271,23 +299,24 @@ namespace services::dispatcher::validation {
     core::result_wrapper_t<type_paths> validate_key(std::pmr::memory_resource* resource,
                                                     components::expressions::key_t& key,
                                                     const named_schema* schema_left,
-                                                    const named_schema* schema_right) {
+                                                    const named_schema* schema_right,
+                                                    column_uses_t* uses) {
         if (schema_right == nullptr) {
-            auto resolved = find_types(resource, key, *schema_left);
+            auto resolved = find_types(resource, key, *schema_left, uses);
             if (!resolved.has_error() && key.side() == side_t::undefined) {
                 key.set_side(side_t::left);
             }
             return resolved;
         }
         if (key.side() == side_t::left) {
-            return find_types(resource, key, *schema_left);
+            return find_types(resource, key, *schema_left, uses);
         }
         if (key.side() == side_t::right) {
-            return find_types(resource, key, *schema_right);
+            return find_types(resource, key, *schema_right, uses);
         }
         // find_types sets a path, but if both left and right are valid, this will be an error and won't matter
-        auto column_path_left = find_types(resource, key, *schema_left);
-        auto column_path_right = find_types(resource, key, *schema_right);
+        auto column_path_left = find_types(resource, key, *schema_left, uses);
+        auto column_path_right = find_types(resource, key, *schema_right, uses);
         // TODO Stop erasing errors from right and left
         if (column_path_left.has_error() && column_path_right.has_error()) {
             if (column_path_left.error().type == core::error_code_t::ambiguous_name ||

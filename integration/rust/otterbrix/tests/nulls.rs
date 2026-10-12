@@ -3,8 +3,8 @@ mod common;
 #[test]
 fn null_from_missing_column() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, age) VALUES ('Bob', 25);")
         .unwrap();
@@ -27,8 +27,8 @@ fn null_from_missing_column() {
 #[test]
 fn where_is_null() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, age) VALUES ('Bob', 25);")
         .unwrap();
@@ -44,8 +44,8 @@ fn where_is_null() {
 #[test]
 fn where_is_not_null() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, age) VALUES ('Bob', 25);")
         .unwrap();

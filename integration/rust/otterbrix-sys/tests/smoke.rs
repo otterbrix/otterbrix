@@ -1,9 +1,10 @@
 use otterbrix_sys::*;
+use std::ffi::c_char;
 use std::process;
 
 fn make_sv(s: &str) -> string_view_t {
     string_view_t {
-        data: s.as_ptr() as *const i8,
+        data: s.as_ptr() as *const c_char,
         size: s.len(),
     }
 }
@@ -33,7 +34,12 @@ fn test_create_destroy() {
         let base = unique_base("create_destroy");
         let (cfg, _log, _wal, _disk, _main) = make_config(&base);
 
-        let db = otterbrix_create(cfg);
+        let mut refusal = error_message {
+            code: 0,
+            message: std::ptr::null_mut(),
+        };
+        let db = otterbrix_create(cfg, &mut refusal);
+        assert!(refusal.message.is_null());
         assert!(!db.is_null(), "otterbrix_create returned null");
 
         otterbrix_destroy(db);
@@ -46,7 +52,12 @@ fn test_execute_sql() {
         let base = unique_base("execute_sql");
         let (cfg, _log, _wal, _disk, _main) = make_config(&base);
 
-        let db = otterbrix_create(cfg);
+        let mut refusal = error_message {
+            code: 0,
+            message: std::ptr::null_mut(),
+        };
+        let db = otterbrix_create(cfg, &mut refusal);
+        assert!(refusal.message.is_null());
         assert!(!db.is_null());
 
         let cursor = execute_sql(db, make_sv("CREATE DATABASE test_db;"));

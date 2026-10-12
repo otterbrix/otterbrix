@@ -88,9 +88,10 @@ namespace components::operators {
                 co_return updated.error();
             }
         }
-        compose_output_(insert_part_->output(),
-                        conflicts,
-                        any_conflict && update_part_ ? update_part_->output() : nullptr);
+        const bool updated = any_conflict && update_part_;
+        written_ = insert_part_->written() - (any_conflict ? conflicts->size() : 0) +
+                   (updated ? update_part_->written() : 0);
+        compose_output_(insert_part_->output(), conflicts, updated ? update_part_->output() : nullptr);
         co_return core::error_t::no_error();
     }
 
@@ -192,15 +193,8 @@ namespace components::operators {
     void operator_insert_on_conflict_t::compose_output_(const operator_data_ptr& inserted,
                                                         const operator_data_ptr& removed,
                                                         const operator_data_ptr& updated) {
-        uint64_t removed_count = removed ? removed->size() : 0;
         if (!has_returning_) {
-            uint64_t inserted_count = inserted ? inserted->size() : 0;
-            uint64_t updated_count = updated ? updated->size() : 0;
-            uint64_t written = inserted_count - removed_count + updated_count;
-            set_output(
-                written == 0
-                    ? nullptr
-                    : make_operator_data(resource_, dml_detail::make_affected_count_chunks(resource_, written, {})));
+            set_output(nullptr);
             return;
         }
         std::pmr::unordered_set<int64_t> removed_ids(resource_);

@@ -2,6 +2,7 @@
 
 #include <components/table/standard_column_data.hpp>
 #include <components/table/storage/buffer_pool.hpp>
+#include <components/table/storage/partial_block_manager.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
@@ -71,9 +72,12 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, uint64_t(i));
             }
 
-            column_append_state state;
+            auto state_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(block_manager);
+
+            column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
             vector_t v(&resource, logical_type::UBIGINT, test_size);
@@ -116,9 +120,12 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, std::string_view{value});
             }
 
-            column_append_state state;
+            auto state_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(block_manager);
+
+            column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
             vector_t v(&resource, logical_type::STRING_LITERAL, test_size);
@@ -172,9 +179,12 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, arr);
             }
 
-            column_append_state state;
+            auto state_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(block_manager);
+
+            column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
             vector_t v(&resource, complex_logical_type::create_array(logical_type::UBIGINT, array_size), test_size);
@@ -240,9 +250,12 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, arr);
             }
 
-            column_append_state state;
+            auto state_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(block_manager);
+
+            column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
             vector_t v(&resource,
@@ -306,9 +319,12 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, list);
             }
 
-            column_append_state state;
+            auto state_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(block_manager);
+
+            column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
             vector_t v(&resource, complex_logical_type::create_list(logical_type::UBIGINT), test_size);
@@ -372,9 +388,12 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, list);
             }
 
-            column_append_state state;
+            auto state_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(block_manager);
+
+            column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
             vector_t v(&resource, complex_logical_type::create_list(logical_type::STRING_LITERAL), test_size);
@@ -453,9 +472,12 @@ TEST_CASE("components::table::column") {
                 v.set_value(i, value);
             }
 
-            column_append_state state;
+            auto state_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(block_manager);
+
+            column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
             REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
             vector_t v(&resource, struct_type, test_size);
@@ -480,7 +502,7 @@ TEST_CASE("components::table::column") {
                 REQUIRE(value.children()[0].value<bool>() == test_data[i].flag);
                 REQUIRE(value.children()[1].value<int32_t>() == test_data[i].number);
                 REQUIRE(*value.children()[2].value<std::string*>() == test_data[i].name);
-                std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
+                std::vector arr(value.children()[3].children());
                 REQUIRE(arr.size() == test_data[i].array.size());
                 for (size_t j = 0; j < arr.size(); j++) {
                     REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
@@ -519,7 +541,7 @@ TEST_CASE("components::table::column") {
                 REQUIRE(value.children()[0].value<bool>() == test_data[i].flag);
                 REQUIRE(value.children()[1].value<int32_t>() == test_data[i].number);
                 REQUIRE(*value.children()[2].value<std::string*>() == test_data[i].name);
-                std::vector arr(*value.children()[3].value<std::vector<logical_value_t>*>());
+                std::vector arr(value.children()[3].children());
                 REQUIRE(arr.size() == test_data[i].array.size());
                 for (size_t j = 0; j < arr.size(); j++) {
                     REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);

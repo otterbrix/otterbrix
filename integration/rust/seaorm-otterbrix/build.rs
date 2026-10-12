@@ -18,8 +18,12 @@ fn main() {
     let lib_dir =
         env::var("OTTERBRIX_LIB_DIR").unwrap_or_else(|_| default_lib_dir.display().to_string());
 
-    if let Ok(abs) = PathBuf::from(&lib_dir).canonicalize() {
-        println!("cargo:rustc-link-arg-tests=-Wl,-rpath,{}", abs.display());
-    }
+    let abs_lib_dir = PathBuf::from(&lib_dir).canonicalize().unwrap_or_else(|_| {
+        panic!(
+            "OTTERBRIX_LIB_DIR={lib_dir:?} does not point to an existing directory; \
+             build the C++ side first (integration/rust/scripts/build-cpp.sh) or set OTTERBRIX_LIB_DIR explicitly"
+        )
+    });
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", abs_lib_dir.display());
     println!("cargo:rerun-if-env-changed=OTTERBRIX_LIB_DIR");
 }

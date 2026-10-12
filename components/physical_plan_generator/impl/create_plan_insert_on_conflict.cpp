@@ -6,8 +6,7 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr
-    create_plan_insert_on_conflict(const context_storage_t& context,
+    plan_result_t create_plan_insert_on_conflict(const context_storage_t& context,
                                    const components::compute::function_registry_t& function_registry,
                                    const components::logical_plan::node_ptr& node,
                                    const components::logical_plan::storage_parameters* params) {
@@ -20,14 +19,12 @@ namespace services::planner::impl {
         }
         const auto* insert = static_cast<const components::logical_plan::node_insert_t*>(insert_node);
 
-        auto insert_part = create_plan(context,
-                                       function_registry,
-                                       node->children().front(),
-                                       components::logical_plan::limit_t::unlimit(),
-                                       params);
-        if (!insert_part) {
-            return nullptr;
-        }
+        VALUE_OR_RETURN(auto insert_part,
+                        create_plan(context,
+                                    function_registry,
+                                    node->children().front(),
+                                    components::logical_plan::limit_t::unlimit(),
+                                    params));
         ops::operator_unique_constraint_t* check = nullptr;
         for (ops::operator_t* op = insert_part.get(); op != nullptr; op = op->left().get()) {
             if (op->type() == ops::operator_type::unique_constraint) {
@@ -50,14 +47,12 @@ namespace services::planner::impl {
         plan->set_parts(std::move(insert_part), check, std::move(removal));
 
         if (node->children().size() > 1) {
-            auto update_part = create_plan(context,
-                                           function_registry,
-                                           node->children()[1],
-                                           components::logical_plan::limit_t::unlimit(),
-                                           params);
-            if (!update_part) {
-                return nullptr;
-            }
+            VALUE_OR_RETURN(auto update_part,
+                            create_plan(context,
+                                        function_registry,
+                                        node->children()[1],
+                                        components::logical_plan::limit_t::unlimit(),
+                                        params));
             ops::operator_update* update = nullptr;
             for (ops::operator_t* op = update_part.get(); op != nullptr; op = op->left().get()) {
                 if (op->type() == ops::operator_type::update) {

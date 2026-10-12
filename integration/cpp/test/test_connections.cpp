@@ -5,8 +5,8 @@
 #include <integration/cpp/connection.hpp>
 #include <unistd.h>
 
-static const database_name_t database_name = "testdatabase";
-static const collection_name_t collection_name = "testcollection";
+static const core::dbname_t database_name{"testdatabase"};
+static const core::relname_t collection_name{"testcollection"};
 constexpr size_t doc_num = 1000;
 constexpr size_t num_threads = 4;
 constexpr size_t work_per_thread = doc_num / num_threads;
@@ -21,7 +21,7 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -45,8 +45,7 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
             }
             auto session = otterbrix::session_id_t();
             auto c = dispatcher->execute_sql(session, query.str());
-            //REQUIRE(c->size() == work_per_thread);
-            results[id] = c->size() == work_per_thread;
+            results[id] = c->affected_rows() == work_per_thread;
         };
 
         std::vector<std::thread> threads;
@@ -85,14 +84,14 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
 TEST_CASE("integration::cpp::test_connectors") {
     auto config = test_create_config(integration_fixture_path("test_connectors"));
     test_clear_directory(config);
-    auto otterbrix = otterbrix::make_otterbrix(config);
+    auto otterbrix = test_make_otterbrix(config);
 
     INFO("initialization");
     {
         auto* dispatcher = otterbrix->dispatcher();
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -120,8 +119,7 @@ TEST_CASE("integration::cpp::test_connectors") {
                 query << "('Name " << num << "'," << num << ")" << (num == end - 1 ? ";" : ", ");
             }
             auto c = connectors[id]->execute(query.str());
-            //REQUIRE(c->size() == work_per_thread);
-            results[id] = c->size() == work_per_thread;
+            results[id] = c->affected_rows() == work_per_thread;
         };
 
         std::vector<std::thread> threads;
@@ -176,7 +174,7 @@ TEST_CASE("integration::cpp::connection") {
     auto config = test_create_config(integration_fixture_path("connection") / std::to_string(::getpid()));
     test_clear_directory(config);
     config.log.level = log_t::level::off;
-    auto instance = otterbrix::make_otterbrix(config);
+    auto instance = test_make_otterbrix(config);
 
     SECTION("statements share the connection's session") {
         otterbrix::connection_t writer(instance);

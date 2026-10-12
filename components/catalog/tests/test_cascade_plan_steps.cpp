@@ -180,3 +180,34 @@ TEST_CASE("catalog::cascade_plan::two_objects_sharing_an_oid_are_two_steps") {
     REQUIRE(plan.steps.size() == 3);
     CHECK(plan.steps.back().objid == oid_t{16400});
 }
+
+// PostgreSQL 18 findDependentObjects walks the whole closure: an object only an auto chain reaches is dropped with
+// the seed, but a normal dependent anywhere in it refuses RESTRICT.
+TEST_CASE("catalog::cascade_plan::restrict_refuses_a_normal_dependent_behind_an_auto_chain") {
+    core::pmr::otterbrix_resource resource;
+    const std::vector<edge_t> edges{
+        {kClass, oid_t{16400}, {kClass, oid_t{16401}, deptype::auto_dep}},
+        {kClass, oid_t{16401}, {kClass, oid_t{16402}, deptype::normal}},
+    };
+
+    auto plan = plan_drop(&resource, kClass, oid_t{16400}, drop_behavior_t::restrict_, make_fetch(edges));
+
+    REQUIRE(plan.status == ddl_status::restrict_blocked);
+    CHECK(plan.blocking_oid == oid_t{16402});
+    CHECK(plan.steps.empty());
+}
+
+TEST_CASE("catalog::cascade_plan::restrict_drops_a_normal_dependent_the_seed_also_owns") {
+    core::pmr::otterbrix_resource resource;
+    const std::vector<edge_t> edges{
+        {kClass, oid_t{16400}, {kClass, oid_t{16401}, deptype::auto_dep}},
+        {kClass, oid_t{16401}, {kClass, oid_t{16402}, deptype::normal}},
+        {kClass, oid_t{16400}, {kClass, oid_t{16402}, deptype::auto_dep}},
+    };
+
+    auto plan = plan_drop(&resource, kClass, oid_t{16400}, drop_behavior_t::restrict_, make_fetch(edges));
+
+    REQUIRE(plan.status == ddl_status::ok);
+    CHECK(has_step(plan, kClass, oid_t{16402}));
+    CHECK(plan.steps.back().objid == oid_t{16400});
+}

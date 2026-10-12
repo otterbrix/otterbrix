@@ -461,7 +461,8 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
                                                0,
                                                0,
                                                complex_logical_type{logical_type::STRING_LITERAL});
-    column_append_state append_state;
+    auto append_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(block_manager);
+    column_append_state append_state{&append_pbm};
     REQUIRE_FALSE(column->initialize_append(append_state).has_error());
 
     auto types = string_column_types(&env.resource);
@@ -469,6 +470,7 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
     input.set_cardinality(1);
     input.set_value(0, 0, std::string_view{big});
     REQUIRE_FALSE(column->append(append_state, input.data[0], 1).has_error());
+    REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
     REQUIRE(append_state.current != nullptr);
 
     {
@@ -538,7 +540,8 @@ TEST_CASE("big_strings: a reloaded segment reports its overflow blocks for compa
     {
         // Append state must be gone before the checkpoint: it re-points the still-managed
         // validity segment to disk, dropping the block_handle the append state's pin refers to.
-        column_append_state append_state;
+        auto append_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(bm);
+        column_append_state append_state{&append_pbm};
         REQUIRE_FALSE(column->initialize_append(append_state).has_error());
 
         auto types = string_column_types(&env.resource);
@@ -548,9 +551,10 @@ TEST_CASE("big_strings: a reloaded segment reports its overflow blocks for compa
             input.set_value(0, i, std::string_view{values[i]});
         }
         REQUIRE_FALSE(column->append(append_state, input.data[0], values.size()).has_error());
+        REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
     }
 
-    tstorage::partial_block_manager_t pbm(bm);
+    auto pbm = tstorage::partial_block_manager_t::for_checkpoint(bm);
     auto persistent = column->checkpoint(pbm);
     REQUIRE_FALSE(persistent.has_error());
     REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());
@@ -711,7 +715,8 @@ TEST_CASE("big_strings: a duplicated persisted overflow block is data_corruption
     auto column =
         column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::STRING_LITERAL});
     {
-        column_append_state append_state;
+        auto append_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(bm);
+        column_append_state append_state{&append_pbm};
         REQUIRE_FALSE(column->initialize_append(append_state).has_error());
         auto types = string_column_types(&env.resource);
         data_chunk_t input(&env.resource, types, values.size());
@@ -720,9 +725,10 @@ TEST_CASE("big_strings: a duplicated persisted overflow block is data_corruption
             input.set_value(0, i, std::string_view{values[i]});
         }
         REQUIRE_FALSE(column->append(append_state, input.data[0], values.size()).has_error());
+        REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
     }
 
-    tstorage::partial_block_manager_t pbm(bm);
+    auto pbm = tstorage::partial_block_manager_t::for_checkpoint(bm);
     auto persistent = column->checkpoint(pbm);
     REQUIRE_FALSE(persistent.has_error());
     REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());

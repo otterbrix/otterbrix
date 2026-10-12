@@ -1,5 +1,7 @@
 #pragma once
 
+#include <components/physical_plan_generator/create_plan.hpp>
+
 #include <components/compute/function.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/physical_plan/operators/operator.hpp>
@@ -7,8 +9,7 @@
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr
-    create_plan_insert_on_conflict(const context_storage_t& context,
+    plan_result_t create_plan_insert_on_conflict(const context_storage_t& context,
                                    const components::compute::function_registry_t& function_registry,
                                    const components::logical_plan::node_ptr& node,
                                    const components::logical_plan::storage_parameters* params);

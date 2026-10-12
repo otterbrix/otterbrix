@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <memory>
 #include <memory_resource>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -89,6 +90,7 @@ namespace components::catalog {
         constexpr oid_t pg_namespace_oid = well_known_oid::pg_namespace_table;
         constexpr oid_t pg_sequence_oid = well_known_oid::pg_sequence_table;
         constexpr oid_t pg_rewrite_oid = well_known_oid::pg_rewrite_table;
+        constexpr oid_t pg_rewrite_ref_oid = well_known_oid::pg_rewrite_ref_table;
         constexpr oid_t pg_type_oid = well_known_oid::pg_type_table;
         constexpr oid_t pg_proc_oid = well_known_oid::pg_proc_table;
         constexpr oid_t pg_index_oid = well_known_oid::pg_index_table;
@@ -107,6 +109,47 @@ namespace components::catalog {
                 std::abort();
             }
             return *def;
+        }
+
+        // One pg_attribute row. Strings are owned here: set_str's string_view must stay live past the fill.
+        struct attribute_row_t {
+            oid_t attoid{INVALID_OID};
+            oid_t atttypid{INVALID_OID};
+            std::string name;
+            std::int32_t attnum{0};
+            bool not_null{false};
+            bool has_default{false};
+            bool is_dropped{false};
+            std::string typspec;
+            std::string defspec;
+            std::int64_t added_at_commit_id{0};
+            std::int64_t dropped_at_commit_id{0};
+        };
+
+        vector::data_chunk_t make_pg_attribute_rows(std::pmr::memory_resource* resource,
+                                                    oid_t table_oid,
+                                                    std::span<const attribute_row_t> rows) {
+            const auto& def = system_table(pg_attribute_oid);
+            return make_pg_rows(resource,
+                                def.columns,
+                                rows.size(),
+                                [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                                    for (std::size_t i = 0; i < rows.size(); ++i) {
+                                        const auto& a = rows[i];
+                                        set_oid(c, 0, i, a.attoid);
+                                        set_oid(c, 1, i, table_oid);
+                                        set_str(c, 2, i, a.name, r);
+                                        set_oid(c, 3, i, a.atttypid);
+                                        set_i32(c, 4, i, a.attnum);
+                                        set_bool(c, 5, i, a.not_null);
+                                        set_bool(c, 6, i, a.has_default);
+                                        set_bool(c, 7, i, a.is_dropped);
+                                        set_str(c, 8, i, a.typspec, r);
+                                        set_str(c, 9, i, a.defspec, r);
+                                        set_i64(c, 10, i, a.added_at_commit_id);
+                                        set_i64(c, 11, i, a.dropped_at_commit_id);
+                                    }
+                                });
         }
 
     } // anonymous namespace
@@ -141,24 +184,13 @@ namespace components::catalog {
             result.push_back(make_write(pg_class_oid, std::move(chunk)));
         }
 
-        // Pre-computed: set_str's string_view argument must stay live at the call, past the lambda below.
-        struct attr_t {
-            oid_t attoid;
-            oid_t atttypid;
-            std::string name;
-            std::int32_t attnum;
-            bool not_null;
-            bool has_default;
-            std::string typspec;
-            std::string defspec;
-        };
-        std::vector<attr_t> attrs;
+        std::vector<attribute_row_t> attrs;
         attrs.reserve(columns.size());
         {
             std::int32_t attnum = 0;
             for (auto& col : columns) {
                 ++attnum;
-                attr_t a;
+                attribute_row_t a;
                 a.attoid = oid_batch.allocate();
                 // set_attoid is immutable-after-assignment, and a column is minted exactly once.
                 col.set_attoid(static_cast<std::uint32_t>(a.attoid));
@@ -182,31 +214,7 @@ namespace components::catalog {
         }
 
         if (!attrs.empty()) {
-            {
-                const auto& def = system_table(pg_attribute_oid);
-                auto chunk = make_pg_rows(resource,
-                                          def.columns,
-                                          attrs.size(),
-                                          [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                                              for (std::size_t i = 0; i < attrs.size(); ++i) {
-                                                  const auto& a = attrs[i];
-                                                  set_oid(c, 0, i, a.attoid);
-                                                  set_oid(c, 1, i, table_oid);
-                                                  set_str(c, 2, i, a.name, r);
-                                                  set_oid(c, 3, i, a.atttypid);
-                                                  set_i32(c, 4, i, a.attnum);
-                                                  set_bool(c, 5, i, a.not_null);
-                                                  set_bool(c, 6, i, a.has_default);
-                                                  set_bool(c, 7, i, false); // attisdropped
-                                                  set_str(c, 8, i, a.typspec, r);
-                                                  set_str(c, 9, i, a.defspec, r);
-                                                  // Written explicitly, not left to vector_t's zero-init.
-                                                  set_i64(c, 10, i, 0); // added_at_commit_id
-                                                  set_i64(c, 11, i, 0); // dropped_at_commit_id
-                                              }
-                                          });
-                result.push_back(make_write(pg_attribute_oid, std::move(chunk)));
-            }
+            result.push_back(make_write(pg_attribute_oid, make_pg_attribute_rows(resource, table_oid, attrs)));
         }
 
         {
@@ -320,54 +328,109 @@ namespace components::catalog {
         return result;
     }
 
-    std::vector<catalog_write_t> build_create_view_writes(std::pmr::memory_resource* resource,
-                                                          const std::string& name,
-                                                          oid_t namespace_oid,
-                                                          oid_t view_oid,
-                                                          oid_t rule_oid,
-                                                          const std::string& body_sql) {
-        std::vector<catalog_write_t> result;
+    catalog_write_t build_view_class_row(std::pmr::memory_resource* resource,
+                                         oid_t view_oid,
+                                         const std::string& name,
+                                         oid_t namespace_oid,
+                                         char relkind) {
+        const auto& def = system_table(pg_class_oid);
+        const std::string relkind_str(1, relkind);
+        const std::string storagemode_str(1, relstoragemode::disk);
+        auto chunk = make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+            set_oid(c, 0, 0, view_oid);
+            set_str(c, 1, 0, name, r);
+            set_oid(c, 2, 0, namespace_oid);
+            set_str(c, 3, 0, relkind_str, r);
+            set_str(c, 4, 0, storagemode_str, r);
+        });
+        return make_write(pg_class_oid, std::move(chunk));
+    }
 
-        {
-            const auto& def = system_table(pg_class_oid);
-            const std::string relkind_str(1, relkind::view);
-            const std::string storagemode_str(1, relstoragemode::disk);
-            auto chunk =
-                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                    set_oid(c, 0, 0, view_oid);
-                    set_str(c, 1, 0, name, r);
-                    set_oid(c, 2, 0, namespace_oid);
-                    set_str(c, 3, 0, relkind_str, r);
-                    set_str(c, 4, 0, storagemode_str, r);
-                });
-            result.push_back(make_write(pg_class_oid, std::move(chunk)));
+    std::vector<catalog_write_t> build_view_body_writes(std::pmr::memory_resource* resource,
+                                                        oid_t view_oid,
+                                                        std::span<table::column_definition_t> columns,
+                                                        std::span<const view_binding_t> bindings,
+                                                        std::span<const view_dependency_t> dependencies,
+                                                        oid_t namespace_oid,
+                                                        oid_t rule_oid,
+                                                        const std::string& name,
+                                                        const std::string& body_sql,
+                                                        char relkind,
+                                                        oid_batch_t& oid_batch) {
+        std::vector<catalog_write_t> result;
+        const std::string relkind_str(1, relkind);
+
+        if (!columns.empty()) {
+            std::vector<attribute_row_t> attrs;
+            attrs.reserve(columns.size());
+            for (auto& col : columns) {
+                attribute_row_t a;
+                a.attoid = oid_batch.allocate();
+                col.set_attoid(static_cast<std::uint32_t>(a.attoid));
+                a.atttypid = (col.atttypid() != INVALID_OID) ? col.atttypid() : builtin_type_to_oid(col.type().type());
+                a.name = col.name();
+                a.attnum = static_cast<std::int32_t>(attrs.size() + 1);
+                a.typspec = encode_type_spec(col.type());
+                attrs.push_back(std::move(a));
+            }
+            result.push_back(make_write(pg_attribute_oid, make_pg_attribute_rows(resource, view_oid, attrs)));
         }
 
         {
             const auto& def = system_table(pg_depend_oid);
-            auto chunk =
-                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                    set_oid(c, 0, 0, well_known_oid::pg_class_table);
-                    set_oid(c, 1, 0, view_oid);
-                    set_oid(c, 2, 0, well_known_oid::pg_namespace_table);
-                    set_oid(c, 3, 0, namespace_oid);
-                    set_str(c, 4, 0, "n", r);
-                });
+            auto chunk = make_pg_rows(resource,
+                                      def.columns,
+                                      1 + dependencies.size(),
+                                      [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                                          set_oid(c, 0, 0, well_known_oid::pg_class_table);
+                                          set_oid(c, 1, 0, view_oid);
+                                          set_oid(c, 2, 0, well_known_oid::pg_namespace_table);
+                                          set_oid(c, 3, 0, namespace_oid);
+                                          set_str(c, 4, 0, "n", r);
+                                          for (std::size_t i = 0; i < dependencies.size(); ++i) {
+                                              set_oid(c, 0, i + 1, well_known_oid::pg_class_table);
+                                              set_oid(c, 1, i + 1, view_oid);
+                                              set_oid(c, 2, i + 1, dependencies[i].refclassid);
+                                              set_oid(c, 3, i + 1, dependencies[i].refobjid);
+                                              set_str(c, 4, i + 1, "n", r);
+                                          }
+                                      });
             result.push_back(make_write(pg_depend_oid, std::move(chunk)));
         }
 
         {
             const auto& def = system_table(pg_rewrite_oid);
-            const std::string ev_type_str(1, 'v');
             auto chunk =
                 make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
                     set_oid(c, 0, 0, rule_oid);
                     set_str(c, 1, 0, name, r);
                     set_oid(c, 2, 0, view_oid);
-                    set_str(c, 3, 0, ev_type_str, r);
+                    set_str(c, 3, 0, relkind_str, r);
                     set_str(c, 4, 0, body_sql, r);
                 });
             result.push_back(make_write(pg_rewrite_oid, std::move(chunk)));
+        }
+
+        if (!bindings.empty()) {
+            const auto& def = system_table(pg_rewrite_ref_oid);
+            auto chunk = make_pg_rows(resource,
+                                      def.columns,
+                                      bindings.size(),
+                                      [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
+                                          for (std::size_t i = 0; i < bindings.size(); ++i) {
+                                              const auto& b = bindings[i];
+                                              const auto refkind = static_cast<char>(b.refkind);
+                                              set_oid(c, 0, i, view_oid);
+                                              set_str(c, 1, i, std::string_view{&refkind, 1}, r);
+                                              set_str(c, 2, i, b.dbname.t, r);
+                                              set_str(c, 3, i, b.schema.t, r);
+                                              set_str(c, 4, i, b.relname.t, r);
+                                              set_oid(c, 5, i, b.refobjid);
+                                              set_str(c, 6, i, b.proargmatchers, r);
+                                              set_str(c, 7, i, b.prorettype, r);
+                                          }
+                                      });
+            result.push_back(make_write(pg_rewrite_ref_oid, std::move(chunk)));
         }
 
         return result;
@@ -421,48 +484,6 @@ namespace components::catalog {
                     set_str(c, 4, 0, body_sql, r);
                 });
             result.push_back(make_write(pg_rewrite_oid, std::move(chunk)));
-        }
-
-        return result;
-    }
-
-    std::vector<catalog_write_t> build_matview_rewrite_writes(std::pmr::memory_resource* resource,
-                                                              oid_t mv_oid,
-                                                              oid_t rule_oid,
-                                                              const std::string& mv_name,
-                                                              const std::string& body_sql,
-                                                              oid_t source_table_oid) {
-        std::vector<catalog_write_t> result;
-
-        // REFRESH MATERIALIZED VIEW reads this row to re-execute the body.
-        {
-            const auto& def = system_table(pg_rewrite_oid);
-            const std::string ev_type_str(1, relkind::materialized_view);
-            auto chunk =
-                make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                    set_oid(c, 0, 0, rule_oid);
-                    set_str(c, 1, 0, mv_name, r);
-                    set_oid(c, 2, 0, mv_oid);
-                    set_str(c, 3, 0, ev_type_str, r);
-                    set_str(c, 4, 0, body_sql, r);
-                });
-            result.push_back(make_write(pg_rewrite_oid, std::move(chunk)));
-        }
-
-        // Depends on the source table so a future DROP TABLE can detect a dangling matview.
-        if (source_table_oid != INVALID_OID) {
-            {
-                const auto& def = system_table(pg_depend_oid);
-                auto chunk =
-                    make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-                        set_oid(c, 0, 0, well_known_oid::pg_class_table);
-                        set_oid(c, 1, 0, mv_oid);
-                        set_oid(c, 2, 0, well_known_oid::pg_class_table);
-                        set_oid(c, 3, 0, source_table_oid);
-                        set_str(c, 4, 0, "n", r);
-                    });
-                result.push_back(make_write(pg_depend_oid, std::move(chunk)));
-            }
         }
 
         return result;
@@ -795,21 +816,18 @@ namespace components::catalog {
                                                 const std::string& defspec,
                                                 std::int64_t added_at_commit_id,
                                                 std::int64_t dropped_at_commit_id) {
-        const auto& def = system_table(pg_attribute_oid);
-        return make_pg_rows(resource, def.columns, 1, [&](vector::data_chunk_t& c, std::pmr::memory_resource* r) {
-            set_oid(c, 0, 0, attoid);
-            set_oid(c, 1, 0, table_oid);
-            set_str(c, 2, 0, name, r);
-            set_oid(c, 3, 0, atttypid);
-            set_i32(c, 4, 0, attnum);
-            set_bool(c, 5, 0, not_null);
-            set_bool(c, 6, 0, has_default);
-            set_bool(c, 7, 0, is_dropped);
-            set_str(c, 8, 0, typspec, r);
-            set_str(c, 9, 0, defspec, r);
-            set_i64(c, 10, 0, added_at_commit_id);
-            set_i64(c, 11, 0, dropped_at_commit_id);
-        });
+        const attribute_row_t row{attoid,
+                                  atttypid,
+                                  name,
+                                  attnum,
+                                  not_null,
+                                  has_default,
+                                  is_dropped,
+                                  typspec,
+                                  defspec,
+                                  added_at_commit_id,
+                                  dropped_at_commit_id};
+        return make_pg_attribute_rows(resource, table_oid, std::span<const attribute_row_t>{&row, 1});
     }
 
     vector::data_chunk_t build_pg_index_row(std::pmr::memory_resource* resource,

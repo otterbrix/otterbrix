@@ -48,11 +48,11 @@ namespace components::sql::transform {
         auto& name_parts = node.funcname->lst;
         VALUE_OR_RETURN(std::pmr::string dotted, dotted_name_of(resource_, node.funcname));
         if (name_parts.size() == 1) {
-            qn.collection = strVal(name_parts.front().data);
+            qn.collection.t = strVal(name_parts.front().data);
         } else if (name_parts.size() == 2) {
             auto it = name_parts.begin();
-            qn.database = strVal(it++->data);
-            qn.collection = strVal(it->data);
+            qn.database.t = strVal(it++->data);
+            qn.collection.t = strVal(it->data);
         } else {
             std::pmr::string msg{"CREATE FUNCTION ", resource_};
             msg += dotted;
@@ -151,11 +151,11 @@ namespace components::sql::transform {
         }
 
         auto m = logical_plan::make_node_create_macro(resource_,
-                                                      core::macroname_t{qn.collection},
+                                                      core::macroname_t{qn.collection.t},
                                                       std::move(params),
                                                       core::body_sql_t{std::move(body_sql)});
-        const std::string db_for_resolve = set_target(*m, qn);
-        register_catalog_resolve_namespace(resource_, &catalog_resolves_, db_for_resolve);
+        const std::string db_for_resolve = set_target(*m, qn, target_slots::database);
+        register_namespace(db_for_resolve);
         return m;
     }
 } // namespace components::sql::transform

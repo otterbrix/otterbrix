@@ -26,7 +26,7 @@ namespace {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, q.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kSeedRows);
+        REQUIRE(cur->affected_rows() == kSeedRows);
     }
 } // namespace
 
@@ -66,7 +66,7 @@ TEST_CASE("integration::cpp::index_fetch_visibility::point_fetch_honours_the_rea
         ins << "INSERT INTO VisDb.t (id, val) VALUES (" << kLateId << ", " << kLateId << ");";
         auto cur = exec(dispatcher, writer, ins.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->affected_rows() == 1);
     }
 
     INFO("UNINDEXED equality -> full scan: the reader's snapshot already hides the late row");

@@ -451,35 +451,9 @@ TEST_CASE("logical_value_binary_codec: read_le cannot be walked past the end by 
     CHECK(tail == 4);
 }
 
-// encode_disk_hash_key runs on the path that opens a database: bitcask_index_disk_t's rebuild loop hands it
-// a value decoded off disk (services/index/bitcask_index_disk.cpp), so an unhashable key type must be
-// reported through `ok`, not aborted -- an abort here would make the database unopenable.
-TEST_CASE("logical_value_binary_codec: an unhashable key type is reported, not aborted") {
-    using components::index::codec::encode_disk_hash_key;
-    using components::types::int128_t;
-    using components::types::logical_value_t;
-
-    auto resource = core::pmr::otterbrix_resource();
-
-    // HUGEINT is physical INT128, which this encoder has no arm for.
-    logical_value_t hugeint(&resource, int128_t{7});
-    REQUIRE(hugeint.type().to_physical_type() == components::types::physical_type::INT128);
-
-    bool ok = true;
-    const auto encoded = encode_disk_hash_key(hugeint, &ok);
-    CHECK_FALSE(ok);
-    // The tag byte and nothing else: not a usable hash key, which is why `ok` has to be read.
-    CHECK(encoded.size() == 1);
-
-    bool good_ok = true;
-    const auto good = encode_disk_hash_key(logical_value_t(&resource, int64_t{7}), &good_ok);
-    CHECK(good_ok);
-    CHECK(good.size() == 1 + sizeof(int64_t));
-}
-
-// The same arm on the OTHER encoder of this file. append_logical_value is reached with a
-// disk-decoded value through bitcask's merge relocation (serialize_payload over the key
-// read_rows_at just handed back), so it must refuse for the same reason.
+// append_logical_value is reached with a disk-decoded value through bitcask's merge relocation
+// (serialize_payload over the key read_rows_at just handed back), so an unencodable key type is
+// reported through `ok`, not aborted: an abort there would make the database unopenable.
 TEST_CASE("logical_value_binary_codec: append_logical_value reports an unencodable key type") {
     using components::index::codec::append_logical_value;
     using components::types::int128_t;

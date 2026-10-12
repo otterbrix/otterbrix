@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <string>
 #include <thread>
@@ -46,17 +47,6 @@ namespace {
         gate_guard_t(const gate_guard_t&) = delete;
         gate_guard_t& operator=(const gate_guard_t&) = delete;
     };
-
-    bool wait_flag(const std::atomic<bool>& flag, std::chrono::seconds timeout) {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (!flag.load(std::memory_order_acquire)) {
-            if (std::chrono::steady_clock::now() > deadline) {
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        return true;
-    }
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
         REQUIRE(exec(d, "CREATE DATABASE adb;")->is_success());
@@ -106,7 +96,7 @@ TEST_CASE("integration::cpp::delete_floor_resurrection::committed_delete_survive
         });
 
         INFO("the delete must reach the post-WAL seam");
-        REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
+        REQUIRE(test_helpers::wait_until([&] { return guard.gate.reached.load(); }));
 
         const auto cp_session = otterbrix::session_id_t();
         REQUIRE(d->execute_sql(cp_session, "CHECKPOINT;")->is_success());

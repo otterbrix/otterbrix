@@ -25,8 +25,8 @@
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! let db = Database::open(Config::new("./data"))?;
-//! db.create_database("app")?;
-//! db.create_collection("app", "t")?;
+//! db.execute("CREATE DATABASE app;")?;
+//! db.execute("CREATE TABLE app.t();")?;
 //!
 //! let proxy: Arc<Box<dyn ProxyDatabaseTrait>> = Arc::new(Box::new(OtterbrixProxy::new(db)));
 //! let conn: DatabaseConnection =
@@ -53,9 +53,8 @@
 //! Errors produced by the engine are translated into [`sea_orm::DbErr`] as
 //! follows:
 //!
-//! - [`otterbrix::Error::Query`] → [`DbErr::Exec`](sea_orm::DbErr::Exec);
-//! - [`otterbrix::Error::NullPointer`] and
-//!   [`otterbrix::Error::InvalidPath`] → [`DbErr::Conn`](sea_orm::DbErr::Conn);
+//! - [`otterbrix::Error::Engine`] → [`DbErr::Exec`](sea_orm::DbErr::Exec);
+//! - [`otterbrix::Error::InvalidPath`] → [`DbErr::Conn`](sea_orm::DbErr::Conn);
 //! - [`otterbrix::Error::TypeMismatch`] → [`DbErr::Type`](sea_orm::DbErr::Type).
 //!
 //! The original `Display` text of the underlying [`otterbrix::Error`] is

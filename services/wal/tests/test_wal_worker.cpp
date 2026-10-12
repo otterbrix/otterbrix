@@ -13,7 +13,6 @@
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/tests/generaty.hpp>
-#include <core/config.hpp>
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
 #include <filesystem>
@@ -27,27 +26,13 @@
 #include <thread>
 #include <unistd.h>
 #include "wal_test_attoids.hpp"
+#include <components/log/test/test_log.hpp>
+#include <core/tests/wait_ready.hpp>
 
 using namespace services::wal;
 using namespace components::session;
 using namespace components::vector;
 using namespace components::types;
-
-#if defined(OTTERBRIX_TSAN_ENABLED)
-// TSAN false-positives on synchronized_pool_resource's cross-thread reuse; delegate to new_delete_resource.
-struct test_pool_resource_t final : std::pmr::memory_resource {
-protected:
-    void* do_allocate(size_t bytes, size_t align) override {
-        return std::pmr::new_delete_resource()->allocate(bytes, align);
-    }
-    void do_deallocate(void* p, size_t bytes, size_t align) override {
-        std::pmr::new_delete_resource()->deallocate(p, bytes, align);
-    }
-    bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
-};
-#else
-using test_pool_resource_t = core::pmr::otterbrix_resource;
-#endif
 
 namespace catalog_ns = components::catalog;
 constexpr auto kMainDb = catalog_ns::well_known_oid::main_database;
@@ -67,11 +52,7 @@ static const std::filesystem::path base_wal_worker_path =
 template<typename F>
 static decltype(auto) await_ready(F& fut) {
     // Wall-clock deadline: under TSAN or parallel-ctest oversubscription no fixed yield budget is safe.
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!fut.is_ready() && std::chrono::steady_clock::now() < deadline) {
-        std::this_thread::yield();
-    }
-    REQUIRE(fut.is_ready());
+    REQUIRE(test_helpers::wait_ready(fut));
     return std::move(fut).take_ready();
 }
 
@@ -87,7 +68,7 @@ struct test_wal_worker {
     test_wal_worker(const std::filesystem::path& path)
         : path_(path)
         , resource_()
-        , log_(initialization_logger("python", "/tmp/docker_logs/"))
+        , log_(make_test_log())
         , scheduler_(new actor_zeta::shared_work(3, 1000))
         , config_([&]() {
             configuration::config_wal c(path);
@@ -98,7 +79,8 @@ struct test_wal_worker {
                                                               config_,
                                                               log_,
                                                               components::pipeline::no_mailbox(),
-                                                              components::pipeline::no_mailbox())) {
+                                                              components::pipeline::no_mailbox(),
+                                                              configuration::pump_intervals_t{})) {
         std::filesystem::remove_all(path_);
         std::filesystem::create_directories(path_);
         scheduler_->start();
@@ -203,7 +185,7 @@ struct test_wal_worker {
     }
 
     std::filesystem::path path_;
-    test_pool_resource_t resource_;
+    core::pmr::otterbrix_resource resource_;
     log_t log_;
     actor_zeta::scheduler_ptr scheduler_;
     configuration::config_wal config_;
@@ -325,8 +307,8 @@ TEST_CASE("wal_worker::corruption_stop") {
         std::filesystem::remove_all(test_path);
         std::filesystem::create_directories(test_path);
 
-        test_pool_resource_t resource;
-        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        core::pmr::otterbrix_resource resource;
+        auto log = make_test_log();
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
 
@@ -335,7 +317,8 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                                   config,
                                                                   log,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox());
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{});
         scheduler->start();
 
         for (int i = 0; i < 5; ++i) {
@@ -390,8 +373,8 @@ TEST_CASE("wal_worker::corruption_stop") {
     }
     REQUIRE(corrupted);
 
-    test_pool_resource_t resource;
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    core::pmr::otterbrix_resource resource;
+    auto log = make_test_log();
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
 
@@ -400,7 +383,8 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                               config,
                                                               log,
                                                               components::pipeline::no_mailbox(),
-                                                              components::pipeline::no_mailbox());
+                                                              components::pipeline::no_mailbox(),
+                                                              configuration::pump_intervals_t{});
     scheduler->start();
 
     auto [needs_sched, fut_records] = actor_zeta::otterbrix::send(manager->address(),
@@ -431,8 +415,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
         std::filesystem::remove_all(test_path);
         std::filesystem::create_directories(test_path);
 
-        test_pool_resource_t resource;
-        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        core::pmr::otterbrix_resource resource;
+        auto log = make_test_log();
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
 
@@ -441,7 +425,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                                                   config,
                                                                   log,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox());
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{});
         scheduler->start();
 
         {
@@ -482,8 +467,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
     }
 
     {
-        test_pool_resource_t resource;
-        auto log = initialization_logger("python", "/tmp/docker_logs/");
+        core::pmr::otterbrix_resource resource;
+        auto log = make_test_log();
         auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
         configuration::config_wal config(test_path);
 
@@ -492,7 +477,8 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                                                   config,
                                                                   log,
                                                                   components::pipeline::no_mailbox(),
-                                                                  components::pipeline::no_mailbox());
+                                                                  components::pipeline::no_mailbox(),
+                                                                  configuration::pump_intervals_t{});
         scheduler->start();
 
         auto [ns1, fut_records] = actor_zeta::otterbrix::send(manager->address(),
@@ -530,8 +516,8 @@ TEST_CASE("wal_worker::segment_rotation") {
     std::filesystem::remove_all(test_path);
     std::filesystem::create_directories(test_path);
 
-    test_pool_resource_t resource;
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    core::pmr::otterbrix_resource resource;
+    auto log = make_test_log();
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
     config.max_segment_size = 8192;
@@ -541,7 +527,8 @@ TEST_CASE("wal_worker::segment_rotation") {
                                                               config,
                                                               log,
                                                               components::pipeline::no_mailbox(),
-                                                              components::pipeline::no_mailbox());
+                                                              components::pipeline::no_mailbox(),
+                                                              configuration::pump_intervals_t{});
     scheduler->start();
 
     actor_zeta::unique_future<core::result_wrapper_t<services::wal::id_t>> last_fut;
@@ -626,8 +613,8 @@ TEST_CASE("wal_worker::fsync_full_mode") {
     std::filesystem::remove_all(test_path);
     std::filesystem::create_directories(test_path);
 
-    test_pool_resource_t resource;
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    core::pmr::otterbrix_resource resource;
+    auto log = make_test_log();
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
 
@@ -636,7 +623,8 @@ TEST_CASE("wal_worker::fsync_full_mode") {
                                                               config,
                                                               log,
                                                               components::pipeline::no_mailbox(),
-                                                              components::pipeline::no_mailbox());
+                                                              components::pipeline::no_mailbox(),
+                                                              configuration::pump_intervals_t{});
     scheduler->start();
 
     {
@@ -687,8 +675,8 @@ TEST_CASE("wal_worker::fsync_off_mode") {
     std::filesystem::remove_all(test_path);
     std::filesystem::create_directories(test_path);
 
-    test_pool_resource_t resource;
-    auto log = initialization_logger("python", "/tmp/docker_logs/");
+    core::pmr::otterbrix_resource resource;
+    auto log = make_test_log();
     auto scheduler = std::make_unique<actor_zeta::shared_work>(3, 1000);
     configuration::config_wal config(test_path);
 
@@ -697,7 +685,8 @@ TEST_CASE("wal_worker::fsync_off_mode") {
                                                               config,
                                                               log,
                                                               components::pipeline::no_mailbox(),
-                                                              components::pipeline::no_mailbox());
+                                                              components::pipeline::no_mailbox(),
+                                                              configuration::pump_intervals_t{});
     scheduler->start();
 
     {

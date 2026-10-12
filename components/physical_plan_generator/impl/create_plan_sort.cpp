@@ -1,5 +1,8 @@
 #include "create_plan_sort.hpp"
 
+#include <cassert>
+#include <cstdlib>
+
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 #include <components/physical_plan/operators/operator_sort.hpp>
@@ -22,15 +25,12 @@ namespace services::planner::impl {
         }
     } // namespace
 
-    components::operators::operator_ptr create_plan_sort(const context_storage_t& context,
-                                                         const components::logical_plan::node_ptr& node,
-                                                         components::logical_plan::limit_t limit) {
-        auto table_oid = node->table_oid();
-        bool known = context.has_table_oid(table_oid);
-        auto plan_resource = known ? context.resource : node->resource();
+    plan_result_t create_plan_sort(const context_storage_t& context,
+                                   const components::logical_plan::node_ptr& node,
+                                   components::logical_plan::limit_t limit) {
+        auto* plan_resource = context.resource;
         auto sort =
-            known ? boost::intrusive_ptr(new components::operators::operator_sort_t(plan_resource, context.log.clone()))
-                  : boost::intrusive_ptr(new components::operators::operator_sort_t(node->resource(), log_t{}));
+            boost::intrusive_ptr(new components::operators::operator_sort_t(plan_resource, context.log.clone()));
 
         for (const auto& expr : node->expressions()) {
             if (expr->group() != components::expressions::expression_group::sort) {
@@ -41,11 +41,7 @@ namespace services::planner::impl {
             const auto nulls = resolve_null_order(sort_expr->null_order(), ord);
             if (components::expressions::is_key(sort_expr->operand())) {
                 const auto& path = components::expressions::as_key(sort_expr->operand()).path();
-                if (path.empty()) {
-                    // Defensive guard (validation resolves the path so this never fires): return
-                    // nullptr -> executor surfaces the error; the operator-build path never throws.
-                    return nullptr;
-                }
+                assert(!path.empty() && "validation resolves every ORDER BY key to a column");
                 sort->add(path, ord, nulls);
                 continue;
             }

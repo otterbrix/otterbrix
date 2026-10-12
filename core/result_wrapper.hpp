@@ -124,11 +124,11 @@ namespace core {
 
         // Defaulted, so member-wise: copy lands on the default resource, move keeps the source's
         // allocator — a moved error_t outlives its arena only if the arena outlives it. Safe today:
-        // the short-lived arenas are base_otterbrix_t::resource (integration/cpp/base_spaces.hpp) and
-        // five monotonic_buffer_resource arenas (components/planner/view_expansion.cpp,
-        // components/sql/transformer/impl/transfrom_common.cpp, integration/cpp/wrapper_dispatcher.cpp x2,
-        // integration/python/arrow/arrow_scan_function.cpp); none let an error_t escape scope — recheck
-        // this list before adding a shorter-lived one.
+        // the short-lived arenas are base_otterbrix_t::host_t::resource (integration/cpp/base_spaces.cpp) and
+        // four core::pmr::arena_resource_t arenas (components/planner/view_expansion.cpp,
+        // components/sql/transformer/impl/transfrom_common.cpp, integration/cpp/wrapper_dispatcher.cpp x2) and
+        // one monotonic_buffer_resource (integration/python/arrow/arrow_scan_function.cpp); none let an error_t
+        // escape scope — recheck this list before adding a shorter-lived one.
         error_t(const error_t&) = default;
         error_t(error_t&&) noexcept = default;
 

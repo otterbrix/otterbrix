@@ -479,16 +479,30 @@ namespace components::table {
             auto max_tuples =
                 segment.segment_size() / vector::validity_mask_t::STANDARD_MASK_SIZE * vector::DEFAULT_VECTOR_CAPACITY;
             uint64_t append_count = std::min(vcount, max_tuples - segment.count);
+            // Every bit of the appended range is written, valid or not: a revert moves the count only,
+            // so the bits past it are whatever the reverted rows left there.
+            auto* words = reinterpret_cast<uint64_t*>(handle.ptr());
+            constexpr uint64_t BITS = vector::validity_mask_t::BITS_PER_VALUE;
             if (data.validity.all_valid()) {
+                const uint64_t from = segment.count.load();
+                const uint64_t to = from + append_count;
+                for (uint64_t w = from / BITS; w * BITS < to; w++) {
+                    const uint64_t lo = w * BITS < from ? from - w * BITS : 0;
+                    const uint64_t hi = (w + 1) * BITS > to ? to - w * BITS : BITS;
+                    const uint64_t upto =
+                        hi == BITS ? vector::validity_data_t::MAX_ENTRY : vector::validity_details::LOWER_MASKS[hi];
+                    words[w] |= upto & ~vector::validity_details::LOWER_MASKS[lo];
+                }
                 segment.count += append_count;
                 return append_count;
             }
 
-            vector::validity_mask_t mask(segment.block->buffer_manager.resource(),
-                                         reinterpret_cast<uint64_t*>(handle.ptr()));
+            vector::validity_mask_t mask(segment.block->buffer_manager.resource(), words);
             for (uint64_t i = 0; i < append_count; i++) {
                 auto idx = data.referenced_indexing->get_index(offset + i);
-                if (!data.validity.row_is_valid(idx)) {
+                if (data.validity.row_is_valid(idx)) {
+                    mask.set_valid(segment.count + i);
+                } else {
                     mask.set_invalid(segment.count + i);
                 }
             }
@@ -521,8 +535,11 @@ namespace components::table {
             auto dictionary_size = reinterpret_cast<uint32_t*>(handle_ptr);
             auto dictionary_end = reinterpret_cast<uint32_t*>(handle_ptr + sizeof(uint32_t));
 
-            uint64_t remaining = remaining_space(segment, handle);
             auto base_count = segment.count.load();
+            // The dictionary size IS the last row's offset: a revert moves the count only, so the header
+            // may still hold the size the reverted rows had reached (their bytes are never read again).
+            *dictionary_size = base_count == 0 ? 0 : static_cast<uint32_t>(std::abs(result_data[base_count - 1]));
+            uint64_t remaining = remaining_space(segment, handle);
             for (uint64_t i = 0; i < count; i++) {
                 auto source_idx = data.referenced_indexing->get_index(offset + i);
                 auto target_idx = base_count + i;
@@ -957,6 +974,13 @@ namespace components::table {
                                             vector::validity_mask_t::BITS_PER_VALUE;
                 for (uint64_t i = 0; i < entry_scan_count; i++) {
                     auto input_entry = input_data[start_offset + i];
+                    if (i + 1 == entry_scan_count && scan_count % vector::validity_mask_t::BITS_PER_VALUE != 0) {
+                        // The bits past the scan are not rows of it: a revert leaves them as the
+                        // reverted rows had them (scan_partial masks the same way).
+                        input_entry |=
+                            vector::validity_details::UPPER_MASKS[vector::validity_mask_t::BITS_PER_VALUE -
+                                                                  scan_count % vector::validity_mask_t::BITS_PER_VALUE];
+                    }
                     if (!result_data && input_entry == vector::validity_data_t::MAX_ENTRY) {
                         continue;
                     }
@@ -1193,8 +1217,11 @@ namespace components::table {
                 return corrupt("big-string payload runs past the end of its overflow block");
             }
 
-            const auto allocation = pbm.get_block_allocation(record_size);
-            pbm.write_to_block(allocation.block_id, allocation.offset_in_block, payload, record_size);
+            auto placed = pbm.place(payload, record_size);
+            if (placed.has_error()) {
+                return placed.convert_error<bool>();
+            }
+            const auto& allocation = placed.value();
             impl::write_string_marker(marker, allocation.block_id, static_cast<int64_t>(allocation.offset_in_block));
             if (std::find(out_blocks.begin(), out_blocks.end(), allocation.block_id) == out_blocks.end()) {
                 out_blocks.push_back(allocation.block_id);
@@ -1218,7 +1245,12 @@ namespace components::table {
         if (segment_size < fixed_part) {
             return corrupt("dictionary header and offset array do not fit the segment");
         }
-        const auto dict_size = impl::load<uint32_t>(segment_copy);
+        // The size is the last row's offset, not the header's: after a revert the header still holds
+        // the size the reverted rows had reached, and their bytes must not travel to the file.
+        const auto* offsets = reinterpret_cast<const int32_t*>(segment_copy + impl::DICTIONARY_HEADER_SIZE);
+        const auto dict_size =
+            tuple_count == 0 ? uint32_t{0} : static_cast<uint32_t>(std::abs(offsets[tuple_count - 1]));
+        impl::store<uint32_t>(dict_size, segment_copy);
         const auto dict_end = impl::load<uint32_t>(segment_copy + sizeof(uint32_t));
         // Both writers of this image keep the dictionary end equal to the segment size.
         if (static_cast<uint64_t>(dict_end) != segment_size) {
@@ -1548,51 +1580,12 @@ namespace components::table {
         }
     }
 
-    core::result_wrapper_t<bool> column_segment_t::revert_append(uint64_t start_row) {
-        // STRING's cumulative dictionary size must roll back to the last kept row's offset, or a re-appended
-        // string's offset spans the reverted payload too. BIT's tail bits must reset to valid before reuse.
-        // Fixed-size segments just had raw values overwritten, so reverting only drops the count.
-        if (type.to_physical_type() == types::physical_type::STRING) {
-            uint64_t new_count = start_row - static_cast<uint64_t>(start);
-            auto& buffer_manager = block->buffer_manager;
-            auto pinned = buffer_manager.pin(block);
-            if (pinned.has_error()) {
-                return pinned.convert_error<bool>();
-            }
-            {
-                auto& handle = pinned.value();
-                auto dict = impl::dictionary(*this, handle);
-                auto offsets = reinterpret_cast<int32_t*>(handle.ptr() + block_offset() + impl::DICTIONARY_HEADER_SIZE);
-                int32_t last = new_count == 0 ? 0 : offsets[new_count - 1];
-                dict.size = static_cast<uint32_t>(last < 0 ? -last : last);
-                impl::set_dictionary(*this, handle, dict);
-            }
-        }
-        if (type.to_physical_type() == types::physical_type::BIT) {
-            uint64_t start_bit = start_row - static_cast<uint64_t>(start);
-
-            auto& buffer_manager = block->buffer_manager;
-            auto pinned = buffer_manager.pin(block);
-            if (pinned.has_error()) {
-                return pinned.convert_error<bool>();
-            }
-            {
-                auto& handle = pinned.value();
-                // Bitmap starts at the segment's offset: a packed segment shares its block, so handle.ptr()
-                // alone would smear the reset over a neighbour.
-                auto* bitmap = handle.ptr() + block_offset();
-                uint64_t revert_start;
-                if (start_bit % 8 != 0) {
-                    bitmap[start_bit / 8] |= static_cast<std::byte>(0xFFu << (start_bit % 8));
-                    revert_start = start_bit / 8 + 1;
-                } else {
-                    revert_start = start_bit / 8;
-                }
-                memset(bitmap + revert_start, 0xFF, segment_size_ - revert_start);
-            }
-        }
+    void column_segment_t::revert_append(uint64_t start_row) {
+        // Only the count moves. The bytes past it are never read: string_append derives the dictionary
+        // size from the last kept row's offset, validity_append writes every bit it appends, and the
+        // scans mask the bits past their count. Rejected: a pin to roll the bytes back -- it needs memory
+        // the pool has just refused when the block was spilled meanwhile (test_list_revert_pin R5).
         count = start_row - static_cast<uint64_t>(start);
-        return true;
     }
 
     void column_segment_t::scan(column_scan_state& state, uint64_t scan_count, vector::vector_t& result) {

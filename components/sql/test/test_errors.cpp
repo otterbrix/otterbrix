@@ -211,7 +211,8 @@ TEST_CASE("components::sql::errors") {
     TEST_TRANSFORMER_ERROR("INSERT INTO d.t DEFAULT VALUES;", R"_(INSERT ... DEFAULT VALUES is not supported)_");
 
     SECTION("unsupported statements name their tag") {
-        for (const char* q : {"TRUNCATE d.t;", "GRANT SELECT ON d.t TO alice;", "COPY d.t FROM '/tmp/x';"}) {
+        // TRUNCATE has its own refusal (test_name_bugs.cpp).
+        for (const char* q : {"GRANT SELECT ON d.t TO alice;", "COPY d.t FROM '/tmp/x';"}) {
             auto stmt = linitial(raw_parser(&arena_resource, q));
             auto result = transformer.transform(transform::pg_cell_to_node_cast(stmt));
             const std::string what{result.get_error().what.c_str()};
@@ -230,6 +231,25 @@ TEST_CASE("components::sql::errors") {
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE (5 -> 'a') ? 'b';",
                            R"_(unsupported base operand for jsonb operator)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE 5 ? 'a';", R"_(unsupported base operand for jsonb operator)_");
+}
+
+// Ignoring CONCURRENTLY would run a plain refresh under the caller's name.
+TEST_CASE("components::sql::errors::refresh_concurrently_is_refused") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    const char* query = "REFRESH MATERIALIZED VIEW CONCURRENTLY d.mv;";
+    auto stmt = linitial(raw_parser(&arena_resource, query));
+    transform::transformer transformer(&resource, query);
+    auto result = transformer.transform(transform::pg_cell_to_node_cast(stmt));
+    REQUIRE(result.get_error().contains_error());
+    CHECK(result.get_error().type == core::error_code_t::unimplemented_yet);
+    CHECK(std::string_view{result.get_error().what} == "REFRESH MATERIALIZED VIEW CONCURRENTLY is not supported");
+
+    const char* plain = "REFRESH MATERIALIZED VIEW d.mv;";
+    auto plain_stmt = linitial(raw_parser(&arena_resource, plain));
+    transform::transformer plain_transformer(&resource, plain);
+    REQUIRE_FALSE(
+        plain_transformer.transform(transform::pg_cell_to_node_cast(plain_stmt)).get_error().contains_error());
 }
 
 // WITH (storage = ...) is gone; every value must fail loudly, not be silently accepted.
@@ -276,7 +296,11 @@ namespace {
         if (result.has_error()) {
             return {true, std::string{result.get_error().what.c_str()}, false};
         }
-        auto node = result.node_ptr();
+        auto plan = result.finalize();
+        if (plan.has_error()) {
+            return {true, std::string{plan.error().what.c_str()}, false};
+        }
+        auto node = plan.value().sub_queries.back();
         if (!node) {
             return {false, std::string{"<null node>"}, false};
         }

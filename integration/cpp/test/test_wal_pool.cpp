@@ -17,15 +17,15 @@ using id_par = core::parameter_id_t;
 using namespace components::types;
 
 // NOTE: SQL parser lowercases identifiers, so API names must be lowercase
-static const database_name_t database_name = "testdatabase";
-static const collection_name_t collection_name = "testcollection";
-static const collection_name_t collection_name_2 = "testcollection2";
+static const core::dbname_t database_name{"testdatabase"};
+static const core::relname_t collection_name{"testcollection"};
+static const core::relname_t collection_name_2{"testcollection2"};
 
 #define INIT_COLLECTION_WAL(DB, COLL)                                                                                  \
     do {                                                                                                               \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + (DB) + ";");                            \
+            dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + (DB).t + ";");                          \
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
@@ -57,17 +57,17 @@ static const collection_name_t collection_name_2 = "testcollection2";
 #define CHECK_FIND_WAL(DB, COLL, KEY, COMPARE, VALUE, COUNT)                                                           \
     do {                                                                                                               \
         auto session = otterbrix::session_id_t();                                                                      \
-        auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),                              \
-                                                                  core::dbname_t{DB},                                  \
-                                                                  core::relname_t{COLL});                              \
+        auto plan = components::logical_plan::make_node_aggregate(                                                     \
+            dispatcher->resource(),                                                                                    \
+            qualified_name_t{core::dbname_t{DB}, core::relname_t{COLL}});                                              \
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
                                                                      key{dispatcher->resource(), KEY, side_t::left},   \
                                                                      id_par{1});                                       \
-        plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),                           \
-                                                                     core::dbname_t{DB},                               \
-                                                                     core::relname_t{COLL},                            \
-                                                                     std::move(expr)));                                \
+        plan->append_child(                                                                                            \
+            components::logical_plan::make_node_match(dispatcher->resource(),                                          \
+                                                      qualified_name_t{core::dbname_t{DB}, core::relname_t{COLL}},     \
+                                                      std::move(expr)));                                               \
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
         params->add_parameter(id_par{1}, VALUE);                                                                       \
         auto c = dispatcher->execute_plan(                                                                             \
@@ -329,7 +329,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -354,7 +354,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kDocuments);
+            REQUIRE(cur->affected_rows() == kDocuments);
         }
 
         // Verify insert: total + exact match + range + boundary
@@ -368,7 +368,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count > 90;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 9);
+            REQUIRE(cur->affected_rows() == 9);
         }
 
         // Verify delete: deleted gone + boundary intact
@@ -383,7 +383,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
             auto cur = dispatcher->execute_sql(session,
                                                "UPDATE TestDatabase.TestCollection SET count = 999 WHERE count = 50;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 1);
+            REQUIRE(cur->affected_rows() == 1);
         }
 
         // Verify update: old gone, new present, total unchanged
@@ -426,7 +426,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
         // Create database
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
 
         // Create table with NOT NULL on a string column
@@ -446,7 +446,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
                                                "INSERT INTO TestDatabase.TestCollection (name, tag) VALUES "
                                                "('alice', 'red'), ('bob', 'green'), ('charlie', 'blue');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 3);
+            REQUIRE(cur->affected_rows() == 3);
         }
 
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 3);
@@ -471,7 +471,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
                                                "INSERT INTO TestDatabase.TestCollection (name, tag) VALUES "
                                                "('eve', 'yellow'), ('frank', 'white');");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 2);
+            REQUIRE(cur->affected_rows() == 2);
         }
 
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 5);
@@ -512,7 +512,7 @@ TEST_CASE("integration::cpp::test_wal_pool::constant_data_checkpoint_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
 
         // Create table with a typed schema
@@ -533,7 +533,7 @@ TEST_CASE("integration::cpp::test_wal_pool::constant_data_checkpoint_restart") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
 
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 100);
@@ -568,7 +568,7 @@ TEST_CASE("integration::cpp::test_wal_pool::insert_delete_checkpoint_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
 
         {
@@ -588,7 +588,7 @@ TEST_CASE("integration::cpp::test_wal_pool::insert_delete_checkpoint_restart") {
             }
             auto cur = dispatcher->execute_sql(session, query.str());
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 100);
+            REQUIRE(cur->affected_rows() == 100);
         }
 
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 100);
@@ -598,7 +598,7 @@ TEST_CASE("integration::cpp::test_wal_pool::insert_delete_checkpoint_restart") {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "DELETE FROM TestDatabase.TestCollection WHERE count < 50;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == 50);
+            REQUIRE(cur->affected_rows() == 50);
         }
 
         CHECK_FIND_SQL_WAL("SELECT * FROM TestDatabase.TestCollection;", 50);

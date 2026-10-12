@@ -20,6 +20,7 @@ set_property(TARGET otterbrix_${CURRENT_TARGET} PROPERTY EXPORT_NAME ${CURRENT_T
 
 target_link_libraries(
         otterbrix_${CURRENT_TARGET} PUBLIC
+        otterbrix::pmr
         spdlog::spdlog
         Boost::boost
         dl

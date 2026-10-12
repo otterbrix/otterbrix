@@ -8,8 +8,8 @@
 #include <components/tests/generaty.hpp>
 #include <core/operations_helper.hpp>
 
-static const database_name_t database_name = "testdatabase";
-static const collection_name_t collection_name = "testcollection";
+static const core::dbname_t database_name{"testdatabase"};
+static const core::relname_t collection_name{"testcollection"};
 
 using namespace components;
 using namespace components::compute;
@@ -55,10 +55,15 @@ concat_finalize(kernel_context& ctx, aggregate_states_t states, uint64_t first, 
     return core::error_t::no_error();
 }
 
-std::unique_ptr<aggregate_function> make_concat_func(std::pmr::memory_resource* resource) {
-    function_doc doc{"short_doc", "full_doc", {"arg"}, false};
+core::pmr::polymorphic_unique_ptr<aggregate_function> make_concat_func(std::pmr::memory_resource* resource) {
+    function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
 
-    auto fn = std::make_unique<aggregate_function>(udf1_name, arity::unary(), doc, 1);
+    auto fn = core::pmr::make_polymorphic_unique<aggregate_function>(resource,
+                                                                     udf1_name,
+                                                                     arity::unary(),
+                                                                     doc,
+                                                                     size_t{1},
+                                                                     false);
 
     kernel_signature_t sig(function_type_t::aggregate,
                            {parameter_type::exact(types::logical_type::STRING_LITERAL)},
@@ -97,10 +102,15 @@ mult_finalize(kernel_context&, aggregate_states_t states, uint64_t first, uint64
 }
 
 // has overloads for diff argument types
-std::unique_ptr<aggregate_function> make_mult_func(std::pmr::memory_resource* resource) {
-    function_doc doc{"short_doc", "full_doc", {"arg1", "arg2"}, false};
+core::pmr::polymorphic_unique_ptr<aggregate_function> make_mult_func(std::pmr::memory_resource* resource) {
+    function_doc doc{resource, "short_doc", "full_doc", {"arg1", "arg2"}, false};
 
-    auto fn = std::make_unique<aggregate_function>(udf2_name, arity::binary(), doc, 1);
+    auto fn = core::pmr::make_polymorphic_unique<aggregate_function>(resource,
+                                                                     udf2_name,
+                                                                     arity::binary(),
+                                                                     doc,
+                                                                     size_t{1},
+                                                                     false);
 
     kernel_signature_t sig(
         function_type_t::aggregate,
@@ -121,10 +131,10 @@ static core::error_t is_even_exec(kernel_context&, const vector::data_chunk_t& i
     return core::error_t::no_error();
 }
 
-std::unique_ptr<vector_function> make_is_even_func(std::pmr::memory_resource* resource) {
-    function_doc doc{"short_doc", "full_doc", {"arg"}, false};
+core::pmr::polymorphic_unique_ptr<vector_function> make_is_even_func(std::pmr::memory_resource* resource) {
+    function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
 
-    auto fn = std::make_unique<vector_function>(udf3_name, arity::unary(), doc, 1);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource, udf3_name, arity::unary(), doc, size_t{1});
 
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(types::logical_type::BIGINT)},
@@ -145,10 +155,10 @@ static core::error_t modulo_exec(kernel_context&, const vector::data_chunk_t& in
     return core::error_t::no_error();
 }
 
-std::unique_ptr<vector_function> make_modulo_func(std::pmr::memory_resource* resource) {
-    function_doc doc{"short_doc", "full_doc", {"arg1", "arg2"}, false};
+core::pmr::polymorphic_unique_ptr<vector_function> make_modulo_func(std::pmr::memory_resource* resource) {
+    function_doc doc{resource, "short_doc", "full_doc", {"arg1", "arg2"}, false};
 
-    auto fn = std::make_unique<vector_function>(udf4_name, arity::binary(), doc, 1);
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource, udf4_name, arity::binary(), doc, size_t{1});
 
     kernel_signature_t sig(
         function_type_t::vector,
@@ -172,7 +182,7 @@ TEST_CASE("integration::cpp::test_udfs") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -201,7 +211,7 @@ TEST_CASE("integration::cpp::test_udfs") {
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), ins, nullptr});
             REQUIRE(cur->is_success());
-            REQUIRE(cur->size() == kNumInserts);
+            REQUIRE(cur->affected_rows() == kNumInserts);
         }
     }
 
@@ -431,6 +441,169 @@ TEST_CASE("integration::cpp::test_udfs") {
                                                R"_(ORDER BY count DESC;)_");
             REQUIRE(cur->is_error());
             REQUIRE(cur->get_error().type == core::error_code_t::unrecognized_function);
+        }
+    }
+}
+
+namespace {
+
+    struct total_kernel_state {
+        int64_t value{};
+    };
+
+    aggregate_state_layout_t total_layout(const std::pmr::vector<types::complex_logical_type>&) {
+        return aggregate_state_of<total_kernel_state>();
+    }
+
+    core::error_t total_update(kernel_context&,
+                               const vector::data_chunk_t& in,
+                               core::span<const uint32_t> groups,
+                               aggregate_states_t states) {
+        for (size_t i = 0; i < in.size(); i++) {
+            states.at<total_kernel_state>(groups[i]).value += in.data[0].data<int64_t>()[i];
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t
+    total_finalize(kernel_context&, aggregate_states_t states, uint64_t first, uint64_t count, vector::vector_t& out) {
+        for (uint64_t row = 0; row < count; row++) {
+            out.data<int64_t>()[row] = states.at<total_kernel_state>(first + row).value;
+        }
+        return core::error_t::no_error();
+    }
+
+    core::pmr::polymorphic_unique_ptr<aggregate_function>
+    make_mergeable_total_func(std::pmr::memory_resource* resource) {
+        function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
+        auto fn = core::pmr::make_polymorphic_unique<aggregate_function>(resource,
+                                                                         "total",
+                                                                         arity::unary(),
+                                                                         doc,
+                                                                         size_t{1},
+                                                                         /*mergeable=*/true);
+        kernel_signature_t sig(function_type_t::aggregate,
+                               {parameter_type::exact(types::logical_type::BIGINT)},
+                               {output_type::fixed(types::logical_type::BIGINT)});
+        std::ignore =
+            fn->add_kernel(resource, aggregate_kernel{std::move(sig), total_layout, total_update, total_finalize});
+        return fn;
+    }
+
+    std::string explain_text(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
+        auto cur = dispatcher->execute_sql(otterbrix::session_id_t(), "EXPLAIN " + sql);
+        REQUIRE(cur->is_success());
+        std::string plan;
+        for (std::size_t r = 0; r < cur->size(); ++r) {
+            auto v = cur->value(0, r);
+            plan += std::string(v.value<std::string_view>());
+            plan += '\n';
+        }
+        return plan;
+    }
+
+} // namespace
+
+TEST_CASE("integration::cpp::test_udfs::a_udf_compare_in_where_is_pushed_into_the_scan") {
+    auto config = test_create_config(integration_fixture_path("test_udfs/udf_compare_pushed"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto exec = [&](const std::string& sql) { return dispatcher->execute_sql(otterbrix::session_id_t(), sql); };
+    REQUIRE(exec("CREATE DATABASE udfpush;")->is_success());
+    REQUIRE(exec("CREATE TABLE udfpush.t (count BIGINT);")->is_success());
+    {
+        std::string values;
+        for (int i = 1; i <= kNumInserts; ++i) {
+            values += (i == 1 ? "(" : ",(") + std::to_string(i) + ")";
+        }
+        REQUIRE(exec("INSERT INTO udfpush.t (count) VALUES " + values + ";")->is_success());
+    }
+    REQUIRE_FALSE(
+        dispatcher->register_udf(otterbrix::session_id_t(), make_modulo_func(dispatcher->resource())).contains_error());
+
+    INFO("the plan has no Filter above the scan");
+    {
+        const auto plan = explain_text(dispatcher, "SELECT count FROM udfpush.t WHERE modulo(count, 7) <= 2;");
+        INFO(plan);
+        REQUIRE(plan.find("Seq Scan") != std::string::npos);
+        REQUIRE(plan.find("Filter") == std::string::npos);
+    }
+
+    INFO("the pushed UDF selects the same rows");
+    {
+        std::size_t expected = 0;
+        for (int i = 1; i <= kNumInserts; ++i) {
+            if (i % 7 <= 2) {
+                ++expected;
+            }
+        }
+        auto cur = exec("SELECT count FROM udfpush.t WHERE modulo(count, 7) <= 2 ORDER BY count ASC;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == expected);
+        for (std::size_t i = 0; i < cur->size(); ++i) {
+            REQUIRE(cur->chunks().front().data[0].data<int64_t>()[i] % 7 <= 2);
+        }
+    }
+}
+
+TEST_CASE("integration::cpp::test_udfs::a_udf_in_a_pushable_aggregate_is_pushed_into_the_scan") {
+    auto config = test_create_config(integration_fixture_path("test_udfs/udf_aggregate_pushed"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto exec = [&](const std::string& sql) { return dispatcher->execute_sql(otterbrix::session_id_t(), sql); };
+    REQUIRE(exec("CREATE DATABASE udfagg;")->is_success());
+    REQUIRE(exec("CREATE TABLE udfagg.t (g BIGINT, v BIGINT);")->is_success());
+    {
+        std::string values;
+        for (int i = 1; i <= kNumInserts; ++i) {
+            values += (i == 1 ? "(" : ",(") + std::to_string(i % 3) + ", " + std::to_string(i) + ")";
+        }
+        REQUIRE(exec("INSERT INTO udfagg.t (g, v) VALUES " + values + ";")->is_success());
+    }
+    REQUIRE_FALSE(
+        dispatcher->register_udf(otterbrix::session_id_t(), make_modulo_func(dispatcher->resource())).contains_error());
+    REQUIRE_FALSE(dispatcher->register_udf(otterbrix::session_id_t(), make_mergeable_total_func(dispatcher->resource()))
+                      .contains_error());
+
+    INFO("a UDF in the WHERE of a pushed aggregate");
+    {
+        const std::string sql = "SELECT sum(v) AS s FROM udfagg.t WHERE modulo(v, 7) <= 2;";
+        const auto plan = explain_text(dispatcher, sql);
+        INFO(plan);
+        CHECK(plan.find("Pushed Aggregate Scan") != std::string::npos);
+        int64_t expected = 0;
+        for (int i = 1; i <= kNumInserts; ++i) {
+            if (i % 7 <= 2) {
+                expected += i;
+            }
+        }
+        auto cur = exec(sql);
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->value(0, 0).value<int64_t>() == expected);
+    }
+
+    INFO("a mergeable UDF aggregate, grouped");
+    {
+        const std::string sql = "SELECT g, total(v) AS t FROM udfagg.t GROUP BY g ORDER BY g;";
+        const auto plan = explain_text(dispatcher, sql);
+        INFO(plan);
+        CHECK(plan.find("Pushed Aggregate Scan") != std::string::npos);
+        int64_t expected[3] = {0, 0, 0};
+        for (int i = 1; i <= kNumInserts; ++i) {
+            expected[i % 3] += i;
+        }
+        auto cur = exec(sql);
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        for (std::size_t row = 0; row < 3; ++row) {
+            INFO("group " << row);
+            REQUIRE(cur->value(0, row).value<int64_t>() == static_cast<int64_t>(row));
+            REQUIRE(cur->value(1, row).value<int64_t>() == expected[row]);
         }
     }
 }

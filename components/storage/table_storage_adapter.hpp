@@ -213,10 +213,9 @@ namespace components::storage {
                 return core::error_t{core::error_code_t::schema_error, std::move(what)};
             }
 
-            auto delete_state = table_.initialize_delete({});
             // An update is a delete then an append: if the delete refuses, appending would leave
             // both the old and the new row.
-            auto deleted = table_.delete_rows(*delete_state, row_ids, count, txn);
+            auto deleted = table_.delete_rows(row_ids, count, txn);
             if (deleted.has_error()) {
                 return deleted.convert_error<appended_range_t>();
             }
@@ -243,8 +242,7 @@ namespace components::storage {
 
         core::result_wrapper_t<uint64_t>
         delete_rows(vector::vector_t& row_ids, uint64_t count, const table::transaction_data& txn) override {
-            auto delete_state = table_.initialize_delete({});
-            return table_.delete_rows(*delete_state, row_ids, count, txn);
+            return table_.delete_rows(row_ids, count, txn);
         }
 
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count) override {

@@ -49,7 +49,13 @@ namespace components::compute {
 
     class compute_kernel {
     public:
+        using allocator_type = std::pmr::polymorphic_allocator<>;
+
         explicit compute_kernel(kernel_signature_t signature, kernel_init_fn init = nullptr);
+        compute_kernel(const compute_kernel& other) = default;
+        compute_kernel(compute_kernel&& other) = default;
+        compute_kernel(const compute_kernel& other, const allocator_type& allocator);
+        compute_kernel(compute_kernel&& other, const allocator_type& allocator);
         virtual ~compute_kernel() = default;
 
         const kernel_signature_t& signature() const { return signature_; }
@@ -73,6 +79,8 @@ namespace components::compute {
                       vector_exec_fn exec,
                       kernel_init_fn init = nullptr,
                       vector_finalize_fn finalize = nullptr);
+        vector_kernel(const vector_kernel& other, const allocator_type& allocator);
+        vector_kernel(vector_kernel&& other, const allocator_type& allocator);
 
         core::error_t execute(kernel_context& ctx, const vector::data_chunk_t& inputs, vector::vector_t& output) const;
         core::error_t finalize(kernel_context& ctx, vector::data_chunk_t& output) const;
@@ -106,6 +114,8 @@ namespace components::compute {
                          aggregate_layout_fn layout,
                          aggregate_update_fn update,
                          aggregate_finalize_fn finalize);
+        aggregate_kernel(const aggregate_kernel& other, const allocator_type& allocator);
+        aggregate_kernel(aggregate_kernel&& other, const allocator_type& allocator);
 
         [[nodiscard]] aggregate_state_layout_t
         state_layout(const std::pmr::vector<types::complex_logical_type>& inputs) const;
@@ -132,6 +142,8 @@ namespace components::compute {
     class expand_kernel : public compute_kernel {
     public:
         expand_kernel(kernel_signature_t signature, expand_exec_fn exec);
+        expand_kernel(const expand_kernel& other, const allocator_type& allocator);
+        expand_kernel(expand_kernel&& other, const allocator_type& allocator);
 
         core::error_t execute(kernel_context& ctx,
                               const vector::data_chunk_t& inputs,

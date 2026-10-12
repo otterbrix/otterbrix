@@ -1,7 +1,7 @@
 #pragma once
 
-#include "identifier_types.hpp"
 #include "node.hpp"
+#include <components/base/identifier_types.hpp>
 
 #include <components/catalog/fk_info.hpp>
 
@@ -16,15 +16,10 @@ namespace components::logical_plan {
 
         const catalog::fk_info_t& fk() const noexcept { return fk_; }
 
-        const std::string& relname() const noexcept { return relname_; }
-        const std::string& dbname() const noexcept { return dbname_; }
-
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::string dbname_;
-        std::string relname_;
         catalog::fk_info_t fk_;
     };
 

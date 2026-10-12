@@ -11,7 +11,7 @@ namespace components::logical_plan {
                                                    int64_t min_value,
                                                    int64_t max_value)
         : node_t(resource, node_type::create_sequence_t)
-        , seqname_(std::move(static_cast<std::string&>(seqname)))
+        , seqname_(std::move(seqname))
         , start_(start)
         , increment_(increment)
         , min_value_(min_value)

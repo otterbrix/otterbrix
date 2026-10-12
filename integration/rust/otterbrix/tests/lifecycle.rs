@@ -45,3 +45,20 @@ fn open_with_explicit_log_level() {
     db.execute("CREATE DATABASE leveldb;").unwrap();
     db.execute("CREATE TABLE leveldb.t (n integer);").unwrap();
 }
+
+#[test]
+fn a_second_open_of_the_same_directory_is_refused() {
+    let id = BUILDER_TEST_ID.fetch_add(1, Ordering::SeqCst);
+    let dir = format!("/tmp/otterbrix_safe_locked_{}_{id}", process::id());
+    let first = Database::open(Config::new(&dir)).expect("first open");
+    match Database::open(Config::new(&dir)) {
+        Err(otterbrix::Error::Engine { code, message }) => {
+            assert_ne!(code, 0);
+            assert!(message.contains("unique directory"), "refusal: {message}");
+        }
+        other => panic!("a second open must be refused with the engine's reason, got {other:?}"),
+    }
+    drop(first);
+    let reopened = Database::open(Config::new(&dir)).expect("open after the first engine is gone");
+    reopened.execute("CREATE DATABASE relocked;").unwrap();
+}

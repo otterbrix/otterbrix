@@ -51,4 +51,47 @@ namespace components::catalog {
         return out;
     }
 
+    services::disk::resolve_function_result_t decode_pg_proc_row(const vector::data_chunk_t& chunk, std::uint64_t row) {
+        services::disk::resolve_function_result_t r;
+        r.found = true;
+        r.oid = static_cast<oid_t>(chunk.get_value<std::uint32_t>(pg_proc_col::oid, row));
+        r.name = std::string{chunk.get_value<std::string_view>(pg_proc_col::proname, row)};
+        if (!chunk.is_null(pg_proc_col::pronamespace, row)) {
+            r.namespace_oid = static_cast<oid_t>(chunk.get_value<std::uint32_t>(pg_proc_col::pronamespace, row));
+        }
+        if (!chunk.is_null(pg_proc_col::pronargs, row)) {
+            r.signature.pronargs = chunk.get_value<std::int32_t>(pg_proc_col::pronargs, row);
+        }
+        if (!chunk.is_null(pg_proc_col::prouid, row)) {
+            r.prouid = chunk.get_value<std::uint64_t>(pg_proc_col::prouid, row);
+        }
+        if (!chunk.is_null(pg_proc_col::proargmatchers, row)) {
+            r.signature.proargmatchers =
+                std::string{chunk.get_value<std::string_view>(pg_proc_col::proargmatchers, row)};
+        }
+        if (!chunk.is_null(pg_proc_col::prorettype, row)) {
+            r.signature.prorettype = std::string{chunk.get_value<std::string_view>(pg_proc_col::prorettype, row)};
+        }
+        return r;
+    }
+
+    core::result_wrapper_t<char> deptype_of(const vector::data_chunk_t& chunk, std::uint64_t row) {
+        if (!chunk.is_null(pg_depend_col::deptype, row)) {
+            const auto text = chunk.get_value<std::string_view>(pg_depend_col::deptype, row);
+            if (!text.empty()) {
+                return text.front();
+            }
+        }
+        const auto oid_at = [&chunk, row](std::uint64_t column) {
+            return chunk.is_null(column, row) ? std::string{"?"}
+                                              : std::to_string(chunk.get_value<std::uint32_t>(column, row));
+        };
+        return core::error_t{core::error_code_t::data_corruption,
+                             std::pmr::string{"the pg_depend row " + oid_at(pg_depend_col::classid) + "/" +
+                                                  oid_at(pg_depend_col::objid) + " -> " +
+                                                  oid_at(pg_depend_col::refclassid) + "/" +
+                                                  oid_at(pg_depend_col::refobjid) + " has no deptype",
+                                              chunk.resource()}};
+    }
+
 } // namespace components::catalog

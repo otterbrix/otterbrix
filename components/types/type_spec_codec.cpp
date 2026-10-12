@@ -83,7 +83,6 @@ namespace components::types {
 
         bool is_plain_scalar(logical_type t) {
             switch (t) {
-                case logical_type::NA:
                 case logical_type::ANY:
                 case logical_type::BOOLEAN:
                 case logical_type::TINYINT:
@@ -269,6 +268,8 @@ namespace components::types {
                     }
                     return true;
                 }
+                case logical_type::NA:
+                    return encode_error(resource, "type spec encode: NULL (NA) is not a stored type");
                 default:
                     // USER/TABLE/FUNCTION/LAMBDA/INVALID never describe stored data.
                     return encode_error(resource, "type spec encode: type cannot be persisted");
@@ -453,6 +454,8 @@ namespace components::types {
                     }
                     return complex_logical_type::create_unknown(std::move(type_name), std::move(alias));
                 }
+                case logical_type::NA:
+                    return corrupt(resource, "type spec decode: NULL (NA) is not a stored type");
                 default:
                     return corrupt(resource, "type spec decode: unrecognized logical_type byte");
             }

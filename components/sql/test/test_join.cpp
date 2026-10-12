@@ -100,22 +100,22 @@ TEST_CASE("components::sql::join") {
         // preferred over schema when both are present in cfn).
         {
             auto* agg = static_cast<const components::logical_plan::node_aggregate_t*>(join->children().back().get());
-            REQUIRE(static_cast<const std::string&>(agg->dbname()) == "db3");
-            REQUIRE(static_cast<const std::string&>(agg->relname()) == "test3");
+            REQUIRE(static_cast<const std::string&>(agg->target().database) == "db3");
+            REQUIRE(static_cast<const std::string&>(agg->target().collection) == "test3");
         }
 
         auto nested_join = join->children().front();
         {
             auto* agg =
                 static_cast<const components::logical_plan::node_aggregate_t*>(nested_join->children().front().get());
-            REQUIRE(static_cast<const std::string&>(agg->dbname()) == "db1");
-            REQUIRE(static_cast<const std::string&>(agg->relname()) == "test1");
+            REQUIRE(static_cast<const std::string&>(agg->target().database) == "db1");
+            REQUIRE(static_cast<const std::string&>(agg->target().collection) == "test1");
         }
         {
             auto* agg =
                 static_cast<const components::logical_plan::node_aggregate_t*>(nested_join->children().back().get());
-            REQUIRE(static_cast<const std::string&>(agg->dbname()) == "db2");
-            REQUIRE(static_cast<const std::string&>(agg->relname()) == "test2");
+            REQUIRE(static_cast<const std::string&>(agg->target().database) == "db2");
+            REQUIRE(static_cast<const std::string&>(agg->target().collection) == "test2");
         }
     }
 

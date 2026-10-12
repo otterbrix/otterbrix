@@ -1,5 +1,8 @@
 #include "create_plan_join.hpp"
 
+#include <cassert>
+#include <cstdlib>
+
 #include <components/logical_plan/effective_table_oid.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/physical_plan/operators/operator_hash_join.hpp>
@@ -35,23 +38,21 @@ namespace services::planner::impl {
 
     } // namespace
 
-    components::operators::operator_ptr
-    create_plan_join(const context_storage_t& context,
-                     const components::compute::function_registry_t& function_registry,
-                     const components::logical_plan::node_ptr& node,
-                     const components::logical_plan::storage_parameters* params) {
+    plan_result_t create_plan_join(const context_storage_t& context,
+                                   const components::compute::function_registry_t& function_registry,
+                                   const components::logical_plan::node_ptr& node,
+                                   const components::logical_plan::storage_parameters* params) {
         const auto* join_node = static_cast<const components::logical_plan::node_join_t*>(node.get());
-        // Try left child context first, fall back to right (one side may be raw data with nullptr context)
-        auto left_oid = node->children().front()->table_oid();
-        auto right_oid = node->children().back()->table_oid();
-        bool known = context.has_table_oid(left_oid) || context.has_table_oid(right_oid);
-        // Neither side may be a known table; fall back to the logical node's own resource so the
-        // operator still has a valid allocator for its working state (mirrors create_plan_aggregate).
-        auto* resource = known ? context.resource : node->resource();
-        auto log = known ? context.log.clone() : log_t{};
+        auto* resource = context.resource;
+        auto log = context.log.clone();
 
         using join_type = components::logical_plan::join_type;
         using join_algo = components::logical_plan::node_join_t::join_algo;
+
+        auto lower_input = [&](const components::logical_plan::node_ptr& input) -> plan_result_t {
+            assert(input && "a join has both inputs");
+            return create_plan(context, function_registry, input, components::logical_plan::limit_t::unlimit(), params);
+        };
 
         if (join_node->is_lateral()) {
             std::pmr::vector<components::logical_plan::node_join_t::correlation_t> correlations(resource);
@@ -76,26 +77,8 @@ namespace services::planner::impl {
                                                                                         std::move(on_expression),
                                                                                         std::move(outer_schema),
                                                                                         std::move(inner_schema)));
-            components::operators::operator_ptr outer;
-            components::operators::operator_ptr inner;
-            if (node->children().front()) {
-                outer = create_plan(context,
-                                    function_registry,
-                                    node->children().front(),
-                                    components::logical_plan::limit_t::unlimit(),
-                                    params);
-            }
-            if (node->children().back()) {
-                inner = create_plan(context,
-                                    function_registry,
-                                    node->children().back(),
-                                    components::logical_plan::limit_t::unlimit(),
-                                    params);
-            }
-            // A null child means a term failed to lower; return nullptr rather than execute on it.
-            if (!outer || !inner) {
-                return nullptr;
-            }
+            VALUE_OR_RETURN(auto outer, lower_input(node->children().front()));
+            VALUE_OR_RETURN(auto inner, lower_input(node->children().back()));
             lateral->set_lateral_terms(std::move(outer), std::move(inner));
             return lateral;
         }
@@ -153,29 +136,13 @@ namespace services::planner::impl {
                 case join_type::invalid:
                 case join_type::semi:
                 case join_type::anti:
-                    return nullptr;
+                    assert(false && "a hash join is only inner, left, right or full");
+                    std::abort();
             }
             const auto& probe_child = swap_build_side ? node->children().back() : node->children().front();
             const auto& build_child = swap_build_side ? node->children().front() : node->children().back();
-            components::operators::operator_ptr hash_left;
-            components::operators::operator_ptr hash_right;
-            if (probe_child) {
-                hash_left = create_plan(context,
-                                        function_registry,
-                                        probe_child,
-                                        components::logical_plan::limit_t::unlimit(),
-                                        params);
-            }
-            if (build_child) {
-                hash_right = create_plan(context,
-                                         function_registry,
-                                         build_child,
-                                         components::logical_plan::limit_t::unlimit(),
-                                         params);
-            }
-            if (!hash_left || !hash_right) {
-                return nullptr;
-            }
+            VALUE_OR_RETURN(auto hash_left, lower_input(probe_child));
+            VALUE_OR_RETURN(auto hash_right, lower_input(build_child));
             hash_join->set_children(std::move(hash_left), std::move(hash_right));
             return hash_join;
         }
@@ -197,27 +164,11 @@ namespace services::planner::impl {
             case join_type::semi:
             case join_type::anti:
                 // invalid never fires (validation); semi/anti appear only as LATERAL joins (handled above).
-                return nullptr;
+                assert(false && "a semi, anti or invalid join outside LATERAL");
+                std::abort();
         }
-        components::operators::operator_ptr left;
-        components::operators::operator_ptr right;
-        if (node->children().front()) {
-            left = create_plan(context,
-                               function_registry,
-                               node->children().front(),
-                               components::logical_plan::limit_t::unlimit(),
-                               params);
-        }
-        if (node->children().back()) {
-            right = create_plan(context,
-                                function_registry,
-                                node->children().back(),
-                                components::logical_plan::limit_t::unlimit(),
-                                params);
-        }
-        if (!left || !right) {
-            return nullptr;
-        }
+        VALUE_OR_RETURN(auto left, lower_input(node->children().front()));
+        VALUE_OR_RETURN(auto right, lower_input(node->children().back()));
         join->set_children(std::move(left), std::move(right));
         return join;
     }

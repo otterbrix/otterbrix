@@ -229,20 +229,26 @@ namespace {
             return out;
         }
 
-        collect_join_arities(result.node_ptr(), out.join_arities);
-        collect_joins(result.node_ptr(), out.joins);
+        auto plan = result.finalize();
+        if (plan.has_error()) {
+            out.rejected = true;
+            out.stage = "finalize";
+            out.code = plan.error().type;
+            out.message = to_std(plan.error().what);
+            return out;
+        }
+        const auto& root = plan.value().sub_queries.back();
+        collect_join_arities(root, out.join_arities);
+        collect_joins(root, out.joins);
         std::vector<found_key_t> keys;
-        collect_keys(result.node_ptr(), keys);
+        collect_keys(root, keys);
         for (const auto& key : keys) {
             // An empty name asks for every key, for cases that watch a statement's shape, not one reference.
             if (column.empty() || last_segment(key.path) == column) {
                 out.matches.push_back(key);
             }
         }
-        // Reads the plan, so it goes last: finalize() hands over what transform() built.
-        if (auto plan = result.finalize(); !plan.has_error()) {
-            collect_catalog_targets(plan.value().catalog_resolves, out.catalog_targets);
-        }
+        collect_catalog_targets(plan.value().catalog_resolves, out.catalog_targets);
         return out;
     }
 
@@ -442,11 +448,14 @@ TEST_CASE("name_resolution::from_name::five_part_from_reference_rejected") {
     require_rejected_by_parser(result);
 }
 
+// ALTER TYPE follows CREATE/DROP TYPE — a type always lives in public.
 TEST_CASE("name_resolution::type_name::alter_type_keeps_its_database") {
     auto result = transform_only("ALTER TYPE shop.addr_t ADD ATTRIBUTE zip TEXT;");
     INFO(describe(result));
     REQUIRE_FALSE(result.rejected);
-    CHECK(std::find(result.catalog_targets.begin(), result.catalog_targets.end(), "table:shop.addr_t") !=
+    CHECK(std::find(result.catalog_targets.begin(), result.catalog_targets.end(), "table:public.addr_t") !=
+          result.catalog_targets.end());
+    CHECK(std::find(result.catalog_targets.begin(), result.catalog_targets.end(), "table:shop.addr_t") ==
           result.catalog_targets.end());
 }
 
@@ -454,8 +463,19 @@ TEST_CASE("name_resolution::type_name::unqualified_alter_type_has_no_database") 
     auto result = transform_only("ALTER TYPE addr_t ADD ATTRIBUTE zip TEXT;");
     INFO(describe(result));
     REQUIRE_FALSE(result.rejected);
-    CHECK(std::find(result.catalog_targets.begin(), result.catalog_targets.end(), "table:.addr_t") !=
+    CHECK(std::find(result.catalog_targets.begin(), result.catalog_targets.end(), "table:public.addr_t") !=
           result.catalog_targets.end());
+}
+
+TEST_CASE("name_resolution::type_name::alter_type_in_a_database_is_refused_like_create_type") {
+    database_t db(integration_fixture_path("test_name_resolution/alter_type_database"));
+    db.seed({"CREATE DATABASE shop;"});
+    auto create = run_refused(db, "CREATE TYPE shop.mood AS (a BIGINT);");
+    auto alter = run_refused(db, "ALTER TYPE shop.mood ADD ATTRIBUTE b BIGINT;");
+    CHECK(create.type == core::error_code_t::invalid_parameter);
+    CHECK(alter.type == core::error_code_t::invalid_parameter);
+    CHECK(std::string(alter.what).find("a type always lives in \"public\"") != std::string::npos);
+    CHECK(std::string(create.what).find("a type always lives in \"public\"") != std::string::npos);
 }
 
 TEST_CASE("name_resolution::type_name::type_name_over_three_parts_rejected") {
@@ -1019,7 +1039,8 @@ namespace {
 
     reference_slots_t reference_slots(const std::string& sql) {
         sql::transform::name_collection_t names;
-        names.left_name = qualified_name_t{"u", "d", "s", "t"};
+        names.left_name =
+            qualified_name_t{core::uid_t{"u"}, core::dbname_t{"d"}, core::schema_t{"s"}, core::relname_t{"t"}};
         return with_parsed(sql, [&names](SelectStmt* select, std::pmr::memory_resource* resource) {
             auto* target = sql::transform::pg_ptr_cast<ResTarget>(select->targetList->lst.front().data);
             auto parsed = sql::transform::columnref_to_field(resource,
@@ -1027,10 +1048,10 @@ namespace {
                                                              names);
             REQUIRE_FALSE(parsed.has_error());
             const auto& ref = parsed.value();
-            return reference_slots_t{ref.table.unique_identifier,
-                                     ref.table.database,
-                                     ref.table.schema,
-                                     ref.table.collection,
+            return reference_slots_t{ref.table.unique_identifier.t,
+                                     ref.table.database.t,
+                                     ref.table.schema.t,
+                                     ref.table.collection.t,
                                      ref.field.as_string()};
         });
     }
@@ -1040,31 +1061,31 @@ TEST_CASE("name_resolution::from_name::from_arities_fill_the_slots") {
     // The shorter forms drop the middle slots: two segments are db.relname, not schema.relname.
     {
         auto name = from_slots("SELECT 1 FROM t;");
-        CHECK(name.collection == "t");
-        CHECK(name.database.empty());
-        CHECK(name.schema.empty());
-        CHECK(name.unique_identifier.empty());
+        CHECK(name.collection.t == "t");
+        CHECK(name.database.t.empty());
+        CHECK(name.schema.t.empty());
+        CHECK(name.unique_identifier.t.empty());
     }
     {
         auto name = from_slots("SELECT 1 FROM d.t;");
-        CHECK(name.database == "d");
-        CHECK(name.collection == "t");
-        CHECK(name.schema.empty());
-        CHECK(name.unique_identifier.empty());
+        CHECK(name.database.t == "d");
+        CHECK(name.collection.t == "t");
+        CHECK(name.schema.t.empty());
+        CHECK(name.unique_identifier.t.empty());
     }
     {
         auto name = from_slots("SELECT 1 FROM d.s.t;");
-        CHECK(name.database == "d");
-        CHECK(name.schema == "s");
-        CHECK(name.collection == "t");
-        CHECK(name.unique_identifier.empty());
+        CHECK(name.database.t == "d");
+        CHECK(name.schema.t == "s");
+        CHECK(name.collection.t == "t");
+        CHECK(name.unique_identifier.t.empty());
     }
     {
         auto name = from_slots("SELECT 1 FROM u.d.s.t;");
-        CHECK(name.unique_identifier == "u");
-        CHECK(name.database == "d");
-        CHECK(name.schema == "s");
-        CHECK(name.collection == "t");
+        CHECK(name.unique_identifier.t == "u");
+        CHECK(name.database.t == "d");
+        CHECK(name.schema.t == "s");
+        CHECK(name.collection.t == "t");
     }
 }
 
@@ -1107,4 +1128,278 @@ TEST_CASE("name_resolution::column_ref::column_arities_fill_the_slots") {
         CHECK(ref.schema == "s");
         CHECK(ref.table == "t");
     }
+}
+
+TEST_CASE("name_resolution::star::qualified_star_keeps_its_side") {
+    database_t db(integration_fixture_path("test_name_resolution/qualified_star_side"));
+    db.seed({"CREATE DATABASE d1;",
+             "CREATE DATABASE d2;",
+             "CREATE TABLE d1.t (id BIGINT, a BIGINT);",
+             "CREATE TABLE d2.t (id BIGINT, b BIGINT);",
+             "INSERT INTO d1.t (id, a) VALUES (1, 10);",
+             "INSERT INTO d2.t (id, b) VALUES (1, 20);"});
+
+    auto right = run_ok(db, "SELECT d2.t.* FROM d1.t JOIN d2.t ON d1.t.id = d2.t.id;");
+    REQUIRE(right->size() == 1);
+    REQUIRE(right->column_count() == 2);
+    CHECK(right->value(1, 0).value<int64_t>() == 20);
+
+    auto left = run_ok(db, "SELECT d1.t.* FROM d1.t JOIN d2.t ON d1.t.id = d2.t.id;");
+    REQUIRE(left->size() == 1);
+    REQUIRE(left->column_count() == 2);
+    CHECK(left->value(1, 0).value<int64_t>() == 10);
+}
+
+TEST_CASE("name_resolution::alter::alter_table_if_exists_on_a_missing_table_is_a_no_op") {
+    database_t db(integration_fixture_path("test_name_resolution/alter_if_exists"));
+    db.seed({"CREATE DATABASE d;"});
+    run_ok(db, "ALTER TABLE IF EXISTS d.missing ADD COLUMN z BIGINT;");
+    auto refused = run_refused(db, "ALTER TABLE d.missing ADD COLUMN z BIGINT;");
+    CHECK(refused.type == core::error_code_t::table_not_exists);
+}
+
+// An unqualified REFERENCES target lives in the database of the table that owns the key — in ALTER TABLE as in
+// CREATE TABLE, whether that table is written qualified or found by resolve.
+TEST_CASE("name_resolution::fk_target::alter_resolves_the_target_in_the_owner_database") {
+    database_t db(integration_fixture_path("test_name_resolution/fk_owner_database"));
+    db.seed({"CREATE DATABASE shop;",
+             "CREATE DATABASE other;",
+             "CREATE TABLE shop.customers (id BIGINT PRIMARY KEY);",
+             "CREATE TABLE other.customers (id BIGINT PRIMARY KEY);",
+             "INSERT INTO shop.customers (id) VALUES (1);",
+             "INSERT INTO other.customers (id) VALUES (2);",
+             "CREATE TABLE shop.orders (cid BIGINT);",
+             "CREATE TABLE shop.returns (cid BIGINT);"});
+
+    run_ok(db, "ALTER TABLE orders ADD CONSTRAINT fk_orders FOREIGN KEY (cid) REFERENCES customers (id);");
+    run_ok(db, "ALTER TABLE shop.returns ADD CONSTRAINT fk_returns FOREIGN KEY (cid) REFERENCES customers (id);");
+    for (const std::string table : {"shop.orders", "shop.returns"}) {
+        run_ok(db, "INSERT INTO " + table + " (cid) VALUES (1);");
+        auto refused = run_refused(db, "INSERT INTO " + table + " (cid) VALUES (2);");
+        CHECK(refused.type != core::error_code_t::none);
+    }
+}
+
+TEST_CASE("name_resolution::fk_target::alter_does_not_reach_another_database") {
+    database_t db(integration_fixture_path("test_name_resolution/fk_other_database"));
+    db.seed({"CREATE DATABASE shop;",
+             "CREATE DATABASE other;",
+             "CREATE TABLE other.customers (id BIGINT PRIMARY KEY);",
+             "CREATE TABLE shop.orders (cid BIGINT);"});
+
+    for (const std::string sql :
+         {"ALTER TABLE orders ADD CONSTRAINT fk FOREIGN KEY (cid) REFERENCES customers (id);",
+          "ALTER TABLE shop.orders ADD CONSTRAINT fk FOREIGN KEY (cid) REFERENCES customers (id);"}) {
+        // The refusal a missing REFERENCES target gets anywhere (CREATE TABLE, a qualified ALTER).
+        auto refused = run_refused(db, sql);
+        INFO(sql << ": " << to_std(refused.what));
+        CHECK(refused.type == core::error_code_t::invalid_constraint);
+        CHECK(to_std(refused.what).find("customers\" does not exist") != std::string::npos);
+    }
+}
+
+TEST_CASE("name_resolution::alter::alter_table_if_exists_add_constraint_on_a_missing_table_is_a_no_op") {
+    database_t db(integration_fixture_path("test_name_resolution/alter_if_exists_constraint"));
+    db.seed({"CREATE DATABASE d;"});
+    run_ok(db, "ALTER TABLE IF EXISTS d.missing ADD CONSTRAINT uq UNIQUE (z);");
+    auto refused = run_refused(db, "ALTER TABLE d.missing ADD CONSTRAINT uq UNIQUE (z);");
+    CHECK(refused.type != core::error_code_t::none);
+}
+
+TEST_CASE("name_resolution::alter::alter_table_if_exists_rename_column_on_a_missing_table_is_a_no_op") {
+    database_t db(integration_fixture_path("test_name_resolution/alter_if_exists_rename"));
+    db.seed({"CREATE DATABASE d;"});
+    run_ok(db, "ALTER TABLE IF EXISTS d.missing RENAME COLUMN a TO b;");
+    auto refused = run_refused(db, "ALTER TABLE d.missing RENAME COLUMN a TO b;");
+    CHECK(refused.type != core::error_code_t::none);
+}
+
+TEST_CASE("name_resolution::fk_target::schema_or_uid_segment_is_refused") {
+    database_t db(integration_fixture_path("test_name_resolution/fk_segments"));
+    db.seed({"CREATE DATABASE d;", "CREATE TABLE d.p (id BIGINT PRIMARY KEY);", "CREATE TABLE d.c (id BIGINT);"});
+    for (const std::string sql : {"CREATE TABLE d.c1 (id BIGINT REFERENCES d.s.p (id));",
+                                  "CREATE TABLE d.c2 (id BIGINT, FOREIGN KEY (id) REFERENCES u.d.s.p (id));",
+                                  "ALTER TABLE d.c ADD CONSTRAINT fk FOREIGN KEY (id) REFERENCES d.s.p (id);"}) {
+        auto refused = run_refused(db, sql);
+        INFO(sql << ": " << to_std(refused.what));
+        CHECK(refused.type == core::error_code_t::invalid_parameter);
+        CHECK(to_std(refused.what).find("uid or schema segment") != std::string::npos);
+    }
+    run_ok(db, "CREATE TABLE d.c3 (id BIGINT REFERENCES d.p (id));");
+}
+
+// A write target keeps its schema segment, as a read does: in a local database it is refused with the read's words;
+// a database the catalog does not know leaves the whole name to the host.
+TEST_CASE("name_resolution::write_target::schema_segment_in_a_local_database_is_refused") {
+    database_t db(integration_fixture_path("test_name_resolution/write_schema_segment"));
+    db.seed({"CREATE DATABASE d;", "CREATE TABLE d.t (id BIGINT);", "INSERT INTO d.t (id) VALUES (1);"});
+    for (const std::string sql :
+         {"INSERT INTO d.s.t (id) VALUES (2);", "UPDATE d.s.t SET id = 2;", "DELETE FROM d.s.t WHERE id = 1;"}) {
+        auto refused = run_refused(db, sql);
+        INFO(sql);
+        CHECK(to_std(refused.what) ==
+              "schema \"s\" does not exist: a relation lives in a database — write d.s.t as [database.]name");
+    }
+    auto rows = run_ok(db, "SELECT id FROM d.t;");
+    CHECK(rows->size() == 1);
+}
+
+// IF EXISTS is a statement-level switch: it turns only "the statement's target does not exist" into success.
+TEST_CASE("name_resolution::if_exists::drop_of_a_missing_target") {
+    database_t db(integration_fixture_path("test_name_resolution/if_exists_drop"));
+    db.seed({"CREATE DATABASE d;", "CREATE TABLE d.t (id BIGINT);"});
+    for (const std::string kind_and_name : {"TABLE d.missing",
+                                            "VIEW d.missing",
+                                            "SEQUENCE d.missing",
+                                            "TYPE missing",
+                                            "DATABASE missing",
+                                            "INDEX d.t.missing"}) {
+        const auto space = kind_and_name.find(' ');
+        const auto kind = kind_and_name.substr(0, space);
+        const auto name = kind_and_name.substr(space + 1);
+        INFO(kind_and_name);
+        run_ok(db, "DROP " + kind + " IF EXISTS " + name + ";");
+        auto refused = run_refused(db, "DROP " + kind + " " + name + ";");
+        CHECK(to_std(refused.what).find("missing") != std::string::npos);
+    }
+}
+
+TEST_CASE("name_resolution::if_exists::alter_forms_on_a_missing_table") {
+    database_t db(integration_fixture_path("test_name_resolution/if_exists_alter"));
+    db.seed({"CREATE DATABASE d;"});
+    for (const std::string tail : {"ADD COLUMN z BIGINT",
+                                   "ADD CONSTRAINT uq UNIQUE (z)",
+                                   "ADD CONSTRAINT fk FOREIGN KEY (z) REFERENCES d.p (id)",
+                                   "RENAME COLUMN a TO b"}) {
+        INFO(tail);
+        run_ok(db, "ALTER TABLE IF EXISTS d.missing " + tail + ";");
+        auto refused = run_refused(db, "ALTER TABLE d.missing " + tail + ";");
+        CHECK(refused.type == core::error_code_t::table_not_exists);
+    }
+}
+
+TEST_CASE("name_resolution::if_exists::alter_of_an_existing_table_keeps_other_errors") {
+    database_t db(integration_fixture_path("test_name_resolution/if_exists_other"));
+    db.seed({"CREATE DATABASE d;", "CREATE TABLE d.t (id BIGINT);"});
+    for (const std::string tail : {"ADD CONSTRAINT fk FOREIGN KEY (id) REFERENCES d.missing (id)",
+                                   "ADD CONSTRAINT uq UNIQUE (nosuch)",
+                                   "RENAME COLUMN nosuch TO b"}) {
+        INFO(tail);
+        auto refused = run_refused(db, "ALTER TABLE IF EXISTS d.t " + tail + ";");
+        CHECK(refused.type != core::error_code_t::none);
+    }
+}
+
+TEST_CASE("name_resolution::alter::add_column_resolves_its_type") {
+    database_t db(integration_fixture_path("test_name_resolution/add_column_type"));
+    db.seed({"CREATE DATABASE d;", "CREATE TABLE d.t (id BIGINT);", "CREATE TYPE mood AS ENUM ('sad', 'ok');"});
+    auto refused = run_refused(db, "ALTER TABLE d.t ADD COLUMN z nosuchtype;");
+    INFO(to_std(refused.what));
+    CHECK(refused.type != core::error_code_t::none);
+    run_ok(db, "ALTER TABLE d.t ADD COLUMN m mood;");
+    run_ok(db, "INSERT INTO d.t (id, m) VALUES (1, 'ok');");
+    auto rows = run_ok(db, "SELECT m FROM d.t;");
+    REQUIRE(rows->size() == 1);
+}
+
+// DROP MATERIALIZED VIEW goes through the same path as DROP TABLE / DROP VIEW.
+TEST_CASE("name_resolution::drop_matview::drop_survives_restart") {
+    const auto path = integration_fixture_path("test_name_resolution/drop_matview");
+    {
+        database_t db(path);
+        db.seed({"CREATE DATABASE d;",
+                 "CREATE TABLE d.t (a BIGINT);",
+                 "CREATE MATERIALIZED VIEW d.mv AS SELECT a FROM d.t WITH NO DATA;"});
+        run_ok(db, "DROP MATERIALIZED VIEW d.mv;");
+        auto gone = run_refused(db, "SELECT * FROM d.mv;");
+        CHECK(gone.type == core::error_code_t::table_not_exists);
+        run_ok(db, "DROP MATERIALIZED VIEW IF EXISTS d.mv;");
+        auto missing = run_refused(db, "DROP MATERIALIZED VIEW d.mv;");
+        CHECK(missing.type == core::error_code_t::table_not_exists);
+    }
+    auto config = test_create_config(path);
+    test_spaces space(config);
+    auto cur = space.dispatcher()->execute_sql(otterbrix::session_id_t(), "SELECT * FROM d.mv;");
+    REQUIRE(cur->is_error());
+    auto again = space.dispatcher()->execute_sql(otterbrix::session_id_t(),
+                                                 "CREATE MATERIALIZED VIEW d.mv AS SELECT a FROM d.t WITH NO DATA;");
+    INFO(to_std(again->is_error() ? again->get_error().what : std::pmr::string{"<ok>"}));
+    REQUIRE(again->is_success());
+}
+
+TEST_CASE("name_resolution::drop_matview::kind_mismatch_is_refused") {
+    database_t db(integration_fixture_path("test_name_resolution/drop_matview_kind"));
+    db.seed({"CREATE DATABASE d;",
+             "CREATE TABLE d.t (a BIGINT);",
+             "CREATE VIEW d.v AS SELECT a FROM d.t;",
+             "CREATE MATERIALIZED VIEW d.mv AS SELECT a FROM d.t WITH NO DATA;"});
+    for (const auto& [sql, text] : std::vector<std::pair<std::string, std::string>>{
+             {"DROP MATERIALIZED VIEW d.t;", "\"t\" is not a materialized view"},
+             {"DROP MATERIALIZED VIEW d.v;", "\"v\" is not a materialized view"},
+             {"DROP VIEW d.mv;", "\"mv\" is not a view"}}) {
+        auto refused = run_refused(db, sql);
+        INFO(sql << ": " << to_std(refused.what));
+        CHECK(to_std(refused.what).find(text) != std::string::npos);
+        CHECK(refused.type == core::error_code_t::schema_error);
+    }
+    // PostgreSQL 18 DropErrorMsgWrongType: the hint names the DROP for the kind the name has.
+    CHECK(to_std(run_refused(db, "DROP VIEW d.t;").what).find("HINT: Use DROP TABLE to remove a table.") !=
+          std::string::npos);
+    CHECK(to_std(run_refused(db, "DROP MATERIALIZED VIEW d.v;").what).find("HINT: Use DROP VIEW to remove a view.") !=
+          std::string::npos);
+    run_ok(db, "SELECT * FROM d.mv;");
+    run_ok(db, "SELECT * FROM d.v;");
+}
+
+// The matview depends on its source table ('n'): RESTRICT refuses, CASCADE takes the matview too.
+TEST_CASE("name_resolution::drop_matview::source_table_restrict_and_cascade") {
+    database_t db(integration_fixture_path("test_name_resolution/drop_matview_source"));
+    db.seed({"CREATE DATABASE d;",
+             "CREATE TABLE d.t (a BIGINT);",
+             "CREATE MATERIALIZED VIEW d.mv AS SELECT a FROM d.t WITH NO DATA;"});
+    auto restricted = run_refused(db, "DROP TABLE d.t;");
+    INFO(to_std(restricted.what));
+    run_ok(db, "SELECT * FROM d.mv;");
+    run_ok(db, "DROP TABLE d.t CASCADE;");
+    auto gone = run_refused(db, "SELECT * FROM d.mv;");
+    CHECK(gone.type == core::error_code_t::table_not_exists);
+    run_ok(db, "CREATE TABLE d.t (a BIGINT);");
+    run_ok(db, "CREATE MATERIALIZED VIEW d.mv AS SELECT a FROM d.t WITH NO DATA;");
+    run_ok(db, "DROP MATERIALIZED VIEW d.mv CASCADE;");
+}
+
+// A subcommand's IF EXISTS skips that subcommand alone; the others still apply (PostgreSQL: a notice, no error).
+TEST_CASE("name_resolution::if_exists::subcommand_skips_only_itself") {
+    database_t db(integration_fixture_path("test_name_resolution/if_exists_subcommand"));
+    db.seed({"CREATE DATABASE d;", "CREATE TABLE d.t (id BIGINT, CONSTRAINT uq_id UNIQUE (id));"});
+
+    run_ok(db, "ALTER TABLE d.t DROP COLUMN IF EXISTS a, ADD COLUMN b BIGINT;");
+    run_ok(db, "SELECT b FROM d.t;");
+    auto atomic = run_refused(db, "ALTER TABLE d.t DROP COLUMN a, ADD COLUMN c BIGINT;");
+    INFO(to_std(atomic.what));
+    auto no_c = run_refused(db, "SELECT c FROM d.t;");
+    CHECK(no_c.type != core::error_code_t::none);
+
+    run_ok(db, "ALTER TABLE d.t DROP CONSTRAINT IF EXISTS nope, ADD COLUMN e BIGINT;");
+    run_ok(db, "SELECT e FROM d.t;");
+    auto atomic_constraint = run_refused(db, "ALTER TABLE d.t DROP CONSTRAINT nope, ADD COLUMN f BIGINT;");
+    INFO(to_std(atomic_constraint.what));
+    auto no_f = run_refused(db, "SELECT f FROM d.t;");
+    CHECK(no_f.type != core::error_code_t::none);
+
+    run_ok(db, "ALTER TABLE d.t DROP COLUMN IF EXISTS a;");
+    run_ok(db, "ALTER TABLE d.t DROP CONSTRAINT IF EXISTS uq_id, DROP CONSTRAINT IF EXISTS nope;");
+    run_ok(db, "INSERT INTO d.t (id) VALUES (1), (1);");
+}
+
+TEST_CASE("name_resolution::if_exists::subcommand_on_a_computed_table") {
+    database_t db(integration_fixture_path("test_name_resolution/if_exists_subcommand_computed"));
+    db.seed({"CREATE DATABASE d;", "CREATE TABLE d.g ();", "INSERT INTO d.g (id, x) VALUES (1, 2);"});
+    run_ok(db, "ALTER TABLE d.g DROP COLUMN IF EXISTS nosuch, DROP COLUMN x;");
+    auto rows = run_ok(db, "SELECT * FROM d.g;");
+    CHECK(rows->column_count() == 1);
+    auto atomic = run_refused(db, "ALTER TABLE d.g DROP COLUMN nosuch, DROP COLUMN id;");
+    INFO(to_std(atomic.what));
+    auto still = run_ok(db, "SELECT * FROM d.g;");
+    CHECK(still->column_count() == 1);
 }

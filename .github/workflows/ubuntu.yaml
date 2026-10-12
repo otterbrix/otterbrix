@@ -83,3 +83,10 @@ jobs:
       - name: build and test
         run: |
           CTEST_PARALLEL_LEVEL=$(nproc) cmake --workflow --preset release
+
+      - name: package consumer test
+        if: matrix.version == '24.04' && matrix.compiler == 'gcc'
+        run: |
+          cmake --preset release -DOTTERBRIX_PACKAGE_TEST=ON
+          cmake --build --preset release
+          ctest --preset release -L package

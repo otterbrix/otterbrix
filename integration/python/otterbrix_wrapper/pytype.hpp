@@ -32,7 +32,7 @@ namespace otterbrix {
         //! A type built by a module factory: `type_` lives on that module's arena; `arena` is never null.
         otterbrix_py_type_t(module_arena_ptr arena, components::types::complex_logical_type type);
 
-        //! Reads a type from a RELATION'S schema onto the ENGINE's arena (base_otterbrix_t::resource),
+        //! Reads a type from a RELATION'S schema onto the ENGINE's arena (base_otterbrix_t::host_t::resource),
         //! since a copied nested type keeps the source's allocator — without this ctor, a STRUCT
         //! column's child vector outlived the connection that freed it. `space` is never null.
         otterbrix_py_type_t(boost::intrusive_ptr<otterbrix_t> space, components::types::complex_logical_type type);

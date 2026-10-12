@@ -228,7 +228,7 @@ namespace components::operators {
         // where the last partial chunk is emitted — for EVERY join type, not only the
         // right/full drain below.
         //
-        // If push() never ran (the probe source emitted its drain sentinel before
+        // If push() never ran (the probe source ended its stream before
         // any schema'd batch), the index is unbuilt and res_types_ is empty. With no
         // probe schema there is no left column layout to NULL-pad against, so the
         // only safe action is to build the index (so build_matched_ is sized) and

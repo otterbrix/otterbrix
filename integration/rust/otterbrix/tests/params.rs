@@ -9,9 +9,9 @@ fn p(index: i32, value: SqlParamValue<'_>) -> SqlParam<'_> {
 #[test]
 fn insert_uint64_param_into_bigint_or_schema_free_column() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
 
-    db.create_collection("db", "u").unwrap();
+    db.execute("CREATE TABLE db.u();").unwrap();
     db.execute_with_params(
         "INSERT INTO db.u (k, v) VALUES ($1, $2);",
         &[
@@ -36,8 +36,8 @@ fn insert_uint64_param_into_bigint_or_schema_free_column() {
 #[test]
 fn insert_with_dollar_params() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute_with_params(
         "INSERT INTO db.t (id, name) VALUES ($1, $2);",
@@ -57,8 +57,8 @@ fn insert_with_dollar_params() {
 #[test]
 fn insert_repeated_placeholder_one_bind() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute_with_params(
         "INSERT INTO db.t (a, b) VALUES ($1, $1);",
@@ -76,8 +76,8 @@ fn insert_repeated_placeholder_one_bind() {
 #[test]
 fn insert_all_supported_types() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute_with_params(
         "INSERT INTO db.t (i, u, d, s, b) VALUES ($1, $2, $3, $4, $5);",
@@ -106,8 +106,8 @@ fn insert_all_supported_types() {
 #[test]
 fn select_where_with_params() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, count) VALUES ('a', 10), ('b', 20), ('c', 30);")
         .unwrap();
@@ -124,8 +124,8 @@ fn select_where_with_params() {
 #[test]
 fn select_combined_and_or_with_params() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, count) VALUES ('a', 10), ('b', 20), ('c', 30);")
         .unwrap();
@@ -147,8 +147,8 @@ fn select_combined_and_or_with_params() {
 #[test]
 fn update_with_params() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, score) VALUES ('a', 10), ('b', 20);")
         .unwrap();
@@ -170,8 +170,8 @@ fn update_with_params() {
 #[test]
 fn delete_with_params() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, score) VALUES ('a', 10), ('b', 20), ('c', 30);")
         .unwrap();
@@ -189,8 +189,8 @@ fn delete_with_params() {
 #[test]
 fn missing_param_is_error() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     let err = db
         .execute_with_params(
@@ -208,8 +208,8 @@ fn missing_param_is_error() {
 #[test]
 fn unknown_param_index_is_error() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     let err = db
         .execute_with_params(
@@ -224,8 +224,8 @@ fn unknown_param_index_is_error() {
 #[test]
 fn zero_param_index_is_error() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     let err = db
         .execute_with_params(
@@ -240,8 +240,8 @@ fn zero_param_index_is_error() {
 #[test]
 fn injection_quote_in_string_param_is_stored_verbatim() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     let nasty = "Robert'); DROP TABLE db.t;--";
     db.execute_with_params(
@@ -259,8 +259,8 @@ fn injection_quote_in_string_param_is_stored_verbatim() {
 #[test]
 fn injection_or_1_eq_1_does_not_match_extra_rows() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, score) VALUES ('alice', 1), ('bob', 2), ('eve', 3);")
         .unwrap();
@@ -281,9 +281,9 @@ fn injection_or_1_eq_1_does_not_match_extra_rows() {
 #[test]
 fn injection_with_semicolon_does_not_chain_statements() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
-    db.create_collection("db", "victim").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
+    db.execute("CREATE TABLE db.victim();").unwrap();
 
     db.execute("INSERT INTO db.victim (x) VALUES (1), (2), (3);")
         .unwrap();
@@ -313,8 +313,8 @@ fn injection_with_semicolon_does_not_chain_statements() {
 #[test]
 fn injection_via_int_param_is_rejected_for_string_payload() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (id, name) VALUES (1, 'a'), (2, 'b'), (3, 'c');")
         .unwrap();
@@ -333,8 +333,8 @@ fn injection_via_int_param_is_rejected_for_string_payload() {
 #[test]
 fn select_where_bool_param() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, flag) VALUES ('a', true), ('b', false), ('c', true);")
         .unwrap();
@@ -351,8 +351,8 @@ fn select_where_bool_param() {
 #[test]
 fn select_where_in_list_with_params() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (id, name) VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd');")
         .unwrap();
@@ -373,8 +373,8 @@ fn select_where_in_list_with_params() {
 #[test]
 fn duplicate_param_index_last_value_wins() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (id, name) VALUES (1, 'a'), (2, 'b'), (3, 'c');")
         .unwrap();
@@ -396,8 +396,8 @@ fn duplicate_param_index_last_value_wins() {
 #[test]
 fn select_limit_offset_with_params() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     for id in 1..=5_i64 {
         db.execute_with_params(
@@ -423,8 +423,8 @@ fn select_limit_offset_with_params() {
 #[test]
 fn smoke_thousand_repetitions_does_not_deadlock() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     for i in 0..1000_i64 {
         db.execute_with_params(
@@ -441,8 +441,8 @@ fn smoke_thousand_repetitions_does_not_deadlock() {
 #[test]
 fn injection_with_comment_marker_in_string() {
     let db = common::open_test_db();
-    db.create_database("db").unwrap();
-    db.create_collection("db", "t").unwrap();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name) VALUES ('a'), ('b');")
         .unwrap();

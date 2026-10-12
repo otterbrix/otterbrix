@@ -21,8 +21,6 @@
 
 namespace components::operators {
 
-    using constraint_detail::resolve_cursor_output;
-
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_unique_constraint_scan_sends{0};
@@ -227,9 +225,10 @@ namespace components::operators {
         , conflict_groups_(std::move(conflict_groups)) {}
 
     actor_zeta::unique_future<void> operator_unique_constraint_t::await_async_and_resume(pipeline::context_t* ctx) {
+        written_ = left_->written();
         const auto& source = constraint_detail::resolve_constraint_source(left_);
         if (!source || source->size() == 0 || unique_groups_.empty()) {
-            output_ = resolve_cursor_output(left_, source);
+            output_ = left_->output();
             mark_executed();
             co_return;
         }
@@ -237,7 +236,7 @@ namespace components::operators {
             set_error(checked);
             co_return;
         }
-        output_ = resolve_cursor_output(left_, source);
+        output_ = left_->output();
         mark_executed();
     }
 

@@ -2,6 +2,7 @@
 
 #include <pyconnection/pyconnection.hpp>
 #include <util/convert_value.hpp>
+#include <util/util.hpp>
 #include <vector>
 
 using namespace components;
@@ -10,7 +11,8 @@ namespace otterbrix {
     std::vector<components::table::column_definition_t>
     py_result_t::columns_of(const components::cursor::cursor_t_ptr& cursor) {
         std::vector<components::table::column_definition_t> defs;
-        if (!cursor) {
+        // A write without RETURNING has no result set; its count is rowcount.
+        if (!cursor || cursor->is_write()) {
             return defs;
         }
         const auto& types = cursor->type_data();
@@ -49,7 +51,7 @@ namespace otterbrix {
         if (!result) {
             throw std::runtime_error("result closed");
         }
-        // No result set (INSERT/UPDATE/DDL): row count lives in size(), not columns.
+        // No result set (INSERT/UPDATE/DDL): the written-row count is rowcount, not rows.
         if (columns.empty()) {
             return py::none();
         }
@@ -126,7 +128,14 @@ namespace otterbrix {
         return df;
     }
 
-    std::size_t py_result_t::size() const { return result ? result->size() : 0u; }
+    std::size_t py_result_t::size() const { return result && !result->is_write() ? result->size() : 0u; }
+
+    int64_t py_result_t::rowcount() const {
+        if (!result) {
+            return -1;
+        }
+        return util::rowcount_of(*result);
+    }
 
     void py_result_t::close() { result = nullptr; }
 
@@ -147,7 +156,10 @@ namespace otterbrix {
             .def("to_df", &py_result_t::fetch_df, "Fetch every remaining row as a pandas DataFrame")
             .def("close", &py_result_t::close, "Release the result batch")
             .def("is_closed", &py_result_t::is_closed, "Whether the result batch has been released")
-            .def("__len__", &py_result_t::size, "Rows the statement produced (SELECT) or wrote (INSERT/UPDATE/DELETE)");
+            .def("__len__", &py_result_t::size, "Rows of the result (SELECT, or a write's RETURNING)")
+            .def_property_readonly("rowcount",
+                                   &py_result_t::rowcount,
+                                   "Rows an INSERT/UPDATE/DELETE wrote, else rows of the result");
     }
 
 } // namespace otterbrix

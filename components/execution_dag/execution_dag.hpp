@@ -134,7 +134,7 @@ namespace components::execution_dag {
     class function_node_t final : public execution_node_t {
     public:
         function_node_t(std::pmr::memory_resource* resource,
-                        const compute::function* function,
+                        compute::function_ptr function,
                         slot_list_t inputs,
                         slot_list_t outputs,
                         bool reduces = false,
@@ -158,7 +158,7 @@ namespace components::execution_dag {
 
         vector::data_chunk_t argument_chunk(uint64_t count) const;
 
-        const compute::function* function_{nullptr};
+        compute::function_ptr function_;
         compute::exec_context_t context_;
         std::unique_ptr<compute::function_executor> executor_;
         // aggregate specifics:
@@ -297,7 +297,7 @@ namespace components::execution_dag {
         node_id_t add_cast(slot_id_t input, casts::cast_kind kind = casts::cast_kind::cast);
         node_id_t add_operator(operators::operator_code op, slot_id_t left, slot_id_t right);
         node_id_t add_operator(operators::operator_code op, slot_id_t operand);
-        node_id_t add_function(const compute::function* function, const slot_list_t& inputs, size_t output_count);
+        node_id_t add_function(compute::function_ptr function, const slot_list_t& inputs, size_t output_count);
         node_id_t add_parameter(core::parameter_id_t id);
         node_id_t add_blend(blend_node_t::blend_kind kind, const slot_list_t& inputs);
         // Declares and returns N + 1 BOOLEAN mask slots (one per condition, plus the DEFAULT).
@@ -308,7 +308,7 @@ namespace components::execution_dag {
         // `path` is the steps BELOW the input column;
         // the output slot references the nested vector they reach, so it owns no storage of its own.
         node_id_t add_field(slot_id_t input, const std::pmr::vector<size_t>& path);
-        node_id_t add_aggregate(const compute::function* function, const slot_list_t& inputs, bool distinct = false);
+        node_id_t add_aggregate(compute::function_ptr function, const slot_list_t& inputs, bool distinct = false);
 
         void connect(node_id_t consumer, size_t position, slot_id_t producer);
 

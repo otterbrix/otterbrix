@@ -18,11 +18,11 @@ namespace components::logical_plan {
         // (enrich hasn't stamped them yet), so `DROP TABLE a` vs `DROP TABLE b` would otherwise hash identically.
         hash_t hash_value{0};
         boost::hash_combine(hash_value, static_cast<uint8_t>(kind_));
-        boost::hash_combine(hash_value, dbname_);
-        boost::hash_combine(hash_value, relname_);
-        boost::hash_combine(hash_value, index_name_);
+        boost::hash_combine(hash_value, target_.database.t);
+        boost::hash_combine(hash_value, target_.collection.t);
+        boost::hash_combine(hash_value, index_name_.t);
         boost::hash_combine(hash_value, static_cast<uint8_t>(behavior_));
-        boost::hash_combine(hash_value, missing_ok_);
+        boost::hash_combine(hash_value, if_exists_);
         switch (kind_) {
             case drop_target_kind::database:
                 boost::hash_combine(hash_value, static_cast<hash_t>(namespace_oid_));
@@ -36,6 +36,7 @@ namespace components::logical_plan {
                 break;
             case drop_target_kind::sequence:
             case drop_target_kind::view:
+            case drop_target_kind::materialized_view:
             case drop_target_kind::macro:
                 boost::hash_combine(hash_value, static_cast<hash_t>(table_oid()));
                 break;
@@ -65,6 +66,9 @@ namespace components::logical_plan {
                 break;
             case drop_target_kind::view:
                 stream << "$drop_view: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";
+                break;
+            case drop_target_kind::materialized_view:
+                stream << "$drop_materialized_view: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";
                 break;
             case drop_target_kind::macro:
                 stream << "$drop_macro: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";

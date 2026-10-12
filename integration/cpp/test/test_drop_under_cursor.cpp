@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <core/tests/wait_ready.hpp>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -47,17 +48,6 @@ namespace {
         gate_guard_t& operator=(const gate_guard_t&) = delete;
     };
 
-    bool wait_flag(const std::atomic<bool>& flag, std::chrono::seconds timeout) {
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while (!flag.load(std::memory_order_acquire)) {
-            if (std::chrono::steady_clock::now() > deadline) {
-                return false;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        return true;
-    }
-
     void seed(otterbrix::wrapper_dispatcher_t* d) {
         REQUIRE(exec(d, "CREATE DATABASE adb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE adb.t (id bigint);")->is_success());
@@ -94,7 +84,7 @@ TEST_CASE("integration::cpp::drop_under_cursor::vanished_entry_fails_loudly_not_
     std::thread reader([&] { reader_cursor = d->execute_sql(reader_session, "SELECT id FROM adb.t;"); });
 
     INFO("the reader must reach the between-batches seam");
-    REQUIRE(wait_flag(guard.gate.reached, std::chrono::seconds(30)));
+    REQUIRE(test_helpers::wait_until([&] { return guard.gate.reached.load(); }));
 
     {
         const auto drop_session = otterbrix::session_id_t();

@@ -8,16 +8,16 @@ namespace components::catalog {
         : namespace_parts_(resource)
         // .c_str() + resource: constructing the pmr::string straight from the
         // std::string would silently land the copy on the DEFAULT resource.
-        , name_(full_name.collection.c_str(), resource) {
+        , name_(full_name.collection.t.c_str(), resource) {
         // Storage order is database-first (see header); empty parts omitted.
-        if (!full_name.database.empty()) {
-            namespace_parts_.emplace_back(full_name.database.c_str());
+        if (!full_name.database.t.empty()) {
+            namespace_parts_.emplace_back(full_name.database.t.c_str());
         }
-        if (!full_name.schema.empty()) {
-            namespace_parts_.emplace_back(full_name.schema.c_str());
+        if (!full_name.schema.t.empty()) {
+            namespace_parts_.emplace_back(full_name.schema.t.c_str());
         }
-        if (!full_name.unique_identifier.empty()) {
-            namespace_parts_.emplace_back(full_name.unique_identifier.c_str());
+        if (!full_name.unique_identifier.t.empty()) {
+            namespace_parts_.emplace_back(full_name.unique_identifier.t.c_str());
         }
     }
 

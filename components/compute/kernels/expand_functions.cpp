@@ -101,14 +101,18 @@ namespace {
         return core::error_t::no_error();
     }
 
-    std::unique_ptr<expand_function> make_generate_series_func(std::pmr::memory_resource* resource,
-                                                               const std::string& name,
-                                                               const std::string& short_doc,
-                                                               const std::string& full_doc) {
-        function_doc doc{short_doc, full_doc, {"start", "stop", "step"}, false};
+    core::pmr::polymorphic_unique_ptr<expand_function> make_generate_series_func(std::pmr::memory_resource* resource,
+                                                                                 const std::string& name,
+                                                                                 const std::string& short_doc,
+                                                                                 const std::string& full_doc) {
+        function_doc doc{resource, short_doc, full_doc, {"start", "stop", "step"}, false};
 
         // arity::var_args(2) — accept 2 or 3 args; two kernel slots for the overloads.
-        auto fn = std::make_unique<expand_function>(name, arity::var_args(2), doc, /*available_kernel_slots=*/2);
+        auto fn = core::pmr::make_polymorphic_unique<expand_function>(resource,
+                                                                      name,
+                                                                      arity::var_args(2),
+                                                                      doc,
+                                                                      /*available_kernel_slots=*/size_t{2});
 
         kernel_signature_t sig2(
             function_type_t::expand,

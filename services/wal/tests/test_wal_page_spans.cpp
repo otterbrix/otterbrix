@@ -22,7 +22,7 @@ namespace {
 
     constexpr size_t D = PAGE_DATA_SIZE;
     constexpr size_t kCommitSize = 37;
-    constexpr size_t kDeleteBase = 53;
+    constexpr size_t kDeleteBase = 61;
     constexpr uint16_t kContEnd = PAGE_PARTIAL_CONT | PAGE_PARTIAL_END;
 
     struct expected_t {
@@ -30,7 +30,7 @@ namespace {
         std::vector<char> bytes;
     };
 
-    // The encoders hit exactly two size families: a COMMIT (37 bytes) and a DELETE (53 + 8n bytes).
+    // The encoders hit exactly two size families: a COMMIT (37 bytes) and a DELETE (61 + 8n bytes).
     std::vector<char> encode(uint64_t id, size_t size) {
         buffer_t buf{&resource};
         if (size == kCommitSize) {
@@ -42,7 +42,7 @@ namespace {
             for (size_t i = 0; i < row_ids.size(); ++i) {
                 row_ids[i] = static_cast<int64_t>(id * 100000 + i);
             }
-            encode_delete(buf, 0, id, id + 1000, 16500, row_ids.data(), row_ids.size());
+            encode_delete(buf, 0, id, id + 1000, 0, 16500, row_ids.data(), row_ids.size());
         }
         REQUIRE(buf.size() == size);
         return std::vector<char>(buf.begin(), buf.end());

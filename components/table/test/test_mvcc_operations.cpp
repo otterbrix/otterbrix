@@ -886,7 +886,7 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
     REQUIRE(appended_start == 1);
 
     REQUIRE_FALSE(table->revert_append(appended_start, 1).has_error());
-    table->revert_all_deletes(txn_id);
+    table->revert_all_deletes(txn_id, 0);
 
     auto scan_once = [&](uint64_t reader_txn, uint64_t reader_start) {
         std::vector<storage_index_t> column_ids;
@@ -1013,8 +1013,87 @@ TEST_CASE("components::table::mvcc::compact_refused_while_delete_past_1024_pendi
     REQUIRE_FALSE(table->compact(mgr.compact_watermark()));
 
     mgr.abort(session);
-    table->revert_all_deletes(txn_id);
+    table->revert_all_deletes(txn_id, 0);
     REQUIRE(scan_count(*table, env) == 1034);
+}
+
+TEST_CASE("components::table::mvcc::savepoints") {
+    test_env env;
+    auto table = make_int_table(env);
+    append_rows(*table, env, 0, 1500);
+
+    transaction_manager_t mgr(&env.resource);
+    auto session = components::session::session_id_t::generate_uid();
+    auto& txn = mgr.begin_transaction(session, transaction_scope_t::until_commit);
+    const auto txn_id = txn.transaction_id();
+
+    auto delete_row = [&](int64_t row) {
+        auto row_ids = vector_t(&env.resource, complex_logical_type(logical_type::BIGINT), 1);
+        row_ids.set_value(0, logical_value_t(&env.resource, row));
+        REQUIRE(deleted_or_fail(table->delete_rows(row_ids, 1, txn.data())) == 1);
+    };
+    auto rollback_to = [&](std::string_view name) {
+        txn_abort_drain_t drain;
+        REQUIRE(txn.rollback_to_savepoint(name, &drain));
+        REQUIRE(drain.from_sub_id != 0);
+        table->revert_all_deletes(txn_id, drain.from_sub_id);
+    };
+
+    delete_row(10);
+    delete_row(1200);
+
+    SECTION("rollback to undoes only the deletes made after the savepoint") {
+        txn.push_savepoint("after_first_deletes");
+        delete_row(20);
+        delete_row(1300);
+        REQUIRE(scan_count_txn(*table, env, txn.data()) == 1496);
+
+        rollback_to("after_first_deletes");
+        REQUIRE(scan_count_txn(*table, env, txn.data()) == 1498);
+
+        // The savepoint stays: a second round trip undoes only the new delete.
+        delete_row(30);
+        rollback_to("after_first_deletes");
+        REQUIRE(scan_count_txn(*table, env, txn.data()) == 1498);
+
+        // Rows the rollback restored can be deleted again.
+        delete_row(1300);
+        auto commit_id = mgr.commit(session);
+        mgr.publish(commit_id);
+        table->commit_all_deletes(txn_id, commit_id);
+        REQUIRE(scan_count(*table, env) == 1497);
+    }
+
+    SECTION("a released savepoint's deletes belong to the enclosing one") {
+        txn.push_savepoint("outer");
+        delete_row(20);
+        txn.push_savepoint("inner");
+        delete_row(1300);
+        REQUIRE(txn.release_savepoint("inner"));
+        REQUIRE_FALSE(txn.release_savepoint("inner"));
+
+        rollback_to("outer");
+        REQUIRE(scan_count_txn(*table, env, txn.data()) == 1498);
+        mgr.abort(session);
+    }
+
+    SECTION("a repeated name is released one savepoint at a time") {
+        txn.push_savepoint("repeated");
+        delete_row(20);
+        txn.push_savepoint("repeated");
+        delete_row(1300);
+
+        REQUIRE(txn.release_savepoint("repeated"));
+        // The older savepoint with the name is still there and still covers both deletes.
+        rollback_to("repeated");
+        REQUIRE(scan_count_txn(*table, env, txn.data()) == 1498);
+
+        REQUIRE(txn.release_savepoint("repeated"));
+        REQUIRE_FALSE(txn.release_savepoint("repeated"));
+        txn_abort_drain_t drain;
+        REQUIRE_FALSE(txn.rollback_to_savepoint("repeated", &drain));
+        mgr.abort(session);
+    }
 }
 
 namespace {

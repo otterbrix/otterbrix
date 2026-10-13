@@ -1940,6 +1940,7 @@ namespace services::collection::executor {
                 auto [_rd, rdf] = actor_zeta::otterbrix::send(disk_address_,
                                                               &services::disk::manager_disk_t::storage_revert_deletes,
                                                               rd_ctx,
+                                                              uint64_t{0},
                                                               std::move(revert_delete_tables));
                 co_await std::move(rdf);
             }
@@ -1957,6 +1958,7 @@ namespace services::collection::executor {
                 auto [_cs, csf] = actor_zeta::otterbrix::send(disk_address_,
                                                               &services::disk::manager_disk_t::revert_column_stamps,
                                                               cs_ctx,
+                                                              uint64_t{0},
                                                               std::move(column_stamped_tables));
                 co_await std::move(csf);
             }
@@ -1966,46 +1968,57 @@ namespace services::collection::executor {
             exec_result.dml_deletes.clear();
         };
 
-        if (needs_dml_txn || needs_commit_txn) {
-            if (exec_result.cursor->is_success()) {
-                services::dispatcher::txn_accumulate_payload_t payload;
-                payload.base_appends.reserve(exec_result.dml_appends.size());
-                for (const auto& app : exec_result.dml_appends) {
-                    payload.base_appends.push_back(
-                        components::table::dml_append_range_t{app.table_oid, app.row_start, app.row_count});
-                }
-                payload.base_deletes.reserve(exec_result.dml_deletes.size());
-                for (const auto& del : exec_result.dml_deletes) {
-                    payload.base_deletes.push_back(components::table::dml_delete_range_t{del.table_oid, del.txn_id});
-                }
-                payload.pg_catalog_appends = std::move(exec_result.pg_catalog_appends);
-                payload.pg_catalog_delete_tables = std::move(exec_result.pg_catalog_delete_tables);
-                payload.backfills = std::move(exec_result.pg_attribute_commit_id_backfills);
-                payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
-                payload.created_storage_oids = std::move(exec_result.created_storage_oids);
-                payload.created_indexes = std::move(exec_result.created_indexes);
-                payload.referenced_deletes = std::move(exec_result.referenced_deletes);
-                trace(log_,
-                      "executor::execute_plan_full: txn {} — accumulating {} appends, {} deletes ({})",
-                      resolve_txn.transaction_id,
-                      payload.base_appends.size(),
-                      payload.base_deletes.size(),
-                      plan.commits_when_done ? "COMMIT follows" : "publish deferred to COMMIT");
-                if (!payload.empty()) {
-                    auto [_ac, acf] =
-                        actor_zeta::otterbrix::send(parent_address_,
-                                                    &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
-                                                    session,
-                                                    resolve_txn.transaction_id,
-                                                    std::move(payload));
-                    // transaction_inactive means the ranges were parked NOWHERE — swallowing it fakes success.
-                    auto accumulate_err = co_await std::move(acf);
-                    if (accumulate_err.contains_error()) {
+        // something failed, but transaction may be recovered in the future
+        auto park_in_transaction = [this, session, resolve_txn, &plan, &revert_failed_txn](
+                                       [[maybe_unused]] executor_t* self,
+                                       execute_result_t& exec_result) -> executor_t::unique_future<void> {
+            services::dispatcher::txn_accumulate_payload_t payload;
+            payload.base_appends.reserve(exec_result.dml_appends.size());
+            for (const auto& app : exec_result.dml_appends) {
+                payload.base_appends.push_back(
+                    components::table::dml_append_range_t{app.table_oid, app.row_start, app.row_count});
+            }
+            payload.base_deletes.reserve(exec_result.dml_deletes.size());
+            for (const auto& del : exec_result.dml_deletes) {
+                payload.base_deletes.push_back(components::table::dml_delete_range_t{del.table_oid, del.txn_id});
+            }
+            payload.pg_catalog_appends = std::move(exec_result.pg_catalog_appends);
+            payload.pg_catalog_delete_tables = std::move(exec_result.pg_catalog_delete_tables);
+            payload.backfills = std::move(exec_result.pg_attribute_commit_id_backfills);
+            payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
+            payload.created_storage_oids = std::move(exec_result.created_storage_oids);
+            payload.created_indexes = std::move(exec_result.created_indexes);
+            payload.referenced_deletes = std::move(exec_result.referenced_deletes);
+            trace(log_,
+                  "executor::execute_plan_full: txn {} — accumulating {} appends, {} deletes ({})",
+                  resolve_txn.transaction_id,
+                  payload.base_appends.size(),
+                  payload.base_deletes.size(),
+                  plan.commits_when_done ? "COMMIT follows" : "publish deferred to COMMIT");
+            if (!payload.empty()) {
+                auto [_ac, acf] =
+                    actor_zeta::otterbrix::send(parent_address_,
+                                                &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
+                                                session,
+                                                resolve_txn.transaction_id,
+                                                std::move(payload));
+                // transaction_inactive means the ranges were parked NOWHERE — swallowing it fakes success.
+                auto accumulate_err = co_await std::move(acf);
+                if (accumulate_err.contains_error()) {
+                    // A failed statement keeps its own error.
+                    if (exec_result.cursor->is_success()) {
                         exec_result.cursor = make_cursor(resource(), std::move(accumulate_err));
-                        // NOT a no-op: base_appends/base_deletes were copied (not moved), so this un-appends the rows.
-                        co_await revert_failed_txn(this, exec_result);
                     }
+                    co_await revert_failed_txn(this, exec_result);
                 }
+            }
+            co_return;
+        };
+
+        if (needs_dml_txn || needs_commit_txn) {
+            // Transaction stays failed, and only ROLLBACK or ROLLBACK TO SAVEPOINT are allowed
+            if (exec_result.cursor->is_success() || !plan.commits_when_done) {
+                co_await park_in_transaction(this, exec_result);
                 exec_result.dml_appends.clear();
                 exec_result.dml_deletes.clear();
                 exec_result.pg_catalog_appends.clear();
@@ -2125,6 +2138,13 @@ namespace services::collection::executor {
                     }
                 }
             }
+        } else if (needs_ddl_txn && exec_result.cursor->is_error() && !plan.commits_when_done) {
+            trace(log_,
+                  "executor::execute_plan_full: DDL failed — parking its writes on txn {}, session: {}",
+                  resolve_txn.transaction_id,
+                  session.data());
+
+            co_await park_in_transaction(this, exec_result);
         } else if (needs_ddl_txn && exec_result.cursor->is_error()) {
             trace(log_,
                   "executor::execute_plan_full: DDL failed — reverting txn {}, session: {}",

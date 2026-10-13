@@ -294,7 +294,9 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void>
-    manager_disk_t::revert_column_stamps(execution_context_t ctx, std::pmr::set<components::catalog::oid_t> tables) {
+    manager_disk_t::revert_column_stamps(execution_context_t ctx,
+                                         uint64_t from_sub_id,
+                                         std::pmr::set<components::catalog::oid_t> tables) {
         auto txn_id = ctx.txn.transaction_id;
         if (txn_id == 0 || agents_.empty()) {
             co_return;
@@ -317,6 +319,7 @@ namespace services::disk {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                   &agent_disk_t::revert_column_stamps_inner,
                                                                   txn_id,
+                                                                  from_sub_id,
                                                                   std::move(per_agent[i]));
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());

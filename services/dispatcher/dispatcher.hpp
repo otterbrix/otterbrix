@@ -132,6 +132,13 @@ namespace services::dispatcher {
                                                         uint64_t transaction_id,
                                                         txn_accumulate_payload_t payload);
         unique_future<void> txn_abort_msg(components::session::session_id_t session, uint64_t transaction_id);
+
+        unique_future<core::error_t>
+        txn_savepoint_msg(components::session::session_id_t session, uint64_t transaction_id, std::string name);
+        unique_future<core::error_t>
+        txn_release_savepoint_msg(components::session::session_id_t session, uint64_t transaction_id, std::string name);
+        unique_future<txn_rollback_to_drain_t>
+        txn_rollback_to_drain_msg(components::session::session_id_t session, uint64_t transaction_id, std::string name);
         // Returns the compact watermark data_table_t::compact() treats as its visible-to-all horizon.
         unique_future<uint64_t> txn_publish_msg(uint64_t commit_id);
         // The other end of txn_publish_msg, for commits that never reach it. The operator must be
@@ -158,6 +165,9 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::txn_abort_drain_msg,
                                                             &manager_dispatcher_t::txn_accumulate_msg,
                                                             &manager_dispatcher_t::txn_abort_msg,
+                                                            &manager_dispatcher_t::txn_savepoint_msg,
+                                                            &manager_dispatcher_t::txn_release_savepoint_msg,
+                                                            &manager_dispatcher_t::txn_rollback_to_drain_msg,
                                                             &manager_dispatcher_t::txn_publish_msg,
                                                             &manager_dispatcher_t::txn_discard_msg,
                                                             &manager_dispatcher_t::txn_compact_watermark_msg,
@@ -179,6 +189,11 @@ namespace services::dispatcher {
 
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
+        core::result_wrapper_t<components::table::transaction_t*>
+        savepoint_transaction_(components::session::session_id_t session,
+                               uint64_t transaction_id,
+                               std::string_view statement);
+
         std::size_t next_executor_index() noexcept;
 
         core::result_wrapper_t<txn_session_context_t>
@@ -187,8 +202,6 @@ namespace services::dispatcher {
 
         unique_future<void> finish_failed_statement_(components::session::session_id_t session,
                                                      uint64_t transaction_id);
-        unique_future<void> run_rollback_plan_(components::session::session_id_t session,
-                                               components::table::transaction_data txn);
 
         components::table::txn_abort_drain_t drain_for_abort_(components::table::transaction_t& txn);
 

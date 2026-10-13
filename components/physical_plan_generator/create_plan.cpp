@@ -34,6 +34,7 @@
 #include "impl/create_plan_resolve_namespace.hpp"
 #include "impl/create_plan_resolve_table.hpp"
 #include "impl/create_plan_resolve_type.hpp"
+#include "impl/create_plan_savepoint.hpp"
 #include "impl/create_plan_select.hpp"
 #include "impl/create_plan_sequence.hpp"
 #include "impl/create_plan_set_setting.hpp"
@@ -177,6 +178,12 @@ namespace services::planner {
                         return impl::create_plan_commit_transaction(context, node);
                     case components::logical_plan::transaction_op::abort:
                         return impl::create_plan_abort_transaction(context, node);
+                    case components::logical_plan::transaction_op::savepoint:
+                        return impl::create_plan_savepoint(context, node);
+                    case components::logical_plan::transaction_op::release_savepoint:
+                        return impl::create_plan_release_savepoint(context, node);
+                    case components::logical_plan::transaction_op::rollback_to_savepoint:
+                        return impl::create_plan_rollback_to_savepoint(context, node);
                 }
                 assert(false && "unknown transaction operation");
                 std::abort();

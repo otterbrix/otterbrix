@@ -89,8 +89,8 @@ namespace components::operators {
             }
         }
         const bool updated = any_conflict && update_part_;
-        written_ = insert_part_->written() - (any_conflict ? conflicts->size() : 0) +
-                   (updated ? update_part_->written() : 0);
+        written_ =
+            insert_part_->written() - (any_conflict ? conflicts->size() : 0) + (updated ? update_part_->written() : 0);
         compose_output_(insert_part_->output(), conflicts, updated ? update_part_->output() : nullptr);
         co_return core::error_t::no_error();
     }

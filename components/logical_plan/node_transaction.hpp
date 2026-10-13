@@ -5,6 +5,8 @@
 #include <components/catalog/catalog_oids.hpp>
 
 #include <cstdint>
+#include <string>
+#include <string_view>
 
 namespace components::logical_plan {
 
@@ -12,10 +14,13 @@ namespace components::logical_plan {
     {
         begin,
         commit,
-        abort
+        abort,
+        savepoint,
+        release_savepoint,
+        rollback_to_savepoint
     };
 
-    // Transaction-control leaf node (BEGIN / COMMIT / ROLLBACK), selected by
+    // Transaction-control leaf node (BEGIN / COMMIT / ROLLBACK / SAVEPOINT / RELEASE / ROLLBACK TO), selected by
     // op(). The session id flows through pipeline::context_t::session;
     // operator-side resolution against the txn_manager happens at execution time.
     //
@@ -30,8 +35,11 @@ namespace components::logical_plan {
     class node_transaction_t final : public node_t {
     public:
         node_transaction_t(std::pmr::memory_resource* resource, transaction_op op);
+        node_transaction_t(std::pmr::memory_resource* resource, transaction_op op, std::string_view savepoint_name);
 
         transaction_op op() const noexcept { return op_; }
+        // savepoint / release_savepoint / rollback_to_savepoint only
+        const std::pmr::string& savepoint_name() const noexcept { return savepoint_name_; }
 
         // commit-only payload (ignored for begin/abort)
         bool is_ddl_commit() const noexcept { return is_ddl_commit_; }
@@ -46,6 +54,7 @@ namespace components::logical_plan {
         std::string to_string_impl() const override;
 
         transaction_op op_;
+        std::pmr::string savepoint_name_;
         bool is_ddl_commit_{false};
         std::uint64_t txn_id_{0};
         components::catalog::oid_t database_oid_{components::catalog::INVALID_OID};
@@ -53,5 +62,7 @@ namespace components::logical_plan {
 
     using node_transaction_ptr = boost::intrusive_ptr<node_transaction_t>;
     node_transaction_ptr make_node_transaction(std::pmr::memory_resource* resource, transaction_op op);
+    node_transaction_ptr
+    make_node_transaction(std::pmr::memory_resource* resource, transaction_op op, std::string_view savepoint_name);
 
 } // namespace components::logical_plan

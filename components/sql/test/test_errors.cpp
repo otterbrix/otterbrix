@@ -201,9 +201,7 @@ TEST_CASE("components::sql::errors") {
     TEST_TRANSFORMER_OK("SELECT count FROM TEST_DATABASE.TEST_COLLECTION ORDER BY (SELECT count FROM "
                         "TEST_DATABASE.TEST_COLLECTION);");
 
-    TEST_TRANSFORMER_ERROR("SAVEPOINT sp1;", R"_(unsupported transaction statement)_");
-    TEST_TRANSFORMER_ERROR("RELEASE SAVEPOINT sp1;", R"_(unsupported transaction statement)_");
-    TEST_TRANSFORMER_ERROR("ROLLBACK TO SAVEPOINT sp1;", R"_(unsupported transaction statement)_");
+    TEST_TRANSFORMER_ERROR("PREPARE TRANSACTION 'tx1';", R"_(unsupported transaction statement)_");
     TEST_TRANSFORMER_OK("BEGIN;");
     TEST_TRANSFORMER_OK("COMMIT;");
     TEST_TRANSFORMER_OK("ROLLBACK;");

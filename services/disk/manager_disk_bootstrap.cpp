@@ -980,7 +980,7 @@ namespace services::disk {
                 // A drop whose storage stamp a crash discarded
                 if (def.dropped_at() != components::table::NOT_DELETED_ID &&
                     column.dropped_at() == components::table::NOT_DELETED_ID) {
-                    loaded_table.stamp_column_dropped(position, def.dropped_at());
+                    loaded_table.stamp_column_dropped(position, def.dropped_at(), 0);
                     continue;
                 }
                 if (def.dropped_at() == components::table::NOT_DELETED_ID && def.name() != column.name()) {

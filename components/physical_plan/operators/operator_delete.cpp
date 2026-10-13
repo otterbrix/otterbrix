@@ -408,6 +408,7 @@ namespace components::operators {
                                                     std::move(wal_row_ids),
                                                     count,
                                                     ctx->txn.transaction_id,
+                                                    ctx->txn.sub_id,
                                                     db_oid);
                     auto wal_result = co_await std::move(wf);
                     if (wal_result.has_error()) {

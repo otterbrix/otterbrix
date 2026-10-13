@@ -425,9 +425,9 @@ namespace components::table {
         }
     }
 
-    void collection_t::revert_all_deletes(uint64_t txn_id) {
+    void collection_t::revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id) {
         for (auto& rg : row_groups_->segments()) {
-            rg.revert_all_deletes(txn_id);
+            rg.revert_all_deletes(txn_id, from_sub_id);
         }
     }
 
@@ -539,8 +539,11 @@ namespace components::table {
         total_rows_ += data.total_rows_.load();
     }
 
-    core::result_wrapper_t<uint64_t>
-    collection_t::delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id) {
+    core::result_wrapper_t<uint64_t> collection_t::delete_rows(data_table_t& table,
+                                                               int64_t* ids,
+                                                               uint64_t count,
+                                                               uint64_t transaction_id,
+                                                               uint64_t sub_id) {
         uint64_t delete_count = 0;
         uint64_t pos = 0;
         do {
@@ -563,7 +566,7 @@ namespace components::table {
                     break;
                 }
             }
-            delete_count += row_group->delete_rows(table, ids + start, pos - start, transaction_id);
+            delete_count += row_group->delete_rows(table, ids + start, pos - start, transaction_id, sub_id);
         } while (pos < count);
         return delete_count;
     }

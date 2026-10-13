@@ -195,6 +195,7 @@ namespace {
                                                          row_start,
                                                          static_cast<uint64_t>(rows),
                                                          txn_id,
+                                                         uint64_t{0},
                                                          kMainDb);
             return std::move(fut);
         }

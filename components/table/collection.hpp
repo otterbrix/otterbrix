@@ -86,13 +86,13 @@ namespace components::table {
         core::result_wrapper_t<bool> revert_append(int64_t row_start, uint64_t count);
         [[nodiscard]] core::error_t settle_unwind(std::pmr::vector<uint64_t> erased_blocks);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
-        void revert_all_deletes(uint64_t txn_id);
+        void revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id);
         void cleanup_append(int64_t start, uint64_t count);
 
         void merge_storage(collection_t& data);
 
         [[nodiscard]] core::result_wrapper_t<uint64_t>
-        delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id);
+        delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id, uint64_t sub_id);
         std::vector<column_segment_info> get_column_segment_info();
 
         // Exclusively owned blocks only; data_table_t::compact frees them after swapping this collection out.

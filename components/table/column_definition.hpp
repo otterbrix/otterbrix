@@ -65,6 +65,10 @@ namespace components::table {
         void set_added_at(uint64_t stamp) noexcept { added_at_ = stamp; }
         [[nodiscard]] uint64_t dropped_at() const noexcept { return dropped_at_; }
         void set_dropped_at(uint64_t stamp) noexcept { dropped_at_ = stamp; }
+        [[nodiscard]] uint64_t added_sub_id() const noexcept { return added_sub_id_; }
+        void set_added_sub_id(uint64_t sub_id) noexcept { added_sub_id_ = sub_id; }
+        [[nodiscard]] uint64_t dropped_sub_id() const noexcept { return dropped_sub_id_; }
+        void set_dropped_sub_id(uint64_t sub_id) noexcept { dropped_sub_id_ = sub_id; }
 
         [[nodiscard]] bool visible_to(const transaction_data& txn) const noexcept {
             return version_visible(txn, added_at_) && !version_visible(txn, dropped_at_);
@@ -79,6 +83,8 @@ namespace components::table {
         std::uint32_t atttypid_{0}; // catalog::INVALID_OID; resolved by the CREATE TABLE pipeline.
         uint64_t added_at_{0};
         uint64_t dropped_at_{NOT_DELETED_ID};
+        uint64_t added_sub_id_{0};
+        uint64_t dropped_sub_id_{0};
         bool not_null_{false};
         std::optional<types::logical_value_t> default_value_;
         std::unordered_map<std::string, std::string> tags_;

@@ -63,6 +63,9 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_abort_transaction.cpp
         operators/transaction_teardown.cpp
         operators/operator_begin_transaction.cpp
+        operators/operator_savepoint.cpp
+        operators/operator_release_savepoint.cpp
+        operators/operator_rollback_to_savepoint.cpp
         operators/operator_computed_field_register.cpp
         operators/operator_computed_field_unregister.cpp
         operators/operator_resolve_namespace.cpp

@@ -39,12 +39,31 @@ namespace services::wal {
             id_t wal_id;
             std::uint64_t commit_id;
         };
+        struct rollback_to_marker_t {
+            id_t wal_id;
+            std::uint64_t from_sub_id;
+        };
         std::map<std::uint64_t, std::vector<commit_marker_t>> commits_by_txn;
+        std::map<std::uint64_t, std::vector<rollback_to_marker_t>> rollbacks_by_txn;
         for (const auto& r : records) {
             if (r.is_commit_marker() && r.is_valid()) {
                 commits_by_txn[r.transaction_id].push_back(commit_marker_t{r.id, r.commit_id});
             }
+            if (r.is_rollback_to_marker() && r.is_valid()) {
+                rollbacks_by_txn[r.transaction_id].push_back(rollback_to_marker_t{r.id, r.sub_id});
+            }
         }
+        const auto rolled_back = [&rollbacks_by_txn](const record_t& r, id_t commit_wal_id) {
+            const auto it = rollbacks_by_txn.find(r.transaction_id);
+            if (it == rollbacks_by_txn.end()) {
+                return false;
+            }
+            return std::any_of(it->second.begin(),
+                               it->second.end(),
+                               [&r, commit_wal_id](const rollback_to_marker_t& m) {
+                                   return r.id < m.wal_id && m.wal_id < commit_wal_id && r.sub_id >= m.from_sub_id;
+                               });
+        };
         for (auto& entry : commits_by_txn) {
             std::sort(entry.second.begin(),
                       entry.second.end(),
@@ -54,7 +73,7 @@ namespace services::wal {
         std::vector<record_t> result;
         result.reserve(records.size());
         for (auto& r : records) {
-            if (!r.is_valid()) {
+            if (!r.is_valid() || r.is_rollback_to_marker()) {
                 continue;
             }
             if (r.transaction_id == 0 || r.is_commit_marker()) {
@@ -69,7 +88,7 @@ namespace services::wal {
                 std::upper_bound(it->second.begin(), it->second.end(), r.id, [](id_t probe, const commit_marker_t& m) {
                     return probe < m.wal_id;
                 });
-            if (marker == it->second.end()) {
+            if (marker == it->second.end() || rolled_back(r, marker->wal_id)) {
                 continue;
             }
             r.commit_id = marker->commit_id;
@@ -105,6 +124,9 @@ namespace services::wal {
                                                                     wal::id_t wal_id,
                                                                     uint64_t commit_id);
 
+        unique_future<core::result_wrapper_t<wal::id_t>>
+        rollback_to(session_id_t session, uint64_t transaction_id, uint64_t from_sub_id, wal::id_t wal_id);
+
         // Refuses rather than deleting: an unreadable segment reads as 'empty', and unlinking on that would destroy it.
         unique_future<core::error_t> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
 
@@ -118,6 +140,7 @@ namespace services::wal {
                               uint64_t row_start,
                               uint64_t row_count,
                               uint64_t txn_id,
+                              uint64_t sub_id,
                               wal::id_t wal_id);
 
         unique_future<core::result_wrapper_t<wal::id_t>> write_physical_delete(session_id_t session,
@@ -125,6 +148,7 @@ namespace services::wal {
                                                                                std::pmr::vector<int64_t> row_ids,
                                                                                uint64_t count,
                                                                                uint64_t txn_id,
+                                                                               uint64_t sub_id,
                                                                                wal::id_t wal_id);
 
         unique_future<core::result_wrapper_t<wal::id_t>>
@@ -135,6 +159,7 @@ namespace services::wal {
                               std::pmr::vector<components::vector::data_chunk_t> new_chunks,
                               uint64_t count,
                               uint64_t txn_id,
+                              uint64_t sub_id,
                               wal::id_t wal_id);
 
         unique_future<core::result_wrapper_t<wal::id_t>>
@@ -147,6 +172,7 @@ namespace services::wal {
                             uint64_t row_start,
                             uint64_t row_count,
                             uint64_t txn_id,
+                            uint64_t sub_id,
                             wal::id_t add_column_id,
                             wal::id_t insert_id);
 
@@ -157,10 +183,12 @@ namespace services::wal {
                                   std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
                                   uint64_t first_position,
                                   uint64_t txn_id,
+                                  uint64_t sub_id,
                                   wal::id_t wal_id);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&wal_worker_t::load,
                                                             &wal_worker_t::commit_txn,
+                                                            &wal_worker_t::rollback_to,
                                                             &wal_worker_t::truncate_before,
                                                             &wal_worker_t::current_wal_id,
                                                             &wal_worker_t::write_physical_insert,

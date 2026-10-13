@@ -787,18 +787,20 @@ namespace services::disk {
         delete_tables.insert(drain.pg_catalog_delete_tables.begin(), drain.pg_catalog_delete_tables.end());
         if (!delete_tables.empty()) {
             co_await storage_revert_deletes(ctx,
+                                            drain.from_sub_id,
                                             std::vector<catalog::oid_t>{delete_tables.begin(), delete_tables.end()});
         }
 
         if (!drain.column_stamped_tables.empty()) {
             co_await revert_column_stamps(ctx,
+                                          drain.from_sub_id,
                                           std::pmr::set<catalog::oid_t>{drain.column_stamped_tables.begin(),
                                                                         drain.column_stamped_tables.end(),
                                                                         resource()});
         }
 
         if (!drain.dropped_storage_oids.empty()) {
-            co_await storage_drop_aborted(drain.txn.transaction_id);
+            co_await storage_drop_aborted(drain.txn.transaction_id, std::move(drain.dropped_storage_oids));
         }
 
         // manager_index_t::abort_transaction has already unregistered them
@@ -811,15 +813,19 @@ namespace services::disk {
         co_return reverted;
     }
 
-    manager_disk_t::unique_future<void> manager_disk_t::storage_drop_aborted(uint64_t txn_id) {
+    manager_disk_t::unique_future<void> manager_disk_t::storage_drop_aborted(uint64_t txn_id,
+                                                                             std::vector<catalog::oid_t> oids) {
         // Abort mirror of storage_dropped_committed: ERASES (not remaps) so the .otbx is never reclaimed.
-        trace(log_, "manager_disk::storage_drop_aborted , txn_id : {}", txn_id);
+        trace(log_, "manager_disk::storage_drop_aborted , txn_id : {} , oids : {}", txn_id, oids.size());
 
         std::pmr::vector<unique_future<void>> agent_futures{resource()};
         agent_futures.reserve(agents_.size());
         for (auto& agent_ptr : agents_) {
             auto [needs_sched, fut] =
-                actor_zeta::otterbrix::send(agent_ptr->address(), &agent_disk_t::storage_drop_aborted_inner, txn_id);
+                actor_zeta::otterbrix::send(agent_ptr->address(),
+                                            &agent_disk_t::storage_drop_aborted_inner,
+                                            txn_id,
+                                            std::pmr::vector<catalog::oid_t>{oids.begin(), oids.end(), resource()});
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent_ptr.get());
             }

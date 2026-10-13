@@ -60,6 +60,7 @@ TEST_CASE("services::wal::decode_record::an INSERT payload lives on the arena th
                   /*last_crc32=*/0,
                   /*wal_id=*/1,
                   /*txn_id=*/100,
+                  /*sub_id=*/0,
                   kResidencyTableOid,
                   wal_test::attoids_for(chunk),
                   one_chunk_batch(chunk),
@@ -99,6 +100,7 @@ TEST_CASE("services::wal::decode_record::a DELETE row-id list lives on the arena
                   /*last_crc32=*/0,
                   /*wal_id=*/2,
                   /*txn_id=*/101,
+                  /*sub_id=*/0,
                   kResidencyTableOid,
                   row_ids.data(),
                   row_ids.size());
@@ -140,6 +142,7 @@ TEST_CASE("services::wal::decode_record::an UPDATE carries both payloads on the 
                   /*last_crc32=*/0,
                   /*wal_id=*/3,
                   /*txn_id=*/102,
+                  /*sub_id=*/0,
                   kResidencyTableOid,
                   row_ids.data(),
                   wal_test::attoids_for(new_data),

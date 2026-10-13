@@ -711,7 +711,7 @@ TEST_CASE("services::disk::error::a_publish_or_revert_that_finds_no_storage_says
     INFO("revert_deletes for it is a miss");
     {
         std::vector<catalog::oid_t> tables{nowhere};
-        fx.invoke(&manager_disk_t::storage_revert_deletes, txn_ctx(), std::move(tables));
+        fx.invoke(&manager_disk_t::storage_revert_deletes, txn_ctx(), std::uint64_t{0}, std::move(tables));
         REQUIRE(services::disk::publish_revert_misses() == 3);
     }
 

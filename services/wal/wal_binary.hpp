@@ -32,6 +32,7 @@ namespace services::wal {
                           crc32_t last_crc32,
                           id_t wal_id,
                           uint64_t txn_id,
+                          uint64_t sub_id,
                           components::catalog::oid_t table_oid,
                           const column_attoids_t& attoids,
                           const std::pmr::vector<components::vector::data_chunk_t>& chunks,
@@ -42,6 +43,7 @@ namespace services::wal {
                           crc32_t last_crc32,
                           id_t wal_id,
                           uint64_t txn_id,
+                          uint64_t sub_id,
                           components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
                           uint64_t count);
@@ -52,6 +54,7 @@ namespace services::wal {
                               crc32_t last_crc32,
                               id_t wal_id,
                               uint64_t txn_id,
+                              uint64_t sub_id,
                               components::catalog::oid_t table_oid,
                               const column_attoids_t& attoids,
                               const components::vector::data_chunk_t& schema_chunk,
@@ -62,6 +65,7 @@ namespace services::wal {
                           crc32_t last_crc32,
                           id_t wal_id,
                           uint64_t txn_id,
+                          uint64_t sub_id,
                           components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
                           const column_attoids_t& attoids,
@@ -71,6 +75,9 @@ namespace services::wal {
     // commit_id (from transaction_manager_t::commit()) is appended to COMMIT
     // records so replay can rebuild published_horizon_.
     crc32_t encode_commit(buffer_t& buffer, crc32_t last_crc32, id_t wal_id, uint64_t txn_id, uint64_t commit_id);
+
+    crc32_t
+    encode_rollback_to(buffer_t& buffer, crc32_t last_crc32, id_t wal_id, uint64_t txn_id, uint64_t from_sub_id);
 
     // -----------------------------------------------------------------------
     // Decode

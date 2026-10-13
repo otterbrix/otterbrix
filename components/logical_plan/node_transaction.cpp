@@ -6,13 +6,22 @@ namespace components::logical_plan {
 
     node_transaction_t::node_transaction_t(std::pmr::memory_resource* resource, transaction_op op)
         : node_t(resource, node_type::transaction_t)
-        , op_(op) {}
+        , op_(op)
+        , savepoint_name_(resource) {}
+
+    node_transaction_t::node_transaction_t(std::pmr::memory_resource* resource,
+                                           transaction_op op,
+                                           std::string_view savepoint_name)
+        : node_t(resource, node_type::transaction_t)
+        , op_(op)
+        , savepoint_name_(savepoint_name, resource) {}
 
     // op_ is folded into the hash so begin/commit/abort land in distinct
     // buckets of any node-keyed container despite sharing node_type::transaction_t.
     hash_t node_transaction_t::hash_impl() const {
         hash_t hash_value{0};
         boost::hash_combine(hash_value, static_cast<uint8_t>(op_));
+        boost::hash_combine(hash_value, std::hash<std::string_view>{}(savepoint_name_));
         return hash_value;
     }
 
@@ -24,12 +33,23 @@ namespace components::logical_plan {
                 return "$commit_transaction";
             case transaction_op::abort:
                 return "$abort_transaction";
+            case transaction_op::savepoint:
+                return "$savepoint: " + std::string{savepoint_name_};
+            case transaction_op::release_savepoint:
+                return "$release_savepoint: " + std::string{savepoint_name_};
+            case transaction_op::rollback_to_savepoint:
+                return "$rollback_to_savepoint: " + std::string{savepoint_name_};
         }
         return "$transaction";
     }
 
     node_transaction_ptr make_node_transaction(std::pmr::memory_resource* resource, transaction_op op) {
         return {new node_transaction_t{resource, op}};
+    }
+
+    node_transaction_ptr
+    make_node_transaction(std::pmr::memory_resource* resource, transaction_op op, std::string_view savepoint_name) {
+        return {new node_transaction_t{resource, op, savepoint_name}};
     }
 
 } // namespace components::logical_plan

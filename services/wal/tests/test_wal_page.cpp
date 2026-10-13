@@ -86,6 +86,7 @@ namespace {
                                      last_crc,
                                      wal_id,
                                      txn_id,
+                                     /*sub_id=*/0,
                                      table_oid,
                                      wal_test::attoids_for(chunk),
                                      to_chunk_batch(chunk),
@@ -106,7 +107,7 @@ namespace {
         info.txn_id = txn_id;
         info.type = wal_record_type::PHYSICAL_DELETE;
         buffer_t buf;
-        services::wal::encode_delete(buf, last_crc, wal_id, txn_id, table_oid, row_ids.data(), count);
+        services::wal::encode_delete(buf, last_crc, wal_id, txn_id, /*sub_id=*/0, table_oid, row_ids.data(), count);
         info.data = buffer_to_vec(buf);
         return info;
     }
@@ -128,6 +129,7 @@ namespace {
                                      last_crc,
                                      wal_id,
                                      txn_id,
+                                     /*sub_id=*/0,
                                      table_oid,
                                      row_ids.data(),
                                      wal_test::attoids_for(chunk),

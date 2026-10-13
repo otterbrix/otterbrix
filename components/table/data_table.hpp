@@ -51,10 +51,10 @@ namespace components::table {
         [[nodiscard]] std::pmr::vector<std::uint32_t> column_attoids() const;
 
         void stamp_column_identity(uint64_t position, std::uint32_t attoid);
-        void stamp_column_added(uint64_t position, uint64_t stamp);
-        void stamp_column_dropped(uint64_t position, uint64_t stamp);
+        void stamp_column_added(uint64_t position, uint64_t stamp, uint64_t sub_id);
+        void stamp_column_dropped(uint64_t position, uint64_t stamp, uint64_t sub_id);
         uint64_t publish_column_stamps(uint64_t txn_id, uint64_t commit_id);
-        uint64_t revert_column_stamps(uint64_t txn_id);
+        uint64_t revert_column_stamps(uint64_t txn_id, uint64_t from_sub_id);
 
         // The only write decided at write time
         // TODO: pass Isolation level here, when it will be implemented
@@ -125,7 +125,7 @@ namespace components::table {
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count);
         core::result_wrapper_t<bool> revert_append(int64_t row_start, uint64_t count);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
-        void revert_all_deletes(uint64_t txn_id);
+        void revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id);
 
         void merge_storage(collection_t& data);
 

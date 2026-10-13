@@ -62,6 +62,9 @@ namespace services::dispatcher {
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_abort_drain_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_accumulate_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_abort_msg>,
+            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_savepoint_msg>,
+            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_release_savepoint_msg>,
+            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_rollback_to_drain_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_publish_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_discard_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_compact_watermark_msg>,
@@ -303,6 +306,18 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_abort_msg, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_savepoint_msg>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_savepoint_msg, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_release_savepoint_msg>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_release_savepoint_msg, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_rollback_to_drain_msg>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_rollback_to_drain_msg, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_publish_msg>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_publish_msg, msg);
                 break;
@@ -411,12 +426,18 @@ namespace services::dispatcher {
             if (root == nullptr || root->type() != components::logical_plan::node_type::transaction_t) {
                 return components::table::transaction_control_t::none;
             }
-            const auto op = static_cast<const components::logical_plan::node_transaction_t*>(root)->op();
-            if (op == components::logical_plan::transaction_op::commit) {
-                return components::table::transaction_control_t::commit;
-            }
-            if (op == components::logical_plan::transaction_op::abort) {
-                return components::table::transaction_control_t::rollback;
+            switch (static_cast<const components::logical_plan::node_transaction_t*>(root)->op()) {
+                case components::logical_plan::transaction_op::commit:
+                    return components::table::transaction_control_t::commit;
+                case components::logical_plan::transaction_op::abort:
+                    return components::table::transaction_control_t::rollback;
+                case components::logical_plan::transaction_op::savepoint:
+                case components::logical_plan::transaction_op::release_savepoint:
+                    return components::table::transaction_control_t::savepoint;
+                case components::logical_plan::transaction_op::rollback_to_savepoint:
+                    return components::table::transaction_control_t::rollback_to;
+                case components::logical_plan::transaction_op::begin:
+                    return components::table::transaction_control_t::none;
             }
             return components::table::transaction_control_t::none;
         }
@@ -451,7 +472,7 @@ namespace services::dispatcher {
         const auto control = transaction_control_of(plan);
         co_await take_turn_(session, control);
         session_turn_t turn{this, session, control};
-        // The failed transaction was rolled back when it failed; a COMMIT ends it as that ROLLBACK.
+        // A failed transaction's writes wait for its end; a COMMIT ends it as a ROLLBACK.
         bool commits_failed =
             control == components::table::transaction_control_t::commit && failed_sessions_.contains(session);
         auto executed = commits_failed ? make_rollback_plan(resource()) : std::move(plan);
@@ -495,6 +516,13 @@ namespace services::dispatcher {
               exec_result.cursor->is_success());
         if (exec_result.cursor && exec_result.cursor->is_error()) {
             co_await finish_failed_statement_(session, statement_txn_id);
+        } else if (control == components::table::transaction_control_t::none && failed_sessions_.contains(session)) {
+            exec_result.cursor = components::cursor::make_cursor(
+                resource(),
+                core::error_t{core::error_code_t::transaction_finalized,
+                              std::pmr::string{"the transaction failed while this statement ran", resource()}});
+        } else if (control == components::table::transaction_control_t::rollback_to) {
+            failed_sessions_.erase(session);
         } else if (commits_failed) {
             exec_result.cursor = components::cursor::make_cursor(
                 resource(),
@@ -979,12 +1007,18 @@ namespace services::dispatcher {
     manager_dispatcher_t::create_session_context(components::session::session_id_t session,
                                                  components::logical_plan::execution_plan_t* plan) {
         if (failed_sessions_.contains(session)) {
-            if (transaction_control_of(*plan) == components::table::transaction_control_t::none) {
-                return core::error_t{
-                    core::error_code_t::transaction_finalized,
-                    std::pmr::string{"the transaction failed; only ROLLBACK is accepted until it ends", resource()}};
+            const auto control = transaction_control_of(*plan);
+            if (control == components::table::transaction_control_t::none ||
+                control == components::table::transaction_control_t::savepoint) {
+                return core::error_t{core::error_code_t::transaction_finalized,
+                                     std::pmr::string{"the transaction failed; only ROLLBACK or ROLLBACK TO SAVEPOINT "
+                                                      "is accepted until it ends",
+                                                      resource()}};
             }
-            failed_sessions_.erase(session);
+            // A ROLLBACK TO clears the failure only once it has undone the work (execute_plan).
+            if (control != components::table::transaction_control_t::rollback_to) {
+                failed_sessions_.erase(session);
+            }
         }
         const auto& settings = session_settings(session);
         const auto scope = settings.autocommit ? components::table::transaction_scope_t::statement
@@ -1014,39 +1048,14 @@ namespace services::dispatcher {
             try_trigger_cleanup_if_horizon_advanced();
             co_return;
         }
-        if (!failed_sessions_.insert(session).second) {
-            co_return;
+        // Undone only by the ROLLBACK or ROLLBACK TO SAVEPOINT that ends the failure (Postgres semantics).
+        if (failed_sessions_.insert(session).second) {
+            trace(log_,
+                  "manager_dispatcher_t::finish_failed_statement_: txn {} failed, session: {}",
+                  txn->transaction_id(),
+                  session.data());
         }
-        trace(log_,
-              "manager_dispatcher_t::finish_failed_statement_: txn {} failed, session: {}",
-              txn->transaction_id(),
-              session.data());
-        co_await run_rollback_plan_(session, txn->data());
-    }
-
-    manager_dispatcher_t::unique_future<void>
-    manager_dispatcher_t::run_rollback_plan_(components::session::session_id_t session,
-                                             components::table::transaction_data txn) {
-        auto plan = make_rollback_plan(resource());
-        txn_session_context_t context;
-        context.txn = txn;
-        context.settings = session_settings(session);
-        context.lowest_active_start_time = txn_manager_.lowest_active_start_time();
-        const std::size_t pool_idx = next_executor_index();
-        auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
-                                                                 &collection::executor::executor_t::execute_plan_full,
-                                                                 session,
-                                                                 std::move(plan),
-                                                                 std::move(context));
-        if (needs_sched && executors_[pool_idx]) {
-            scheduler_->enqueue(executors_[pool_idx].get());
-        }
-        auto result = co_await std::move(future);
-        if (result.cursor && result.cursor->is_error()) {
-            error(log_,
-                  "manager_dispatcher_t::run_rollback_plan_: the failed transaction was not fully undone: {}",
-                  result.cursor->get_error().what);
-        }
+        co_return;
     }
 
     components::table::transaction_t*
@@ -1279,6 +1288,72 @@ namespace services::dispatcher {
         txn_manager_.abort(session);
         try_trigger_cleanup_if_horizon_advanced();
         co_return;
+    }
+
+    core::result_wrapper_t<components::table::transaction_t*>
+    manager_dispatcher_t::savepoint_transaction_(components::session::session_id_t session,
+                                                 uint64_t transaction_id,
+                                                 std::string_view statement) {
+        auto* txn = statement_transaction_(session, transaction_id);
+        if (txn == nullptr || txn->scope() == components::table::transaction_scope_t::statement) {
+            std::pmr::string what{statement, resource()};
+            what += " can only be used in transaction blocks";
+            return core::error_t{core::error_code_t::transaction_inactive, std::move(what)};
+        }
+        return txn;
+    }
+
+    manager_dispatcher_t::unique_future<core::error_t>
+    manager_dispatcher_t::txn_savepoint_msg(components::session::session_id_t session,
+                                            uint64_t transaction_id,
+                                            std::string name) {
+        trace(log_, "manager_dispatcher_t::txn_savepoint_msg, session: {}, savepoint: {}", session.data(), name);
+        auto txn = savepoint_transaction_(session, transaction_id, "SAVEPOINT");
+        if (txn.has_error()) {
+            co_return txn.error();
+        }
+        txn.value()->push_savepoint(name);
+        co_return core::error_t::no_error();
+    }
+
+    manager_dispatcher_t::unique_future<core::error_t>
+    manager_dispatcher_t::txn_release_savepoint_msg(components::session::session_id_t session,
+                                                    uint64_t transaction_id,
+                                                    std::string name) {
+        trace(log_,
+              "manager_dispatcher_t::txn_release_savepoint_msg, session: {}, savepoint: {}",
+              session.data(),
+              name);
+        auto txn = savepoint_transaction_(session, transaction_id, "RELEASE SAVEPOINT");
+        if (txn.has_error()) {
+            co_return txn.error();
+        }
+        if (!txn.value()->release_savepoint(name)) {
+            co_return core::error_t{core::error_code_t::missing_savepoint,
+                                    std::pmr::string{"savepoint \"" + name + "\" does not exist", resource()}};
+        }
+        co_return core::error_t::no_error();
+    }
+
+    manager_dispatcher_t::unique_future<txn_rollback_to_drain_t>
+    manager_dispatcher_t::txn_rollback_to_drain_msg(components::session::session_id_t session,
+                                                    uint64_t transaction_id,
+                                                    std::string name) {
+        trace(log_,
+              "manager_dispatcher_t::txn_rollback_to_drain_msg, session: {}, savepoint: {}",
+              session.data(),
+              name);
+        txn_rollback_to_drain_t out;
+        auto txn = savepoint_transaction_(session, transaction_id, "ROLLBACK TO SAVEPOINT");
+        if (txn.has_error()) {
+            out.error = txn.error();
+            co_return out;
+        }
+        if (!txn.value()->rollback_to_savepoint(name, &out.drain)) {
+            out.error = core::error_t{core::error_code_t::missing_savepoint,
+                                      std::pmr::string{"savepoint \"" + name + "\" does not exist", resource()}};
+        }
+        co_return out;
     }
 
     manager_dispatcher_t::unique_future<uint64_t> manager_dispatcher_t::txn_publish_msg(uint64_t commit_id) {

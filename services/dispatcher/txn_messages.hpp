@@ -68,6 +68,12 @@ namespace services::dispatcher {
         std::vector<components::table::referenced_delete_t> referenced_deletes{};
     };
 
+    // Writes made since the savepoint, which the operator reverts, or why ROLLBACK TO can't run
+    struct txn_rollback_to_drain_t {
+        core::error_t error{core::error_t::no_error()};
+        components::table::txn_abort_drain_t drain{};
+    };
+
     // Payload of txn_accumulate_msg: every range an executor statement parks on
     // the session's transaction_t. ONE message serves both producers:
     //   explicit-DML statements — all five fields populated as needed;

@@ -1020,7 +1020,8 @@ TEST_CASE("components::table::mvcc::compact_refused_while_delete_past_1024_pendi
 TEST_CASE("components::table::mvcc::savepoints") {
     test_env env;
     auto table = make_int_table(env);
-    append_rows(*table, env, 0, 1500);
+    append_rows(*table, env, 0, 1000);
+    append_rows(*table, env, 1000, 500);
 
     transaction_manager_t mgr(&env.resource);
     auto session = components::session::session_id_t::generate_uid();

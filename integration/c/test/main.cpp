@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "../otterbrix.h"
 
@@ -569,7 +570,7 @@ TEST_CASE("c-api: value kinds of every scalar column type", "[c-api][value]") {
     });
     with_value(t.ptr, q, 3, [](value_ptr v) {
         CHECK(value_is_double(v));
-        CHECK(value_get_double(v) == 2.5);
+        CHECK_THAT(value_get_double(v), Catch::Matchers::WithinULP(2.5, 0));
     });
     with_value(t.ptr, q, 4, [](value_ptr v) {
         CHECK(value_is_string(v));

@@ -136,11 +136,13 @@ namespace components::table {
         void set_bounds(T min, T max) {
             assert(slot_of<T>() == slot_of_type(type_) && type_ != types::logical_type::DECIMAL);
             if constexpr (slot_of<T>() == slot::signed_int) {
-                min_i_ = static_cast<types::int128_t>(min);
-                max_i_ = static_cast<types::int128_t>(max);
+                using wide_t = std::conditional_t<std::is_same_v<T, types::int128_t>, types::int128_t, int64_t>;
+                min_i_ = static_cast<types::int128_t>(static_cast<wide_t>(min));
+                max_i_ = static_cast<types::int128_t>(static_cast<wide_t>(max));
             } else if constexpr (slot_of<T>() == slot::unsigned_int) {
-                min_u_ = static_cast<types::uint128_t>(min);
-                max_u_ = static_cast<types::uint128_t>(max);
+                using wide_t = std::conditional_t<std::is_same_v<T, types::uint128_t>, types::uint128_t, uint64_t>;
+                min_u_ = static_cast<types::uint128_t>(static_cast<wide_t>(min));
+                max_u_ = static_cast<types::uint128_t>(static_cast<wide_t>(max));
             } else if constexpr (slot_of<T>() == slot::real) {
                 min_d_ = static_cast<double>(min);
                 max_d_ = static_cast<double>(max);

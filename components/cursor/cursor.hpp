@@ -2,6 +2,7 @@
 
 #include <core/result_wrapper.hpp>
 
+#include <cmath>
 #include <cstdint>
 #include <initializer_list>
 #include <optional>
@@ -121,6 +122,15 @@ namespace components::cursor {
         template<typename T>
         inline constexpr bool is_numeric_cell_v =
             std::is_arithmetic_v<T> || std::is_same_v<T, types::int128_t> || std::is_same_v<T, types::uint128_t>;
+
+        template<typename T, typename F>
+        T from_floating(F value) {
+            if constexpr (std::is_same_v<T, bool>) {
+                return std::fpclassify(value) != FP_ZERO;
+            } else {
+                return static_cast<T>(value);
+            }
+        }
     } // namespace detail
 
     template<typename T>
@@ -129,7 +139,7 @@ namespace components::cursor {
         if constexpr (detail::is_numeric_cell_v<T>) {
             switch (vec.type().to_physical_type()) {
                 case physical_type::BOOL:
-                    return static_cast<T>(vec.get_value<bool>(index));
+                    return static_cast<T>(static_cast<uint64_t>(vec.get_value<bool>(index)));
                 case physical_type::INT8:
                     return static_cast<T>(vec.get_value<int8_t>(index));
                 case physical_type::INT16:
@@ -139,9 +149,9 @@ namespace components::cursor {
                 case physical_type::INT64:
                     return static_cast<T>(vec.get_value<int64_t>(index));
                 case physical_type::UINT8:
-                    return static_cast<T>(vec.get_value<uint8_t>(index));
+                    return static_cast<T>(static_cast<uint64_t>(vec.get_value<uint8_t>(index)));
                 case physical_type::UINT16:
-                    return static_cast<T>(vec.get_value<uint16_t>(index));
+                    return static_cast<T>(static_cast<uint64_t>(vec.get_value<uint16_t>(index)));
                 case physical_type::UINT32:
                     return static_cast<T>(vec.get_value<uint32_t>(index));
                 case physical_type::UINT64:
@@ -151,9 +161,9 @@ namespace components::cursor {
                 case physical_type::UINT128:
                     return static_cast<T>(vec.get_value<types::uint128_t>(index));
                 case physical_type::FLOAT:
-                    return static_cast<T>(vec.get_value<float>(index));
+                    return detail::from_floating<T>(vec.get_value<float>(index));
                 case physical_type::DOUBLE:
-                    return static_cast<T>(vec.get_value<double>(index));
+                    return detail::from_floating<T>(vec.get_value<double>(index));
                 default:
                     return make_error(core::error_code_t::conversion_failure,
                                       "the column's physical type is not numeric");

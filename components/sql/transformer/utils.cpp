@@ -1427,7 +1427,7 @@ namespace components::sql::transform {
                                                             vector::make_flat_copy(resource, rhs, 1),
                                                             types::complex_logical_type{types::logical_type::DOUBLE},
                                                             1));
-            if (as_double.get_value<double>(0) == 0.0) {
+            if (std::fpclassify(as_double.get_value<double>(0)) == FP_ZERO) {
                 return core::error_t(core::error_code_t::invalid_parameter,
                                      std::pmr::string{"division by zero", resource});
             }

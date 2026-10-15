@@ -52,7 +52,8 @@ namespace components::catalog {
                 if (decimal == nullptr || !with_typmod) {
                     return "numeric";
                 }
-                return "numeric(" + std::to_string(decimal->width()) + "," + std::to_string(decimal->scale()) + ")";
+                return "numeric(" + std::to_string(static_cast<unsigned>(decimal->width())) + "," +
+                       std::to_string(static_cast<unsigned>(decimal->scale())) + ")";
             }
             case logical_type::LIST:
                 return format_type_be(type.child_type(), with_typmod) + "[]";

@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <components/tests/generaty.hpp>
 #include <components/vector/data_chunk_binary.hpp>
 #include <core/pmr.hpp>
@@ -645,7 +646,7 @@ TEST_CASE("wal_binary::data_chunk_binary_null_fixed_width_payload_is_not_read") 
     REQUIRE(result.size() == 3);
     CHECK(result.data[0].get_value<int64_t>(0) == 1);
     CHECK(result.data[1].get_value<int32_t>(2) == 3);
-    CHECK(result.data[2].get_value<double>(2) == 3.0);
+    CHECK_THAT(result.data[2].get_value<double>(2), Catch::Matchers::WithinULP(3.0, 0));
     for (uint64_t column = 0; column < 3; column++) {
         CHECK_FALSE(result.data[column].validity().row_is_valid(1));
     }

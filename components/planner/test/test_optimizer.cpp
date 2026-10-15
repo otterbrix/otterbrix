@@ -1,5 +1,6 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <components/casts/default_casts.hpp>
 #include <components/compute/function.hpp>
@@ -994,8 +995,8 @@ TEST_CASE("optimizer::scalar_fold_double") {
     auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
     REQUIRE(new_id != id0);
     REQUIRE(new_id != id1);
-    REQUIRE(params->parameter(id0).get_value<double>(0) == 2.5);
-    REQUIRE(params->parameter(id1).get_value<double>(0) == 1.5);
+    REQUIRE_THAT(params->parameter(id0).get_value<double>(0), Catch::Matchers::WithinULP(2.5, 0));
+    REQUIRE_THAT(params->parameter(id1).get_value<double>(0), Catch::Matchers::WithinULP(1.5, 0));
     REQUIRE(params->parameter(new_id).get_value<double>(0) == Catch::Approx(4.0));
 }
 

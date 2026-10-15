@@ -2,6 +2,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <components/vector/vector_builders.hpp>
 #include <components/types/types.hpp>
 #include <core/date/date_parse.hpp>
@@ -3749,10 +3750,10 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     CHECK(cell145.value() == 2);
     auto cell146 = cur->get<double>(1, 0);
     REQUIRE_FALSE(cell146.has_error());
-    CHECK(cell146.value() == 1.0);
+    CHECK_THAT(cell146.value(), Catch::Matchers::WithinULP(1.0, 0));
     auto cell147 = cur->get<double>(1, 1);
     REQUIRE_FALSE(cell147.has_error());
-    CHECK(cell147.value() == 2.5);
+    CHECK_THAT(cell147.value(), Catch::Matchers::WithinULP(2.5, 0));
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::values_mismatch_error_names_both_types") {

@@ -448,8 +448,12 @@ void a_null_key_matches_no_value_comparison(Agent& agent, std::pmr::memory_resou
 
     std::vector<compare_type> compares{compare_type::eq};
     if constexpr (Agent::element_type::supports_ordered_probe_v) {
-        compares.insert(compares.end(),
-                        {compare_type::ne, compare_type::lt, compare_type::lte, compare_type::gt, compare_type::gte});
+        compares = {compare_type::eq,
+                    compare_type::ne,
+                    compare_type::lt,
+                    compare_type::lte,
+                    compare_type::gt,
+                    compare_type::gte};
     }
     // Both spellings of NULL: the parameter bound to a typed NULL, and the untyped NULL literal.
     const auto expect_nothing = [&](uint64_t txn_id) {

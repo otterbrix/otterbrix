@@ -25,7 +25,7 @@ namespace {
 
     bool is_quoted_literal(Node* node) {
         using components::sql::transform::pg_ptr_cast;
-        return nodeTag(node) == T_A_Const && nodeTag(&pg_ptr_cast<A_Const>(node)->val) == T_String;
+        return nodeTag(node) == T_A_Const && pg_ptr_cast<A_Const>(node)->val.type == T_String;
     }
 
     core::error_t empty_array_untyped(std::pmr::memory_resource* resource) {

@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/tests/generaty.hpp>
 #include <components/vector/vector_builders.hpp>
@@ -181,10 +182,10 @@ TEST_CASE("components::cursor::get casts by physical type") {
     CHECK(ok(cursor->get<int32_t>(0, 0)) == 1);
     CHECK(ok(cursor->get<int64_t>(0, 0)) == int64_t{4294967297});
     CHECK(ok(cursor->get<int64_t>(1, 0)) == 7);
-    CHECK(ok(cursor->get<double>(2, 0)) == 2.5);
-    CHECK(ok(cursor->get<double>(3, 0)) == 3.0);
+    CHECK_THAT(ok(cursor->get<double>(2, 0)), Catch::Matchers::WithinULP(2.5, 0));
+    CHECK_THAT(ok(cursor->get<double>(3, 0)), Catch::Matchers::WithinULP(3.0, 0));
     CHECK(ok(cursor->get<int64_t>(4, 0)) == 1);
-    CHECK(ok(cursor->get<double>(5, 0)) == 1.5);
+    CHECK_THAT(ok(cursor->get<double>(5, 0)), Catch::Matchers::WithinULP(1.5, 0));
     CHECK(ok(cursor->get<int32_t>(6, 0)) == 777);
     CHECK_FALSE(ok(cursor->is_null(6, 0)));
     CHECK(ok(cursor->get<core::date::date_t>(6, 0)).value == core::date::days{777});

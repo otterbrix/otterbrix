@@ -112,6 +112,7 @@ struct test_wal_worker {
                                                                  row_start,
                                                                  row_count,
                                                                  txn_id,
+                                                                 uint64_t{0},
                                                                  kMainDb);
         return std::move(future);
     }
@@ -128,6 +129,7 @@ struct test_wal_worker {
                                                                  std::move(ids_copy),
                                                                  static_cast<uint64_t>(row_ids.size()),
                                                                  txn_id,
+                                                                 uint64_t{0},
                                                                  kMainDb);
         return std::move(future);
     }
@@ -151,6 +153,7 @@ struct test_wal_worker {
                                                                  std::move(chunk_ptr),
                                                                  static_cast<uint64_t>(row_count),
                                                                  txn_id,
+                                                                 uint64_t{0},
                                                                  kMainDb);
         return std::move(future);
     }
@@ -334,6 +337,7 @@ TEST_CASE("wal_worker::corruption_stop") {
                                                          static_cast<uint64_t>(i * 4),
                                                          uint64_t{4},
                                                          uint64_t{500},
+                                                         uint64_t{0},
                                                          kMainDb);
         }
         {
@@ -442,6 +446,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
                                                          uint64_t{0},
                                                          uint64_t{8},
                                                          uint64_t{600},
+                                                         uint64_t{0},
                                                          kMainDb);
         }
         {
@@ -499,6 +504,7 @@ TEST_CASE("wal_worker::crc_chain_startup") {
             uint64_t{0},
             uint64_t{3},
             uint64_t{601},
+            uint64_t{0},
             kMainDb);
         auto new_wal_id = await_value(fut_id);
         REQUIRE(new_wal_id > last_wal_id);
@@ -545,6 +551,7 @@ TEST_CASE("wal_worker::segment_rotation") {
                                                      i * 20,
                                                      uint64_t{20},
                                                      uint64_t{700 + i},
+                                                     uint64_t{0},
                                                      kMainDb);
         last_fut = std::move(fut);
     }
@@ -586,6 +593,7 @@ TEST_CASE("wal_worker::spanning_record") {
                                                      uint64_t{0},
                                                      uint64_t{500},
                                                      uint64_t{800},
+                                                     uint64_t{0},
                                                      kMainDb);
         auto wal_id = await_value(fut);
         REQUIRE(wal_id > 0);
@@ -640,6 +648,7 @@ TEST_CASE("wal_worker::fsync_full_mode") {
                                                      uint64_t{0},
                                                      uint64_t{10},
                                                      uint64_t{900},
+                                                     uint64_t{0},
                                                      kMainDb);
         REQUIRE(await_value(fut) > 0);
     }
@@ -702,6 +711,7 @@ TEST_CASE("wal_worker::fsync_off_mode") {
                                                      uint64_t{0},
                                                      uint64_t{10},
                                                      uint64_t{1000},
+                                                     uint64_t{0},
                                                      kMainDb);
         REQUIRE(await_value(fut) > 0);
     }

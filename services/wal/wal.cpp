@@ -89,6 +89,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &wal_worker_t::commit_txn, msg);
                 break;
             }
+            case actor_zeta::msg_id<wal_worker_t, &wal_worker_t::rollback_to>: {
+                co_await actor_zeta::dispatch(this, &wal_worker_t::rollback_to, msg);
+                break;
+            }
             case actor_zeta::msg_id<wal_worker_t, &wal_worker_t::truncate_before>: {
                 co_await actor_zeta::dispatch(this, &wal_worker_t::truncate_before, msg);
                 break;
@@ -135,6 +139,7 @@ namespace services::wal {
                                         uint64_t row_start,
                                         uint64_t row_count,
                                         uint64_t txn_id,
+                                        uint64_t sub_id,
                                         wal::id_t wal_id) {
         if (recovery_error_.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
@@ -155,6 +160,7 @@ namespace services::wal {
                                               last_crc_,
                                               wal_id,
                                               txn_id,
+                                              sub_id,
                                               table_oid,
                                               attoids,
                                               chunks,
@@ -185,6 +191,7 @@ namespace services::wal {
                                         std::pmr::vector<int64_t> row_ids,
                                         uint64_t count,
                                         uint64_t txn_id,
+                                        uint64_t sub_id,
                                         wal::id_t wal_id) {
         if (recovery_error_.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
@@ -194,7 +201,8 @@ namespace services::wal {
         trace(log_, "wal_worker::write_physical_delete , wal_id : {} , txn : {} , count : {}", wal_id, txn_id, count);
 
         encode_buf_.clear();
-        const auto record_crc = encode_delete(encode_buf_, last_crc_, wal_id, txn_id, table_oid, row_ids.data(), count);
+        const auto record_crc =
+            encode_delete(encode_buf_, last_crc_, wal_id, txn_id, sub_id, table_oid, row_ids.data(), count);
 
         if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{std::move(writer_error)};
@@ -222,6 +230,7 @@ namespace services::wal {
                                         std::pmr::vector<components::vector::data_chunk_t> new_chunks,
                                         uint64_t count,
                                         uint64_t txn_id,
+                                        uint64_t sub_id,
                                         wal::id_t wal_id) {
         if (recovery_error_.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
@@ -236,6 +245,7 @@ namespace services::wal {
                                               last_crc_,
                                               wal_id,
                                               txn_id,
+                                              sub_id,
                                               table_oid,
                                               row_ids.data(),
                                               attoids,
@@ -267,6 +277,7 @@ namespace services::wal {
                                             std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
                                             uint64_t first_position,
                                             uint64_t txn_id,
+                                            uint64_t sub_id,
                                             wal::id_t wal_id) {
         if (recovery_error_.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
@@ -284,6 +295,7 @@ namespace services::wal {
                                                   last_crc_,
                                                   wal_id,
                                                   txn_id,
+                                                  sub_id,
                                                   table_oid,
                                                   attoids,
                                                   *schema_chunk,
@@ -317,6 +329,7 @@ namespace services::wal {
                                       uint64_t row_start,
                                       uint64_t row_count,
                                       uint64_t txn_id,
+                                      uint64_t sub_id,
                                       wal::id_t add_column_id,
                                       wal::id_t insert_id) {
         column_attoids_t added_attoids(attoids.end() - static_cast<std::ptrdiff_t>(schema_chunk->column_count()),
@@ -328,6 +341,7 @@ namespace services::wal {
                                                         std::move(schema_chunk),
                                                         first_position,
                                                         txn_id,
+                                                        sub_id,
                                                         add_column_id);
         if (added.has_error()) {
             co_return std::move(added);
@@ -339,6 +353,7 @@ namespace services::wal {
                                                  row_start,
                                                  row_count,
                                                  txn_id,
+                                                 sub_id,
                                                  insert_id);
     }
 
@@ -395,6 +410,42 @@ namespace services::wal {
                   sync_error.what);
             co_return core::result_wrapper_t<wal::id_t>{std::move(sync_error)};
         }
+
+        co_return core::result_wrapper_t<wal::id_t>{wal_id};
+    }
+
+    wal_worker_t::unique_future<core::result_wrapper_t<wal::id_t>> wal_worker_t::rollback_to(session_id_t /*session*/,
+                                                                                             uint64_t transaction_id,
+                                                                                             uint64_t from_sub_id,
+                                                                                             wal::id_t wal_id) {
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
+        }
+        id_.store(wal_id, std::memory_order_relaxed);
+
+        trace(log_,
+              "wal_worker::rollback_to , wal_id : {} , txn : {} , from_sub_id : {}",
+              wal_id,
+              transaction_id,
+              from_sub_id);
+
+        encode_buf_.clear();
+        auto record_crc = encode_rollback_to(encode_buf_, last_crc_, wal_id, transaction_id, from_sub_id);
+
+        if (auto writer_error = ensure_writer(); writer_error.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{std::move(writer_error)};
+        }
+        if (auto append_error = writer_->append(encode_buf_.data(), encode_buf_.size(), wal_id);
+            append_error.contains_error()) {
+            error(log_,
+                  "wal_worker::rollback_to , wal_id : {} , txn : {} , the ROLLBACK TO marker did NOT reach the "
+                  "journal: {}",
+                  wal_id,
+                  transaction_id,
+                  append_error.what);
+            co_return core::result_wrapper_t<wal::id_t>{std::move(append_error)};
+        }
+        last_crc_ = record_crc;
 
         co_return core::result_wrapper_t<wal::id_t>{wal_id};
     }

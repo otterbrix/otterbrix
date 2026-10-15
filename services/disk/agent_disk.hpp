@@ -178,6 +178,7 @@ namespace services::disk {
 
         // Un-stamps back to NOT_DELETED_ID.
         unique_future<void> storage_revert_deletes_inner(uint64_t txn_id,
+                                                         uint64_t from_sub_id,
                                                          std::pmr::vector<components::catalog::oid_t> tables);
 
         unique_future<core::error_t>
@@ -283,7 +284,8 @@ namespace services::disk {
 
         unique_future<void> storage_dropped_committed_inner(uint64_t txn_id, uint64_t commit_id);
 
-        unique_future<void> storage_drop_aborted_inner(uint64_t txn_id);
+        unique_future<void> storage_drop_aborted_inner(uint64_t txn_id,
+                                                       std::pmr::vector<components::catalog::oid_t> oids);
 
         void register_dropped_storage_inner_sync(components::catalog::oid_t oid,
                                                  uint64_t dropped_at_commit_id,
@@ -346,6 +348,7 @@ namespace services::disk {
                                                         std::pmr::vector<components::catalog::oid_t> tables);
 
         unique_future<void> revert_column_stamps_inner(uint64_t txn_id,
+                                                       uint64_t from_sub_id,
                                                        std::pmr::vector<components::catalog::oid_t> tables);
 
         unique_future<core::error_t>

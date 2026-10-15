@@ -99,6 +99,7 @@ namespace {
                                                         uint64_t{0},
                                                         uint64_t{rows},
                                                         txn_id,
+                                                        uint64_t{0},
                                                         kMainDb);
             auto r = await_ready(fut);
             REQUIRE_FALSE(r.has_error());

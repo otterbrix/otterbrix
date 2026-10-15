@@ -161,15 +161,17 @@ namespace components::table {
         mark_modified();
     }
 
-    void data_table_t::stamp_column_added(uint64_t position, uint64_t stamp) {
+    void data_table_t::stamp_column_added(uint64_t position, uint64_t stamp, uint64_t sub_id) {
         assert(position < column_definitions_.size() && "stamp_column_added: no such column");
         column_definitions_[position].set_added_at(stamp);
+        column_definitions_[position].set_added_sub_id(sub_id);
         mark_modified();
     }
 
-    void data_table_t::stamp_column_dropped(uint64_t position, uint64_t stamp) {
+    void data_table_t::stamp_column_dropped(uint64_t position, uint64_t stamp, uint64_t sub_id) {
         assert(position < column_definitions_.size() && "stamp_column_dropped: no such column");
         column_definitions_[position].set_dropped_at(stamp);
+        column_definitions_[position].set_dropped_sub_id(sub_id);
         mark_modified();
     }
 
@@ -197,17 +199,17 @@ namespace components::table {
         return published;
     }
 
-    uint64_t data_table_t::revert_column_stamps(uint64_t txn_id) {
+    uint64_t data_table_t::revert_column_stamps(uint64_t txn_id, uint64_t from_sub_id) {
         if (txn_id < TRANSACTION_ID_START) {
             return 0;
         }
         uint64_t reverted = 0;
         for (auto& column : column_definitions_) {
-            if (column.added_at() == txn_id) {
+            if (column.added_at() == txn_id && column.added_sub_id() >= from_sub_id) {
                 column.set_added_at(ABORTED_ID);
                 ++reverted;
             }
-            if (column.dropped_at() == txn_id) {
+            if (column.dropped_at() == txn_id && column.dropped_sub_id() >= from_sub_id) {
                 column.set_dropped_at(NOT_DELETED_ID);
                 ++reverted;
             }
@@ -852,8 +854,8 @@ namespace components::table {
         mark_modified();
     }
 
-    void data_table_t::revert_all_deletes(uint64_t txn_id) {
-        row_groups_->revert_all_deletes(txn_id);
+    void data_table_t::revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id) {
+        row_groups_->revert_all_deletes(txn_id, from_sub_id);
         mark_modified();
     }
 
@@ -915,8 +917,9 @@ namespace components::table {
             uint64_t current_count = pos - start;
 
             vector::vector_t offset_ids(row_identifiers, current_offset, pos);
-            VALUE_OR_RETURN(auto deleted,
-                            row_groups_->delete_rows(*this, ids + current_offset, current_count, txn.transaction_id));
+            VALUE_OR_RETURN(
+                auto deleted,
+                row_groups_->delete_rows(*this, ids + current_offset, current_count, txn.transaction_id, txn.sub_id));
             delete_count += deleted;
         }
         return core::result_wrapper_t<uint64_t>{delete_count};

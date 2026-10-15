@@ -174,7 +174,9 @@ TEST_CASE("integration::cpp::autocommit::a_statement_refused_before_planning_fai
 
     std::string refused_statement;
     SECTION("a syntax error") { refused_statement = "SELEC id FROM TestDatabase.marks;"; }
-    SECTION("a statement the transformer refuses") { refused_statement = "SAVEPOINT before_the_end;"; }
+    SECTION("a statement naming a missing column") {
+        refused_statement = "SELECT no_such_column FROM TestDatabase.marks;";
+    }
 
     auto writer = otterbrix::session_id_t();
     REQUIRE(run(dispatcher, writer, "BEGIN;")->is_success());

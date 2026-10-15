@@ -5,9 +5,12 @@
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
+#include <cstddef>
 #include <cstdint>
 #include <memory_resource>
 #include <set>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace components::table {
@@ -50,6 +53,7 @@ namespace components::table {
     // until un-stamped.
     struct txn_abort_drain_t {
         transaction_data txn{0, 0};
+        uint64_t from_sub_id{0};
         std::vector<pg_catalog_append_range_t> swap_appends{};
         // The USER-table ranges this txn appended, kept whole (not collapsed to oids like
         // base_append_tables) so the rows physically go, which is what stops their never-committed
@@ -65,6 +69,24 @@ namespace components::table {
         // Storage oids / indexes a CREATE in this txn brought into being; dropped again.
         std::vector<catalog::oid_t> created_storage_oids{};
         std::vector<created_index_t> created_indexes{};
+    };
+
+    // Sizes of the ordered parked lists when a savepoint was taken
+    struct parked_marks_t {
+        size_t base_appends{0};
+        size_t base_deletes{0};
+        size_t pg_catalog_appends{0};
+        size_t backfills{0};
+        size_t dropped_storages{0};
+        size_t created_storages{0};
+        size_t created_indexes{0};
+        size_t referenced_deletes{0};
+    };
+
+    struct savepoint_t {
+        std::pmr::string name;
+        uint64_t sub_id;
+        parked_marks_t marks;
     };
 
     enum class transaction_state_t : uint8_t
@@ -84,7 +106,9 @@ namespace components::table {
     {
         none,
         commit,
-        rollback
+        rollback,
+        savepoint,
+        rollback_to
     };
 
     class transaction_t {
@@ -98,7 +122,9 @@ namespace components::table {
 
         // Value-copy of the cached snapshot, so reads avoid re-locking; O(in-flight commits) to copy, typically <100.
         transaction_data data() const {
-            return transaction_data(transaction_id_, start_time_, snapshot_horizon_, in_flight_snapshot_);
+            transaction_data out(transaction_id_, start_time_, snapshot_horizon_, in_flight_snapshot_);
+            out.sub_id = current_sub_id_;
+            return out;
         }
         uint64_t transaction_id() const { return transaction_id_; }
         uint64_t start_time() const { return start_time_; }
@@ -119,6 +145,10 @@ namespace components::table {
         }
 
         void keep_until_commit() noexcept { scope_ = transaction_scope_t::until_commit; }
+
+        void push_savepoint(std::string_view name);
+        bool release_savepoint(std::string_view name);
+        bool rollback_to_savepoint(std::string_view name, txn_abort_drain_t* drain);
 
         void accumulate_base_append(dml_append_range_t range) { pending_base_appends_.push_back(range); }
         void accumulate_base_delete(dml_delete_range_t range) { pending_base_deletes_.push_back(range); }
@@ -238,6 +268,10 @@ namespace components::table {
         std::vector<components::catalog::oid_t> created_storage_oids_;
         std::vector<created_index_t> created_indexes_;
         std::vector<referenced_delete_t> referenced_deletes_;
+
+        uint64_t last_sub_id_{0};
+        uint64_t current_sub_id_{0};
+        std::pmr::vector<savepoint_t> savepoints_;
     };
 
 } // namespace components::table

@@ -749,6 +749,7 @@ namespace components::operators {
                                                     std::move(update_result.value().written),
                                                     wal_count,
                                                     ctx->txn.transaction_id,
+                                                    ctx->txn.sub_id,
                                                     db_oid);
                     auto wal_result = co_await std::move(wf);
                     if (wal_result.has_error()) {

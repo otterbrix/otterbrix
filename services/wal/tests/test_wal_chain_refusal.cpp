@@ -145,6 +145,7 @@ namespace {
                                                          row_start,
                                                          static_cast<uint64_t>(rows),
                                                          txn_id,
+                                                         uint64_t{0},
                                                          kMainDb);
             return std::move(fut);
         }
@@ -163,6 +164,7 @@ namespace {
                                                          uint64_t{0},
                                                          static_cast<uint64_t>(chunk_count * rows),
                                                          txn_id,
+                                                         uint64_t{0},
                                                          kMainDb);
             return std::move(fut);
         }

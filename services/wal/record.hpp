@@ -12,6 +12,7 @@ namespace services::wal {
     enum class wal_record_type : uint8_t
     {
         COMMIT = 1,
+        ROLLBACK_TO = 2,
         PHYSICAL_INSERT = 10,
         PHYSICAL_DELETE = 11,
         PHYSICAL_UPDATE = 12,
@@ -34,6 +35,8 @@ namespace services::wal {
         uint64_t transaction_id{0};
         // From txn_manager_->commit(); replay uses it to restore published_horizon_/in_flight; 0 on non-COMMIT records.
         uint64_t commit_id{0};
+        // ROLLBACK_TO id, so we won't replay the rest
+        uint64_t sub_id{0};
         wal_record_type record_type{wal_record_type::COMMIT};
 
         // physical_data batches the payload as ≤DEFAULT_VECTOR_CAPACITY chunks; empty for DELETE/no-payload records.
@@ -50,6 +53,7 @@ namespace services::wal {
 
         bool is_valid() const { return size > 0 && !is_corrupt; }
         bool is_commit_marker() const { return record_type == wal_record_type::COMMIT; }
+        bool is_rollback_to_marker() const { return record_type == wal_record_type::ROLLBACK_TO; }
         bool is_physical() const {
             return record_type == wal_record_type::PHYSICAL_INSERT || record_type == wal_record_type::PHYSICAL_DELETE ||
                    record_type == wal_record_type::PHYSICAL_UPDATE ||

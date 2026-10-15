@@ -100,6 +100,7 @@ namespace {
                                                                uint64_t{0},
                                                                uint64_t{rows},
                                                                txn_id,
+                                                               uint64_t{0},
                                                                kMainDb);
             auto insert_r = await_ready(insert_fut);
             REQUIRE_FALSE(insert_r.has_error());

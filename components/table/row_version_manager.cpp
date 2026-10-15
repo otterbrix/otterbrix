@@ -173,13 +173,19 @@ namespace components::table {
         return use_version(transaction, inserted[row]) && !use_version(transaction, deleted[row]);
     }
 
-    uint64_t chunk_vector_info::delete_rows(uint64_t transaction_id, int64_t rows[], uint64_t count) {
+    uint64_t chunk_vector_info::delete_rows(uint64_t transaction_id, uint64_t sub_id, int64_t rows[], uint64_t count) {
         any_deleted = true;
+        if (sub_id != 0 && !deleted_sub_ids) {
+            deleted_sub_ids = std::make_unique<uint64_t[]>(vector::DEFAULT_VECTOR_CAPACITY);
+        }
 
         // data_table_t::delete_rows deals with taken slots
         for (uint64_t i = 0; i < count; i++) {
             assert(deleted[rows[i]] == NOT_DELETED_ID && "chunk_vector_info::delete_rows: the slot is taken");
             deleted[rows[i]] = transaction_id;
+            if (deleted_sub_ids) {
+                deleted_sub_ids[static_cast<std::size_t>(rows[i])] = sub_id;
+            }
         }
         return count;
     }
@@ -211,18 +217,21 @@ namespace components::table {
         }
     }
 
-    void chunk_vector_info::revert_all_deletes(uint64_t txn_id) {
+    void chunk_vector_info::revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id) {
         // Reverses commit_all_deletes: un-stamps this txn's pending deletes back to NOT_DELETED_ID so an
         // aborted DELETE leaves rows visible again. any_deleted stays as-is — a conservative hint;
         // indexing/cleanup re-check each slot.
         if (!any_deleted) {
             return;
         }
+        if (from_sub_id != 0 && !deleted_sub_ids) {
+            return;
+        }
 #ifdef DEV_MODE
         g_version_slots_visited.fetch_add(vector::DEFAULT_VECTOR_CAPACITY, std::memory_order_relaxed);
 #endif
         for (uint64_t i = 0; i < vector::DEFAULT_VECTOR_CAPACITY; i++) {
-            if (deleted[i] == txn_id) {
+            if (deleted[i] == txn_id && (from_sub_id == 0 || deleted_sub_ids[i] >= from_sub_id)) {
                 deleted[i] = NOT_DELETED_ID;
             }
         }
@@ -597,10 +606,13 @@ namespace components::table {
         return vector_info_[vector_idx]->cast<chunk_vector_info>();
     }
 
-    uint64_t
-    row_version_manager_t::delete_rows(uint64_t vector_idx, uint64_t transaction_id, int64_t rows[], uint64_t count) {
+    uint64_t row_version_manager_t::delete_rows(uint64_t vector_idx,
+                                                uint64_t transaction_id,
+                                                uint64_t sub_id,
+                                                int64_t rows[],
+                                                uint64_t count) {
         has_changes_ = true;
-        return vector_info(vector_idx).delete_rows(transaction_id, rows, count);
+        return vector_info(vector_idx).delete_rows(transaction_id, sub_id, rows, count);
     }
 
     void row_version_manager_t::commit_delete(uint64_t vector_idx, uint64_t commit_id, const delete_info& info) {
@@ -616,10 +628,10 @@ namespace components::table {
         }
     }
 
-    void row_version_manager_t::revert_all_deletes(uint64_t txn_id) {
+    void row_version_manager_t::revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id) {
         for (auto& info : vector_info_) {
             if (info && info->type == chunk_info_type::VECTOR_INFO) {
-                info->cast<chunk_vector_info>().revert_all_deletes(txn_id);
+                info->cast<chunk_vector_info>().revert_all_deletes(txn_id, from_sub_id);
             }
         }
     }

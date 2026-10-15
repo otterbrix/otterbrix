@@ -424,6 +424,7 @@ namespace services::disk {
                                                   std::pmr::set<components::catalog::oid_t> tables);
         // The abort half: ctx.txn's column stamps on `tables'
         unique_future<void> revert_column_stamps(execution_context_t ctx,
+                                                 uint64_t from_sub_id,
                                                  std::pmr::set<components::catalog::oid_t> tables);
         // ctx.txn's COMMIT, above its WAL marker
         unique_future<core::error_t> storage_prepare(execution_context_t ctx,
@@ -588,6 +589,7 @@ namespace services::disk {
                                                             std::vector<components::pg_catalog_append_range_t> ranges);
 
         unique_future<void> storage_revert_deletes(execution_context_t ctx,
+                                                   uint64_t from_sub_id,
                                                    std::vector<components::catalog::oid_t> tables);
 
         using dispatch_traits = actor_zeta::implements<disk_contract,
@@ -651,8 +653,9 @@ namespace services::disk {
                                          std::vector<components::table::column_definition_t>>
         collect_catalog_columns_sync(const std::unordered_set<components::catalog::oid_t>& wanted) const;
 
-        // Abort mirror of storage_dropped_committed: erases dropped_storages_ entries for an aborted txn.
-        unique_future<void> storage_drop_aborted(uint64_t txn_id);
+        // Abort mirror of storage_dropped_committed: erases the dropped_storages_ entries txn_id made for `oids`
+        // (all of its drops on ABORT, the ones after the savepoint on ROLLBACK TO).
+        unique_future<void> storage_drop_aborted(uint64_t txn_id, std::vector<components::catalog::oid_t> oids);
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;

@@ -133,7 +133,7 @@ namespace services::wal {
             return chunks;
         }
 
-        // DML header: [size:4][last_crc32:4][wal_id:8][txn_id:8][record_type:1][table_oid:4]
+        // DML header: [size:4][last_crc32:4][wal_id:8][txn_id:8][record_type:1][table_oid:4][sub_id:8]
         // [row_start:8][row_count:8][payload_size:4][payload][crc32:4].
 
         static constexpr size_t DML_FIXED_HEADER = 4    // last_crc32
@@ -141,6 +141,7 @@ namespace services::wal {
                                                    + 8  // txn_id
                                                    + 1  // record_type
                                                    + 4  // table_oid
+                                                   + 8  // sub_id
                                                    + 8  // row_start
                                                    + 8  // row_count
                                                    + 4; // payload_size
@@ -149,6 +150,7 @@ namespace services::wal {
                                  crc32_t last_crc32,
                                  id_t wal_id,
                                  uint64_t txn_id,
+                                 uint64_t sub_id,
                                  wal_record_type rtype,
                                  components::catalog::oid_t table_oid,
                                  uint64_t row_start,
@@ -178,6 +180,8 @@ namespace services::wal {
             out += 1;
             write_le32(out, static_cast<uint32_t>(table_oid));
             out += 4;
+            write_le64(out, sub_id);
+            out += 8;
             write_le64(out, row_start);
             out += 8;
             write_le64(out, row_count);
@@ -205,6 +209,7 @@ namespace services::wal {
                           crc32_t last_crc32,
                           id_t wal_id,
                           uint64_t txn_id,
+                          uint64_t sub_id,
                           components::catalog::oid_t table_oid,
                           const column_attoids_t& attoids,
                           const std::pmr::vector<components::vector::data_chunk_t>& chunks,
@@ -219,6 +224,7 @@ namespace services::wal {
                                 last_crc32,
                                 wal_id,
                                 txn_id,
+                                sub_id,
                                 wal_record_type::PHYSICAL_INSERT,
                                 table_oid,
                                 row_start,
@@ -232,6 +238,7 @@ namespace services::wal {
                               crc32_t last_crc32,
                               id_t wal_id,
                               uint64_t txn_id,
+                              uint64_t sub_id,
                               components::catalog::oid_t table_oid,
                               const column_attoids_t& attoids,
                               const components::vector::data_chunk_t& schema_chunk,
@@ -254,6 +261,7 @@ namespace services::wal {
                                 last_crc32,
                                 wal_id,
                                 txn_id,
+                                sub_id,
                                 wal_record_type::PHYSICAL_ADD_COLUMN,
                                 table_oid,
                                 first_position,
@@ -266,6 +274,7 @@ namespace services::wal {
                           crc32_t last_crc32,
                           id_t wal_id,
                           uint64_t txn_id,
+                          uint64_t sub_id,
                           components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
                           uint64_t count) {
@@ -276,6 +285,7 @@ namespace services::wal {
                                 last_crc32,
                                 wal_id,
                                 txn_id,
+                                sub_id,
                                 wal_record_type::PHYSICAL_DELETE,
                                 table_oid,
                                 0,
@@ -289,6 +299,7 @@ namespace services::wal {
                           crc32_t last_crc32,
                           id_t wal_id,
                           uint64_t txn_id,
+                          uint64_t sub_id,
                           components::catalog::oid_t table_oid,
                           const int64_t* row_ids,
                           const column_attoids_t& attoids,
@@ -313,6 +324,7 @@ namespace services::wal {
                                 last_crc32,
                                 wal_id,
                                 txn_id,
+                                sub_id,
                                 wal_record_type::PHYSICAL_UPDATE,
                                 table_oid,
                                 0,
@@ -321,17 +333,21 @@ namespace services::wal {
                                 static_cast<uint32_t>(payload_buf.size()));
     }
 
-    // COMMIT (37 bytes): [size:4][last_crc32:4][wal_id:8][txn_id:8][record_type:1=COMMIT][commit_id:8][crc32:4].
-    crc32_t encode_commit(buffer_t& buffer, crc32_t last_crc32, id_t wal_id, uint64_t txn_id, uint64_t commit_id) {
-        // commit_id sits after the type byte so its offset matches DML records for decode.
-        static constexpr uint32_t COMMIT_BODY_SIZE = 4 + 8 + 8 + 1 + 8;
-        static constexpr size_t COMMIT_TOTAL = 4 + COMMIT_BODY_SIZE + 4;
+    // Marker (37 bytes): [size:4][last_crc32:4][wal_id:8][txn_id:8][record_type:1][commit_id/from_sub_id:8][crc32:4].
+    crc32_t write_marker_record(buffer_t& buffer,
+                                crc32_t last_crc32,
+                                id_t wal_id,
+                                uint64_t txn_id,
+                                wal_record_type rtype,
+                                uint64_t value) {
+        static constexpr uint32_t MARKER_BODY_SIZE = 4 + 8 + 8 + 1 + 8;
+        static constexpr size_t MARKER_TOTAL = 4 + MARKER_BODY_SIZE + 4;
 
         const size_t base = buffer.size();
-        buffer.resize(base + COMMIT_TOTAL);
+        buffer.resize(base + MARKER_TOTAL);
         char* out = buffer.data() + base;
 
-        write_le32(out, COMMIT_BODY_SIZE);
+        write_le32(out, MARKER_BODY_SIZE);
         out += 4;
 
         char* crc_start = out;
@@ -342,17 +358,26 @@ namespace services::wal {
         out += 8;
         write_le64(out, txn_id);
         out += 8;
-        *reinterpret_cast<uint8_t*>(out) = static_cast<uint8_t>(wal_record_type::COMMIT);
+        *reinterpret_cast<uint8_t*>(out) = static_cast<uint8_t>(rtype);
         out += 1;
-        write_le64(out, commit_id);
+        write_le64(out, value);
         out += 8;
 
-        assert(static_cast<size_t>(out - crc_start) == COMMIT_BODY_SIZE);
+        assert(static_cast<size_t>(out - crc_start) == MARKER_BODY_SIZE);
 
-        crc32_t crc = compute_crc(crc_start, COMMIT_BODY_SIZE);
+        crc32_t crc = compute_crc(crc_start, MARKER_BODY_SIZE);
         write_le32(out, crc);
 
         return crc;
+    }
+
+    crc32_t encode_commit(buffer_t& buffer, crc32_t last_crc32, id_t wal_id, uint64_t txn_id, uint64_t commit_id) {
+        return write_marker_record(buffer, last_crc32, wal_id, txn_id, wal_record_type::COMMIT, commit_id);
+    }
+
+    crc32_t
+    encode_rollback_to(buffer_t& buffer, crc32_t last_crc32, id_t wal_id, uint64_t txn_id, uint64_t from_sub_id) {
+        return write_marker_record(buffer, last_crc32, wal_id, txn_id, wal_record_type::ROLLBACK_TO, from_sub_id);
     }
 
     record_t decode_record(const buffer_t& buffer, std::pmr::memory_resource* resource) {
@@ -409,6 +434,11 @@ namespace services::wal {
             ptr += 8;
             return rec;
         }
+        if (rec.record_type == wal_record_type::ROLLBACK_TO) {
+            rec.sub_id = read_le64(ptr);
+            ptr += 8;
+            return rec;
+        }
 
         if (static_cast<size_t>(body_size) < DML_FIXED_HEADER) {
             rec.is_corrupt = true;
@@ -417,6 +447,8 @@ namespace services::wal {
 
         rec.table_oid = static_cast<components::catalog::oid_t>(read_le32(ptr));
         ptr += 4;
+        rec.sub_id = read_le64(ptr);
+        ptr += 8;
         rec.physical_row_start = read_le64(ptr);
         ptr += 8;
         rec.physical_row_count = read_le64(ptr);

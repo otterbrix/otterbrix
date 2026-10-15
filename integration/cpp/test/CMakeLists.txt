@@ -206,6 +206,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_index_oid_selection.cpp
         test_streaming_join.cpp
         test_autocommit.cpp
+        test_savepoint.cpp
         test_streaming_ddl_leaf.cpp
         test_streaming_recursive_cte.cpp
         test_large_aggregate_dml.cpp
@@ -243,6 +244,7 @@ set( ${PROJECT_NAME}_SOURCES
         concurrency/test_row_conflicts.cpp
         concurrency/test_constraints.cpp
         concurrency/test_ddl.cpp
+        concurrency/test_savepoint.cpp
 
         # TODO: casts for dynamic schema
         # stress tests with sanitizer are incredibly slow

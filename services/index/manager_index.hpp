@@ -349,7 +349,7 @@ namespace services::index {
         void forget_deferred_deletes(components::catalog::oid_t table_oid, components::catalog::oid_t index_oid);
 
         // Abort mirror of table_dropped_committed: erases, not remaps, since the table must stay indexed.
-        void forget_aborted_drops(uint64_t txn_id);
+        void forget_aborted_drops(uint64_t txn_id, const std::vector<components::catalog::oid_t>& oids);
 
         // Two vectors, not one polymorphic vector: the owning deleter returns sizeof(STATIC T) to
         // the pool, so erasing through a common base would free the wrong size.

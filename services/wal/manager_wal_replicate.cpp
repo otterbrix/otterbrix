@@ -287,6 +287,10 @@ namespace services::wal {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::commit_txn, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::rollback_to>: {
+                co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::rollback_to, msg);
+                break;
+            }
             case actor_zeta::msg_id<manager_wal_replicate_t, &manager_wal_replicate_t::truncate_before>: {
                 co_await actor_zeta::dispatch(this, &manager_wal_replicate_t::truncate_before, msg);
                 break;
@@ -643,6 +647,28 @@ namespace services::wal {
         co_return max_id;
     }
 
+    manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
+    manager_wal_replicate_t::rollback_to(session_id_t session,
+                                         uint64_t txn_id,
+                                         uint64_t from_sub_id,
+                                         components::catalog::oid_t database_oid) {
+        if (recovery_error_.contains_error()) {
+            co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
+        }
+
+        auto* worker = get_or_create_worker(database_oid);
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(worker->address(),
+                                                              &wal_worker_t::rollback_to,
+                                                              session,
+                                                              txn_id,
+                                                              from_sub_id,
+                                                              next_wal_id());
+        if (needs_sched) {
+            scheduler_->enqueue(worker);
+        }
+        co_return co_await std::move(fut);
+    }
+
     // Worker keying uses database_oid as a single main_database today; table_oid isn't used for routing yet.
     manager_wal_replicate_t::unique_future<core::result_wrapper_t<wal::id_t>>
     manager_wal_replicate_t::write_physical_insert(session_id_t session,
@@ -652,6 +678,7 @@ namespace services::wal {
                                                    uint64_t row_start,
                                                    uint64_t row_count,
                                                    uint64_t txn_id,
+                                                   uint64_t sub_id,
                                                    components::catalog::oid_t database_oid) {
         // An empty batch is a legitimate no-op, not a refusal; refusals travel in result_wrapper_t.
         if (batch_row_count(chunks) == 0) {
@@ -672,6 +699,7 @@ namespace services::wal {
                                                               row_start,
                                                               row_count,
                                                               txn_id,
+                                                              sub_id,
                                                               wal_id);
         if (needs_sched) {
             scheduler_->enqueue(worker);
@@ -686,6 +714,7 @@ namespace services::wal {
                                                    std::pmr::vector<int64_t> row_ids,
                                                    uint64_t count,
                                                    uint64_t txn_id,
+                                                   uint64_t sub_id,
                                                    components::catalog::oid_t database_oid) {
         if (recovery_error_.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
@@ -700,6 +729,7 @@ namespace services::wal {
                                                               std::move(row_ids),
                                                               count,
                                                               txn_id,
+                                                              sub_id,
                                                               wal_id);
         if (needs_sched) {
             scheduler_->enqueue(worker);
@@ -716,6 +746,7 @@ namespace services::wal {
                                                    std::pmr::vector<components::vector::data_chunk_t> new_data,
                                                    uint64_t count,
                                                    uint64_t txn_id,
+                                                   uint64_t sub_id,
                                                    components::catalog::oid_t database_oid) {
         if (batch_row_count(new_data) == 0) {
             co_return core::result_wrapper_t<wal::id_t>{wal::id_t{0}};
@@ -735,6 +766,7 @@ namespace services::wal {
                                                               std::move(new_data),
                                                               count,
                                                               txn_id,
+                                                              sub_id,
                                                               wal_id);
         if (needs_sched) {
             scheduler_->enqueue(worker);
@@ -753,6 +785,7 @@ namespace services::wal {
                                                  uint64_t row_start,
                                                  uint64_t row_count,
                                                  uint64_t txn_id,
+                                                 uint64_t sub_id,
                                                  components::catalog::oid_t database_oid) {
         if (recovery_error_.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
@@ -772,6 +805,7 @@ namespace services::wal {
                                                               row_start,
                                                               row_count,
                                                               txn_id,
+                                                              sub_id,
                                                               add_column_id,
                                                               insert_id);
         if (needs_sched) {
@@ -788,6 +822,7 @@ namespace services::wal {
                                                        std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
                                                        uint64_t first_position,
                                                        uint64_t txn_id,
+                                                       uint64_t sub_id,
                                                        components::catalog::oid_t database_oid) {
         if (recovery_error_.contains_error()) {
             co_return core::result_wrapper_t<wal::id_t>{recovery_error_};
@@ -802,6 +837,7 @@ namespace services::wal {
                                                               std::move(schema_chunk),
                                                               first_position,
                                                               txn_id,
+                                                              sub_id,
                                                               next_wal_id());
         if (needs_sched) {
             scheduler_->enqueue(worker);

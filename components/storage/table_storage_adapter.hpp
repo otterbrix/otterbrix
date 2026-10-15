@@ -261,7 +261,9 @@ namespace components::storage {
             table_.commit_all_deletes(txn_id, commit_id);
         }
 
-        void revert_all_deletes(uint64_t txn_id) override { table_.revert_all_deletes(txn_id); }
+        void revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id) override {
+            table_.revert_all_deletes(txn_id, from_sub_id);
+        }
 
         std::pmr::memory_resource* resource() const override { return resource_; }
 

@@ -725,6 +725,7 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<void> manager_disk_t::storage_revert_deletes(execution_context_t ctx,
+                                                                               uint64_t from_sub_id,
                                                                                std::vector<catalog::oid_t> tables) {
         // Un-stamps this txn's pending deletes back to NOT_DELETED_ID (revert_all_deletes), not a commit_id.
         const auto txn_id = ctx.txn.transaction_id;
@@ -750,6 +751,7 @@ namespace services::disk {
                 auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                                       &agent_disk_t::storage_revert_deletes_inner,
                                                                       txn_id,
+                                                                      from_sub_id,
                                                                       std::move(per_agent[i]));
                 if (needs_sched) {
                     scheduler_disk_->enqueue(agent.get());

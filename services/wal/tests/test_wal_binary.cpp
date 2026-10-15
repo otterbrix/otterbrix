@@ -4,6 +4,7 @@
 #include <core/pmr.hpp>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
+#include <services/wal/wal.hpp>
 #include <services/wal/wal_binary.hpp>
 
 #include "wal_test_attoids.hpp"
@@ -46,6 +47,7 @@ TEST_CASE("wal_binary::encode_decode_insert") {
                   /*last_crc32=*/0,
                   /*wal_id=*/1,
                   /*txn_id=*/100,
+                  /*sub_id=*/0,
                   kTestTableOid,
                   attoids,
                   to_chunk_batch(chunk),
@@ -80,7 +82,14 @@ TEST_CASE("wal_binary::encode_decode_delete") {
     std::vector<int64_t> row_ids = {1, 3, 5, 7, 9};
 
     buffer_t buffer(&resource);
-    encode_delete(buffer, /*last_crc32=*/0, /*wal_id=*/2, /*txn_id=*/101, kTestTableOid, row_ids.data(), /*count=*/5);
+    encode_delete(buffer,
+                  /*last_crc32=*/0,
+                  /*wal_id=*/2,
+                  /*txn_id=*/101,
+                  /*sub_id=*/0,
+                  kTestTableOid,
+                  row_ids.data(),
+                  /*count=*/5);
 
     REQUIRE(buffer.size() > 0);
 
@@ -110,6 +119,7 @@ TEST_CASE("wal_binary::encode_decode_update") {
                   /*last_crc32=*/0,
                   /*wal_id=*/3,
                   /*txn_id=*/102,
+                  /*sub_id=*/0,
                   kTestTableOid,
                   row_ids.data(),
                   attoids,
@@ -170,6 +180,7 @@ TEST_CASE("wal_binary::crc32_corruption") {
                   /*last_crc32=*/0,
                   /*wal_id=*/1,
                   /*txn_id=*/100,
+                  /*sub_id=*/0,
                   kTestTableOid,
                   attoids_for(chunk),
                   to_chunk_batch(chunk),
@@ -195,6 +206,7 @@ TEST_CASE("wal_binary::truncated_input") {
                   /*last_crc32=*/0,
                   /*wal_id=*/1,
                   /*txn_id=*/100,
+                  /*sub_id=*/0,
                   kTestTableOid,
                   attoids_for(chunk),
                   to_chunk_batch(chunk),
@@ -630,6 +642,7 @@ TEST_CASE("wal_binary::encode_decode_insert_carries_nested_payload") {
                   /*last_crc32=*/0,
                   /*wal_id=*/7,
                   /*txn_id=*/42,
+                  /*sub_id=*/0,
                   kTestTableOid,
                   attoids_for(chunk),
                   to_chunk_batch(chunk),
@@ -682,6 +695,7 @@ namespace {
         put_le64(body, 100);
         body.push_back(static_cast<char>(type));
         put_le32(body, static_cast<uint32_t>(kTestTableOid));
+        put_le64(body, 0); // sub_id
         put_le64(body, 0);
         put_le64(body, payload.size());                        // row_count (decode does not cross-check it)
         put_le32(body, static_cast<uint32_t>(payload.size())); // payload_size
@@ -733,4 +747,58 @@ TEST_CASE("wal_binary::an_update_row_id_length_near_uint32_max_is_corrupt_not_a_
     auto rec = decode_record(record_bytes.data(), record_bytes.size(), &resource);
     INFO("a row-id length the payload cannot hold must be corrupt, whatever 32-bit addition says");
     REQUIRE(rec.is_corrupt);
+}
+
+TEST_CASE("wal_binary::savepoints") {
+    core::pmr::otterbrix_resource resource;
+    std::vector<int64_t> row_ids = {1, 2, 3};
+    constexpr uint64_t txn_id = 100;
+
+    auto delete_record = [&](services::wal::id_t wal_id, uint64_t txn, uint64_t sub_id) {
+        buffer_t buffer(&resource);
+        encode_delete(buffer, 0, wal_id, txn, sub_id, kTestTableOid, row_ids.data(), row_ids.size());
+        return decode_record(buffer, &resource);
+    };
+    auto rollback_to_record = [&](services::wal::id_t wal_id, uint64_t from_sub_id) {
+        buffer_t buffer(&resource);
+        encode_rollback_to(buffer, 0, wal_id, txn_id, from_sub_id);
+        return decode_record(buffer, &resource);
+    };
+    auto commit_record = [&](services::wal::id_t wal_id) {
+        buffer_t buffer(&resource);
+        encode_commit(buffer, 0, wal_id, txn_id, /*commit_id=*/wal_id);
+        return decode_record(buffer, &resource);
+    };
+
+    SECTION("a physical record keeps its savepoint level") {
+        const auto record = delete_record(1, txn_id, 3);
+        REQUIRE(record.is_valid());
+        REQUIRE(record.sub_id == 3);
+        REQUIRE(record.physical_row_ids.size() == row_ids.size());
+    }
+
+    SECTION("a rollback to marker keeps its level") {
+        const auto record = rollback_to_record(1, 2);
+        REQUIRE(record.is_valid());
+        REQUIRE(record.is_rollback_to_marker());
+        REQUIRE(record.sub_id == 2);
+    }
+
+    SECTION("replay drops what a rollback to killed before its commit") {
+        std::vector<record_t> records;
+        records.push_back(delete_record(1, txn_id, 0));
+        records.push_back(delete_record(2, txn_id, 2));
+        records.push_back(rollback_to_record(3, 2));
+        records.push_back(delete_record(4, txn_id, 3));
+        records.push_back(commit_record(5));
+        // The same id recycled by a later transaction: the earlier marker is outside its commit window.
+        records.push_back(delete_record(6, txn_id, 2));
+        records.push_back(commit_record(7));
+
+        std::vector<services::wal::id_t> kept;
+        for (const auto& record : filter_committed_records(std::move(records))) {
+            kept.push_back(record.id);
+        }
+        REQUIRE(kept == std::vector<services::wal::id_t>{1, 4, 5, 6, 7});
+    }
 }

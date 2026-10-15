@@ -137,8 +137,7 @@ namespace components::sql::transform {
         // RENAME COLUMN comes through T_RenameStmt with renameType=OBJECT_COLUMN.
         // Routes here from the top-level transform() switch.
         core::result_wrapper_t<logical_plan::node_ptr> transform_rename(RenameStmt& node);
-        // BEGIN / COMMIT / ROLLBACK; unsupported variants (SAVEPOINT / 2PC)
-        // return nullptr (see impl).
+        // BEGIN / COMMIT / ROLLBACK / SAVEPOINT / RELEASE / ROLLBACK TO; 2PC is refused.
         core::result_wrapper_t<logical_plan::node_ptr> transform_transaction(TransactionStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_set_setting(VariableSetStmt& node);
         // EXPLAIN / EXPLAIN ANALYZE: read the `analyze` option, restrict the inner to

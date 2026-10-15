@@ -81,6 +81,9 @@ namespace components::operators {
         commit_transaction,
         abort_transaction,
         begin_transaction,
+        savepoint,
+        release_savepoint,
+        rollback_to_savepoint,
         computed_field_register,
         computed_field_unregister,
         // Self-resolving catalog read mirroring manager_disk_t::resolve_table without the dedicated actor message.

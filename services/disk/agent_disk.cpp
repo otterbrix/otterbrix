@@ -634,6 +634,7 @@ namespace services::disk {
                                                             start_row,
                                                             actual_count,
                                                             txn.transaction_id,
+                                                            txn.sub_id,
                                                             db_oid);
                 wal_future = std::move(wf);
             } else {
@@ -658,6 +659,7 @@ namespace services::disk {
                     start_row,
                     actual_count,
                     txn.transaction_id,
+                    txn.sub_id,
                     db_oid);
                 wal_future = std::move(gf);
             }
@@ -776,7 +778,9 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<void>
-    agent_disk_t::storage_revert_deletes_inner(uint64_t txn_id, std::pmr::vector<components::catalog::oid_t> tables) {
+    agent_disk_t::storage_revert_deletes_inner(uint64_t txn_id,
+                                               uint64_t from_sub_id,
+                                               std::pmr::vector<components::catalog::oid_t> tables) {
         if (components::table::is_direct_write_txn(txn_id)) {
             co_return;
         }
@@ -791,7 +795,7 @@ namespace services::disk {
                 report_publish_revert_miss(log_, pool_idx_, "storage_revert_deletes_inner", tbl_oid);
                 continue;
             }
-            entry->storage->revert_all_deletes(txn_id);
+            entry->storage->revert_all_deletes(txn_id, from_sub_id);
         }
         co_return;
     }
@@ -2285,9 +2289,10 @@ namespace services::disk {
         co_return;
     }
 
-    agent_disk_t::unique_future<void> agent_disk_t::storage_drop_aborted_inner(uint64_t txn_id) {
+    agent_disk_t::unique_future<void>
+    agent_disk_t::storage_drop_aborted_inner(uint64_t txn_id, std::pmr::vector<components::catalog::oid_t> oids) {
         for (auto it = dropped_storages_.begin(); it != dropped_storages_.end();) {
-            if (it->dropped_at_commit_id == txn_id) {
+            if (it->dropped_at_commit_id == txn_id && std::find(oids.begin(), oids.end(), it->oid) != oids.end()) {
                 trace(log_,
                       "agent_disk[{}]::storage_drop_aborted_inner: un-marked DROP for oid {} (txn_id {})",
                       pool_idx_,
@@ -2586,6 +2591,7 @@ namespace services::disk {
                                             std::uint64_t{0},
                                             static_cast<std::uint64_t>(row.size()),
                                             ctx.txn.transaction_id,
+                                            ctx.txn.sub_id,
                                             db_oid);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
@@ -2749,6 +2755,7 @@ namespace services::disk {
                                                         std::move(wal_ids),
                                                         static_cast<std::uint64_t>(row_ids.size()),
                                                         ctx.txn.transaction_id,
+                                                        ctx.txn.sub_id,
                                                         components::catalog::well_known_oid::main_database);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
@@ -2900,6 +2907,7 @@ namespace services::disk {
                                             std::move(wal_chunks),
                                             static_cast<std::uint64_t>(row_ids.size()),
                                             ctx.txn.transaction_id,
+                                            ctx.txn.sub_id,
                                             components::catalog::well_known_oid::main_database);
             auto wal_result = co_await std::move(wf);
             if (wal_result.has_error()) {
@@ -3090,6 +3098,7 @@ namespace services::disk {
                                                         std::move(schema_chunk),
                                                         position,
                                                         ctx.txn.transaction_id,
+                                                        ctx.txn.sub_id,
                                                         components::catalog::well_known_oid::main_database);
             auto journalled = co_await std::move(wf);
             if (journalled.has_error()) {
@@ -3105,7 +3114,7 @@ namespace services::disk {
         }
         // ADD appends, so the new column is the last one; nothing before it moves.
         const auto position = table.column_count() - 1;
-        table.stamp_column_added(position, ctx.txn.transaction_id);
+        table.stamp_column_added(position, ctx.txn.transaction_id, ctx.txn.sub_id);
         trace(log_,
               "agent_disk[{}]::add_storage_column_inner: oid={} column='{}' position={} txn={}",
               pool_idx_,
@@ -3137,7 +3146,7 @@ namespace services::disk {
         }
         // The transaction's own id: its later statements stop seeing the column, every other snapshot
         // keeps it until this transaction commits and publish_column_stamps rewrites the stamp.
-        table.stamp_column_dropped(position, txn.transaction_id);
+        table.stamp_column_dropped(position, txn.transaction_id, txn.sub_id);
         trace(log_,
               "agent_disk[{}]::stamp_column_dropped_inner: oid={} attoid={} position={} txn={}",
               pool_idx_,
@@ -3170,14 +3179,16 @@ namespace services::disk {
     }
 
     agent_disk_t::unique_future<void>
-    agent_disk_t::revert_column_stamps_inner(uint64_t txn_id, std::pmr::vector<components::catalog::oid_t> tables) {
+    agent_disk_t::revert_column_stamps_inner(uint64_t txn_id,
+                                             uint64_t from_sub_id,
+                                             std::pmr::vector<components::catalog::oid_t> tables) {
         for (const auto& table_oid : tables) {
             auto it = storages_.find(table_oid);
             if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
                 report_publish_revert_miss(log_, pool_idx_, "revert_column_stamps_inner", table_oid);
                 continue;
             }
-            auto reverted = it->second->table_storage.table().revert_column_stamps(txn_id);
+            auto reverted = it->second->table_storage.table().revert_column_stamps(txn_id, from_sub_id);
             trace(log_,
                   "agent_disk[{}]::revert_column_stamps_inner: oid={} reverted={} stamp(s) of txn={}",
                   pool_idx_,

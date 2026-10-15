@@ -93,6 +93,11 @@ namespace services::wal {
                                                                     components::catalog::oid_t database_oid,
                                                                     uint64_t commit_id);
 
+        unique_future<core::result_wrapper_t<wal::id_t>> rollback_to(session_id_t session,
+                                                                     uint64_t txn_id,
+                                                                     uint64_t from_sub_id,
+                                                                     components::catalog::oid_t database_oid);
+
         unique_future<core::error_t> truncate_before(session_id_t session, wal::id_t checkpoint_wal_id);
 
         unique_future<wal::id_t> current_wal_id(session_id_t session);
@@ -110,6 +115,7 @@ namespace services::wal {
                               uint64_t row_start,
                               uint64_t row_count,
                               uint64_t txn_id,
+                              uint64_t sub_id,
                               components::catalog::oid_t database_oid);
 
         unique_future<core::result_wrapper_t<wal::id_t>> write_physical_delete(session_id_t session,
@@ -117,6 +123,7 @@ namespace services::wal {
                                                                                std::pmr::vector<int64_t> row_ids,
                                                                                uint64_t count,
                                                                                uint64_t txn_id,
+                                                                               uint64_t sub_id,
                                                                                components::catalog::oid_t database_oid);
 
         unique_future<core::result_wrapper_t<wal::id_t>>
@@ -127,6 +134,7 @@ namespace services::wal {
                               std::pmr::vector<components::vector::data_chunk_t> new_data,
                               uint64_t count,
                               uint64_t txn_id,
+                              uint64_t sub_id,
                               components::catalog::oid_t database_oid);
 
         unique_future<core::result_wrapper_t<wal::id_t>>
@@ -139,6 +147,7 @@ namespace services::wal {
                             uint64_t row_start,
                             uint64_t row_count,
                             uint64_t txn_id,
+                            uint64_t sub_id,
                             components::catalog::oid_t database_oid);
 
         unique_future<core::result_wrapper_t<wal::id_t>>
@@ -148,11 +157,13 @@ namespace services::wal {
                                   std::unique_ptr<components::vector::data_chunk_t> schema_chunk,
                                   uint64_t first_position,
                                   uint64_t txn_id,
+                                  uint64_t sub_id,
                                   components::catalog::oid_t database_oid);
 
         using dispatch_traits = actor_zeta::implements<wal_contract,
                                                        &manager_wal_replicate_t::load,
                                                        &manager_wal_replicate_t::commit_txn,
+                                                       &manager_wal_replicate_t::rollback_to,
                                                        &manager_wal_replicate_t::truncate_before,
                                                        &manager_wal_replicate_t::current_wal_id,
                                                        &manager_wal_replicate_t::run_auto_checkpoint,

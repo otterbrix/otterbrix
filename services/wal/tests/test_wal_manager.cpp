@@ -115,6 +115,7 @@ struct test_wal_manager {
                                                      row_start,
                                                      row_count,
                                                      txn_id,
+                                                     uint64_t{0},
                                                      kMainDb);
         return std::move(fut);
     }

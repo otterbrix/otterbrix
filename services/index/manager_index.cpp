@@ -539,9 +539,9 @@ namespace services::index {
         co_return;
     }
 
-    void manager_index_t::forget_aborted_drops(uint64_t txn_id) {
+    void manager_index_t::forget_aborted_drops(uint64_t txn_id, const std::vector<components::catalog::oid_t>& oids) {
         for (auto it = dropped_table_agents_.begin(); it != dropped_table_agents_.end();) {
-            if (it->second == txn_id) {
+            if (it->second == txn_id && std::find(oids.begin(), oids.end(), it->first) != oids.end()) {
                 trace(log_,
                       "manager_index_t::forget_aborted_drops: un-marked DROP for oid {} (txn_id {})",
                       static_cast<unsigned>(it->first),
@@ -557,14 +557,16 @@ namespace services::index {
     manager_index_t::abort_transaction(session_id_t session, components::table::txn_abort_drain_t drain) {
         trace(log_, "manager_index_t::abort_transaction , txn_id : {}", drain.txn.transaction_id);
         const execution_context_t ctx{session, drain.txn, {}};
-        for (auto table_oid : drain.base_append_tables) {
-            co_await revert_insert(ctx, table_oid);
-        }
-        for (auto table_oid : drain.base_delete_tables) {
-            co_await revert_delete(ctx, table_oid);
+        if (drain.from_sub_id == 0) {
+            for (auto table_oid : drain.base_append_tables) {
+                co_await revert_insert(ctx, table_oid);
+            }
+            for (auto table_oid : drain.base_delete_tables) {
+                co_await revert_delete(ctx, table_oid);
+            }
         }
         if (!drain.dropped_storage_oids.empty()) {
-            forget_aborted_drops(drain.txn.transaction_id);
+            forget_aborted_drops(drain.txn.transaction_id, drain.dropped_storage_oids);
         }
         for (const auto& created : drain.created_indexes) {
             co_await drop_index(session, created.table_oid, created.index_oid);

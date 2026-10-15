@@ -86,6 +86,9 @@ namespace components::operators {
                 case operator_type::commit_transaction:
                 case operator_type::abort_transaction:
                 case operator_type::begin_transaction:
+                case operator_type::savepoint:
+                case operator_type::release_savepoint:
+                case operator_type::rollback_to_savepoint:
                 case operator_type::computed_field_unregister:
                 case operator_type::resolve_table:
                 case operator_type::resolve_namespace:

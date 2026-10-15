@@ -155,6 +155,7 @@ namespace services::disk {
                                                               std::pmr::set<components::catalog::oid_t> tables);
 
         actor_zeta::unique_future<void> revert_column_stamps(execution_context_t ctx,
+                                                             uint64_t from_sub_id,
                                                              std::pmr::set<components::catalog::oid_t> tables);
 
         actor_zeta::unique_future<core::error_t>
@@ -246,8 +247,10 @@ namespace services::disk {
         // The ranges are the aborting transaction's own pending appends.
         storage_revert_appends(execution_context_t ctx, std::vector<components::pg_catalog_append_range_t> ranges);
 
-        // Abort path: un-stamps this txn's pending delete marks back to NOT_DELETED_ID.
+        // Abort path: un-stamps this txn's pending delete marks back to NOT_DELETED_ID; a nonzero from_sub_id
+        // (ROLLBACK TO) limits it to the marks made at that savepoint level or above.
         actor_zeta::unique_future<void> storage_revert_deletes(execution_context_t ctx,
+                                                               uint64_t from_sub_id,
                                                                std::vector<components::catalog::oid_t> tables);
 
         actor_zeta::unique_future<void> on_horizon_advanced(uint64_t new_horizon);

@@ -139,7 +139,8 @@ namespace components::storage {
             return core::error_t::no_error();
         }
         virtual void commit_all_deletes(uint64_t /*txn_id*/, uint64_t /*commit_id*/) {}
-        virtual void revert_all_deletes(uint64_t /*txn_id*/) {}
+        // from_sub_id 0 reverts fully reverts transaction
+        virtual void revert_all_deletes(uint64_t /*txn_id*/, uint64_t /*from_sub_id*/) {}
 
         virtual std::pmr::memory_resource* resource() const = 0;
     };

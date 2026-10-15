@@ -66,7 +66,7 @@ TEST_CASE("components::table::column_visibility") {
     SECTION("a column a transaction added is its own") {
         // c is added by transaction 'adder' and not committed: its stamp is the transaction id.
         constexpr uint64_t adder_id = TRANSACTION_ID_START + 7;
-        table->stamp_column_added(2, adder_id);
+        table->stamp_column_added(2, adder_id, 0);
 
         auto adder = running(adder_id, 100);
         auto other = running(TRANSACTION_ID_START + 8, 100);
@@ -87,7 +87,7 @@ TEST_CASE("components::table::column_visibility") {
 
     SECTION("a committed add is seen by snapshots after it") {
         // Committed at commit id 50 — the stamp a commit rewrites the transaction id into.
-        table->stamp_column_added(2, 50);
+        table->stamp_column_added(2, 50, 0);
 
         INFO("a snapshot taken before that commit does not have the column");
         REQUIRE(table->visible_columns(running(TRANSACTION_ID_START + 1, 49)).size() == 2);
@@ -98,7 +98,7 @@ TEST_CASE("components::table::column_visibility") {
 
     SECTION("a dropped column stays with the snapshots that had it") {
         // b was there from the start and dropped at commit id 70.
-        table->stamp_column_dropped(1, 70);
+        table->stamp_column_dropped(1, 70, 0);
 
         INFO("a snapshot older than the drop still reads b, and c is still the third column");
         {
@@ -119,7 +119,7 @@ TEST_CASE("components::table::column_visibility") {
 
     SECTION("an uncommitted add is still storage to account for") {
         constexpr uint64_t adder_id = TRANSACTION_ID_START + 11;
-        table->stamp_column_added(2, adder_id);
+        table->stamp_column_added(2, adder_id, 0);
 
         INFO("no snapshot has the column — not another transaction's, not a committed-everything reader's");
         REQUIRE(table->visible_columns(running(TRANSACTION_ID_START + 12, 100)).size() == 2);
@@ -141,8 +141,8 @@ TEST_CASE("components::table::column_visibility") {
     }
 
     SECTION("stamps survive a checkpoint") {
-        table->stamp_column_dropped(1, 70);
-        table->stamp_column_added(2, 50);
+        table->stamp_column_dropped(1, 70, 0);
+        table->stamp_column_added(2, 50, 0);
 
         {
             storage::metadata_manager_t meta_manager(env.block_manager);
@@ -186,13 +186,13 @@ TEST_CASE("components::table::column_visibility") {
     SECTION("an abort reverts the transaction's column stamps and no one else's") {
         constexpr uint64_t aborting_id = TRANSACTION_ID_START + 7;
         constexpr uint64_t other_id = TRANSACTION_ID_START + 8;
-        table->stamp_column_added(2, aborting_id);
-        table->stamp_column_dropped(0, aborting_id);
-        table->stamp_column_dropped(1, other_id);
+        table->stamp_column_added(2, aborting_id, 0);
+        table->stamp_column_dropped(0, aborting_id, 0);
+        table->stamp_column_dropped(1, other_id, 0);
         auto aborting = running(aborting_id, 100);
         REQUIRE(table->visible_columns(aborting) == std::vector<uint64_t>{1, 2});
 
-        REQUIRE(table->revert_column_stamps(aborting_id) == 2);
+        REQUIRE(table->revert_column_stamps(aborting_id, 0) == 2);
 
         INFO("the ADD is ABORTED, the DROP is undone, the other transaction's DROP is untouched");
         REQUIRE(table->columns()[2].added_at() == ABORTED_ID);
@@ -259,7 +259,7 @@ TEST_CASE("components::table::column_visibility::widen") {
         constexpr uint64_t adder_id = TRANSACTION_ID_START + 7;
 
         SECTION("an insert fills a column it cannot see with that column's default") {
-            table->stamp_column_added(2, adder_id);
+            table->stamp_column_added(2, adder_id, 0);
             auto chunk = bigint_chunk(env, 2, 10);
             REQUIRE_FALSE(table->widen_insert(writer, chunk).contains_error());
             REQUIRE(chunk.column_count() == 3);
@@ -273,7 +273,7 @@ TEST_CASE("components::table::column_visibility::widen") {
         SECTION("an update keeps the replaced version's value in a column it cannot see") {
             auto committed = bigint_chunk(env, 3, 50);
             append_committed(env, *table, committed);
-            table->stamp_column_added(2, adder_id);
+            table->stamp_column_added(2, adder_id, 0);
 
             auto chunk = bigint_chunk(env, 2, 90);
             vector_t row_ids(&env.resource, complex_logical_type(logical_type::BIGINT), kRows);
@@ -322,8 +322,8 @@ TEST_CASE("components::table::column_visibility::widen") {
         columns.emplace_back("v", complex_logical_type(logical_type::BIGINT));
         auto table = std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "test");
         // The first v was dropped at commit 50; the second was added at commit 60.
-        table->stamp_column_dropped(1, 50);
-        table->stamp_column_added(2, 60);
+        table->stamp_column_dropped(1, 50, 0);
+        table->stamp_column_added(2, 60, 0);
 
         auto chunk = bigint_chunk(env, 2, 10);
         chunk.data[0].set_type_alias("v");
@@ -376,12 +376,12 @@ TEST_CASE("components::table::column_visibility::not_null_add") {
 
         SECTION("over committed rows, which the ADD left NULL, it is refused") {
             append_without_c(env, *table, transaction_data::committed());
-            table->stamp_column_added(1, adder_id);
+            table->stamp_column_added(1, adder_id, 0);
             CHECK(table->prepare(adder, no_appends).contains_error());
         }
 
         SECTION("over an empty table it commits") {
-            table->stamp_column_added(1, adder_id);
+            table->stamp_column_added(1, adder_id, 0);
             CHECK_FALSE(table->prepare(adder, no_appends).contains_error());
         }
     }
@@ -390,7 +390,7 @@ TEST_CASE("components::table::column_visibility::not_null_add") {
         auto table = make_table_with_not_null(env);
         constexpr uint64_t writer_id = TRANSACTION_ID_START + 8;
         auto writer = running(writer_id, 100);
-        table->stamp_column_added(1, adder_id);
+        table->stamp_column_added(1, adder_id, 0);
         std::pmr::vector<row_range_t> written(&env.resource);
         written.push_back(append_without_c(env, *table, writer));
 
@@ -442,15 +442,15 @@ TEST_CASE("components::table::column_visibility::not_null_add") {
 
         SECTION("the one NULL refuses the commit") {
             seed(true);
-            table->stamp_column_added(1, adder_id);
-            table->stamp_column_added(2, adder_id);
+            table->stamp_column_added(1, adder_id, 0);
+            table->stamp_column_added(2, adder_id, 0);
             CHECK(table->prepare(adder, no_appends).contains_error());
         }
 
         SECTION("with that cell filled it commits") {
             seed(false);
-            table->stamp_column_added(1, adder_id);
-            table->stamp_column_added(2, adder_id);
+            table->stamp_column_added(1, adder_id, 0);
+            table->stamp_column_added(2, adder_id, 0);
             CHECK_FALSE(table->prepare(adder, no_appends).contains_error());
         }
     }

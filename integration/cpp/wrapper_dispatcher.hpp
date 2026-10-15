@@ -22,7 +22,7 @@
 #include <components/session/session.hpp>
 #include <components/sql/parser/extension.hpp>
 #include <components/sql/transformer/transformer.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/vector/vector.hpp>
 
 #include <services/dispatcher/dispatcher.hpp>
 
@@ -71,7 +71,7 @@ namespace otterbrix {
             -> components::cursor::cursor_t_ptr;
         auto execute_sql_with_params(const session_id_t& session,
                                      const std::string& query,
-                                     const std::vector<std::pair<size_t, components::types::logical_value_t>>& params,
+                                     const std::vector<std::pair<size_t, components::vector::vector_t>>& params,
                                      uint32_t render_id = 0) -> components::cursor::cursor_t_ptr;
         auto set_timezone(const session_id_t& session, std::string timezone_name) -> components::cursor::cursor_t_ptr;
 

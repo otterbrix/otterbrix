@@ -88,7 +88,8 @@ namespace {
             data_chunk_t chunk(resource, types, batch);
             chunk.set_cardinality(batch);
             for (uint64_t i = 0; i < batch; i++) {
-                chunk.set_value(0, i, logical_value_t{resource, expected_string(offset + i)});
+                const std::string text = expected_string(offset + i);
+                chunk.set_value(0, i, std::string_view{text});
             }
             table_append_state state(resource);
             REQUIRE_FALSE(table.append_lock(state).has_error());
@@ -104,8 +105,7 @@ namespace {
         uint64_t scanned = 0;
         otterbrix_test::scan_table_segment(table, 0, expected_rows, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                auto val = chunk.data[0].value(i);
-                REQUIRE(val.value<int64_t>() == static_cast<int64_t>(scanned + i));
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == static_cast<int64_t>(scanned + i));
             }
             scanned += chunk.size();
         });
@@ -210,8 +210,7 @@ TEST_CASE("disk_backed_scan: streaming fetch_next_batch reloads correctly under 
                                          drained);
         REQUIRE_FALSE(r.has_error());
         for (uint64_t i = 0; i < batch.size(); i++) {
-            auto val = batch.data[0].value(i);
-            REQUIRE(val.value<int64_t>() == static_cast<int64_t>(scanned + i));
+            REQUIRE(batch.data[0].get_value<int64_t>(i) == static_cast<int64_t>(scanned + i));
         }
         scanned += batch.size();
     }
@@ -276,8 +275,7 @@ TEST_CASE("disk_backed_scan: streaming fetch_next_batch over reopened checkpoint
                                               drained);
             REQUIRE_FALSE(r.has_error());
             for (uint64_t i = 0; i < batch.size(); i++) {
-                auto val = batch.data[0].value(i);
-                REQUIRE(val.value<int64_t>() == static_cast<int64_t>(scanned + i));
+                REQUIRE(batch.data[0].get_value<int64_t>(i) == static_cast<int64_t>(scanned + i));
             }
             scanned += batch.size();
         }
@@ -493,7 +491,7 @@ TEST_CASE("disk_backed_scan: B2 write-through packs segments, no per-segment ove
         chunk.set_cardinality(batch);
         for (uint64_t col = 0; col < NCOLS; col++) {
             for (uint64_t i = 0; i < batch; i++) {
-                chunk.set_value(col, i, logical_value_t{&resource, static_cast<int32_t>(offset + i)});
+                chunk.set_value(col, i, static_cast<int32_t>(offset + i));
             }
         }
         table_append_state state(&resource);
@@ -609,11 +607,10 @@ TEST_CASE("disk_backed_scan: streaming STRING batch survives block eviction (no 
         REQUIRE_FALSE(r.has_error());
     }
 
-    // value() materialises a std::string FROM the stored string_view: a dangling view reads garbage here.
+    // The stored string_view is copied out: a dangling view reads garbage here.
     for (uint64_t i = 0; i < held_count; i++) {
-        auto val = held.data[0].value(i);
-        REQUIRE(val.type().type() == logical_type::STRING_LITERAL);
-        std::string got = *val.value<std::string*>();
+        REQUIRE(held.data[0].type().type() == logical_type::STRING_LITERAL);
+        std::string got{held.data[0].get_value<std::string_view>(i)};
         REQUIRE(got == expected_string(i));
     }
 
@@ -681,7 +678,7 @@ TEST_CASE("disk_backed_scan: multi-row-group revert leaves surviving row intact"
     uint64_t rows = 0;
     otterbrix_test::scan_table_segment(*table, 0, 1, [&](data_chunk_t& chunk) {
         for (uint64_t i = 0; i < chunk.size(); i++) {
-            got = chunk.data[0].value(i).value<int64_t>();
+            got = chunk.data[0].get_value<int64_t>(i);
             rows++;
         }
     });

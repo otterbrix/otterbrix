@@ -185,7 +185,9 @@ TEST_CASE("integration::cpp::null_3vl::jsonb_absent_key_comparisons") {
         auto cur = d->execute_sql(session, "SELECT co ->> 'x' AS v FROM n3.co WHERE id = 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        CHECK(cur->value(0, 0).is_null());
+        auto cell0 = cur->is_null(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        CHECK(cell0.value());
     }
 
     // ...and it must now be excluded from every value comparison through the nav operand.

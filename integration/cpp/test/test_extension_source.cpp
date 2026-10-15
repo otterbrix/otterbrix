@@ -309,7 +309,7 @@ namespace {
         [[nodiscard]] core::error_t
         push(components::pipeline::context_t*, vector::data_chunk_t&& input, operators::chunks_vector_t&) override {
             for (size_t i = 0; i < input.size(); ++i) {
-                received_->emplace_back(input.value(0, i).value<int64_t>(), input.value(1, i).value<int64_t>());
+                received_->emplace_back(input.data[0].get_value<int64_t>(i), input.data[1].get_value<int64_t>(i));
             }
             return core::error_t::no_error();
         }
@@ -463,7 +463,7 @@ namespace {
         std::string out;
         for (const auto& chunk : cursor->chunks()) {
             for (std::uint64_t row = 0; row < chunk.size(); ++row) {
-                out += std::string(chunk.value(0, row).value<std::string_view>());
+                out += std::string(chunk.data[0].get_value<std::string_view>(row));
                 out += '\n';
             }
         }
@@ -740,8 +740,7 @@ static std::vector<std::vector<int64_t>> sorted_rows(const cursor::cursor_t_ptr&
         for (std::uint64_t row = 0; row < chunk.size(); ++row) {
             std::vector<int64_t> values;
             for (std::uint64_t col = 0; col < chunk.column_count(); ++col) {
-                const auto cell = chunk.value(col, row);
-                values.push_back(cell.value<int64_t>());
+                values.push_back(chunk.data[col].get_value<int64_t>(row));
             }
             rows.push_back(std::move(values));
         }
@@ -878,7 +877,9 @@ TEST_CASE("integration::cpp::extension_source::count_star_over_a_storage_table")
     auto cursor = run_over_remote(dispatcher, "SELECT count(*) AS c FROM remote.c;", tables);
     REQUIRE(cursor->is_success());
     REQUIRE(cursor->size() == 1);
-    REQUIRE(cursor->value(0, 0).value<int64_t>() == 3);
+    auto cell0 = cursor->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    REQUIRE(cell0.value() == 3);
 }
 
 TEST_CASE("integration::cpp::extension_source::count_star_after_host_optimizer_rule") {
@@ -894,6 +895,8 @@ TEST_CASE("integration::cpp::extension_source::count_star_after_host_optimizer_r
     auto cursor = run_over_remote(dispatcher, "SELECT count(*) AS c FROM remote.p;", tables);
     REQUIRE(cursor->is_success());
     REQUIRE(cursor->size() == 1);
-    REQUIRE(cursor->value(0, 0).value<int64_t>() == 3);
+    auto cell1 = cursor->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell1.has_error());
+    REQUIRE(cell1.value() == 3);
     CHECK(scans_made().load() == 1);
 }

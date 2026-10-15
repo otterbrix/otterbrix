@@ -1,6 +1,5 @@
 #include <array>
 #include <catch2/catch_test_macros.hpp>
-#include <components/index/logical_value_binary_codec.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
 #include <filesystem>
@@ -13,11 +12,15 @@
 #include <unordered_set>
 
 #include "index_fixture_path.hpp"
+#include "index_store_keys.hpp"
 
 using services::index::tests::index_fixture_path;
 using services::index::tests::index_fixture_root;
 
-using components::types::logical_value_t;
+using services::index::tests::find;
+using services::index::tests::make_scalar;
+using services::index::tests::put;
+using services::index::tests::take;
 using services::index::bitcask_index_disk_t;
 
 namespace {
@@ -90,8 +93,8 @@ TEST_CASE("services::index::bitcask_index_disk::randomized_insert_remove_find_st
     auto snapshot = [&](bitcask_index_disk_t& from) {
         std::array<std::unordered_set<int64_t>, key_count> state;
         for (size_t key = 0; key < key_count; ++key) {
-            const auto logical_key = logical_value_t(&resource, static_cast<int64_t>(key));
-            const auto actual_rows = rows_of(from.find(logical_key));
+            const auto logical_key = make_scalar(&resource, static_cast<int64_t>(key));
+            const auto actual_rows = rows_of(find(from, logical_key));
 
             std::unordered_set<int64_t> actual_set;
             actual_set.reserve(actual_rows.size());
@@ -120,14 +123,14 @@ TEST_CASE("services::index::bitcask_index_disk::randomized_insert_remove_find_st
                 const auto key = key_dist(rng);
                 const auto row = static_cast<int64_t>(worker_id) * 100000 + row_dist(rng);
                 const auto op = op_dist(rng);
-                const auto logical_key = logical_value_t(&resource, static_cast<int64_t>(key));
+                const auto logical_key = make_scalar(&resource, static_cast<int64_t>(key));
 
                 if (op < 45) {
-                    index.insert(logical_key, row);
+                    put(index, logical_key, row);
                 } else if (op < 80) {
-                    index.remove(logical_key, row);
+                    take(index, logical_key, row);
                 } else {
-                    auto rows = rows_of(index.find(logical_key));
+                    auto rows = rows_of(find(index, logical_key));
                     if (!rows.empty()) {
                         std::unordered_set<int64_t> seen;
                         seen.reserve(rows.size());

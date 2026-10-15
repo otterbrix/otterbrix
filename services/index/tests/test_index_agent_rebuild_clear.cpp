@@ -14,7 +14,7 @@
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
@@ -36,7 +36,7 @@
 using components::expressions::compare_type;
 using components::session::session_id_t;
 using components::table::TRANSACTION_ID_START;
-using components::types::logical_value_t;
+using components::vector::make_scalar;
 using services::index::bitcask_index_agent_t;
 using services::index::btree_index_agent_t;
 using services::index::index_agent_contract;
@@ -103,7 +103,7 @@ namespace {
             auto answer = ask<&index_agent_contract::read_rows>(agent,
                                                                 session,
                                                                 compare_type::eq,
-                                                                logical_value_t(resource, key),
+                                                                make_scalar(resource, key),
                                                                 txn_id);
             REQUIRE_FALSE(answer.has_error());
             return sorted(std::move(answer.value()));

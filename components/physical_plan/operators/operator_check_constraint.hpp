@@ -2,8 +2,8 @@
 
 #include <components/expressions/execution_dag_builder.hpp>
 #include <components/physical_plan/operators/operator.hpp>
-#include <components/types/logical_value.hpp>
-#include <components/types/parameter_map.hpp>
+#include <components/types/types.hpp>
+#include <components/vector/storage_parameters.hpp>
 
 #include <memory>
 #include <string>
@@ -17,13 +17,13 @@ namespace components::operators {
     // which would leave the predicate UNKNOWN and silently permit the row.
     class operator_check_constraint_t final : public read_write_operator_t {
     public:
-        // check_params has no default -- a parameter_map_t needs a resource, not a process-wide default.
+        // check_params has no default -- a storage_parameters needs a resource, not a process-wide default.
         operator_check_constraint_t(std::pmr::memory_resource* resource,
                                     log_t log,
                                     std::vector<std::string> not_null_columns,
                                     std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates,
                                     std::vector<std::pair<std::string, uint64_t>> array_size_reqs,
-                                    types::parameter_map_t check_params);
+                                    vector::storage_parameters&& check_params);
 
         // Validation must run after the DML's await, which snapshots rows into constraint_input() --
         // so needs_async_finalize routes it into the bottom-up async-finalize drive, not the flush phase.
@@ -62,7 +62,7 @@ namespace components::operators {
         // Not the SQL text -- resolved expression trees with ordinals and casts already bound.
         // Unrecognised shapes compile to the constant true.
         std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates_;
-        types::parameter_map_t check_params_{resource_};
+        vector::storage_parameters check_params_;
     };
 
 } // namespace components::operators

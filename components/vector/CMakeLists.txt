@@ -5,10 +5,11 @@ set(SOURCE_${PROJECT_NAME}
         vector_buffer.cpp
         indexing_vector.cpp
         vector_operations.cpp
+        vector_builders.cpp
+        storage_parameters.cpp
         data_chunk.cpp
         data_chunk_binary.cpp
         validation.cpp
-        arithmetic.cpp
         operations/apply_operator.cpp
 
         arrow/appender/bool_data.cpp

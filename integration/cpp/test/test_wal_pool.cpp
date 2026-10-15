@@ -1,6 +1,7 @@
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <components/catalog/catalog_oids.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_insert.hpp>
@@ -63,13 +64,14 @@ static const core::relname_t collection_name_2{"testcollection2"};
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
                                                                      key{dispatcher->resource(), KEY, side_t::left},   \
-                                                                     id_par{1});                                       \
+                                                                     id_par{0});                                       \
         plan->append_child(                                                                                            \
             components::logical_plan::make_node_match(dispatcher->resource(),                                          \
                                                       qualified_name_t{core::dbname_t{DB}, core::relname_t{COLL}},     \
                                                       std::move(expr)));                                               \
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
-        params->add_parameter(id_par{1}, VALUE);                                                                       \
+        REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), VALUE),                  \
+                                      components::vector::parameter_kind::literal) == id_par{0});                      \
         auto c = dispatcher->execute_plan(                                                                             \
             session,                                                                                                   \
             components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});                         \
@@ -179,7 +181,7 @@ TEST_CASE("integration::cpp::test_wal_pool::index_durability") {
                        collection_name,
                        "count",
                        compare_type::eq,
-                       logical_value_t(dispatcher->resource(), 50),
+                       50,
                        1);
     }
 
@@ -192,19 +194,19 @@ TEST_CASE("integration::cpp::test_wal_pool::index_durability") {
                        collection_name,
                        "count",
                        compare_type::eq,
-                       logical_value_t(dispatcher->resource(), 1),
+                       1,
                        1);
         CHECK_FIND_WAL(database_name,
                        collection_name,
                        "count",
                        compare_type::eq,
-                       logical_value_t(dispatcher->resource(), 50),
+                       50,
                        1);
         CHECK_FIND_WAL(database_name,
                        collection_name,
                        "count",
                        compare_type::gt,
-                       logical_value_t(dispatcher->resource(), 90),
+                       90,
                        10);
     }
 }

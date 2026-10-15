@@ -27,7 +27,7 @@ namespace services::planner::impl {
 
     plan_result_t create_plan_sort(const context_storage_t& context,
                                    const components::logical_plan::node_ptr& node,
-                                   components::logical_plan::limit_t limit) {
+                                   components::logical_plan::row_cap_t cap) {
         auto* plan_resource = context.resource;
         auto sort =
             boost::intrusive_ptr(new components::operators::operator_sort_t(plan_resource, context.log.clone()));
@@ -51,7 +51,7 @@ namespace services::planner::impl {
             computed.null_order_ = nulls;
             sort->add_computed(std::move(computed));
         }
-        sort->set_limit(limit);
+        sort->set_cap(cap);
         return sort;
     }
 

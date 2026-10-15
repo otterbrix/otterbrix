@@ -46,14 +46,18 @@ namespace {
         run_ok(d, "ALTER TABLE d.t ADD COLUMN x " + column + ";");
         auto old_row = run_ok(d, "SELECT id, x FROM d.t;");
         REQUIRE(old_row->size() == 1);
-        CHECK(old_row->value(1, 0).is_null());
+        auto cell0 = old_row->is_null(1, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        CHECK(cell0.value());
         if (later_value.empty()) {
             return;
         }
         run_ok(d, "INSERT INTO d.t (id, x) VALUES (2, " + later_value + ");");
         auto both = run_ok(d, "SELECT id, x FROM d.t WHERE id = 2;");
         REQUIRE(both->size() == 1);
-        CHECK_FALSE(both->value(1, 0).is_null());
+        auto cell1 = both->is_null(1, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        CHECK_FALSE(cell1.value());
     }
 
     void is_refused(const char* name, const std::string& column) {
@@ -100,7 +104,9 @@ TEST_CASE("integration::cpp::typed_null_without_storage::add_struct_column_backf
     run_ok(d, "ALTER TABLE d.t ADD COLUMN p pair_t;");
     auto old_row = run_ok(d, "SELECT id, p FROM d.t;");
     REQUIRE(old_row->size() == 1);
-    CHECK(old_row->value(1, 0).is_null());
+    auto cell2 = old_row->is_null(1, 0);
+    REQUIRE_FALSE(cell2.has_error());
+    CHECK(cell2.value());
 }
 
 TEST_CASE("integration::cpp::typed_null_without_storage::add_blob_column_is_refused") { is_refused("blob", "blob"); }
@@ -121,7 +127,9 @@ TEST_CASE("integration::cpp::typed_null_without_storage::cast_null_to_blob_is_re
     run_refused(d, "SELECT CAST(NULL AS blob[]) AS x;");
     auto text = run_ok(d, "SELECT CAST(NULL AS text) AS x;");
     REQUIRE(text->size() == 1);
-    CHECK(text->value(0, 0).is_null());
+    auto cell3 = text->is_null(0, 0);
+    REQUIRE_FALSE(cell3.has_error());
+    CHECK(cell3.value());
 }
 
 TEST_CASE("integration::cpp::typed_null_without_storage::matview_over_cast_null_to_blob_never_crashes") {

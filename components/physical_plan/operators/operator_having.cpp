@@ -40,7 +40,7 @@ namespace components::operators {
             condition_ = expressions::classify_condition(expression_);
             if (condition_ == expressions::condition_kind::computed) {
                 auto graph = expressions::build_condition_graph(resource_,
-                                                                ctx->parameters.parameters,
+                                                                ctx->parameters,
                                                                 expression_.get(),
                                                                 stream_types_);
                 if (graph.has_error()) {
@@ -64,7 +64,7 @@ namespace components::operators {
         std::optional<vector::data_chunk_t> produced;
         if (graph_) {
             auto computed =
-                expressions::run_graph(graph_.get(), ctx->parameters.parameters, input, ctx->execution_context);
+                expressions::run_graph(graph_.get(), ctx->parameters, input, ctx->execution_context);
             if (computed.has_error()) {
                 return computed.error();
             }
@@ -88,7 +88,7 @@ namespace components::operators {
         }
 
         // TYPED, no-box gather: data_chunk_t::copy routes each column through vector_ops::copy
-        // (no per-cell logical_value_t), skips placeholder columns, gathers row_ids (all-zero over a
+        // skips placeholder columns, gathers row_ids (all-zero over a
         // group sink — identical to match's zero sentinel), and sets the target cardinality itself.
         vector::data_chunk_t out_chunk =
             stream_sparse_ ? vector::data_chunk_t(resource_, stream_types_, stream_populated_cols_, out_count)

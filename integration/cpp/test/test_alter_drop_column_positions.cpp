@@ -72,8 +72,12 @@ namespace {
         REQUIRE(cur->size() == expected_rows);
         for (std::size_t row = 0; row < expected_rows; ++row) {
             INFO("row " << row);
-            REQUIRE(cur->value(0, row).value<std::int64_t>() == A_BASE + static_cast<std::int64_t>(row));
-            REQUIRE(cur->value(1, row).value<std::int64_t>() == C_BASE + static_cast<std::int64_t>(row));
+            auto cell0 = cur->get<std::int64_t>(0, row);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == A_BASE + static_cast<std::int64_t>(row));
+            auto cell1 = cur->get<std::int64_t>(1, row);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == C_BASE + static_cast<std::int64_t>(row));
         }
     }
 
@@ -174,7 +178,9 @@ TEST_CASE("integration::cpp::alter_drop_column") {
             REQUIRE(cur->size() == ROWS);
             for (std::size_t row = 0; row < ROWS; ++row) {
                 INFO("row " << row);
-                REQUIRE(cur->value(0, row).value<std::int64_t>() == C_BASE + static_cast<std::int64_t>(row));
+                auto cell2 = cur->get<std::int64_t>(0, row);
+                REQUIRE_FALSE(cell2.has_error());
+                REQUIRE(cell2.value() == C_BASE + static_cast<std::int64_t>(row));
             }
         }
         {
@@ -214,9 +220,15 @@ TEST_CASE("integration::cpp::alter_drop_column") {
             INFO("row " << row);
             const auto expected_c =
                 C_BASE + static_cast<std::int64_t>(row) + (static_cast<std::int64_t>(row) == TOUCHED ? 1 : 0);
-            REQUIRE(cur->value(0, row).value<std::int64_t>() == A_BASE + static_cast<std::int64_t>(row));
-            REQUIRE_FALSE(cur->value(1, row).is_null());
-            REQUIRE(cur->value(1, row).value<std::int64_t>() == expected_c);
+            auto cell3 = cur->get<std::int64_t>(0, row);
+            REQUIRE_FALSE(cell3.has_error());
+            REQUIRE(cell3.value() == A_BASE + static_cast<std::int64_t>(row));
+            auto cell4 = cur->is_null(1, row);
+            REQUIRE_FALSE(cell4.has_error());
+            REQUIRE_FALSE(cell4.value());
+            auto cell5 = cur->get<std::int64_t>(1, row);
+            REQUIRE_FALSE(cell5.has_error());
+            REQUIRE(cell5.value() == expected_c);
         }
     }
 
@@ -263,10 +275,18 @@ TEST_CASE("integration::cpp::alter_drop_column") {
             REQUIRE(cur->size() == ROWS + 1);
             for (std::size_t row = 0; row <= ROWS; ++row) {
                 INFO("row " << row);
-                REQUIRE(cur->value(0, row).value<std::int64_t>() == A_BASE + static_cast<std::int64_t>(row));
-                REQUIRE_FALSE(cur->value(1, row).is_null());
-                REQUIRE(cur->value(1, row).value<std::int64_t>() == expected_b(row));
-                REQUIRE(cur->value(2, row).value<std::int64_t>() == C_BASE + static_cast<std::int64_t>(row));
+                const auto a = cur->get<std::int64_t>(0, row);
+                REQUIRE_FALSE(a.has_error());
+                REQUIRE(a.value() == A_BASE + static_cast<std::int64_t>(row));
+                const auto b_null = cur->is_null(1, row);
+                REQUIRE_FALSE(b_null.has_error());
+                REQUIRE_FALSE(b_null.value());
+                const auto b = cur->get<std::int64_t>(1, row);
+                REQUIRE_FALSE(b.has_error());
+                REQUIRE(b.value() == expected_b(row));
+                const auto c = cur->get<std::int64_t>(2, row);
+                REQUIRE_FALSE(c.has_error());
+                REQUIRE(c.value() == C_BASE + static_cast<std::int64_t>(row));
             }
         };
 

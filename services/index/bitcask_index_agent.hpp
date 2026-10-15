@@ -39,7 +39,6 @@ namespace services::index {
     class bitcask_index_agent_t final : public actor_zeta::basic_actor<bitcask_index_agent_t> {
         using path_t = std::filesystem::path;
         using session_id_t = index_agent_contract::session_id_t;
-        using value_t = index_agent_contract::value_t;
 
     public:
         template<typename T>
@@ -90,7 +89,10 @@ namespace services::index {
         unique_future<core::error_t> revert_inserts(session_id_t session, uint64_t txn_id);
         unique_future<core::error_t> revert_deletes(session_id_t session, uint64_t txn_id);
         unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
-        read_rows(session_id_t session, components::expressions::compare_type compare, value_t key, uint64_t txn_id);
+        read_rows(session_id_t session,
+                  components::expressions::compare_type compare,
+                  components::vector::vector_t key,
+                  uint64_t txn_id);
         unique_future<core::error_t> force_flush(session_id_t session);
 
         // Order must match btree_index_agent_t's dispatch_traits exactly: msg_id positions are what

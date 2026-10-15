@@ -11,6 +11,7 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <services/disk/manager_disk.hpp>
 
 namespace components::operators {
@@ -166,10 +167,14 @@ namespace components::operators {
                 components::pg_attribute_commit_id_backfill_t::added_column_type_t{column_.type(), defspec}});
         }
         {
+            std::optional<components::vector::vector_t> stored_default;
+            if (column_.has_default_value()) {
+                stored_default = components::vector::make_constant_copy(resource_, column_.default_value());
+            }
             components::table::column_definition_t stored{std::string(column_.name()),
                                                           column_.type(),
                                                           column_.is_not_null(),
-                                                          column_.default_value_opt()};
+                                                          std::move(stored_default)};
             stored.set_attoid(static_cast<std::uint32_t>(attoid));
             stored.set_atttypid(static_cast<std::uint32_t>(atttypid));
             components::execution_context_t add_ctx{ctx->session,

@@ -110,7 +110,9 @@ TEST_CASE("integration::cpp::index_stale_window::reader_in_window_is_refused_not
         REQUIRE(plan->is_success());
         std::string text;
         for (std::size_t r = 0; r < plan->size(); ++r) {
-            text += std::string(plan->value(0, r).value<std::string_view>());
+            auto cell0 = plan->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            text += std::string(cell0.value());
             text += '\n';
         }
         INFO("plan for the indexed probe:\n" << text);
@@ -171,12 +173,16 @@ TEST_CASE("integration::cpp::index_stale_window::reader_in_window_is_refused_not
         } else if (rd_cur->size() > 1) {
             shape = "EXTRA";
             ++extra;
-        } else if (rd_cur->value(0, 0).value<int64_t>() != p) {
-            shape = "WRONG";
-            ++wrong;
-            detail = "got id=" + std::to_string(rd_cur->value(0, 0).value<int64_t>());
         } else {
-            ++clean;
+            auto cell1 = rd_cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell1.has_error());
+            if (cell1.value() != p) {
+                shape = "WRONG";
+                ++wrong;
+                detail = "got id=" + std::to_string(cell1.value());
+            } else {
+                ++clean;
+            }
         }
         std::fprintf(stderr,
                      "[refusal-pin] attempt=%d shape=%s expected=%lld %s\n",
@@ -190,14 +196,18 @@ TEST_CASE("integration::cpp::index_stale_window::reader_in_window_is_refused_not
             auto ctl = exec(d, control_sql(p));
             REQUIRE(ctl->is_success());
             REQUIRE(ctl->size() == 1);
-            REQUIRE(ctl->value(0, 0).value<int64_t>() == 10 * p);
+            auto cell2 = ctl->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == 10 * p);
         }
         // The refusal is NOT sticky: once the round finished, the rebuilt index answers again.
         {
             auto post = exec(d, probe);
             REQUIRE(post->is_success());
             REQUIRE(post->size() == 1);
-            REQUIRE(post->value(0, 0).value<int64_t>() == p);
+            auto cell3 = post->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell3.has_error());
+            REQUIRE(cell3.value() == p);
         }
     }
 

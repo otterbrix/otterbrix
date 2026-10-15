@@ -4,7 +4,7 @@
 #include <memory>
 
 #include "indexing_vector.hpp"
-#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
 #include <core/string_buffer/string_buffer.hpp>
 
 namespace components::vector {
@@ -81,7 +81,7 @@ namespace components::vector {
                                  vector_buffer_type type,
                                  size_t capacity = DEFAULT_VECTOR_CAPACITY);
         explicit vector_buffer_t(std::pmr::memory_resource* resource,
-                                 types::complex_logical_type type,
+                                 const types::complex_logical_type& type,
                                  size_t capacity = DEFAULT_VECTOR_CAPACITY);
         vector_buffer_t(const vector_buffer_t& other) = delete;
         vector_buffer_t operator=(const vector_buffer_t& other) = delete;
@@ -145,7 +145,7 @@ namespace components::vector {
     public:
         explicit struct_vector_buffer_t(std::pmr::memory_resource* resource);
         explicit struct_vector_buffer_t(std::pmr::memory_resource* resource,
-                                        types::complex_logical_type struct_type,
+                                        const types::complex_logical_type& struct_type,
                                         uint64_t capacity = DEFAULT_VECTOR_CAPACITY);
         struct_vector_buffer_t(vector_t& other, const indexing_vector_t& indexing, uint64_t count);
 
@@ -168,7 +168,6 @@ namespace components::vector {
         void reserve(uint64_t capacity);
         void append(const vector_t& node, uint64_t size, uint64_t offset = 0);
         void append(const vector_t& node, const indexing_vector_t& indexing, uint64_t size, uint64_t offset = 0);
-        void push_back(types::logical_value_t&& node);
         uint64_t size() const noexcept { return size_; }
         uint64_t capacity() const noexcept { return capacity_; }
         void set_size(uint64_t size) noexcept { size_ = size; }

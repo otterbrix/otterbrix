@@ -38,8 +38,15 @@ namespace {
         REQUIRE(c->is_success());
         std::vector<opt> out;
         for (uint64_t r = 0; r < c->size(); ++r) {
-            auto v = c->value(0, r);
-            out.push_back(v.is_null() ? opt{} : opt{v.template value<int64_t>()});
+            auto cell0 = c->is_null(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            if (cell0.value()) {
+                out.push_back(opt{});
+            } else {
+                auto cell0v = c->template get<int64_t>(0, r);
+                REQUIRE_FALSE(cell0v.has_error());
+                out.push_back(opt{cell0v.value()});
+            }
         }
         return out;
     }
@@ -52,8 +59,15 @@ namespace {
         REQUIRE(c->is_success());
         std::vector<std::optional<double>> out;
         for (uint64_t r = 0; r < c->size(); ++r) {
-            auto v = c->value(0, r);
-            out.push_back(v.is_null() ? std::optional<double>{} : std::optional<double>{v.template value<double>()});
+            auto cell1 = c->is_null(0, r);
+            REQUIRE_FALSE(cell1.has_error());
+            if (cell1.value()) {
+                out.push_back(std::optional<double>{});
+            } else {
+                auto cell1v = c->template get<double>(0, r);
+                REQUIRE_FALSE(cell1v.has_error());
+                out.push_back(std::optional<double>{cell1v.value()});
+            }
         }
         return out;
     }
@@ -73,9 +87,12 @@ namespace {
         INFO(sql);
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        auto v = c->value(0, 0);
-        REQUIRE_FALSE(v.is_null());
-        return v.template value<double>();
+        auto cell2 = c->is_null(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE_FALSE(cell2.value());
+        auto cell3 = c->template get<double>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        return cell3.value();
     }
 
     // x is seeded {5, NULL, 0, 10, NULL} at ids {1..5} -- every CHECK below reads against this fixed set.

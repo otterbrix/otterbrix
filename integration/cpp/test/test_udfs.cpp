@@ -47,10 +47,10 @@ static core::error_t concat_update(kernel_context&,
 }
 
 static core::error_t
-concat_finalize(kernel_context& ctx, aggregate_states_t states, uint64_t first, uint64_t count, vector::vector_t& out) {
+concat_finalize(kernel_context&, aggregate_states_t states, uint64_t first, uint64_t count, vector::vector_t& out) {
     for (uint64_t row = 0; row < count; row++) {
         const auto& acc = states.at<concat_kernel_state>(first + row);
-        out.set_value(row, types::logical_value_t{ctx.exec_context().resource(), std::string{acc.value}});
+        out.set_value(row, std::string_view{std::string{acc.value}});
     }
     return core::error_t::no_error();
 }
@@ -495,8 +495,9 @@ namespace {
         REQUIRE(cur->is_success());
         std::string plan;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            auto v = cur->value(0, r);
-            plan += std::string(v.value<std::string_view>());
+            auto cell0 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            plan += std::string(cell0.value());
             plan += '\n';
         }
         return plan;
@@ -584,7 +585,9 @@ TEST_CASE("integration::cpp::test_udfs::a_udf_in_a_pushable_aggregate_is_pushed_
         auto cur = exec(sql);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == expected);
+        auto cell1 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == expected);
     }
 
     INFO("a mergeable UDF aggregate, grouped");
@@ -602,8 +605,12 @@ TEST_CASE("integration::cpp::test_udfs::a_udf_in_a_pushable_aggregate_is_pushed_
         REQUIRE(cur->size() == 3);
         for (std::size_t row = 0; row < 3; ++row) {
             INFO("group " << row);
-            REQUIRE(cur->value(0, row).value<int64_t>() == static_cast<int64_t>(row));
-            REQUIRE(cur->value(1, row).value<int64_t>() == expected[row]);
+            auto cell2 = cur->get<int64_t>(0, row);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == static_cast<int64_t>(row));
+            auto cell3 = cur->get<int64_t>(1, row);
+            REQUIRE_FALSE(cell3.has_error());
+            REQUIRE(cell3.value() == expected[row]);
         }
     }
 }

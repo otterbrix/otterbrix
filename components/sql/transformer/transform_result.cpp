@@ -6,39 +6,60 @@
 
 #include <core/result_wrapper.hpp>
 
-#include <components/types/logical_value.hpp>
+#include <components/catalog/type_display.hpp>
+#include <components/vector/vector_builders.hpp>
+#include <components/vector/vector_operations.hpp>
 
 namespace components::sql::transform {
 
     namespace {
-        std::optional<int64_t> try_value_to_int64(const types::logical_value_t& value) {
-            if (value.is_null()) {
-                return std::nullopt;
+        // What a bound LIMIT/OFFSET parameter holds: a bigint-compatible value, NULL (LIMIT ALL / OFFSET 0), or
+        // something that is neither: a UINT64 past INT64_MAX (out_of_range) or another type (bad).
+        struct limit_argument_t {
+            enum class kind_t { value, null, out_of_range, bad } kind{kind_t::bad};
+            int64_t value{0};
+        };
+
+        core::error_t limit_argument_error(std::pmr::memory_resource* resource,
+                                           const char* clause,
+                                           const limit_argument_t& argument,
+                                           const vector::vector_t& cell) {
+            std::string text = argument.kind == limit_argument_t::kind_t::out_of_range
+                                   ? "bigint out of range"
+                                   : std::string{"argument of "} + clause + " must be type bigint, not type " +
+                                         catalog::format_type_be(cell.type(), false);
+            return core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{text, resource});
+        }
+
+        limit_argument_t read_limit_argument(const vector::vector_t& cell) {
+            using kind_t = limit_argument_t::kind_t;
+            if (cell.is_null(0)) {
+                return {kind_t::null, 0};
             }
-            switch (value.type().to_physical_type()) {
+            switch (cell.type().to_physical_type()) {
                 case types::physical_type::INT8:
-                    return static_cast<int64_t>(value.value<int8_t>());
+                    return {kind_t::value, static_cast<int64_t>(cell.get_value<int8_t>(0))};
                 case types::physical_type::INT16:
-                    return static_cast<int64_t>(value.value<int16_t>());
+                    return {kind_t::value, static_cast<int64_t>(cell.get_value<int16_t>(0))};
                 case types::physical_type::INT32:
-                    return static_cast<int64_t>(value.value<int32_t>());
+                    return {kind_t::value, static_cast<int64_t>(cell.get_value<int32_t>(0))};
                 case types::physical_type::INT64:
-                    return value.value<int64_t>();
+                    return {kind_t::value, cell.get_value<int64_t>(0)};
                 case types::physical_type::UINT8:
-                    return static_cast<int64_t>(value.value<uint8_t>());
+                    return {kind_t::value, static_cast<int64_t>(cell.get_value<uint8_t>(0))};
                 case types::physical_type::UINT16:
-                    return static_cast<int64_t>(value.value<uint16_t>());
+                    return {kind_t::value, static_cast<int64_t>(cell.get_value<uint16_t>(0))};
                 case types::physical_type::UINT32:
-                    return static_cast<int64_t>(value.value<uint32_t>());
+                    return {kind_t::value, static_cast<int64_t>(cell.get_value<uint32_t>(0))};
                 case types::physical_type::UINT64: {
-                    auto u = value.value<uint64_t>();
+                    auto u = cell.get_value<uint64_t>(0);
                     if (u > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
-                        return std::nullopt;
+                        return {kind_t::out_of_range, 0};
                     }
-                    return static_cast<int64_t>(u);
+                    return {kind_t::value, static_cast<int64_t>(u)};
                 }
                 default:
-                    return std::nullopt;
+                    return {kind_t::bad, 0};
             }
         }
 
@@ -70,26 +91,36 @@ namespace components::sql::transform {
                                        const std::string& column_name,
                                        const std::pmr::vector<transform_result::insert_location_t>& bound_locations) {
             auto& col = chunk.data[column_index];
-            vector::vector_t converted(chunk.resource(), target, chunk.capacity());
+            // The ongoing bind overwrites the parameter's own cells; nulling them first keeps whatever
+            // they hold from failing the conversion of the cells that stay.
+            bool foreign_cells_present = false;
             for (size_t row = 0; row < chunk.size(); ++row) {
-                if (col.is_null(row) || row_belongs_to_param(bound_locations, column_name, chunk_index, row)) {
-                    converted.set_null(row, true);
+                if (col.is_null(row)) {
                     continue;
                 }
-                auto casted = col.value(row).cast_as(target, core::date::timezone_offset_t{});
-                if (casted.has_error()) {
-                    return casted.error();
+                if (row_belongs_to_param(bound_locations, column_name, chunk_index, row)) {
+                    col.set_null(row, true);
+                } else {
+                    foreign_cells_present = true;
                 }
-                if (casted.value().is_null()) {
-                    return core::error_t(core::error_code_t::sql_parse_error,
-                                         std::pmr::string{"INSERT cannot convert an already-written value of "
-                                                          "column '" +
-                                                              column_name + "' to the bound parameter's type",
-                                                          chunk.resource()});
-                }
-                converted.set_value(row, casted.value());
             }
-            chunk.data[column_index] = std::move(converted);
+            if (!foreign_cells_present) {
+                vector::vector_t converted(chunk.resource(), target, chunk.capacity());
+                for (size_t row = 0; row < chunk.size(); ++row) {
+                    converted.set_null(row, true);
+                }
+                chunk.data[column_index] = std::move(converted);
+                return core::error_t::no_error();
+            }
+            if (col.get_vector_type() != vector::vector_type::FLAT) {
+                col.flatten(chunk.size());
+            }
+            auto converted = vector::vector_ops::cast_vector(chunk.resource(), col, target, chunk.size());
+            if (converted.has_error()) {
+                return converted.error();
+            }
+            converted.value().resize(chunk.size(), chunk.capacity());
+            chunk.data[column_index] = std::move(converted.value());
             return core::error_t::no_error();
         }
 
@@ -128,15 +159,16 @@ namespace components::sql::transform {
         , param_insert_map_(std::move(param_insert_map))
         , param_insert_rows_(std::move(param_insert_rows))
         , deferred_limits_(std::move(deferred_limits))
-        , taken_params_(resource_)
         , bound_flags_(resource_)
         , last_error_(core::error_t::no_error())
+        , parameter_count_(effective_consumer_type(plan_.sub_queries.back()) == logical_plan::node_type::insert_t
+                               ? param_insert_map_.size()
+                               : param_map_.size())
         , finalized_(false) {
         if (!parameter_count()) {
             return;
         }
 
-        taken_params_ = plan_.parameters->take_parameters();
         // TODO?: check all sub queries
         if (effective_consumer_type(plan_.sub_queries.back()) == logical_plan::node_type::insert_t) {
             bound_flags_.reserve(param_insert_map_.size());
@@ -157,34 +189,23 @@ namespace components::sql::transform {
         , param_map_(resource)
         , param_insert_map_(resource)
         , param_insert_rows_(resource)
-        , taken_params_(resource_)
         , bound_flags_(resource_)
         , last_error_(std::move(error))
         , finalized_(true) {}
 
-    transform_result& transform_result::bind(size_t id, types::logical_value_t value) {
+    transform_result& transform_result::bind(size_t id, const vector::vector_t& value, uint64_t source_row) {
         if (last_error_.contains_error()) {
+            return *this;
+        }
+        if (finalized_) {
+            last_error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                        std::pmr::string{"transform_result was already finalized", resource_});
             return *this;
         }
 
         // TODO?: check all sub queries
         auto& node = plan_.sub_queries.back();
-        bool prev_finalized = std::exchange(finalized_, false);
-        auto* consumer = consumer_of(node);
         if (effective_consumer_type(node) == logical_plan::node_type::insert_t) {
-            if (prev_finalized) {
-                const auto& bound =
-                    static_cast<logical_plan::node_data_t*>(consumer->children().front().get())->chunks();
-                insert_rows_t fresh(resource_);
-                fresh.reserve(bound.size());
-                for (const auto& src : bound) {
-                    vector::data_chunk_t copy(src.resource(), src.types(), src.size() == 0 ? 1 : src.size());
-                    src.copy(copy);
-                    fresh.emplace_back(std::move(copy));
-                }
-                param_insert_rows_ = std::move(fresh);
-            }
-
             auto it = param_insert_map_.find(id);
             if (it == param_insert_map_.end()) {
                 last_error_ = core::error_t(
@@ -193,6 +214,7 @@ namespace components::sql::transform {
                 return *this;
             }
 
+            const auto bound = vector::make_constant_copy(resource_, value, source_row);
             // captured structure biding are not possible before C++20
             // TODO: const auto& [i, key] : it->second after C++20
             for (const auto& param : it->second) {
@@ -217,10 +239,7 @@ namespace components::sql::transform {
                                          resource_});
                     return *this;
                 }
-                // The bound value's copy for THIS location: a widened value must not leak
-                // into the other locations of the same parameter id.
-                types::logical_value_t cell(resource_, value);
-                if (!cell.is_null() && column->type() != cell.type()) {
+                if (!bound.is_null(0) && column->type() != bound.type()) {
                     // A cell some OTHER writer stored (a literal or another parameter) pins
                     // the column: it must survive the retype by conversion. Cells of THIS
                     // parameter are about to be overwritten and pin nothing.
@@ -235,8 +254,8 @@ namespace components::sql::transform {
                         }
                     }
                     const auto col_type = column->type().type();
-                    const auto val_type = cell.type().type();
-                    types::complex_logical_type target = cell.type();
+                    const auto val_type = bound.type().type();
+                    types::complex_logical_type target = bound.type();
                     if (foreign_cells_present) {
                         if (types::is_arithmetic_numeric(col_type) && types::is_arithmetic_numeric(val_type)) {
                             const auto promoted = types::promote_type(col_type, val_type);
@@ -273,25 +292,22 @@ namespace components::sql::transform {
                             }
                         }
                     }
-                    if (cell.type() != target) {
-                        auto casted = cell.cast_as(target, core::date::timezone_offset_t{});
+                    if (bound.type() != target) {
+                        const auto source = vector::make_flat_copy(resource_, bound, 1);
+                        auto casted = vector::vector_ops::cast_vector(resource_, source, target, 1);
                         if (casted.has_error()) {
                             last_error_ = casted.error();
                             return *this;
                         }
-                        if (casted.value().is_null()) {
-                            last_error_ =
-                                core::error_t(core::error_code_t::sql_parse_error,
-                                              std::pmr::string{"Parameter $" + std::to_string(id) +
-                                                                   " cannot be converted to the type of column '" +
-                                                                   param.second + "'",
-                                                               resource_});
-                            return *this;
-                        }
-                        cell = casted.value();
+                        vector::vector_ops::copy(casted.value(), chunk.data[column_index], 1, 0, local_row);
+                        continue;
                     }
                 }
-                chunk.set_value(column_index, local_row, cell);
+                if (bound.is_null(0)) {
+                    chunk.data[column_index].set_null(local_row, true);
+                } else {
+                    vector::vector_ops::copy(bound, chunk.data[column_index], 1, 0, local_row);
+                }
             }
         } else {
             auto it = param_map_.find(id);
@@ -302,20 +318,14 @@ namespace components::sql::transform {
                 return *this;
             }
 
-            taken_params_.parameters.insert_or_assign(it->second, std::move(value));
+            plan_.parameters->set_parameter_cell(it->second, value, source_row);
         }
 
         bound_flags_[id] = true;
         return *this;
     }
 
-    size_t transform_result::parameter_count() const {
-        if (effective_consumer_type(plan_.sub_queries.back()) == logical_plan::node_type::insert_t) {
-            return param_insert_map_.size();
-        }
-
-        return param_map_.size();
-    }
+    size_t transform_result::parameter_count() const { return parameter_count_; }
 
     bool transform_result::all_bound() const {
         return !std::any_of(bound_flags_.begin(), bound_flags_.end(), [](auto& flg) {
@@ -330,7 +340,8 @@ namespace components::sql::transform {
         }
 
         if (finalized_) {
-            return plan_;
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"transform_result was already finalized", resource_});
         }
 
         if (!all_bound()) {
@@ -345,7 +356,6 @@ namespace components::sql::transform {
         }
 
         if (parameter_count()) {
-            plan_.parameters->set_parameters(taken_params_);
             auto& node = plan_.sub_queries.back();
 
             if (effective_consumer_type(node) == logical_plan::node_type::insert_t) {
@@ -360,48 +370,42 @@ namespace components::sql::transform {
             if (!deferred.node) {
                 continue;
             }
-            int64_t limit_val = deferred.node->limit().limit();
-            int64_t offset_val = deferred.node->limit().offset();
+            using kind_t = limit_argument_t::kind_t;
+            const auto written = deferred.node->limit();
+            std::optional<int64_t> count;
+            if (written.has_count()) {
+                count = written.count();
+            }
+            int64_t offset_val = written.offset();
 
+            // Only a value that is not an integer at all is refused here. Whether a bigint is negative is
+            // for the Limit node to judge when it starts, as PostgreSQL does, so it is stored as bound.
             if (deferred.limit_param) {
-                auto it = taken_params_.parameters.find(*deferred.limit_param);
-                if (it == taken_params_.parameters.end()) {
-                    last_error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                                std::pmr::string{"LIMIT parameter was not bound", resource_});
+                const auto& cell = plan_.parameters->parameter(*deferred.limit_param);
+                const auto argument = read_limit_argument(cell);
+                if (argument.kind == kind_t::bad || argument.kind == kind_t::out_of_range) {
+                    last_error_ = limit_argument_error(resource_, "LIMIT", argument, cell);
                     return last_error_;
                 }
-                auto resolved = try_value_to_int64(it->second);
-                if (!resolved) {
-                    last_error_ =
-                        core::error_t(core::error_code_t::sql_parse_error,
-                                      std::pmr::string{"LIMIT parameter must be a non-NULL integer", resource_});
-                    return last_error_;
-                }
-                limit_val = *resolved;
+                count = argument.kind == kind_t::value ? std::optional<int64_t>{argument.value} : std::nullopt;
             }
 
             if (deferred.offset_param) {
-                auto it = taken_params_.parameters.find(*deferred.offset_param);
-                if (it == taken_params_.parameters.end()) {
-                    last_error_ = core::error_t(core::error_code_t::sql_parse_error,
-                                                std::pmr::string{"OFFSET parameter was not bound", resource_});
+                const auto& cell = plan_.parameters->parameter(*deferred.offset_param);
+                const auto argument = read_limit_argument(cell);
+                if (argument.kind == kind_t::bad || argument.kind == kind_t::out_of_range) {
+                    last_error_ = limit_argument_error(resource_, "OFFSET", argument, cell);
                     return last_error_;
                 }
-                auto resolved = try_value_to_int64(it->second);
-                if (!resolved) {
-                    last_error_ =
-                        core::error_t(core::error_code_t::sql_parse_error,
-                                      std::pmr::string{"OFFSET parameter must be a non-NULL integer", resource_});
-                    return last_error_;
-                }
-                offset_val = *resolved;
+                offset_val = argument.kind == kind_t::value ? argument.value : 0;
             }
 
-            deferred.node->set_limit(logical_plan::limit_t(limit_val, offset_val));
+            deferred.node->set_limit(count ? logical_plan::limit_t(*count, offset_val)
+                                           : logical_plan::limit_t::all_from(offset_val));
         }
 
         finalized_ = true;
-        return plan_;
+        return std::move(plan_);
     }
 
     bool transform_result::has_error() const noexcept { return last_error_.contains_error(); }

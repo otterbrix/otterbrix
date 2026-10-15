@@ -12,6 +12,7 @@
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <core/file/local_file_system.hpp>
 
+#include <components/vector/cell_equal.hpp>
 #include <functional>
 #include <unistd.h>
 
@@ -74,7 +75,7 @@ namespace {
             data_chunk_t chunk(resource, types, batch);
             chunk.set_cardinality(batch);
             for (uint64_t i = 0; i < batch; i++) {
-                chunk.set_value(0, i, logical_value_t{resource, value_fn(offset + i)});
+                chunk.set_value(0, i, value_fn(offset + i));
             }
             table_append_state state(resource);
             REQUIRE_FALSE(table.append_lock(state).has_error());
@@ -100,7 +101,7 @@ namespace {
             data_chunk_t chunk(resource, types, batch);
             chunk.set_cardinality(batch);
             for (uint64_t i = 0; i < batch; i++) {
-                chunk.set_value(0, i, logical_value_t{resource, value_fn(offset + i)});
+                chunk.set_value(0, i, value_fn(offset + i));
             }
             table_append_state state(resource);
             REQUIRE_FALSE(table.append_lock(state).has_error());
@@ -161,8 +162,7 @@ TEST_CASE("checkpoint_load: single INT64 column, 1000 rows") {
         uint64_t scanned = 0;
         otterbrix_test::scan_table_segment(*loaded, 0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                auto val = chunk.data[0].value(i);
-                REQUIRE(val.value<int64_t>() == static_cast<int64_t>(scanned + i));
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == static_cast<int64_t>(scanned + i));
             }
             scanned += chunk.size();
         });
@@ -243,13 +243,10 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
         otterbrix_test::scan_table_segment(*loaded, 0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 uint64_t row = scanned + i;
-                auto id_val = chunk.data[0].value(i);
-                REQUIRE(id_val.value<int64_t>() == static_cast<int64_t>(row));
-                auto name_val = chunk.data[1].value(i);
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == static_cast<int64_t>(row));
                 std::string expected_name = std::string("name_") + std::to_string(row);
-                REQUIRE(*name_val.value<std::string*>() == expected_name);
-                auto score_val = chunk.data[2].value(i);
-                REQUIRE(score_val.value<double>() == Catch::Approx(static_cast<double>(row) * 1.5));
+                REQUIRE(chunk.data[1].get_value<std::string_view>(i) == expected_name);
+                REQUIRE(chunk.data[2].get_value<double>(i) == Catch::Approx(static_cast<double>(row) * 1.5));
             }
             scanned += chunk.size();
         });
@@ -357,8 +354,7 @@ TEST_CASE("checkpoint_load: multiple row groups") {
         uint64_t scanned = 0;
         otterbrix_test::scan_table_segment(*loaded, 0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                auto val = chunk.data[0].value(i);
-                REQUIRE(val.value<int64_t>() == static_cast<int64_t>(scanned + i));
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == static_cast<int64_t>(scanned + i));
             }
             scanned += chunk.size();
         });
@@ -853,7 +849,7 @@ namespace {
             for (uint64_t i = 0; i < batch; i++) {
                 uint64_t r = row_start + offset + i;
                 for (uint64_t c = 0; c < num_cols; c++) {
-                    chunk.set_value(c, i, logical_value_t{resource, pg_attr_value(c, r)});
+                    chunk.set_value(c, i, pg_attr_value(c, r));
                 }
             }
             table_append_state state(resource);
@@ -872,9 +868,8 @@ namespace {
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 uint64_t r = scanned + i;
                 for (uint64_t c = 0; c < num_cols; c++) {
-                    auto v = chunk.data[c].value(i);
                     INFO("col=" << c << " row=" << r);
-                    REQUIRE(v.value<int64_t>() == pg_attr_value(c, r));
+                    REQUIRE(chunk.data[c].get_value<int64_t>(i) == pg_attr_value(c, r));
                 }
             }
             scanned += chunk.size();
@@ -1036,12 +1031,12 @@ TEST_CASE("checkpoint_load: LIST column round-trips its child data") {
         otterbrix_test::scan_table_segment(*loaded, 0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 const uint64_t row = scanned + i;
-                REQUIRE(chunk.data[0].value(i).value<int64_t>() == static_cast<int64_t>(row));
-                auto lv = chunk.data[1].value(i);
-                REQUIRE(lv.type().type() == logical_type::LIST);
-                REQUIRE(lv.children().size() == list_length(row));
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == static_cast<int64_t>(row));
+                REQUIRE(chunk.data[1].type().type() == logical_type::LIST);
+                const auto list = chunk.data[1].get_value<std::vector<uint64_t>>(i);
+                REQUIRE(list.size() == list_length(row));
                 for (uint64_t j = 0; j < list_length(row); j++) {
-                    REQUIRE(lv.children()[j].value<uint64_t>() == row * 100 + j);
+                    REQUIRE(list[j] == row * 100 + j);
                 }
             }
             scanned += chunk.size();
@@ -1117,11 +1112,11 @@ TEST_CASE("checkpoint_load: ARRAY column round-trips its child data") {
         otterbrix_test::scan_table_segment(*loaded, 0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 const uint64_t row = scanned + i;
-                auto av = chunk.data[0].value(i);
-                REQUIRE(av.type().type() == logical_type::ARRAY);
-                REQUIRE(av.children().size() == ARRAY_SIZE);
+                REQUIRE(chunk.data[0].type().type() == logical_type::ARRAY);
+                const auto elements = chunk.data[0].get_value<std::vector<uint64_t>>(i);
+                REQUIRE(elements.size() == ARRAY_SIZE);
                 for (uint64_t j = 0; j < ARRAY_SIZE; j++) {
-                    REQUIRE(av.children()[j].value<uint64_t>() == row * ARRAY_SIZE + j);
+                    REQUIRE(elements[j] == row * ARRAY_SIZE + j);
                 }
             }
             scanned += chunk.size();
@@ -1161,10 +1156,9 @@ TEST_CASE("checkpoint_load: STRUCT column round-trips its fields") {
         data_chunk_t chunk(&env.resource, types, NUM_ROWS);
         chunk.set_cardinality(NUM_ROWS);
         for (uint64_t i = 0; i < NUM_ROWS; i++) {
-            std::vector<logical_value_t> members;
-            members.emplace_back(&env.resource, static_cast<int64_t>(i * 7));
-            members.emplace_back(&env.resource, std::string("row_") + std::to_string(i));
-            chunk.set_value(0, i, logical_value_t::create_struct(&env.resource, struct_type, members));
+            const std::string name = std::string("row_") + std::to_string(i);
+            chunk.data[0].entries()[0]->set_value(i, static_cast<int64_t>(i * 7));
+            chunk.data[0].entries()[1]->set_value(i, std::string_view{name});
         }
         {
             table_append_state state(&env.resource);
@@ -1199,12 +1193,11 @@ TEST_CASE("checkpoint_load: STRUCT column round-trips its fields") {
         otterbrix_test::scan_table_segment(*loaded, 0, NUM_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 const uint64_t row = scanned + i;
-                auto sv = chunk.data[0].value(i);
-                REQUIRE(sv.type().type() == logical_type::STRUCT);
-                REQUIRE(sv.children().size() == 2);
-                REQUIRE(sv.children()[0].value<int64_t>() == static_cast<int64_t>(row * 7));
-                const auto& name_value = sv.children()[1];
-                REQUIRE(name_value.value<std::string_view>() == std::string("row_") + std::to_string(row));
+                REQUIRE(chunk.data[0].type().type() == logical_type::STRUCT);
+                REQUIRE(chunk.data[0].entries().size() == 2);
+                REQUIRE(chunk.data[0].entries()[0]->get_value<int64_t>(i) == static_cast<int64_t>(row * 7));
+                REQUIRE(chunk.data[0].entries()[1]->get_value<std::string_view>(i) ==
+                        std::string("row_") + std::to_string(row));
             }
             scanned += chunk.size();
         });
@@ -1249,11 +1242,11 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
             for (uint64_t i = 0; i < batch; i++) {
                 const uint64_t row = offset + i;
                 if (is_null_row(row)) {
-                    chunk.set_value(0, i, logical_value_t{&env.resource, nullptr});
-                    chunk.set_value(1, i, logical_value_t{&env.resource, nullptr});
+                    chunk.data[0].set_null(i, true);
+                    chunk.data[1].set_null(i, true);
                 } else {
-                    chunk.set_value(0, i, logical_value_t{&env.resource, static_cast<int64_t>(row * 3)});
-                    chunk.set_value(1, i, logical_value_t{&env.resource, std::string("r") + std::to_string(row)});
+                    chunk.set_value(0, i, static_cast<int64_t>(row * 3));
+                    chunk.set_value(1, i, std::string_view{std::string("r") + std::to_string(row)});
                 }
             }
             table_append_state state(&env.resource);
@@ -1297,19 +1290,17 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 const uint64_t row = scanned + i;
                 INFO("row " << row);
-                const auto v = chunk.data[0].value(i);
-                const auto s = chunk.data[1].value(i);
                 if (is_null_row(row)) {
-                    CHECK(v.is_null());
-                    CHECK(s.is_null());
-                    if (v.is_null()) {
+                    CHECK(chunk.data[0].is_null(i));
+                    CHECK(chunk.data[1].is_null(i));
+                    if (chunk.data[0].is_null(i)) {
                         ++nulls_seen;
                     }
                 } else {
-                    REQUIRE_FALSE(v.is_null());
-                    REQUIRE_FALSE(s.is_null());
-                    REQUIRE(v.value<int64_t>() == static_cast<int64_t>(row * 3));
-                    REQUIRE(s.value<std::string_view>() == std::string("r") + std::to_string(row));
+                    REQUIRE_FALSE(chunk.data[0].is_null(i));
+                    REQUIRE_FALSE(chunk.data[1].is_null(i));
+                    REQUIRE(chunk.data[0].get_value<int64_t>(i) == static_cast<int64_t>(row * 3));
+                    REQUIRE(chunk.data[1].get_value<std::string_view>(i) == std::string("r") + std::to_string(row));
                 }
             }
             scanned += chunk.size();
@@ -1351,9 +1342,9 @@ TEST_CASE("checkpoint_load: compact preserves NULL validity across row groups") 
         for (uint64_t i = 0; i < BATCH; i++) {
             const uint64_t row = offset + i;
             if (is_null_row(row)) {
-                chunk.set_value(0, i, logical_value_t{&env.resource, nullptr});
+                chunk.data[0].set_null(i, true);
             } else {
-                chunk.set_value(0, i, logical_value_t{&env.resource, static_cast<int64_t>(row * 3)});
+                chunk.set_value(0, i, static_cast<int64_t>(row * 3));
             }
         }
         table_append_state state(&env.resource);
@@ -1372,11 +1363,10 @@ TEST_CASE("checkpoint_load: compact preserves NULL validity across row groups") 
         for (uint64_t i = 0; i < chunk.size(); i++) {
             const uint64_t row = scanned + i;
             INFO("row " << row);
-            const auto v = chunk.data[0].value(i);
-            CHECK(v.is_null() == is_null_row(row));
+            CHECK(chunk.data[0].is_null(i) == is_null_row(row));
             if (!is_null_row(row)) {
-                REQUIRE_FALSE(v.is_null());
-                REQUIRE(v.value<int64_t>() == static_cast<int64_t>(row * 3));
+                REQUIRE_FALSE(chunk.data[0].is_null(i));
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == static_cast<int64_t>(row * 3));
             }
         }
         scanned += chunk.size();
@@ -1418,9 +1408,9 @@ TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
             for (uint64_t i = 0; i < BATCH; i++) {
                 const uint64_t row = offset + i;
                 if (is_null_row(row)) {
-                    chunk.set_value(0, i, logical_value_t{&env.resource, nullptr});
+                    chunk.data[0].set_null(i, true);
                 } else {
-                    chunk.set_value(0, i, logical_value_t{&env.resource, static_cast<int64_t>(row * 3)});
+                    chunk.set_value(0, i, static_cast<int64_t>(row * 3));
                 }
             }
             table_append_state state(&env.resource);
@@ -1436,8 +1426,7 @@ TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 const uint64_t row = live_scanned + i;
                 INFO("live row " << row);
-                const auto v = chunk.data[0].value(i);
-                REQUIRE(v.is_null() == is_null_row(row));
+                REQUIRE(chunk.data[0].is_null(i) == is_null_row(row));
             }
             live_scanned += chunk.size();
         });
@@ -1468,11 +1457,10 @@ TEST_CASE("checkpoint_load: NULL validity survives boundary-crossing appends") {
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 const uint64_t row = scanned + i;
                 INFO("row " << row);
-                const auto v = chunk.data[0].value(i);
-                CHECK(v.is_null() == is_null_row(row));
+                CHECK(chunk.data[0].is_null(i) == is_null_row(row));
                 if (!is_null_row(row)) {
-                    REQUIRE_FALSE(v.is_null());
-                    REQUIRE(v.value<int64_t>() == static_cast<int64_t>(row * 3));
+                    REQUIRE_FALSE(chunk.data[0].is_null(i));
+                    REQUIRE(chunk.data[0].get_value<int64_t>(i) == static_cast<int64_t>(row * 3));
                 }
             }
             scanned += chunk.size();
@@ -1543,9 +1531,9 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
     REQUIRE(scanned == NUM_ROWS);
     for (uint64_t i = 0; i < NUM_ROWS; i++) {
         INFO("row " << i);
-        const auto cell = result.value(i);
-        REQUIRE(cell.type().type() == logical_type::LIST);
-        CHECK(cell.children().empty());
+        REQUIRE(result.type().type() == logical_type::LIST);
+        REQUIRE_FALSE(result.is_null(i));
+        CHECK(sequence_of(result, i).length == 0);
     }
 
     cleanup_test_file();

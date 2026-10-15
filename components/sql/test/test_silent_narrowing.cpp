@@ -2,6 +2,7 @@
 // silently dropped; a literal under a declared cast carries the declared type, never the one
 // it happened to parse as.
 
+#include "parameter_equals.hpp"
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
@@ -17,7 +18,8 @@
 
 using namespace components::sql;
 
-using v = components::types::logical_value_t;
+using components::vector::make_decimal;
+using components::vector::make_scalar;
 
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
     SECTION(QUERY) {                                                                                                   \
@@ -33,7 +35,7 @@ using v = components::types::logical_value_t;
         REQUIRE_FALSE(result.get_error().contains_error());                                                            \
     }
 
-// logical_value_t::operator== is exact, so a double 2.0 does not pass for an int32 2.
+// The type is compared beside the cell, so a double 2.0 does not pass for an int32 2.
 #define TEST_WHERE_PARAM(QUERY, VALUE)                                                                                 \
     SECTION(QUERY) {                                                                                                   \
         auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
@@ -41,11 +43,10 @@ using v = components::types::logical_value_t;
         REQUIRE(!wrap.has_error());                                                                                    \
         auto result = wrap.value();                                                                                    \
         auto params = result.parameters;                                                                               \
-        REQUIRE(params->parameters().parameters.size() == 1);                                                          \
-        const auto& bound = params->parameter(core::parameter_id_t(uint16_t(0)));                                      \
-        /* type first: operator== over two different types is an ASSERT, not false */                                  \
+        REQUIRE(params->parameters().size() == 1);                                                                     \
+        const auto& bound = params->parameter(core::parameter_id_t(uint32_t(0)));                                      \
         REQUIRE(bound.type() == (VALUE).type());                                                                       \
-        REQUIRE(bound == (VALUE));                                                                                     \
+        REQUIRE(parameter_equals(*params, core::parameter_id_t(uint32_t(0)), (VALUE)));                                \
     }
 
 TEST_CASE("components::sql::narrowing::window_functions_refused") {
@@ -161,19 +162,21 @@ TEST_CASE("components::sql::narrowing::cast_targets_honoured") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1.5 AS INT);", v(&resource, int32_t{2}));
-    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(2.4 AS SMALLINT);", v(&resource, int16_t{2}));
-    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1 AS BIGINT);", v(&resource, int64_t{1}));
-    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1 AS DOUBLE PRECISION);", v(&resource, double{1.0}));
-    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1 AS REAL);", v(&resource, float{1.0f}));
-    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('123' AS BIGINT);", v(&resource, int64_t{123}));
+    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1.5 AS INT);", make_scalar(&resource, int32_t{2}));
+    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(2.4 AS SMALLINT);", make_scalar(&resource, int16_t{2}));
+    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1 AS BIGINT);", make_scalar(&resource, int64_t{1}));
+    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1 AS DOUBLE PRECISION);",
+                     make_scalar(&resource, double{1.0}));
+    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1 AS REAL);", make_scalar(&resource, float{1.0f}));
+    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('123' AS BIGINT);", make_scalar(&resource, int64_t{123}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('9223372036854775807' AS BIGINT);",
-                     v(&resource, std::numeric_limits<int64_t>::max()));
-    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('12.5' AS DOUBLE PRECISION);", v(&resource, double{12.5}));
-    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('yes' AS BOOLEAN);", v(&resource, true));
-    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('off' AS BOOLEAN);", v(&resource, false));
-    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(2 AS BOOLEAN);", v(&resource, true));
-    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(0 AS BOOLEAN);", v(&resource, false));
+                     make_scalar(&resource, std::numeric_limits<int64_t>::max()));
+    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('12.5' AS DOUBLE PRECISION);",
+                     make_scalar(&resource, double{12.5}));
+    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('yes' AS BOOLEAN);", make_scalar(&resource, true));
+    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST('off' AS BOOLEAN);", make_scalar(&resource, false));
+    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(2 AS BOOLEAN);", make_scalar(&resource, true));
+    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(0 AS BOOLEAN);", make_scalar(&resource, false));
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE x = CAST('abc' AS BIGINT);",
                            R"_(invalid input for a cast to BIGINT: 'abc')_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE x = CAST('1.5' AS INT);",
@@ -204,7 +207,7 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
         int128_t{123456789} * ten_to_10 * ten_to_10 + int128_t{1234567890123456789LL} * 10 + int128_t{0};
     auto dec_type_res = complex_logical_type::create_decimal(&resource, 38, 20);
     REQUIRE(!dec_type_res.has_error());
-    const auto expected = v::create_decimal(&resource, dec_type_res.value(), scaled);
+    const auto expected = make_decimal(&resource, dec_type_res.value(), scaled);
 
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST('123456789.12345678901234567890' AS NUMERIC(38,20));",
                      expected);
@@ -216,7 +219,7 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
         auto t32_res = complex_logical_type::create_decimal(&resource, 3, 2);
         REQUIRE(!t32_res.has_error());
         TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST(1.999 AS NUMERIC(3,2));",
-                         v::create_decimal(&resource, t32_res.value(), int64_t{200}));
+                         make_decimal(&resource, t32_res.value(), int64_t{200}));
     }
 
     // An overflow is refused, not truncated or rounded away.
@@ -238,10 +241,8 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exact") {
         const auto& chunk =
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        auto stored = chunk.value(0, 0);
-        REQUIRE(stored.type().type() == components::types::logical_type::DECIMAL);
-        stored.set_alias("");
-        REQUIRE(stored == expected);
+        REQUIRE(chunk.data[0].type().type() == components::types::logical_type::DECIMAL);
+        REQUIRE(cell_equals(chunk.data[0], 0, expected));
     }
 }
 
@@ -278,15 +279,17 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
     SECTION("a fractional default keeps every written digit") {
         auto stored = only_default("CREATE TABLE db.tbl (d numeric(38,20) DEFAULT 0.12345678901234567890);");
         REQUIRE(stored.type().type() == logical_type::DECIMAL);
-        stored.set_alias("");
-        REQUIRE(stored == v::create_decimal(&resource, dec_res.value(), written));
+        stored.set_type_alias("");
+        REQUIRE(stored.type() == dec_res.value());
+        REQUIRE(stored.get_value<int128_t>(0) == written);
     }
 
     SECTION("the sign travels with the digits") {
         auto stored = only_default("CREATE TABLE db.tbl (d numeric(38,20) DEFAULT -0.12345678901234567890);");
         REQUIRE(stored.type().type() == logical_type::DECIMAL);
-        stored.set_alias("");
-        REQUIRE(stored == v::create_decimal(&resource, dec_res.value(), -written));
+        stored.set_type_alias("");
+        REQUIRE(stored.type() == dec_res.value());
+        REQUIRE(stored.get_value<int128_t>(0) == -written);
     }
 
     SECTION("an integer literal under a DECIMAL column scales, it does not stay an integer") {
@@ -294,8 +297,9 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
         REQUIRE(stored.type().type() == logical_type::DECIMAL);
         auto dec_10_2 = complex_logical_type::create_decimal(&resource, 10, 2);
         REQUIRE(!dec_10_2.has_error());
-        stored.set_alias("");
-        REQUIRE(stored == v::create_decimal(&resource, dec_10_2.value(), int64_t{700}));
+        stored.set_type_alias("");
+        REQUIRE(stored.type() == dec_10_2.value());
+        REQUIRE(stored.get_value<int64_t>(0) == 700);
     }
 
     SECTION("a default that does not fit the declared width is refused, not truncated") {
@@ -308,17 +312,17 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exact") {
     SECTION("a BIGINT column still reads its default as the integer ladder produced it") {
         auto stored = only_default("CREATE TABLE db.tbl (c bigint DEFAULT 7);");
         REQUIRE(stored.type().type() == logical_type::BIGINT);
-        REQUIRE(stored.value<int64_t>() == 7);
+        REQUIRE(stored.get_value<int64_t>(0) == 7);
     }
     SECTION("an INTEGER column still reads its default as BIGINT — the ALTER/CREATE split stands") {
         auto stored = only_default("CREATE TABLE db.tbl (c integer DEFAULT 7);");
         REQUIRE(stored.type().type() == logical_type::BIGINT);
-        REQUIRE(stored.value<int64_t>() == 7);
+        REQUIRE(stored.get_value<int64_t>(0) == 7);
     }
     SECTION("a DOUBLE column still reads its default as a double") {
         auto stored = only_default("CREATE TABLE db.tbl (c double precision DEFAULT 1.5);");
         REQUIRE(stored.type().type() == logical_type::DOUBLE);
-        REQUIRE(stored.value<double>() == Catch::Approx(1.5));
+        REQUIRE(stored.get_value<double>(0) == Catch::Approx(1.5));
     }
 }
 
@@ -338,19 +342,19 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exponent") {
     };
 
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST(1e-5 AS NUMERIC(10,6));",
-                     v::create_decimal(&resource, dec(10, 6), int64_t{10}));
+                     make_decimal(&resource, dec(10, 6), int64_t{10}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST('1e-5' AS NUMERIC(10,6));",
-                     v::create_decimal(&resource, dec(10, 6), int64_t{10}));
+                     make_decimal(&resource, dec(10, 6), int64_t{10}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST(1.5e3 AS NUMERIC(10,2));",
-                     v::create_decimal(&resource, dec(10, 2), int64_t{150000}));
+                     make_decimal(&resource, dec(10, 2), int64_t{150000}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST(1.5E+3 AS NUMERIC(10,2));",
-                     v::create_decimal(&resource, dec(10, 2), int64_t{150000}));
+                     make_decimal(&resource, dec(10, 2), int64_t{150000}));
     // Rounding survives the exponent shift.
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST(1.999e0 AS NUMERIC(3,2));",
-                     v::create_decimal(&resource, dec(3, 2), int64_t{200}));
+                     make_decimal(&resource, dec(3, 2), int64_t{200}));
     TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE d = CAST('1e-40' AS NUMERIC(10,6));",
-                     v::create_decimal(&resource, dec(10, 6), int64_t{0}));
-    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1e3 AS INTEGER);", v(&resource, int32_t{1000}));
+                     make_decimal(&resource, dec(10, 6), int64_t{0}));
+    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = CAST(1e3 AS INTEGER);", make_scalar(&resource, int32_t{1000}));
 
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE d = CAST(1e3 AS NUMERIC(3,1));",
                            R"_(numeric field overflow: 1e3 does not fit NUMERIC(3, 1))_");
@@ -379,12 +383,12 @@ TEST_CASE("components::sql::narrowing::decimal_literal_exponent") {
         auto wrap = transformer.transform(transform::pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!wrap.has_error());
         auto params = wrap.value().parameters;
-        REQUIRE(params->parameters().parameters.size() == 1);
-        const auto& bound = params->parameter(core::parameter_id_t(uint16_t(0)));
+        REQUIRE(params->parameters().size() == 1);
+        const auto& bound = params->parameter(core::parameter_id_t(uint32_t(0)));
         // NUMERIC(38, ...) is stored as int128; an int64 zero is a different physical value.
-        const auto zero = v::create_decimal(&resource, dec(38, 6), components::types::int128_t{0});
+        const auto zero = make_decimal(&resource, dec(38, 6), components::types::int128_t{0});
         REQUIRE(bound.type() == zero.type());
-        REQUIRE(bound == zero);
+        REQUIRE(parameter_equals(*params, core::parameter_id_t(uint32_t(0)), zero));
     }
     SECTION("and a mantissa longer than any constant clamp still shifts up to an overflow") {
         std::string tiny = "0.";
@@ -427,16 +431,18 @@ TEST_CASE("components::sql::narrowing::decimal_column_default_exponent") {
     SECTION("a DECIMAL column takes an exponent default") {
         auto stored = only_default("CREATE TABLE db.tbl (d numeric(10,6) DEFAULT 1e-5);");
         REQUIRE(stored.type().type() == logical_type::DECIMAL);
-        stored.set_alias("");
-        REQUIRE(stored == v::create_decimal(&resource, dec_10_6.value(), int64_t{10}));
+        stored.set_type_alias("");
+        REQUIRE(stored.type() == dec_10_6.value());
+        REQUIRE(stored.get_value<int64_t>(0) == 10);
     }
 
     SECTION("and reads it exactly the way the written-out spelling reads") {
         auto shifted = only_default("CREATE TABLE db.tbl (d numeric(10,6) DEFAULT 1e-5);");
         auto spelled = only_default("CREATE TABLE db.tbl (d numeric(10,6) DEFAULT 0.00001);");
-        shifted.set_alias("");
-        spelled.set_alias("");
-        REQUIRE(shifted == spelled);
+        shifted.set_type_alias("");
+        spelled.set_type_alias("");
+        REQUIRE(shifted.type() == spelled.type());
+        REQUIRE(shifted.get_value<int64_t>(0) == spelled.get_value<int64_t>(0));
     }
 }
 
@@ -450,7 +456,7 @@ TEST_CASE("components::sql::narrowing::double_literal_out_of_range_is_refused") 
                            R"_(numeric literal out of range: 1e400 does not fit a double)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM db.tbl WHERE x = -1e400;",
                            R"_(numeric literal out of range: -1e400 does not fit a double)_");
-    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = 1e308;", v(&resource, 1e308));
+    TEST_WHERE_PARAM("SELECT * FROM db.tbl WHERE x = 1e308;", make_scalar(&resource, 1e308));
 }
 
 TEST_CASE("components::sql::narrowing::subscript_read_by_tag") {

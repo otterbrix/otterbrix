@@ -48,14 +48,19 @@ namespace {
             for (std::size_t row = 0; row < cursor->size(); ++row) {
                 std::string line;
                 for (std::size_t col = 0; col < 4; ++col) {
-                    const auto cell = cursor->value(col, row);
                     line += col == 0 ? "" : ",";
-                    if (cell.is_null()) {
+                    auto cell0 = cursor->is_null(col, row);
+                    REQUIRE_FALSE(cell0.has_error());
+                    if (cell0.value()) {
                         line += "null";
                     } else if (col == 1) {
-                        line += std::string{cell.value<std::string_view>()};
+                        auto cell1 = cursor->get<std::string_view>(col, row);
+                        REQUIRE_FALSE(cell1.has_error());
+                        line += std::string{cell1.value()};
                     } else {
-                        line += std::to_string(cell.value<int64_t>());
+                        auto cell2 = cursor->get<int64_t>(col, row);
+                        REQUIRE_FALSE(cell2.has_error());
+                        line += std::to_string(cell2.value());
                     }
                 }
                 out.push_back(std::move(line));
@@ -93,9 +98,9 @@ TEST_CASE("integration::cpp::insert_positional_values::values_are_cast_to_the_co
 TEST_CASE("integration::cpp::insert_positional_values::parameters_by_position") {
     fixture_t db("test_insert_positional_values/params");
     auto* resource = db.space->dispatcher()->resource();
-    std::vector<std::pair<size_t, components::types::logical_value_t>> params{
-        {1, components::types::logical_value_t{resource, static_cast<int64_t>(9)}},
-        {2, components::types::logical_value_t{resource, std::string{"p"}}},
+    std::vector<std::pair<size_t, components::vector::vector_t>> params{
+        {1, components::vector::make_scalar(resource, static_cast<int64_t>(9))},
+        {2, components::vector::make_scalar(resource, std::string{"p"})},
     };
     auto cursor =
         db.space->dispatcher()->execute_sql_with_params(db.session, "INSERT INTO d.t VALUES ($1, $2);", params);

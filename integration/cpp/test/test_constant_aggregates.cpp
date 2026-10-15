@@ -20,8 +20,15 @@ namespace {
         REQUIRE(c->is_success());
         L out;
         for (uint64_t r = 0; r < c->size(); ++r) {
-            const auto v = c->value(column, r);
-            out.push_back(v.is_null() ? std::string{"NULL"} : std::to_string(v.template value<int64_t>()));
+            auto cell0 = c->is_null(column, r);
+            REQUIRE_FALSE(cell0.has_error());
+            if (cell0.value()) {
+                out.push_back(std::string{"NULL"});
+            } else {
+                auto cell0v = c->template get<int64_t>(column, r);
+                REQUIRE_FALSE(cell0v.has_error());
+                out.push_back(std::to_string(cell0v.value()));
+            }
         }
         return out;
     }

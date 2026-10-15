@@ -16,13 +16,14 @@
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/catalog/table_id.hpp>
+#include <components/catalog/type_display.hpp>
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
-#include <components/index/logical_value_binary_codec.hpp>
+#include <components/index/binary_codec.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_alter_table.hpp>
@@ -52,6 +53,7 @@
 #include <components/table/column_data.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/type_spec_codec.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <list>
 #include <optional>
 #include <queue>
@@ -214,6 +216,19 @@ namespace services::dispatcher {
                 combined->append_child(make_compare_expression(resource, cmp->type(), vkey, cmp->right()));
             }
             return combined;
+        }
+
+        // DECIMAL, bare or as a LIST / ARRAY element at any depth: the types whose (p,s) PostgreSQL carries as a typmod.
+        [[nodiscard]] bool holds_decimal_typmod(const components::types::complex_logical_type& type) {
+            switch (type.type()) {
+                case components::types::logical_type::DECIMAL:
+                    return true;
+                case components::types::logical_type::LIST:
+                case components::types::logical_type::ARRAY:
+                    return holds_decimal_typmod(type.child_type());
+                default:
+                    return false;
+            }
         }
 
         [[nodiscard]] core::result_wrapper_t<named_schema>
@@ -739,7 +754,10 @@ namespace services::dispatcher {
         if (!column.has_default_value()) {
             return core::error_t::no_error();
         }
-        if (column.default_value().type() != column.type()) {
+        if (column.default_value().is_null(0)) {
+            // The transformer typed the NULL before the column type was resolved; it takes the resolved type.
+            column.set_default_value(components::vector::make_null(resource, column.type()));
+        } else if (column.default_value().type() != column.type()) {
             const auto& written = column.default_value();
             auto conversion =
                 cast_registry->resolve(written.type(), column.type(), components::casts::cast_type::assignment);
@@ -749,13 +767,12 @@ namespace services::dispatcher {
                                                           "' may not be converted to the column's type on assignment",
                                                       resource});
             }
-            components::vector::vector_t source{resource, written, 1};
             components::vector::vector_t converted{resource, column.type(), 1};
-            auto error = (*conversion)(components::casts::cast_kind::cast, source, &converted, execution_context, 1);
+            auto error = (*conversion)(components::casts::cast_kind::cast, written, &converted, execution_context, 1);
             if (error.contains_error()) {
                 return error;
             }
-            column.set_default_value(converted.value(0));
+            column.set_default_value(std::move(converted));
         }
         std::string encoded;
         return components::catalog::encode_default_spec(resource, column.default_value(), encoded);
@@ -781,7 +798,7 @@ namespace services::dispatcher {
         if (auto refused = components::table::column_data_t::validate_column_type(type, resource);
             refused.contains_error()) {
             return core::error_t(core::error_code_t::schema_error,
-                                 std::pmr::string{subject + " of type " + validation::describe_type(type) +
+                                 std::pmr::string{subject + " of type " + components::catalog::describe_type(type) +
                                                       " cannot be stored: " + std::string(refused.what.c_str()),
                                                   resource});
         }
@@ -1412,9 +1429,10 @@ namespace services::dispatcher {
                                 bool from_null = false;
                                 if (scalar_expr->type() == scalar_type::constant && !scalar_expr->params().empty() &&
                                     components::expressions::is_parameter(scalar_expr->params().front())) {
-                                    auto pit = parameters.parameters.find(
-                                        components::expressions::as_parameter(scalar_expr->params().front()));
-                                    from_null = (pit != parameters.parameters.end() && pit->second.is_null());
+                                    from_null =
+                                        parameters
+                                            .type(components::expressions::as_parameter(scalar_expr->params().front()))
+                                            .type() == components::types::logical_type::NA;
                                 }
                                 complex_logical_type out_type = expr->result_type();
                                 if (!expr->key().is_null()) {
@@ -1680,14 +1698,8 @@ namespace services::dispatcher {
                                         std::pmr::string{"constant in a grouped projection carries no parameter",
                                                          resource});
                                 }
-                                auto constant_it = parameters.parameters.find(
+                                complex_logical_type constant_type = parameters.type(
                                     components::expressions::as_parameter(scalar_expr->params().front()));
-                                if (constant_it == parameters.parameters.end()) {
-                                    return core::error_t(
-                                        core::error_code_t::invalid_parameter,
-                                        std::pmr::string{"unbound parameter in a grouped projection", resource});
-                                }
-                                complex_logical_type constant_type = constant_it->second.type();
                                 if (!scalar_expr->key().is_null()) {
                                     constant_type.set_alias(scalar_expr->key().as_string());
                                 }
@@ -1888,13 +1900,7 @@ namespace services::dispatcher {
                                              "(not yet supported)",
                                              resource});
                     }
-                    auto param_it = parameters.parameters.find(std::get<core::parameter_id_t>(arg));
-                    if (param_it == parameters.parameters.end()) {
-                        return core::error_t(
-                            core::error_code_t::create_physical_plan_error,
-                            std::pmr::string{"unbound parameter referenced in table function arguments", resource});
-                    }
-                    function_input.emplace_back(param_it->second.type());
+                    function_input.emplace_back(parameters.type(std::get<core::parameter_id_t>(arg)));
                 }
 
                 auto fn_resolved =
@@ -1933,9 +1939,9 @@ namespace services::dispatcher {
                     return left_schema;
                 }
                 const storage_parameters* inner_parameters = &parameters;
-                storage_parameters lateral_parameters(resource);
+                std::optional<storage_parameters> lateral_parameters;
                 if (join_node->is_lateral() && !join_node->correlations().empty()) {
-                    lateral_parameters.parameters = parameters.parameters;
+                    lateral_parameters.emplace(parameters.clone(resource));
                     for (const auto& correlation : join_node->correlations()) {
                         const auto& param_id = correlation.first;
                         const auto& key = correlation.second;
@@ -1943,17 +1949,24 @@ namespace services::dispatcher {
                         const std::string last = key.storage().empty() ? full
                                                                        : std::string(key.storage().back().data(),
                                                                                      key.storage().back().size());
+                        bool found = false;
                         for (const auto& outer_col : left_schema.value()) {
                             if (outer_col.type.has_alias() &&
                                 (outer_col.type.alias() == full || outer_col.type.alias() == last)) {
-                                lateral_parameters.parameters.insert_or_assign(
-                                    param_id,
-                                    logical_value_t(resource, outer_col.type));
+                                lateral_parameters->set(param_id,
+                                                        components::vector::make_null(resource, outer_col.type));
+                                found = true;
                                 break;
                             }
                         }
+                        if (!found) {
+                            const std::string written =
+                                key.has_qualifier() ? std::string(key.qualifier()) + "." + full : full;
+                            return core::error_t(core::error_code_t::field_not_exists,
+                                                 std::pmr::string{"column " + written + " does not exist", resource});
+                        }
                     }
-                    inner_parameters = &lateral_parameters;
+                    inner_parameters = &*lateral_parameters;
                 }
                 auto right_schema =
                     validate_schema(context, node->children().back().get(), *inner_parameters, cte_schemas);
@@ -2120,6 +2133,13 @@ namespace services::dispatcher {
                 };
                 // VALUES without a column list names its columns by position only; a dynamic-schema table
                 // takes its column names from the INSERT.
+                if (is_computed && !insert_node->deferred_cells().empty()) {
+                    return core::error_t(core::error_code_t::schema_error,
+                                         std::pmr::string{"INSERT into dynamic-schema table \"" + target_relname_ins +
+                                                              "\": a column holds values of differing types, so "
+                                                              "there is no declared type to coerce them to",
+                                                          resource});
+                }
                 if (is_computed && insert_node->key_translation().empty() &&
                     node->children().front()->type() == node_type::data_t) {
                     return core::error_t(core::error_code_t::schema_error,
@@ -2214,9 +2234,10 @@ namespace services::dispatcher {
                                 return core::error_t(
                                     core::error_code_t::conversion_failure,
                                     std::pmr::string{"insert_node: column '" + tbl_ins->columns[index].attname +
-                                                         "' is of type " + describe_type(corresponding_table_type) +
+                                                         "' is of type " +
+                                                         components::catalog::describe_type(corresponding_table_type) +
                                                          " but the inserted value is of type " +
-                                                         describe_type(incoming_type) +
+                                                         components::catalog::describe_type(incoming_type) +
                                                          "; no cast between them may be applied on assignment",
                                                      resource});
                             }
@@ -2225,6 +2246,40 @@ namespace services::dispatcher {
                         bindings.emplace_back(std::move(binding));
                     }
                     insert_node->set_column_bindings(std::move(bindings));
+
+                    // Each deferred cell is cast to the TABLE column's type by assignment, as PostgreSQL's
+                    // transformInsertRow does. A cell of type text only reaches a non-text column through an
+                    // unknown (quoted) literal; `x::text` has no assignment cast to it.
+                    std::pmr::unordered_set<std::uint64_t> deferred_positions(resource);
+                    for (auto& cell : insert_node->deferred_cells()) {
+                        if (cell.column >= insert_node->column_bindings().size()) {
+                            return core::error_t(core::error_code_t::schema_error,
+                                                 std::pmr::string{"insert_node: a deferred VALUES cell points outside "
+                                                                  "the INSERT columns",
+                                                                  resource});
+                        }
+                        deferred_positions.insert(cell.row * incoming_schema.value().size() + cell.column);
+                        const auto& binding = insert_node->column_bindings()[cell.column];
+                        const bool text_to_other = !cell.quoted &&
+                                                   cell.value.type().type() == logical_type::STRING_LITERAL &&
+                                                   binding.target_type.type() != logical_type::STRING_LITERAL;
+                        if (cell.value.type() == binding.target_type) {
+                            continue;
+                        }
+                        auto cast = cast_registry->resolve(cell.value.type(),
+                                                           binding.target_type,
+                                                           components::casts::cast_type::assignment);
+                        if (text_to_other || !cast.has_value()) {
+                            return core::error_t(
+                                core::error_code_t::conversion_failure,
+                                std::pmr::string{"column \"" + std::string(binding.target_name) + "\" is of type " +
+                                                     components::catalog::format_type_be(binding.target_type, false) +
+                                                     " but expression is of type " +
+                                                     components::catalog::format_type_be(cell.value.type(), false),
+                                                 resource});
+                        }
+                        cell.cast = std::move(cast.value());
+                    }
 
                     if (source_is_raw_values && tbl_ins) {
                         const auto* dat = reinterpret_cast<const node_data_t*>(node->children().front().get());
@@ -2235,7 +2290,8 @@ namespace services::dispatcher {
                             if (tbl_idx >= cat_cols.size() || !cat_cols[tbl_idx].attnotnull)
                                 continue;
                             for (std::uint64_t row = 0; row < chunk.size(); ++row) {
-                                if (!chunk.data[ci].validity().row_is_valid(row)) {
+                                if (!chunk.data[ci].validity().row_is_valid(row) &&
+                                    !deferred_positions.contains(row * incoming_schema.value().size() + ci)) {
                                     return core::error_t{
                                         core::error_code_t::schema_error,
                                         std::pmr::string{("insert_node: NULL value for NOT NULL column '" +
@@ -2402,9 +2458,10 @@ namespace services::dispatcher {
                                 return core::error_t(
                                     core::error_code_t::conversion_failure,
                                     std::pmr::string{("update_node: column '" + expr->key().as_string() +
-                                                      "' is of type " + describe_type(target_type) +
+                                                      "' is of type " +
+                                                      components::catalog::describe_type(target_type) +
                                                       " but the assigned value is of type " +
-                                                      describe_type(value_type) +
+                                                      components::catalog::describe_type(value_type) +
                                                       "; no cast between them may be applied on assignment")
                                                          .c_str(),
                                                      resource});
@@ -2472,7 +2529,7 @@ namespace services::dispatcher {
                     const auto& key_type = key_res.value().front().type;
                     if (!components::index::codec::is_representable_index_key_type(key_type.type(), ordered_index)) {
                         std::string message = "CREATE INDEX: key '" + key.as_string() + "' has type " +
-                                              describe_type(key_type) +
+                                              components::catalog::describe_type(key_type) +
                                               ", which the index key encoders cannot represent";
                         if (ordered_index && key_type.type() == components::types::logical_type::DECIMAL) {
                             message += " in an ordered index (USING hash carries DECIMAL)";
@@ -2554,7 +2611,7 @@ namespace services::dispatcher {
                         std::pmr::string{"UNION operands must have the same number of columns", resource});
                 }
                 for (size_t i = 0; i < left_schema.size(); ++i) {
-                    if (left_schema[i].type.type() == right_schema[i].type.type()) {
+                    if (left_schema[i].type == right_schema[i].type) {
                         continue;
                     }
                     if (right_schema[i].from_null_literal) {
@@ -2610,6 +2667,67 @@ namespace services::dispatcher {
                 if (recursive_res.has_error()) {
                     return recursive_res;
                 }
+
+                const auto& anchor_cols = anchor_res.value();
+                const auto& step_cols = recursive_res.value();
+                const std::string cte_label{cte_node->cte_name()};
+                if (anchor_cols.size() != step_cols.size()) {
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"each UNION query must have the same number of columns", resource});
+                }
+                std::pmr::vector<components::casts::cast_t> step_casts(resource);
+                std::pmr::vector<components::types::complex_logical_type> step_types(resource);
+                bool any_cast = false;
+                step_casts.resize(anchor_cols.size());
+                for (const auto& anchor_col : anchor_cols) {
+                    step_types.push_back(anchor_col.type);
+                }
+                for (size_t i = 0; i < anchor_cols.size(); ++i) {
+                    const auto& anchor_type = anchor_cols[i].type;
+                    const auto& step_type = step_cols[i].type;
+                    if (anchor_type == step_type) {
+                        continue;
+                    }
+                    const bool step_is_null =
+                        step_type.type() == components::types::logical_type::NA || step_cols[i].from_null_literal;
+                    auto common = cast_registry->find_best_common_type(anchor_type, step_type);
+                    if (!common.has_value() && !step_is_null &&
+                        anchor_type.type() != components::types::logical_type::NA) {
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"UNION types " +
+                                                                  components::catalog::format_type_be(anchor_type) +
+                                                                  " and " +
+                                                                  components::catalog::format_type_be(step_type) +
+                                                                  " cannot be matched",
+                                                              resource});
+                    }
+                    // PostgreSQL compares type and typmod: an anchor holding DECIMAL, bare or as a LIST / ARRAY
+                    // element at any depth, takes only an identical step column.
+                    const bool typmod_differs = !step_is_null && impl::holds_decimal_typmod(anchor_type);
+                    if (!common.has_value() || common->type != anchor_type || typmod_differs) {
+                        const auto& overall = common.has_value() ? common->type : step_type;
+                        const std::string anchor_name = anchor_type.type() == components::types::logical_type::NA
+                                                            ? std::string{"text"}
+                                                            : components::catalog::format_type_be(anchor_type);
+                        return core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"recursive query \"" + cte_label + "\" column " + std::to_string(i + 1) +
+                                                 " has type " + anchor_name + " in non-recursive term but type " +
+                                                 components::catalog::format_type_be(overall, false) +
+                                                 " overall. Cast the output of the non-recursive term to the "
+                                                 "correct type.",
+                                             resource});
+                    }
+                    step_casts[i] = std::move(common->right_cast);
+                    any_cast = any_cast || static_cast<bool>(step_casts[i]);
+                }
+                if (!any_cast) {
+                    step_casts.clear();
+                    step_types.clear();
+                }
+                static_cast<components::logical_plan::node_recursive_cte_t*>(node)->set_step_casts(
+                    std::move(step_casts), std::move(step_types));
 
                 if (!node->result_alias().empty()) {
                     for (auto& entry : anchor_res.value()) {

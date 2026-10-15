@@ -1,5 +1,6 @@
 #pragma once
-#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
+#include <components/vector/vector.hpp>
 #include <cstdint>
 #include <unordered_map>
 
@@ -15,21 +16,23 @@ namespace components::table {
         column_definition_t(std::string name, types::complex_logical_type type);
         column_definition_t(std::string name,
                             types::complex_logical_type type,
-                            std::optional<types::logical_value_t> default_value);
+                            std::optional<vector::vector_t>&& default_value);
         column_definition_t(std::string name, types::complex_logical_type type, bool not_null);
         column_definition_t(std::string name,
                             types::complex_logical_type type,
                             bool not_null,
-                            std::optional<types::logical_value_t> default_value);
-        column_definition_t(const column_definition_t&) = default;
-        column_definition_t& operator=(const column_definition_t&) = default;
+                            std::optional<vector::vector_t>&& default_value);
+        // vector_t copies are shallow and a column_definition_t crosses actors, so the copy owns its own default.
+        column_definition_t(const column_definition_t& other);
+        column_definition_t& operator=(const column_definition_t& other);
         column_definition_t(column_definition_t&&) = default;
         column_definition_t& operator=(column_definition_t&&) = default;
 
-        const types::logical_value_t& default_value() const;
-        const std::optional<types::logical_value_t>& default_value_opt() const;
+        // One-row vector; a DEFAULT NULL is a null row of the column's type, not an absent default.
+        const vector::vector_t& default_value() const;
+        const std::optional<vector::vector_t>& default_value_opt() const;
         bool has_default_value() const;
-        void set_default_value(std::optional<types::logical_value_t> default_value);
+        void set_default_value(std::optional<vector::vector_t>&& default_value);
 
         bool is_not_null() const;
         void set_not_null(bool v);
@@ -86,7 +89,7 @@ namespace components::table {
         uint64_t added_sub_id_{0};
         uint64_t dropped_sub_id_{0};
         bool not_null_{false};
-        std::optional<types::logical_value_t> default_value_;
+        std::optional<vector::vector_t> default_value_;
         std::unordered_map<std::string, std::string> tags_;
     };
 

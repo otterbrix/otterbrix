@@ -23,7 +23,9 @@ namespace {
         REQUIRE(c->is_success());
         L out;
         for (uint64_t row = 0; row < c->size(); ++row) {
-            out.push_back(c->value(column, row).template value<int64_t>());
+            auto cell0 = c->template get<int64_t>(column, row);
+            REQUIRE_FALSE(cell0.has_error());
+            out.push_back(cell0.value());
         }
         return out;
     }

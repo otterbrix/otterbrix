@@ -38,7 +38,11 @@ namespace {
     items_t items_of(const cursor_t& cursor) {
         items_t items;
         for (std::size_t row = 0; row < cursor.size(); ++row) {
-            items[cursor.value(0, row).value<std::int64_t>()] = cursor.value(1, row).value<std::int64_t>();
+            const auto id = cursor.get<std::int64_t>(0, row);
+            const auto v = cursor.get<std::int64_t>(1, row);
+            REQUIRE_FALSE(id.has_error());
+            REQUIRE_FALSE(v.has_error());
+            items[id.value()] = v.value();
         }
         INFO("a key returned more than once");
         REQUIRE(items.size() == cursor.size());

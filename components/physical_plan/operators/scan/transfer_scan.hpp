@@ -13,10 +13,10 @@ namespace components::operators {
         // Empty projected_cols means read all columns.
         transfer_scan(std::pmr::memory_resource* resource,
                       components::catalog::oid_t table_oid,
-                      logical_plan::limit_t limit,
+                      logical_plan::row_cap_t cap,
                       std::vector<size_t> projected_cols = {});
 
-        const logical_plan::limit_t& limit() const { return limit_; }
+        const logical_plan::row_cap_t& cap() const { return cap_; }
         const std::vector<size_t>& projected_cols() const noexcept { return projected_cols_; }
 
         // Awaits live in this nested coroutine, not a behavior() handler, so N cross-actor awaits
@@ -45,12 +45,12 @@ namespace components::operators {
             s.end();
         }
 
-        // OFFSET is applied by operator_limit above; every scan receives offset()==0 here.
+        // OFFSET is applied by operator_limit above; a scan never skips rows.
         actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
         emit_or_skip(pipeline::context_t* ctx, std::unique_ptr<vector::data_chunk_t> batch);
 
         components::catalog::oid_t table_oid_;
-        const logical_plan::limit_t limit_;
+        const logical_plan::row_cap_t cap_;
         std::vector<size_t> projected_cols_;
 
         bool opened_{false};

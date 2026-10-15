@@ -34,12 +34,17 @@ TEST_CASE("integration::cpp::test_struct_null_field_read::select_whole_struct_ce
         auto cur = exec("SELECT p FROM snf.t WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto v = cur->value(0, 0);
-        REQUIRE_FALSE(v.is_null());
-        REQUIRE(v.type().type() == components::types::logical_type::STRUCT);
-        REQUIRE(v.children().size() == 2);
-        REQUIRE(v.children()[0].value<int64_t>() == 11);
-        REQUIRE(v.children()[1].value<int64_t>() == 12);
+        auto cell3 = cur->is_null(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE_FALSE(cell3.value());
+        REQUIRE(cur->type_data()[0].type() == components::types::logical_type::STRUCT);
+        REQUIRE(cur->type_data()[0].child_types().size() == 2);
+        auto cell5 = cur->get<int64_t>(0, 0, {0});
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == 11);
+        auto cell6 = cur->get<int64_t>(0, 0, {1});
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == 12);
     }
 
     INFO("a NULL FIELD leaves the cell present, keeps the sibling field, and keeps the declared type");
@@ -47,16 +52,20 @@ TEST_CASE("integration::cpp::test_struct_null_field_read::select_whole_struct_ce
         auto cur = exec("SELECT p FROM snf.t WHERE id = 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto v = cur->value(0, 0);
-        REQUIRE_FALSE(v.is_null());
-        REQUIRE(v.type().type() == components::types::logical_type::STRUCT);
-        REQUIRE(v.type().child_types().size() == 2);
-        REQUIRE(v.type().child_types()[0].type() == components::types::logical_type::BIGINT);
+        auto cell7 = cur->is_null(0, 0);
+        REQUIRE_FALSE(cell7.has_error());
+        REQUIRE_FALSE(cell7.value());
+        REQUIRE(cur->type_data()[0].type() == components::types::logical_type::STRUCT);
+        REQUIRE(cur->type_data()[0].child_types().size() == 2);
+        REQUIRE(cur->type_data()[0].child_types()[0].type() == components::types::logical_type::BIGINT);
         // The declared field type survives the NULL: NA is the absence of a value, not a type.
-        REQUIRE(v.type().child_types()[1].type() == components::types::logical_type::BIGINT);
-        REQUIRE(v.children().size() == 2);
-        REQUIRE(v.children()[0].value<int64_t>() == 21);
-        REQUIRE(v.children()[1].is_null());
+        REQUIRE(cur->type_data()[0].child_types()[1].type() == components::types::logical_type::BIGINT);
+        auto cell9 = cur->get<int64_t>(0, 0, {0});
+        REQUIRE_FALSE(cell9.has_error());
+        REQUIRE(cell9.value() == 21);
+        auto cell10 = cur->is_null(0, 0, {1});
+        REQUIRE_FALSE(cell10.has_error());
+        REQUIRE(cell10.value());
     }
 
     INFO("a NULL CELL is still a NULL cell, not a struct of NULL fields");
@@ -64,9 +73,9 @@ TEST_CASE("integration::cpp::test_struct_null_field_read::select_whole_struct_ce
         auto cur = exec("SELECT p FROM snf.t WHERE id = 3;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto v = cur->value(0, 0);
-        REQUIRE(v.is_null());
-        REQUIRE(v.children().empty());
+        auto cell_null = cur->is_null(0, 0);
+        REQUIRE_FALSE(cell_null.has_error());
+        REQUIRE(cell_null.value());
     }
 
     INFO("field projection agrees with the whole-cell read");
@@ -74,8 +83,12 @@ TEST_CASE("integration::cpp::test_struct_null_field_read::select_whole_struct_ce
         auto cur = exec("SELECT (p).a, (p).b FROM snf.t WHERE id = 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 21);
-        REQUIRE(cur->value(1, 0).is_null());
+        auto cell0 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == 21);
+        auto cell1 = cur->is_null(1, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value());
     }
 
     INFO("the whole result set reads in one pass");
@@ -83,8 +96,14 @@ TEST_CASE("integration::cpp::test_struct_null_field_read::select_whole_struct_ce
         auto cur = exec("SELECT id, p FROM snf.t ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(1, 0).children()[1].value<int64_t>() == 12);
-        REQUIRE(cur->value(1, 1).children()[1].is_null());
-        REQUIRE(cur->value(1, 2).is_null());
+        auto cell11 = cur->get<int64_t>(1, 0, {1});
+        REQUIRE_FALSE(cell11.has_error());
+        REQUIRE(cell11.value() == 12);
+        auto cell12 = cur->is_null(1, 1, {1});
+        REQUIRE_FALSE(cell12.has_error());
+        REQUIRE(cell12.value());
+        auto cell2 = cur->is_null(1, 2);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value());
     }
 }

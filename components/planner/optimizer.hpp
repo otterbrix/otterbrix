@@ -1,11 +1,11 @@
 #pragma once
 
+#include <components/execution_context/graph_execution_context.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/planner/host_hooks.hpp>
 
-#include <set>
 #include <span>
 
 namespace components::planner {
@@ -28,13 +28,12 @@ namespace components::planner {
     // On DDL trees (sequence_t of primitive writes) it is a harmless no-op:
     // the planner leaves the match_t/join_t/aggregate_t these rules target
     // intact (DML wrappers sit on top; DDL has no such nodes).
-    // `deferred_parameters`: unknown type/value parameters at optimization step
     logical_plan::node_ptr optimize(std::pmr::memory_resource* resource,
                                     logical_plan::node_ptr node,
                                     logical_plan::parameter_node_t* parameters,
+                                    const graph_execution_context& ctx,
                                     const logical_plan::catalog_resolves_t* resolves = nullptr,
                                     bool can_push_to_agent = false,
-                                    std::span<const optimizer_rule_t> host_rules = {},
-                                    const std::pmr::set<core::parameter_id_t>* deferred_parameters = nullptr);
+                                    std::span<const optimizer_rule_t> host_rules = {});
 
 } // namespace components::planner

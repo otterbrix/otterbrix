@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/vector/vector_builders.hpp>
 
 #include <components/compute/function.hpp>
 #include <components/context/context.hpp>
@@ -73,15 +74,12 @@ TEST_CASE("group operator contracts: struct-field key type comes from input sche
     std::pmr::vector<types::complex_logical_type> cols(&resource);
     cols.push_back(struct_type);
     vector::data_chunk_t chunk(&resource, cols, 4);
-    auto field_null = types::logical_value_t(&resource, types::complex_logical_type{types::logical_type::NA});
-    auto make_row = [&](types::logical_value_t field_val) {
-        return types::logical_value_t::create_struct(&resource, struct_type, {std::move(field_val)});
-    };
     // Groups form in row order: NULL first, then 10, then 20.
-    chunk.set_value(0, 0, make_row(field_null));
-    chunk.set_value(0, 1, make_row(types::logical_value_t(&resource, int64_t(10))));
-    chunk.set_value(0, 2, make_row(types::logical_value_t(&resource, int64_t(10))));
-    chunk.set_value(0, 3, make_row(types::logical_value_t(&resource, int64_t(20))));
+    auto& field = *chunk.data[0].entries()[0];
+    field.set_null(0, true);
+    field.set_value(1, int64_t(10));
+    field.set_value(2, int64_t(10));
+    field.set_value(3, int64_t(20));
     chunk.set_cardinality(4);
 
     boost::intrusive_ptr<operators::operator_hash_group_t> group(
@@ -152,13 +150,14 @@ TEST_CASE("group operator contracts: aggregator error on empty-input global aggr
     aggregate->set_pin(components::compute::function_pin_t{avg_uid});
     aggregate->set_function(builtins.get_function(avg_uid)->get_copy(&resource));
     aggregate->set_result_type(double_type);
-    aggregate->append_param(core::parameter_id_t(1)); // AVG($1), $1 bound to a string below
+    aggregate->append_param(core::parameter_id_t(0)); // AVG($1), $1 bound to a string below
     group->add_value(std::pmr::string("a", &resource), double_type);
     group->add_output(expressions::expression_ptr(aggregate));
     // No children on purpose: left output is absent.
 
     logical_plan::storage_parameters params{&resource};
-    logical_plan::add_parameter(params, core::parameter_id_t(1), std::string("not_a_number"));
+    REQUIRE(params.add(vector::make_scalar(&resource, std::string("not_a_number")), vector::parameter_kind::literal) ==
+            core::parameter_id_t(0));
     pipeline::context_t ctx(std::move(params), pipeline::no_mailbox(), pipeline::no_mailbox(), pipeline::no_mailbox());
     drive_group(group.get(), &resource, &ctx);
 

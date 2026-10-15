@@ -133,8 +133,9 @@ namespace {
                 INFO("readback of row " << id << " after reopen");
                 REQUIRE(cur->is_success());
                 REQUIRE(cur->size() == 1);
-                const auto cell = cur->value(0, 0);
-                REQUIRE(cell.value<std::string_view>() == expected_payload(id));
+                auto cell0 = cur->get<std::string_view>(0, 0);
+                REQUIRE_FALSE(cell0.has_error());
+                REQUIRE(cell0.value() == expected_payload(id));
             }
         }
         return out;

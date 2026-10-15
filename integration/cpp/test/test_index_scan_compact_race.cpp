@@ -59,8 +59,9 @@ namespace {
     std::string plan_text(const components::cursor::cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            auto v = cur->value(0, r);
-            out += std::string(v.value<std::string_view>());
+            auto cell0 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            out += std::string(cell0.value());
             out += '\n';
         }
         return out;
@@ -120,7 +121,9 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
         auto cur = exec(d, indexed_query());
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == kProbeId);
+        auto cell1 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == kProbeId);
     }
 
     // Control: the held window alone, with no checkpoint inside it, must not corrupt the answer.
@@ -139,7 +142,9 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
         guard.gate.released.store(false, std::memory_order_release);
         REQUIRE(held_cur->is_success());
         REQUIRE(held_cur->size() == 1);
-        REQUIRE(held_cur->value(0, 0).value<int64_t>() == kProbeId);
+        auto cell2 = held_cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == kProbeId);
     }
 
     services::disk::reset_checkpoint_entry_tallies();
@@ -166,14 +171,18 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
         auto cur = exec(d, control_query());
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == kProbeKey);
+        auto cell3 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == kProbeKey);
     }
 
     REQUIRE(raced_cur->is_success());
     {
         INFO("raced indexed probe returned " << raced_cur->size() << " row(s)");
         REQUIRE(raced_cur->size() == 1);
-        const auto got = raced_cur->value(0, 0).value<int64_t>();
+        auto cell4 = raced_cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        const auto got = cell4.value();
         INFO("raced indexed probe answered id=" << got << ", expected id=" << kProbeId);
         REQUIRE(got == kProbeId);
     }
@@ -185,6 +194,8 @@ TEST_CASE("integration::cpp::index_scan_compact_race::matched_row_ids_survive_a_
         auto cur = exec(d, indexed_query());
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == kProbeId);
+        auto cell5 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == kProbeId);
     }
 }

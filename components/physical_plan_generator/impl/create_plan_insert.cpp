@@ -5,6 +5,7 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/physical_plan/operators/operator_insert.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
+#include <components/vector/vector_builders.hpp>
 
 namespace services::planner::impl {
 
@@ -37,11 +38,11 @@ namespace services::planner::impl {
         components::logical_plan::insert_fill_list_t fill(context.resource);
         fill.reserve(node_insert->fill_list().size());
         for (const auto& column : node_insert->fill_list()) {
-            fill.push_back(
-                components::logical_plan::insert_fill_column_t{column.target_index,
-                                                               std::pmr::string{column.name.c_str(), context.resource},
-                                                               column.type,
-                                                               column.value});
+            fill.push_back(components::logical_plan::insert_fill_column_t{
+                column.target_index,
+                std::pmr::string{column.name.c_str(), context.resource},
+                column.type,
+                components::vector::make_constant_copy(context.resource, column.value)});
         }
         plan->set_fill_list(std::move(fill));
         if (const auto* table = node->table_metadata(); table != nullptr && table->storage != nullptr) {
@@ -60,7 +61,7 @@ namespace services::planner::impl {
                         create_plan(context,
                                     function_registry,
                                     node->children().front(),
-                                    components::logical_plan::limit_t::unlimit(),
+                                    components::logical_plan::limit_t::all(),
                                     params));
         plan->set_children(std::move(child));
 

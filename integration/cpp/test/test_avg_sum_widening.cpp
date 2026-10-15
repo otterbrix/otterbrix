@@ -35,36 +35,58 @@ namespace {
     // "<column type>:<value>", so a failing CHECK shows both; a DECIMAL shows its unscaled payload.
     std::string text(const components::cursor::cursor_t_ptr& c, uint64_t column, uint64_t row) {
         const auto& type = c->type_data()[column];
-        const auto v = c->value(column, row);
         std::string out = type_name(type) + ":";
-        if (v.is_null()) {
+        auto cell0 = c->is_null(column, row);
+        REQUIRE_FALSE(cell0.has_error());
+        if (cell0.value()) {
             return out + "NULL";
         }
         std::ostringstream value;
         switch (type.type()) {
-            case logical_type::BIGINT:
-                value << v.value<int64_t>();
+            case logical_type::BIGINT: {
+                auto cell1 = c->get<int64_t>(column, row);
+                REQUIRE_FALSE(cell1.has_error());
+                value << cell1.value();
                 break;
-            case logical_type::DOUBLE:
-                value << v.value<double>();
+            }
+            case logical_type::DOUBLE: {
+                auto cell2 = c->get<double>(column, row);
+                REQUIRE_FALSE(cell2.has_error());
+                value << cell2.value();
                 break;
-            case logical_type::FLOAT:
-                value << v.value<float>();
+            }
+            case logical_type::FLOAT: {
+                auto cell3 = c->get<float>(column, row);
+                REQUIRE_FALSE(cell3.has_error());
+                value << cell3.value();
                 break;
+            }
             case logical_type::DECIMAL:
                 switch (type.to_physical_type()) {
-                    case components::types::physical_type::INT16:
-                        value << v.value<int16_t>();
+                    case components::types::physical_type::INT16: {
+                        auto cell4 = c->get<int16_t>(column, row);
+                        REQUIRE_FALSE(cell4.has_error());
+                        value << cell4.value();
                         break;
-                    case components::types::physical_type::INT32:
-                        value << v.value<int32_t>();
+                    }
+                    case components::types::physical_type::INT32: {
+                        auto cell5 = c->get<int32_t>(column, row);
+                        REQUIRE_FALSE(cell5.has_error());
+                        value << cell5.value();
                         break;
-                    case components::types::physical_type::INT64:
-                        value << v.value<int64_t>();
+                    }
+                    case components::types::physical_type::INT64: {
+                        auto cell6 = c->get<int64_t>(column, row);
+                        REQUIRE_FALSE(cell6.has_error());
+                        value << cell6.value();
                         break;
-                    default:
-                        value << v.value<components::types::int128_t>();
+                    }
+                    default: {
+                        auto cell7 = c->get<components::types::int128_t>(column, row);
+                        REQUIRE_FALSE(cell7.has_error());
+                        value << cell7.value();
                         break;
+                    }
                 }
                 break;
             default:
@@ -103,8 +125,9 @@ namespace {
         REQUIRE(c->is_success());
         std::string out;
         for (uint64_t r = 0; r < c->size(); ++r) {
-            const auto line = c->value(0, r);
-            out += std::string(line.template value<std::string_view>()) + "\n";
+            auto cell8 = c->template get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell8.has_error());
+            out += std::string(cell8.value()) + "\n";
         }
         return out;
     }

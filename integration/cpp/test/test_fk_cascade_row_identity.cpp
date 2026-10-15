@@ -25,7 +25,9 @@ namespace {
         std::vector<int64_t> out;
         out.reserve(cur->size());
         for (std::size_t row = 0; row < cur->size(); ++row) {
-            out.push_back(cur->value(col, row).value<int64_t>());
+            auto cell0 = cur->get<int64_t>(col, row);
+            REQUIRE_FALSE(cell0.has_error());
+            out.push_back(cell0.value());
         }
         return out;
     }
@@ -85,9 +87,13 @@ namespace {
         for (std::size_t row = 0; row < ids.size(); ++row) {
             INFO("child id " << ids[row]);
             const bool want_null = (parent_ids[row] == kNullParent);
-            REQUIRE(cur->value(1, row).is_null() == want_null);
+            auto cell1 = cur->is_null(1, row);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == want_null);
             if (!want_null) {
-                REQUIRE(cur->value(1, row).value<int64_t>() == parent_ids[row]);
+                auto cell2 = cur->get<int64_t>(1, row);
+                REQUIRE_FALSE(cell2.has_error());
+                REQUIRE(cell2.value() == parent_ids[row]);
             }
         }
     }

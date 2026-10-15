@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <utility>
 
+#include <absl/numeric/int128.h>
+
 namespace core::date {
 
     // Fixed offset a.k.a epoch (2000-01-01).
@@ -119,22 +121,25 @@ namespace core::date {
     inline auto operator<=>(timestamptz_t a, timestamptz_t b) noexcept { return a.value <=> b.value; }
     inline bool operator==(timestamptz_t a, timestamptz_t b) noexcept { return a.value == b.value; }
 
-    // timetz: normalise to UTC before comparing  (utc = local - zone_east)
-    inline auto operator<=>(timetz_t a, timetz_t b) noexcept {
+    // timetz, as PostgreSQL's timetz_cmp_internal: by the UTC instant (utc = local - zone_east), and for the same
+    // instant by zone. PostgreSQL stores the zone seconds WEST of UTC and sorts by that, so here, with the zone
+    // east, the larger zone comes first. Equal only when both the time and the zone are equal.
+    inline std::strong_ordering operator<=>(timetz_t a, timetz_t b) noexcept {
         auto a_utc = a.time - std::chrono::duration_cast<microseconds>(a.zone);
         auto b_utc = b.time - std::chrono::duration_cast<microseconds>(b.zone);
-        return a_utc <=> b_utc;
+        if (auto by_instant = a_utc <=> b_utc; by_instant != 0) {
+            return by_instant;
+        }
+        return b.zone <=> a.zone;
     }
-    inline bool operator==(timetz_t a, timetz_t b) noexcept {
-        auto a_utc = a.time - std::chrono::duration_cast<microseconds>(a.zone);
-        auto b_utc = b.time - std::chrono::duration_cast<microseconds>(b.zone);
-        return a_utc == b_utc;
-    }
+    inline bool operator==(timetz_t a, timetz_t b) noexcept { return a.time == b.time && a.zone == b.zone; }
 
-    // interval: compare by total approximate microseconds
-    inline microseconds interval_total(const interval_t& i) noexcept {
-        return i.time + std::chrono::duration_cast<microseconds>(i.day) +
-               std::chrono::duration_cast<microseconds>(i.month);
+    // interval, as PostgreSQL's interval_cmp_value: a month is 30 days and a day is 24 hours, in microseconds.
+    // 128 bits, since a month count near the int32 limit overflows 64 bits of microseconds.
+    inline absl::int128 interval_total(const interval_t& i) noexcept {
+        constexpr int64_t microseconds_per_day = 86'400'000'000;
+        return absl::int128{i.time.count()} + absl::int128{i.day.count()} * microseconds_per_day +
+               absl::int128{i.month.count()} * 30 * microseconds_per_day;
     }
     inline auto operator<=>(const interval_t& a, const interval_t& b) noexcept {
         return interval_total(a) <=> interval_total(b);

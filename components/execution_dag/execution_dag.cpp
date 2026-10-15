@@ -1,10 +1,12 @@
 #include "execution_dag.hpp"
 
+#include <components/vector/cell_equal.hpp>
 #include <components/vector/operations/apply_operator.hpp>
 #include <components/vector/vector_operations.hpp>
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 
 namespace components::execution_dag {
 
@@ -91,8 +93,7 @@ namespace components::execution_dag {
         return core::error_t::no_error();
     }
 
-    core::result_wrapper_t<uint64_t> function_node_t::select_distinct(const vector::data_chunk_t& arguments,
-                                                                      uint64_t count) {
+    core::result_wrapper_t<uint64_t> function_node_t::select_distinct(vector::data_chunk_t& arguments, uint64_t count) {
         if (!distinct_states_) {
             distinct_states_.emplace(resource(), compute::aggregate_state_of<value_set_t>());
         }
@@ -100,12 +101,29 @@ namespace components::execution_dag {
         auto sets = distinct_states_->states();
         distinct_groups_.clear();
         distinct_groups_.reserve(count);
+        vector::vector_t hashes(resource(), types::logical_type::UBIGINT, count);
+        vector::vector_ops::hash(arguments.data.front(), hashes, count);
+        const auto* hash_data = hashes.data<uint64_t>();
+        const auto& column = arguments.data.front();
+        // Rows kept by this call are not stored yet: they sit at distinct_values_.size() and are read
+        // back from the arguments through distinct_rows_.
+        const uint64_t pending_chunk = distinct_values_.size();
         uint64_t kept = 0;
         for (uint64_t row = 0; row < count; row++) {
             const uint32_t group = group_ids_[row];
-            if (!sets.at<value_set_t>(group).insert(arguments.data.front().value(row)).second) {
+            auto& set = sets.at<value_set_t>(group);
+            const auto range = set.equal_range(hash_data[row]);
+            bool seen = false;
+            for (auto it = range.first; it != range.second && !seen; ++it) {
+                const auto& ref = it->second;
+                seen = ref.chunk == pending_chunk
+                           ? vector::cells_equal(column, distinct_rows_.get_index(ref.row), column, row)
+                           : vector::cells_equal(distinct_values_[ref.chunk], ref.row, column, row);
+            }
+            if (seen) {
                 continue;
             }
+            set.emplace(hash_data[row], kept_row_t{pending_chunk, kept});
             distinct_rows_.set_index(kept, row);
             distinct_groups_.push_back(group);
             kept++;
@@ -462,7 +480,8 @@ namespace components::execution_dag {
         , distinct_(distinct)
         , reduces_(reduces)
         , distinct_rows_(resource, vector::DEFAULT_VECTOR_CAPACITY)
-        , distinct_groups_(resource) {}
+        , distinct_groups_(resource)
+        , distinct_values_(resource) {}
 
     core::error_t function_node_t::process(const graph_execution_context&, uint64_t count) {
         auto arguments = argument_chunk(count);
@@ -491,6 +510,9 @@ namespace components::execution_dag {
             vector::data_chunk_t unique(resource(), arguments.types(), kept.value() > 0 ? kept.value() : 1);
             arguments.copy(unique, distinct_rows_, kept.value(), 0);
             unique.set_cardinality(kept.value());
+            if (kept.value() > 0) {
+                distinct_values_.emplace_back(unique.data.front());
+            }
             return executor_->update(unique, {distinct_groups_.data(), kept.value()}, states_->states());
         }
         auto result = executor_->execute(arguments);
@@ -539,20 +561,342 @@ namespace components::execution_dag {
             return core::error_t(core::error_code_t::invalid_parameter,
                                  std::pmr::string{"execution graph: parameters are not bound", resource()});
         }
-        auto value = parameters_->find(id_);
-        if (value == parameters_->end()) {
+        const auto& value = parameters_->at(id_);
+        // vector_t::reference asserts the type only in Debug, and a slot built for another type would read
+        // the parameter's buffer with the wrong layout.
+        if (output(0).type() != value.type()) {
             return core::error_t(
                 core::error_code_t::invalid_parameter,
-                std::pmr::string{"execution graph: parameter is not in the bound parameter map", resource()});
+                std::pmr::string{"execution graph: parameter type differs from its slot's", resource()});
         }
-        output(0).reference(value->second);
+        output(0).reference(value);
         placed_ = true;
         return core::error_t::no_error();
     }
 
-    void parameter_node_t::set_parameters(const parameter_map_t* parameters) noexcept {
+    void parameter_node_t::set_parameters(const storage_parameters* parameters) noexcept {
         parameters_ = parameters;
         placed_ = false;
+    }
+
+    namespace {
+        bool is_ordering(operators::operator_code code) noexcept {
+            return code == operators::operator_code::less || code == operators::operator_code::less_equal ||
+                   code == operators::operator_code::greater || code == operators::operator_code::greater_equal;
+        }
+
+        bool is_membership_comparison(operators::operator_code code) noexcept {
+            return code == operators::operator_code::equal || code == operators::operator_code::not_equal ||
+                   is_ordering(code);
+        }
+
+        // The operator that is TRUE exactly where `x op e` is FALSE for a non-NULL pair
+        operators::operator_code negation_of(operators::operator_code code) noexcept {
+            switch (code) {
+                case operators::operator_code::equal:
+                    return operators::operator_code::not_equal;
+                case operators::operator_code::not_equal:
+                    return operators::operator_code::equal;
+                case operators::operator_code::less:
+                    return operators::operator_code::greater_equal;
+                case operators::operator_code::less_equal:
+                    return operators::operator_code::greater;
+                case operators::operator_code::greater:
+                    return operators::operator_code::less_equal;
+                default:
+                    return operators::operator_code::less;
+            }
+        }
+
+        template<typename T>
+        std::partial_ordering float_order(T left, T right) noexcept {
+            const bool left_nan = std::isnan(left);
+            const bool right_nan = std::isnan(right);
+            if (left_nan || right_nan) {
+                return left_nan == right_nan ? std::partial_ordering::equivalent
+                                             : (left_nan ? std::partial_ordering::greater
+                                                         : std::partial_ordering::less);
+            }
+            return left < right ? std::partial_ordering::less
+                                : (left > right ? std::partial_ordering::greater : std::partial_ordering::equivalent);
+        }
+
+        // The order of a set's extremes: PostgreSQL's for floats, where NaN is the greatest value and equals NaN
+        // (compare_cells leaves NaN unordered), compare_cells for everything else
+        std::partial_ordering extreme_order(const vector::vector_t& left,
+                                            uint64_t left_row,
+                                            const vector::vector_t& right,
+                                            uint64_t right_row) {
+            switch (left.type().to_physical_type()) {
+                case types::physical_type::FLOAT:
+                    return float_order(left.get_value<float>(left_row), right.get_value<float>(right_row));
+                case types::physical_type::DOUBLE:
+                    return float_order(left.get_value<double>(left_row), right.get_value<double>(right_row));
+                default:
+                    return vector::operations::compare_cells(left, left_row, right, right_row);
+            }
+        }
+
+        // Fibonacci hashing: the hashes of integers are the integers, and keys that are multiples of a power of two
+        // would all fall into a few slots of a table indexed by the low bits.
+        uint64_t slot_of_hash(uint64_t hash, uint32_t shift) noexcept {
+            return (hash * UINT64_C(0x9E3779B97F4A7C15)) >> shift;
+        }
+    } // namespace
+
+    membership_node_t::membership_node_t(std::pmr::memory_resource* resource,
+                                         operators::operator_code op,
+                                         quantifier kind,
+                                         slot_id_t probe,
+                                         slot_id_t set,
+                                         slot_id_t output)
+        : execution_node_t(resource, slot_list_t({probe, set}, resource), slot_list_t({output}, resource))
+        , op_(op)
+        , kind_(kind)
+        , witness_op_(kind == quantifier::all ? negation_of(op) : op)
+        , negated_(kind == quantifier::all)
+        , table_(resource) {}
+
+    core::error_t membership_node_t::validate() const {
+        auto error = execution_node_t::validate();
+        if (error.contains_error()) {
+            return error;
+        }
+        if (input_indices_.size() != 2 || output_indices_.size() != 1 || !is_membership_comparison(op_)) {
+            return core::error_t(
+                core::error_code_t::schema_error,
+                std::pmr::string{"execution graph: membership node needs a probe, a set and a comparison",
+                                 resource()});
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t membership_node_t::ensure_state(const graph_execution_context& context) {
+        const auto& set = input(1);
+        if (set.type().to_physical_type() != types::physical_type::ARRAY) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"execution graph: membership set is not an array", resource()});
+        }
+        const auto sequence = vector::sequence_of(set, 0);
+        if (sequence.offset != 0) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"execution graph: membership set does not start at its buffer",
+                                                  resource()});
+        }
+        // A buffer already looked at is the same set: only a new vector can differ, and it is never written in place.
+        // The node keeps the buffer it looked at, so a new set cannot be placed at its address.
+        rebound_ = false;
+        const auto* buffer = vector::resolve_cell(set, 0).vec->auxiliary().get();
+        if (ready_ && buffer != nullptr && set_.has_value() &&
+            buffer == vector::resolve_cell(*set_, 0).vec->auxiliary().get() && sequence.length == source_count_) {
+            return core::error_t::no_error();
+        }
+        ready_ = false;
+        set_.emplace(resource(), set.type(), false, false, 1);
+        set_->reference(set);
+
+        elements_.emplace(resource(), sequence.child->type(), false, false, 1);
+        elements_->reference(*sequence.child);
+        if (elements_->get_vector_type() != vector::vector_type::FLAT) {
+            elements_->flatten(sequence.length);
+        }
+        if (element_target_.type() != types::logical_type::INVALID && element_target_ != elements_->type()) {
+            vector::vector_t converted(resource(), element_target_, sequence.length > 0 ? sequence.length : 1);
+            if (!element_cast_) {
+                return core::error_t(core::error_code_t::invalid_parameter,
+                                     std::pmr::string{"execution graph: membership set needs a cast it was not given",
+                                                      resource()});
+            }
+            auto error = element_cast_(casts::cast_kind::cast, *elements_, &converted, context, sequence.length);
+            if (error.contains_error()) {
+                return error;
+            }
+            elements_.emplace(std::move(converted));
+        }
+        if (auto error = build_state(*elements_, sequence.length); error.contains_error()) {
+            return error;
+        }
+        source_count_ = sequence.length;
+        ready_ = true;
+        return core::error_t::no_error();
+    }
+
+    core::error_t membership_node_t::build_state(const vector::vector_t& elements, uint64_t count) {
+        element_count_ = count;
+        non_null_count_ = 0;
+        has_null_ = false;
+        first_ = 0;
+        first_hash_ = 0;
+        uniform_ = true;
+        min_ = 0;
+        max_ = 0;
+        table_.clear();
+        hashes_.reset();
+        if (count >= std::numeric_limits<uint32_t>::max()) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"execution graph: membership set is too large", resource()});
+        }
+        // An untyped NULL column: every element is NULL
+        const bool untyped = elements.type().type() == types::logical_type::NA;
+        for (uint64_t index = 0; index < count; index++) {
+            if (untyped || elements.is_null(index)) {
+                has_null_ = true;
+                continue;
+            }
+            if (non_null_count_ == 0) {
+                first_ = index;
+                min_ = index;
+                max_ = index;
+            } else {
+                if (is_ordering(witness_op_)) {
+                    if (extreme_order(elements, index, elements, min_) == std::partial_ordering::less) {
+                        min_ = index;
+                    }
+                    if (extreme_order(elements, index, elements, max_) == std::partial_ordering::greater) {
+                        max_ = index;
+                    }
+                }
+            }
+            non_null_count_++;
+        }
+        const bool tested_by_hash =
+            witness_op_ == operators::operator_code::equal || witness_op_ == operators::operator_code::not_equal;
+        if (!tested_by_hash || non_null_count_ == 0) {
+            return core::error_t::no_error();
+        }
+
+        if (!vector::vector_ops::is_hashable(elements.type())) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"execution graph: membership set elements cannot be hashed",
+                                                  resource()});
+        }
+        vector::vector_t shallow(resource(), elements.type(), false, false, 1);
+        shallow.reference(elements);
+        hashes_.emplace(resource(), types::logical_type::UBIGINT, count);
+        vector::vector_ops::hash(shallow, *hashes_, count);
+        const auto* hash = hashes_->data<uint64_t>();
+
+        if (witness_op_ == operators::operator_code::not_equal) {
+            // equality here is the hash's: values that differ only within the float tolerance are different
+            first_hash_ = hash[first_];
+            for (uint64_t index = 0; index < count && uniform_; index++) {
+                if (!elements.is_null(index) &&
+                    (hash[index] != first_hash_ || !vector::cells_equal(elements, first_, elements, index))) {
+                    uniform_ = false;
+                }
+            }
+            hashes_.reset();
+            return core::error_t::no_error();
+        }
+
+        uint32_t bits = 3;
+        while ((uint64_t{1} << bits) < non_null_count_ * 2) {
+            bits++;
+        }
+        table_shift_ = 64 - bits;
+        table_.assign(size_t{1} << bits, 0);
+        const uint64_t mask = (uint64_t{1} << bits) - 1;
+        for (uint64_t index = 0; index < count; index++) {
+            if (elements.is_null(index)) {
+                continue;
+            }
+            uint64_t position = slot_of_hash(hash[index], table_shift_);
+            while (table_[position] != 0) {
+                position = (position + 1) & mask;
+            }
+            table_[position] = static_cast<uint32_t>(index + 1);
+        }
+        return core::error_t::no_error();
+    }
+
+    bool membership_node_t::has_witness(const vector::vector_t& probe, uint64_t row, uint64_t hash) const {
+        if (non_null_count_ == 0) {
+            return false;
+        }
+        const auto& elements = *elements_;
+        switch (witness_op_) {
+            case operators::operator_code::equal: {
+                const uint64_t mask = table_.size() - 1;
+                const auto* hashes = hashes_->data<uint64_t>();
+                for (uint64_t position = slot_of_hash(hash, table_shift_); table_[position] != 0;
+                     position = (position + 1) & mask) {
+                    const uint64_t index = table_[position] - 1;
+                    if (hashes[index] == hash && vector::cells_equal(probe, row, elements, index)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            case operators::operator_code::not_equal:
+                return !uniform_ || hash != first_hash_ || !vector::cells_equal(probe, row, elements, first_);
+            case operators::operator_code::less:
+                return extreme_order(probe, row, elements, max_) == std::partial_ordering::less;
+            case operators::operator_code::less_equal: {
+                const auto order = extreme_order(probe, row, elements, max_);
+                return order == std::partial_ordering::less || order == std::partial_ordering::equivalent;
+            }
+            case operators::operator_code::greater:
+                return extreme_order(probe, row, elements, min_) == std::partial_ordering::greater;
+            default: {
+                const auto order = extreme_order(probe, row, elements, min_);
+                return order == std::partial_ordering::greater || order == std::partial_ordering::equivalent;
+            }
+        }
+    }
+
+    core::error_t membership_node_t::process(const graph_execution_context& context, uint64_t count) {
+        if (!ready_ || rebound_) {
+            if (auto error = ensure_state(context); error.contains_error()) {
+                return error;
+            }
+        }
+        const auto& probe = input(0);
+        // Elements of an untyped NULL column have no type to agree on
+        if (elements_->type().type() != types::logical_type::NA && probe.type() != elements_->type()) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"execution graph: membership probe and set differ in type",
+                                                  resource()});
+        }
+        const bool* active = active_rows();
+        auto& result = output(0);
+
+        // The probe is hashed once, the whole chunk
+        const bool hashed = (witness_op_ == operators::operator_code::equal ||
+                             witness_op_ == operators::operator_code::not_equal) &&
+                            non_null_count_ > 0;
+        std::optional<vector::vector_t> probe_hashes;
+        if (hashed) {
+            vector::vector_t shallow(resource(), probe.type(), false, false, 1);
+            shallow.reference(probe);
+            probe_hashes.emplace(resource(), types::logical_type::UBIGINT, count > 0 ? count : 1);
+            vector::vector_ops::hash(shallow, *probe_hashes, count);
+        }
+        const bool constant_hash = hashed && probe_hashes->get_vector_type() == vector::vector_type::CONSTANT;
+
+        for (uint64_t row = 0; row < count; row++) {
+            if (active != nullptr && !active[row]) {
+                continue;
+            }
+            // TRUE, FALSE, or UNKNOWN (null) for ANY over the witness operator
+            bool unknown = false;
+            bool found = false;
+            if (element_count_ == 0) {
+                found = false;
+            } else if (probe.is_null(row)) {
+                unknown = true;
+            } else {
+                const uint64_t hash = hashed ? probe_hashes->data<uint64_t>()[constant_hash ? 0 : row] : 0;
+                found = has_witness(probe, row, hash);
+                unknown = !found && has_null_;
+            }
+            if (unknown) {
+                result.set_null(row, true);
+                continue;
+            }
+            result.set_null(row, false);
+            result.set_value(row, found != negated_);
+        }
+        return core::error_t::no_error();
     }
 
     execution_dag_t::execution_dag_t(std::pmr::memory_resource* resource, uint64_t capacity)
@@ -631,7 +975,25 @@ namespace components::execution_dag {
     node_id_t execution_dag_t::add_parameter(core::parameter_id_t id) {
         auto output = declare_slot();
         slots_[output].constant = true;
+        slots_[output].parameter = true;
         return append(new parameter_node_t(resource_, id, output));
+    }
+
+    node_id_t execution_dag_t::add_membership(operators::operator_code op,
+                                              membership_node_t::quantifier kind,
+                                              slot_id_t probe,
+                                              slot_id_t set) {
+        auto output = declare_slot();
+        set_slot_type(output, types::complex_logical_type{types::logical_type::BOOLEAN});
+        return append(new membership_node_t(resource_, op, kind, probe, set, output));
+    }
+
+    void execution_dag_t::set_membership_cast(node_id_t node,
+                                              const types::complex_logical_type& target,
+                                              casts::cast_t cast) {
+        auto* membership = dynamic_cast<membership_node_t*>(nodes_[node].get());
+        assert(membership && "execution graph: set_membership_cast on a node that is not a membership");
+        membership->set_element_cast(target, std::move(cast));
     }
 
     node_id_t execution_dag_t::add_blend(blend_node_t::blend_kind kind, const slot_list_t& inputs) {
@@ -850,7 +1212,7 @@ namespace components::execution_dag {
         output_slots_.assign(selected.begin(), selected.end());
     }
 
-    void execution_dag_t::set_parameters(const parameter_map_t* parameters) {
+    void execution_dag_t::set_parameters(const storage_parameters* parameters) {
         parameters_ = parameters;
         for (auto& node : nodes_) {
             node->set_parameters(parameters);
@@ -871,7 +1233,7 @@ namespace components::execution_dag {
         slot_sizes_.assign(slots_.size(), 0);
         for (const auto& slot : slots_) {
             // a bound slot is referenced from the input chunk, so it needs no buffer of its own
-            data_storage_.emplace_back(resource_, slot.type, !slot.bound, false, capacity_);
+            data_storage_.emplace_back(resource_, slot.type, !slot.bound && !slot.parameter, false, capacity_);
         }
         reduction_nodes_.clear();
         for (node_id_t id{0}; id < nodes_.size(); id++) {

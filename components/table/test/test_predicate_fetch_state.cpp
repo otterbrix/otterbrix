@@ -3,6 +3,7 @@
 // columns in one predicate to catch child-state aliasing and premature pin release.
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <components/expressions/execution_dag_builder.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
@@ -73,8 +74,10 @@ TEST_CASE("components::table::predicate::two_long_string_columns_in_one_predicat
     {
         auto chunk = data_chunk_t(&env.resource, types, rows);
         for (size_t i = 0; i < rows; i++) {
-            chunk.data[0].set_value(i, logical_value_t(&env.resource, wide_string('a', i)));
-            chunk.data[1].set_value(i, logical_value_t(&env.resource, wide_string('b', i)));
+            const std::string a = wide_string('a', i);
+            const std::string b = wide_string('b', i);
+            chunk.data[0].set_value(i, std::string_view{a});
+            chunk.data[1].set_value(i, std::string_view{b});
         }
         chunk.set_cardinality(rows);
         table_append_state state(&env.resource);
@@ -89,9 +92,11 @@ TEST_CASE("components::table::predicate::two_long_string_columns_in_one_predicat
     namespace expr = components::expressions;
     const core::parameter_id_t lo_id{0};
     const core::parameter_id_t hi_id{1};
-    parameter_map_t parameters(&env.resource);
-    parameters.emplace(lo_id, logical_value_t{&env.resource, wide_string('a', 100)});
-    parameters.emplace(hi_id, logical_value_t{&env.resource, wide_string('b', 200)});
+    components::vector::storage_parameters parameters(&env.resource);
+    REQUIRE(parameters.add(components::vector::make_scalar(&env.resource, wide_string('a', 100)),
+                           components::vector::parameter_kind::literal) == lo_id);
+    REQUIRE(parameters.add(components::vector::make_scalar(&env.resource, wide_string('b', 200)),
+                           components::vector::parameter_kind::literal) == hi_id);
 
     auto column_key = [&](size_t ordinal) {
         expr::key_t key{&env.resource};
@@ -105,7 +110,7 @@ TEST_CASE("components::table::predicate::two_long_string_columns_in_one_predicat
 
     auto built = expr::build_condition_graph(&env.resource, parameters, predicate.get(), table->copy_types());
     REQUIRE_FALSE(built.has_error());
-    table_filter_t filter{parameters,
+    table_filter_t filter{std::move(parameters),
                           components::graph_execution_context{},
                           std::move(built.value()),
                           expr::condition_kind::computed};
@@ -125,10 +130,8 @@ TEST_CASE("components::table::predicate::two_long_string_columns_in_one_predicat
             break;
         }
         for (size_t row = 0; row < result.size(); row++) {
-            auto a_cell = result.data[0].value(row);
-            auto b_cell = result.data[1].value(row);
-            const auto a = a_cell.value<std::string_view>();
-            const auto b = b_cell.value<std::string_view>();
+            const auto a = result.data[0].get_value<std::string_view>(row);
+            const auto b = result.data[1].get_value<std::string_view>(row);
             INFO("row " << (produced + row) << " a=" << a << " b=" << b);
             REQUIRE(a.substr(0, 2) == "a-");
             REQUIRE(b.substr(0, 2) == "b-");

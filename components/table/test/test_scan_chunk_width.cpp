@@ -1,10 +1,12 @@
+#include <components/vector/cell_equal.hpp>
+#include <components/vector/vector_builders.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/row_group.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
-#include <components/types/logical_value.hpp>
 #include <core/file/local_file_system.hpp>
 
 #include <cerrno>
@@ -45,12 +47,12 @@ namespace {
         return t;
     }
 
-    logical_value_t list_of(env_t& env, uint64_t length) {
-        std::vector<logical_value_t> values;
+    vector_t list_of(env_t& env, uint64_t length) {
+        std::vector<vector_t> values;
         for (uint64_t j = 0; j < length; j++) {
-            values.emplace_back(&env.resource, std::string_view{"e"});
+            values.push_back(make_scalar(&env.resource, std::string_view{"e"}));
         }
-        return logical_value_t::create_list_from_type(&env.resource, list_type(), values);
+        return make_list(&env.resource, list_type().child_type(), values);
     }
 
     // (k BIGINT, v LIST<STRING>), three committed rows, row i's list has i + 1 elements; nullptr on any error.
@@ -65,7 +67,7 @@ namespace {
         chunk.set_cardinality(3);
         for (uint64_t i = 0; i < 3; i++) {
             chunk.set_value(0, i, static_cast<int64_t>(10 + i));
-            chunk.set_value(1, i, list_of(env, i + 1));
+            vector_ops::copy(list_of(env, i + 1), chunk.data[1], 1, 0, i);
         }
         table_append_state state(&env.resource);
         if (table->append_lock(state).has_error() || table->initialize_append(state).has_error() ||
@@ -187,8 +189,7 @@ TEST_CASE("scan_chunk_width: the projected chunk with a placeholder in the unsca
         REQUIRE_FALSE(state.table_state.has_error());
         REQUIRE(chunk.size() == 3);
         for (uint64_t i = 0; i < 3; i++) {
-            const auto cell = chunk.value(1, i);
-            CHECK(cell.children().size() == i + 1);
+            CHECK(sequence_of(chunk.data[1], i).length == i + 1);
         }
     }
     std::remove(path.c_str());

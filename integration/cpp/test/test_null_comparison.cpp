@@ -10,7 +10,7 @@
 // UNKNOWN, so a CASE WHEN falls through, a HAVING group is dropped, and a CHECK passes (only a
 // definitely-FALSE check is a violation).
 //
-// Before the fix these sites answered through logical_value_t::compare(), whose total order made
+// Before the fix these sites answered through a total order that made
 // NULL == anything TRUE (or, once ordering put NULLs last, some other definite answer) -- so
 // `CASE WHEN x = 1` matched a NULL x, and `CHECK (x > 0)` rejected a NULL x.
 //
@@ -42,8 +42,15 @@ namespace {
         REQUIRE(c);
         REQUIRE(c->is_success());
         for (uint64_t r = 0; r < c->size(); ++r) {
-            auto v = c->value(col, r);
-            out.push_back(v.is_null() ? opt{} : opt{v.template value<int64_t>()});
+            auto cell0 = c->is_null(col, r);
+            REQUIRE_FALSE(cell0.has_error());
+            if (cell0.value()) {
+                out.push_back(opt{});
+            } else {
+                auto cell0v = c->template get<int64_t>(col, r);
+                REQUIRE_FALSE(cell0v.has_error());
+                out.push_back(opt{cell0v.value()});
+            }
         }
         return out;
     }

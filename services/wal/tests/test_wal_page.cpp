@@ -8,6 +8,7 @@
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
 #include <services/wal/wal_page_writer.hpp>
+#include <cstring>
 
 namespace {
 

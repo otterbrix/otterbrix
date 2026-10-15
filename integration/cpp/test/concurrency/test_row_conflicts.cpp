@@ -263,7 +263,11 @@ TEST_CASE("integration::cpp::concurrency::row_conflicts::parallel", "[parallel]"
         const auto total_of = [](const cursor_ptr& balances) {
             int64_t total = 0;
             for (std::size_t row = 0; row < balances->size(); ++row) {
-                total += balances->value(0, row).value<int64_t>();
+                const auto balance = balances->get<int64_t>(0, row);
+                if (balance.has_error()) {
+                    return int64_t{-1};
+                }
+                total += balance.value();
             }
             return total;
         };
@@ -346,7 +350,7 @@ TEST_CASE("integration::cpp::concurrency::row_conflicts::parallel", "[parallel]"
                     bool ok = session.run("BEGIN;")->is_success();
                     auto read = session.run("SELECT payload FROM db.typed WHERE id = 1;");
                     ok = ok && read->is_success() && read->size() == 1;
-                    int64_t number = ok ? type.decode(read->value(0, 0)) : MALFORMED;
+                    int64_t number = ok ? type.decode(cell_t{read.get(), 0, 0, {}}) : MALFORMED;
                     malformed_reads += ok && number == MALFORMED ? 1 : 0;
                     ok = ok && number != MALFORMED &&
                          session.run("UPDATE db.typed SET payload = " + type.literal(number + 1) + " WHERE id = 1;")

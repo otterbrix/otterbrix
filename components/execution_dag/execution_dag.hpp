@@ -5,7 +5,7 @@
 #include <components/compute/kernel_executor.hpp>
 #include <components/execution_context/graph_execution_context.hpp>
 #include <components/operators/operator_code.hpp>
-#include <components/types/parameter_map.hpp>
+#include <components/vector/storage_parameters.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector.hpp>
 #include <core/parameter_id.hpp>
@@ -17,8 +17,9 @@
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 
 #include <limits>
+#include <optional>
 #include <memory_resource>
-#include <unordered_set>
+#include <unordered_map>
 
 STRONG_TYPEDEF(size_t, slot_id_t);
 STRONG_TYPEDEF(size_t, node_id_t);
@@ -27,7 +28,7 @@ namespace components::execution_dag {
 
     using core::node_id_t;
     using core::slot_id_t;
-    using types::parameter_map_t;
+    using vector::storage_parameters;
 
     inline constexpr uint64_t unconstrained_rows{std::numeric_limits<uint64_t>::max()};
     inline constexpr slot_id_t invalid_slot{std::numeric_limits<size_t>::max()};
@@ -84,7 +85,7 @@ namespace components::execution_dag {
         void set_constraint(slot_id_t mask) noexcept { constraint_slot_ = mask; }
 
         // only parameter_node_t actually needs it, but it is convenient to have
-        virtual void set_parameters(const parameter_map_t*) noexcept {}
+        virtual void set_parameters(const storage_parameters*) noexcept {}
     };
 
     // [1] input, [1] output
@@ -153,7 +154,7 @@ namespace components::execution_dag {
     private:
         [[nodiscard]] core::error_t validate() const override;
         [[nodiscard]] core::error_t ensure_executor();
-        [[nodiscard]] core::result_wrapper_t<uint64_t> select_distinct(const vector::data_chunk_t& arguments,
+        [[nodiscard]] core::result_wrapper_t<uint64_t> select_distinct(vector::data_chunk_t& arguments,
                                                                        uint64_t count);
 
         vector::data_chunk_t argument_chunk(uint64_t count) const;
@@ -166,15 +167,19 @@ namespace components::execution_dag {
         bool reduces_{false};
         std::optional<compute::aggregate_state_arena_t> states_;
         core::span<const uint32_t> group_ids_;
-        // DISTINCT is per group: one seen-set per group, in an arena beside the accumulators.
-        struct value_hash_t {
-            size_t operator()(const types::logical_value_t& value) const noexcept { return value.hash(); }
+        // DISTINCT is per group: one seen-set per group, in an arena beside the accumulators. A set maps
+        // a row hash to the rows it has kept: chunk number in distinct_values_ and row inside it.
+        struct kept_row_t {
+            uint64_t chunk;
+            uint64_t row;
         };
-        using value_set_t = std::pmr::unordered_set<types::logical_value_t, value_hash_t, std::equal_to<>>;
+        using value_set_t = std::pmr::unordered_multimap<uint64_t, kept_row_t>;
         std::optional<compute::aggregate_state_arena_t> distinct_states_;
         // Rows of the current chunk that survived the DISTINCT filter, and their group ids.
         vector::indexing_vector_t distinct_rows_;
         std::pmr::vector<uint32_t> distinct_groups_;
+        // The first argument column of every call's kept rows, the values the seen-sets compare against.
+        std::pmr::vector<vector::vector_t> distinct_values_;
     };
 
     // [1, N] inputs, [1] output
@@ -261,11 +266,82 @@ namespace components::execution_dag {
         core::parameter_id_t id() const noexcept { return id_; }
 
     private:
-        void set_parameters(const parameter_map_t* parameters) noexcept override;
+        void set_parameters(const storage_parameters* parameters) noexcept override;
 
         core::parameter_id_t id_;
-        const parameter_map_t* parameters_{nullptr};
+        const storage_parameters* parameters_{nullptr};
         bool placed_{false};
+    };
+
+    // [2] inputs (probe, set), [1] BOOLEAN output
+    // `probe <op> ANY|ALL (set)`, the set being one ARRAY value. The graph stays the same size whatever the set
+    // size: the set is hashed (= and <>) or reduced to its extremes (< <= > >=) once, when the node first sees it,
+    // and each probe row costs O(1) after that. ALL is NOT ANY of the negated operator, with NULL staying NULL.
+    class membership_node_t final : public execution_node_t {
+    public:
+        enum class quantifier
+        {
+            any,
+            all
+        };
+
+        membership_node_t(std::pmr::memory_resource* resource,
+                          operators::operator_code op,
+                          quantifier kind,
+                          slot_id_t probe,
+                          slot_id_t set,
+                          slot_id_t output);
+
+        core::error_t process(const graph_execution_context& context, uint64_t count) override;
+
+        operators::operator_code code() const noexcept { return op_; }
+        quantifier kind() const noexcept { return kind_; }
+
+        // The set is cast to `target` once, when its state is built
+        void set_element_cast(types::complex_logical_type target, casts::cast_t cast) {
+            element_target_ = std::move(target);
+            element_cast_ = std::move(cast);
+        }
+
+    private:
+        [[nodiscard]] core::error_t validate() const override;
+        void set_parameters(const storage_parameters*) noexcept override { rebound_ = true; }
+
+        [[nodiscard]] core::error_t ensure_state(const graph_execution_context& context);
+        [[nodiscard]] core::error_t build_state(const vector::vector_t& elements, uint64_t count);
+        [[nodiscard]] bool has_witness(const vector::vector_t& probe, uint64_t row, uint64_t hash) const;
+
+        operators::operator_code op_;
+        quantifier kind_;
+        // ALL tests the negated operator for a witness, then negates the answer
+        operators::operator_code witness_op_;
+        bool negated_;
+
+        types::complex_logical_type element_target_{types::logical_type::INVALID};
+        casts::cast_t element_cast_;
+
+        // -- state of the set bound last. rebound_ is raised by set_parameters(); only then the set is looked at again,
+        // and only a different buffer rebuilds the state.
+        bool rebound_{true};
+        bool ready_{false};
+        // references the set looked at: its buffers stay alive, so a new set cannot take their addresses
+        std::optional<vector::vector_t> set_;
+        uint64_t source_count_{0};
+        std::optional<vector::vector_t> elements_;
+        uint64_t element_count_{0};
+        uint64_t non_null_count_{0};
+        bool has_null_{false};
+        // <> : the first non-NULL element, and whether every other one equals it
+        uint64_t first_{0};
+        uint64_t first_hash_{0};
+        bool uniform_{true};
+        // < <= > >= : the extremes of the non-NULL elements
+        uint64_t min_{0};
+        uint64_t max_{0};
+        // =  : open addressing over the non-NULL elements, index + 1 (0 is empty), at most half full
+        std::optional<vector::vector_t> hashes_;
+        std::pmr::vector<uint32_t> table_;
+        uint32_t table_shift_{0};
     };
 
     using execution_node_ptr = boost::intrusive_ptr<execution_node_t>;
@@ -299,6 +375,13 @@ namespace components::execution_dag {
         node_id_t add_operator(operators::operator_code op, slot_id_t operand);
         node_id_t add_function(compute::function_ptr function, const slot_list_t& inputs, size_t output_count);
         node_id_t add_parameter(core::parameter_id_t id);
+        // `probe <op> ANY|ALL (set)`; op is a comparison. The set's element type must be the probe's, or be cast to
+        // it through set_membership_cast.
+        node_id_t add_membership(operators::operator_code op,
+                                 membership_node_t::quantifier kind,
+                                 slot_id_t probe,
+                                 slot_id_t set);
+        void set_membership_cast(node_id_t node, const types::complex_logical_type& target, casts::cast_t cast);
         node_id_t add_blend(blend_node_t::blend_kind kind, const slot_list_t& inputs);
         // Declares and returns N + 1 BOOLEAN mask slots (one per condition, plus the DEFAULT).
         node_id_t add_case_when(const slot_list_t& conditions, slot_list_t& masks);
@@ -337,7 +420,7 @@ namespace components::execution_dag {
         const std::pmr::vector<node_id_t>& order() const noexcept { return order_; }
 
         void set_output(const slot_list_t& selected);
-        void set_parameters(const parameter_map_t* parameters);
+        void set_parameters(const storage_parameters* parameters);
 
         // Validates, orders the nodes and allocates the slots
         [[nodiscard]] core::error_t prepare();
@@ -403,6 +486,8 @@ namespace components::execution_dag {
             bool bound{false};
             bool typed{false};
             bool constant{false};
+            // references a parameter's buffer, so it needs none of its own
+            bool parameter{false};
         };
 
         node_id_t append(execution_node_ptr node);
@@ -429,7 +514,7 @@ namespace components::execution_dag {
         // Row count per slot, parallel to data_storage_. Seeded from the input chunk for bound
         // slots, then written by each node as it executes.
         std::pmr::vector<uint64_t> slot_sizes_;
-        const parameter_map_t* parameters_{nullptr};
+        const storage_parameters* parameters_{nullptr};
         slot_list_t output_slots_;
         // Slots holding a grouping key, in the caller's key order
         slot_list_t key_slots_;

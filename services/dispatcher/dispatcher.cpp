@@ -740,7 +740,7 @@ namespace services::dispatcher {
         auto planned = services::planner::create_plan(cstor,
                                                       function_registry_,
                                                       plan,
-                                                      components::logical_plan::limit_t::unlimit(),
+                                                      components::logical_plan::limit_t::all(),
                                                       /*params=*/nullptr);
         if (planned.has_error()) {
             co_return core::error_on(resource(), planned.error());

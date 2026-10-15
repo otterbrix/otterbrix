@@ -1,3 +1,4 @@
+#include "parameter_equals.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_update.hpp>
@@ -25,9 +26,9 @@ using namespace components::expressions;
         }                                                                                                              \
         auto agg = result.parameters;                                                                                  \
         REQUIRE(node->to_string() == RESULT);                                                                          \
-        REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                                 \
+        REQUIRE(agg->parameters().size() == PARAMS.size());                                                            \
         for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                                   \
-            REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == PARAMS.at(i));                                \
+            REQUIRE(parameter_equals(*agg, core::parameter_id_t(uint32_t(i)), PARAMS.at(i)));                          \
         }                                                                                                              \
         auto updates = static_cast<components::logical_plan::node_update_t&>(*node).updates();                         \
         REQUIRE(updates.size() == FIELDS.size());                                                                      \
@@ -36,8 +37,8 @@ using namespace components::expressions;
         }                                                                                                              \
     }
 
-using v = components::types::logical_value_t;
-using vec = std::vector<v>;
+using components::vector::make_scalar;
+using vec = std::vector<components::vector::vector_t>;
 using fields = std::pmr::vector<expression_ptr>;
 
 // A SET value expression, keyed by the column it is assigned to.
@@ -64,8 +65,8 @@ TEST_CASE("components::sql::update") {
         f.emplace_back(
             set_const(&resource, components::expressions::key_t{&resource, "count"}, core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10;",
-                           R"_($update: <oid:0> {$match: {$all_true}, $limit: -1})_",
-                           vec({v(&resource, 10l)}),
+                           R"_($update: <oid:0> {$match: {$all_true}})_",
+                           vec({make_scalar(&resource, 10l)}),
                            f);
     }
 
@@ -74,8 +75,8 @@ TEST_CASE("components::sql::update") {
         f.emplace_back(
             set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET name = 'new name';",
-                           R"_($update: <oid:0> {$match: {$all_true}, $limit: -1})_",
-                           vec({v(&resource, "new name")}),
+                           R"_($update: <oid:0> {$match: {$all_true}})_",
+                           vec({make_scalar(&resource, "new name")}),
                            f);
     }
 
@@ -84,8 +85,8 @@ TEST_CASE("components::sql::update") {
         f.emplace_back(
             set_const(&resource, components::expressions::key_t{&resource, "is_doc"}, core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET is_doc = true;",
-                           R"_($update: <oid:0> {$match: {$all_true}, $limit: -1})_",
-                           vec({v(&resource, true)}),
+                           R"_($update: <oid:0> {$match: {$all_true}})_",
+                           vec({make_scalar(&resource, true)}),
                            f);
     }
 
@@ -98,8 +99,10 @@ TEST_CASE("components::sql::update") {
         f.emplace_back(
             set_const(&resource, components::expressions::key_t{&resource, "is_doc"}, core::parameter_id_t{2}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true;",
-                           R"_($update: <oid:0> {$match: {$all_true}, $limit: -1})_",
-                           vec({v(&resource, 10l), v(&resource, "new name"), v(&resource, true)}),
+                           R"_($update: <oid:0> {$match: {$all_true}})_",
+                           vec({make_scalar(&resource, 10l),
+                                make_scalar(&resource, "new name"),
+                                make_scalar(&resource, true)}),
                            f);
     }
 }
@@ -114,8 +117,8 @@ TEST_CASE("components::sql::update_where") {
         f.emplace_back(
             set_const(&resource, components::expressions::key_t{&resource, "count"}, core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10 WHERE id = 1;",
-                           R"_($update: <oid:0> {$match: {"id": {$eq: #1}}, $limit: -1})_",
-                           vec({v(&resource, 10l), v(&resource, 1l)}),
+                           R"_($update: <oid:0> {$match: {"id": {$eq: #1}}})_",
+                           vec({make_scalar(&resource, 10l), make_scalar(&resource, 1l)}),
                            f);
     }
 
@@ -124,8 +127,8 @@ TEST_CASE("components::sql::update_where") {
         f.emplace_back(
             set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET name = 'new name' WHERE name = 'old_name';",
-                           R"_($update: <oid:0> {$match: {"name": {$eq: #1}}, $limit: -1})_",
-                           vec({v(&resource, "new name"), v(&resource, "old_name")}),
+                           R"_($update: <oid:0> {$match: {"name": {$eq: #1}}})_",
+                           vec({make_scalar(&resource, "new name"), make_scalar(&resource, "old_name")}),
                            f);
     }
 
@@ -134,8 +137,8 @@ TEST_CASE("components::sql::update_where") {
         f.emplace_back(
             set_const(&resource, components::expressions::key_t{&resource, "is_doc"}, core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET is_doc = true WHERE is_doc = false;",
-                           R"_($update: <oid:0> {$match: {"is_doc": {$eq: #1}}, $limit: -1})_",
-                           vec({v(&resource, true), v(&resource, false)}),
+                           R"_($update: <oid:0> {$match: {"is_doc": {$eq: #1}}})_",
+                           vec({make_scalar(&resource, true), make_scalar(&resource, false)}),
                            f);
     }
 
@@ -150,13 +153,13 @@ TEST_CASE("components::sql::update_where") {
         TEST_SIMPLE_UPDATE(
             "UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true "
             "WHERE id > 10 AND name = 'old_name' AND is_doc = false;",
-            R"_($update: <oid:0> {$match: {$and: ["id": {$gt: #3}, "name": {$eq: #4}, "is_doc": {$eq: #5}]}, $limit: -1})_",
-            vec({v(&resource, 10l),
-                 v(&resource, "new name"),
-                 v(&resource, true),
-                 v(&resource, 10l),
-                 v(&resource, "old_name"),
-                 v(&resource, false)}),
+            R"_($update: <oid:0> {$match: {$and: ["id": {$gt: #3}, "name": {$eq: #4}, "is_doc": {$eq: #5}]}})_",
+            vec({make_scalar(&resource, 10l),
+                 make_scalar(&resource, "new name"),
+                 make_scalar(&resource, true),
+                 make_scalar(&resource, 10l),
+                 make_scalar(&resource, "old_name"),
+                 make_scalar(&resource, false)}),
             f);
     }
 }
@@ -174,8 +177,8 @@ TEST_CASE("components::sql::update_from") {
         price_expr->append_param(core::parameter_id_t{0});
         f.emplace_back(std::move(price));
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET price = price * 1.5;)_",
-                           R"_($update: <oid:0> {$match: {$all_true}, $limit: -1})_",
-                           vec({v(&resource, 1.5)}),
+                           R"_($update: <oid:0> {$match: {$all_true}})_",
+                           vec({make_scalar(&resource, 1.5)}),
                            f);
     }
 
@@ -194,7 +197,7 @@ TEST_CASE("components::sql::update_from") {
 SET price = OtherTestCollection.price - (OtherTestCollection.price * TestCollection.discount)
 FROM OtherTestCollection
 WHERE TestCollection.id = OtherTestCollection.id;)_",
-            R"_($update: <oid:0> {$match: {"id": {$eq: "id"}}, $limit: -1, $aggregate: {}})_",
+            R"_($update: <oid:0> {$match: {"id": {$eq: "id"}}, $aggregate: {}})_",
             vec({}),
             f);
     }
@@ -214,8 +217,8 @@ WHERE TestCollection.id = OtherTestCollection.id;)_",
         sum_expr->append_param(core::parameter_id_t{0});
         f.emplace_back(std::move(sum));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET struct_type.field = (struct_type).field + 1;",
-                           R"_($update: <oid:0> {$match: {$all_true}, $limit: -1})_",
-                           vec({v(&resource, 1l)}),
+                           R"_($update: <oid:0> {$match: {$all_true}})_",
+                           vec({make_scalar(&resource, 1l)}),
                            f);
     }
 
@@ -223,12 +226,16 @@ WHERE TestCollection.id = OtherTestCollection.id;)_",
         fields f;
         f.emplace_back(
             set_const(&resource, components::expressions::key_t{&resource, "array_type"}, core::parameter_id_t{0}));
+        const std::vector<components::vector::vector_t> elements{make_scalar(&resource, 1l),
+                                                                 make_scalar(&resource, 2l),
+                                                                 make_scalar(&resource, 3l),
+                                                                 make_scalar(&resource, 4l)};
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET array_type = ARRAY[1,2,3,4];",
-                           R"_($update: <oid:0> {$match: {$all_true}, $limit: -1})_",
-                           vec({components::types::logical_value_t::create_array(
+                           R"_($update: <oid:0> {$match: {$all_true}})_",
+                           vec({components::vector::make_array(
                                &arena_resource,
-                               components::types::logical_type::BIGINT,
-                               {v(&resource, 1l), v(&resource, 2l), v(&resource, 3l), v(&resource, 4l)})}),
+                               components::types::complex_logical_type{components::types::logical_type::BIGINT},
+                               elements)}),
                            f);
     }
 
@@ -240,8 +247,8 @@ WHERE TestCollection.id = OtherTestCollection.id;)_",
                                      &resource}},
                                  core::parameter_id_t{0}));
         TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET array_type[4] = 196;",
-                           R"_($update: <oid:0> {$match: {$all_true}, $limit: -1})_",
-                           vec({v(&resource, 196l)}),
+                           R"_($update: <oid:0> {$match: {$all_true}})_",
+                           vec({make_scalar(&resource, 196l)}),
                            f);
     }
 }

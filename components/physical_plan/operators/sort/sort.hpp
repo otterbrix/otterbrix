@@ -1,5 +1,5 @@
 #pragma once
-#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <functional>
 

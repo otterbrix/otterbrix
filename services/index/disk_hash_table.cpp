@@ -1,6 +1,6 @@
 #include "disk_hash_table.hpp"
 
-#include <components/index/logical_value_binary_codec.hpp>
+#include <components/index/binary_codec.hpp>
 
 #include "absl/crc/crc32c.h"
 

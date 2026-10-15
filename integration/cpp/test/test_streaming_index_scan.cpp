@@ -88,7 +88,9 @@ TEST_CASE("integration::cpp::streaming_index_scan::indexed_select_streams_many_w
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM IdxDb.t WHERE grp = 0;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kExpectedInGroup0));
+        auto cell0 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == static_cast<uint64_t>(kExpectedInGroup0));
     }
 }
 
@@ -109,8 +111,12 @@ TEST_CASE("integration::cpp::streaming_index_scan::point_lookup_and_empty_result
         auto cur = exec(dispatcher, "SELECT id, val FROM IdxDb.t WHERE id = 4000;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 4000);  // col id, row 0
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 40000); // col val, row 0
+        auto cell1 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == 4000);  // col id, row 0
+        auto cell2 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == 40000); // col val, row 0
     }
 
     // No matched id -> the source drains immediately; a scalar aggregate must still
@@ -119,7 +125,9 @@ TEST_CASE("integration::cpp::streaming_index_scan::point_lookup_and_empty_result
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM IdxDb.t WHERE id = 999999;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
+        auto cell3 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == 0);
     }
     {
         auto cur = exec(dispatcher, "SELECT id FROM IdxDb.t WHERE id = 999999;");
@@ -202,6 +210,8 @@ TEST_CASE("integration::cpp::streaming_index_scan::indexed_delete_and_update") {
         auto cur = exec(dispatcher, "SELECT val FROM IdxDb.t WHERE id = 4000;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 40000 + kBump);
+        auto cell4 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == 40000 + kBump);
     }
 }

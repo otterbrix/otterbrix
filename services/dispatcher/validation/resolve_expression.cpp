@@ -3,6 +3,7 @@
 #include <services/dispatcher/resolve_arithmetic.hpp>
 #include <services/dispatcher/resolve_function.hpp>
 
+#include <components/catalog/type_display.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -80,12 +81,8 @@ namespace services::dispatcher::validation {
                     return invalid_type;
                 }
                 if (is_parameter(operand)) {
-                    auto bound = context_.parameters.parameters.find(as_parameter(operand));
-                    if (bound == context_.parameters.parameters.end()) {
-                        return fail(core::error_code_t::invalid_parameter, "unbound parameter in expression");
-                    }
                     last_cardinality_ = cardinality_t::constant;
-                    return bound->second.type();
+                    return context_.parameters.type(as_parameter(operand));
                 }
                 if (std::holds_alternative<components::expressions::key_t>(operand)) {
                     return column(std::get<components::expressions::key_t>(operand), inside_aggregate);
@@ -216,7 +213,7 @@ namespace services::dispatcher::validation {
                     }
                     if (!components::expressions::same_computation(expression,
                                                                    candidate.expression,
-                                                                   context_.parameters.parameters)) {
+                                                                   context_.parameters)) {
                         continue;
                     }
                     auto reference =
@@ -272,6 +269,65 @@ namespace services::dispatcher::validation {
                 comparison->set_function(resolved_copy(resolved.value().pin));
             }
 
+            static const char* operator_symbol(compare_type op) {
+                switch (op) {
+                    case compare_type::eq:
+                        return "=";
+                    case compare_type::ne:
+                        return "<>";
+                    case compare_type::lt:
+                        return "<";
+                    case compare_type::lte:
+                        return "<=";
+                    case compare_type::gt:
+                        return ">";
+                    case compare_type::gte:
+                        return ">=";
+                    default:
+                        return "?";
+                }
+            }
+
+            // `probe <op> ANY|ALL (set)` tests the probe against the elements in one type. The probe takes a cast
+            // here; the set is cast once, by the node that tests it, and the target is kept on the comparison.
+            void unify_quantified_set(compare_expression_t* comparison, const complex_logical_type& probe) {
+                const auto& set_type = context_.parameters.type(as_parameter(comparison->right()));
+                // the empty-set sentinel is not an array; an untyped NULL probe takes the set's type
+                if (set_type.type() != logical_type::ARRAY || probe.type() == logical_type::NA) {
+                    return;
+                }
+                const auto& element = set_type.child_type();
+                auto no_operator = [&](const complex_logical_type& left, const complex_logical_type& right) {
+                    fail(core::error_code_t::invalid_parameter,
+                         message(context_.resource,
+                                 "operator does not exist: ",
+                                 components::catalog::format_type_be(left, false),
+                                 " ",
+                                 operator_symbol(comparison->inner_op()),
+                                 " ",
+                                 components::catalog::format_type_be(right, false)));
+                };
+                if (element.type() == logical_type::NA) {
+                    // PostgreSQL resolves an untyped NULL column of a sub-select as text
+                    if (probe.type() != logical_type::STRING_LITERAL) {
+                        no_operator(probe, complex_logical_type{logical_type::STRING_LITERAL});
+                    }
+                    return;
+                }
+                if (element == probe) {
+                    return;
+                }
+                auto common = context_.cast_registry.find_best_common_type(probe, element);
+                if (!common.has_value()) {
+                    no_operator(probe, element);
+                    return;
+                }
+                splice_cast(context_.resource, comparison->left(), common->type, common->left_cast);
+                if (common->type != element) {
+                    comparison->set_set_element_cast(common->type, std::move(common->right_cast));
+                }
+            }
+
             void resolve_compare(compare_expression_t* comparison, bool inside_aggregate) {
                 switch (comparison->type()) {
                     case compare_type::invalid:
@@ -322,6 +378,13 @@ namespace services::dispatcher::validation {
                         }
                         if (comparison->inner_op() == compare_type::regex) {
                             resolve_regex_uid(comparison, subject, complex_logical_type{logical_type::STRING_LITERAL});
+                            if (error_.contains_error()) {
+                                return;
+                            }
+                        } else if ((comparison->type() == compare_type::any ||
+                                    comparison->type() == compare_type::all) &&
+                                   is_parameter(comparison->right())) {
+                            unify_quantified_set(comparison, subject);
                             if (error_.contains_error()) {
                                 return;
                             }
@@ -409,7 +472,7 @@ namespace services::dispatcher::validation {
                     fail(core::error_code_t::schema_error,
                          message(context_.resource,
                                  "type ",
-                                 describe_type(conversion->result_type()),
+                                 components::catalog::describe_type(conversion->result_type()),
                                  " is not supported"));
                     return;
                 }
@@ -420,9 +483,9 @@ namespace services::dispatcher::validation {
                     fail(core::error_code_t::invalid_parameter,
                          message(context_.resource,
                                  "no cast from ",
-                                 describe_type(source),
+                                 components::catalog::describe_type(source),
                                  " to ",
-                                 describe_type(conversion->result_type())));
+                                 components::catalog::describe_type(conversion->result_type())));
                     return;
                 }
                 conversion->set_cast(std::move(*resolved));
@@ -690,7 +753,7 @@ namespace services::dispatcher::validation {
                                  "operator ",
                                  to_string(scalar->type()),
                                  " is not defined for type ",
-                                 describe_type(operand)));
+                                 components::catalog::describe_type(operand)));
                     return;
                 }
                 scalar->set_result_type(resolved.op.result);
@@ -726,9 +789,9 @@ namespace services::dispatcher::validation {
                                  "operator ",
                                  to_string(scalar->type()),
                                  " is not defined for types ",
-                                 describe_type(left),
+                                 components::catalog::describe_type(left),
                                  " and ",
-                                 describe_type(right)));
+                                 components::catalog::describe_type(right)));
                     return;
                 }
                 scalar->set_result_type(resolved.op.result);
@@ -758,9 +821,9 @@ namespace services::dispatcher::validation {
                          message(context_.resource,
                                  what,
                                  " must be ",
-                                 describe_type(wanted),
+                                 components::catalog::describe_type(wanted),
                                  ", not ",
-                                 describe_type(actual)));
+                                 components::catalog::describe_type(actual)));
                     return false;
                 }
                 splice_cast(context_.resource, operand, wanted, *cast);

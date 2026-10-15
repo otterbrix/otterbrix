@@ -17,7 +17,7 @@ namespace components::operators {
         operator_match_t(std::pmr::memory_resource* resource,
                          log_t log,
                          const expressions::expression_ptr& expression,
-                         logical_plan::limit_t limit);
+                         logical_plan::row_cap_t cap);
 
         // Streaming whenever there is input; safe over a sink only because row_ids propagate solely
         // when real, and cached types live on the stable resource_, not a transient sink arena.
@@ -33,11 +33,11 @@ namespace components::operators {
 
     private:
         const expressions::expression_ptr expression_;
-        const logical_plan::limit_t limit_;
+        const logical_plan::row_cap_t cap_;
 
-        // Predicate-true rows seen across all push() batches; limit_.check() reads it so a LIMIT
+        // Predicate-true rows seen across all push() batches; cap_.admits() reads it so a LIMIT
         // caps the total across batches.
-        int64_t stream_limit_total_{0};
+        uint64_t stream_limit_total_{0};
 
         std::unique_ptr<execution_dag::execution_dag_t> graph_;
         expressions::condition_kind condition_{expressions::condition_kind::always};
@@ -50,7 +50,7 @@ namespace components::operators {
                                                   bool sparse,
                                                   const std::pmr::vector<types::complex_logical_type>& types,
                                                   const vector::data_chunk_t& chunk,
-                                                  int64_t& limit_total,
+                                                  uint64_t& limit_total,
                                                   chunks_vector_t& out);
 
         void build_schema_metadata_(const vector::data_chunk_t& sample,

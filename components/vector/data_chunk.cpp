@@ -1,4 +1,5 @@
 #include "data_chunk.hpp"
+#include "vector_builders.hpp"
 #include "vector_operations.hpp"
 
 #include <algorithm>
@@ -62,7 +63,6 @@ namespace {
         return {.array = nullptr, .index = 0, .leaf = sub_column};
     }
 
-    // Uses typed vector_ops::copy, not per-element logical_value_t, to avoid a round-trip per row.
     vector_t align_to_rows(const vector_t& array, size_t index, uint64_t count, std::pmr::memory_resource* resource) {
         const vector_t& child = array.entry();
         const bool is_list = array.type().type() == types::logical_type::LIST;
@@ -184,52 +184,6 @@ namespace components::vector {
         data.clear();
         capacity_ = 0;
         set_cardinality(0);
-    }
-
-    types::logical_value_t data_chunk_t::value(uint64_t col_idx, uint64_t index) const {
-        assert(index < size());
-        return data[col_idx].value(index);
-    }
-
-    types::logical_value_t data_chunk_t::value(const std::pmr::vector<size_t>& col_path, uint64_t index) const {
-        auto element = data[col_path.front()].resolve_nested_element(index, col_path, 1);
-        if (element.is_null) {
-            return types::logical_value_t{element.leaf->resource(),
-                                          types::complex_logical_type{types::logical_type::NA}};
-        }
-        return element.leaf->value(element.index);
-    }
-
-    void data_chunk_t::set_value(uint64_t col_idx, uint64_t index, const types::logical_value_t& val) {
-        data[col_idx].set_value(index, val);
-    }
-
-    void data_chunk_t::set_value(const std::pmr::vector<size_t>& col_path,
-                                 uint64_t index,
-                                 const types::logical_value_t& val) {
-        vector_t* sub_column = &data[col_path.front()];
-        for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
-            if (std::next(it) == col_path.end()) {
-                if (sub_column->type().type() == types::logical_type::ARRAY) {
-                    auto stride =
-                        static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())->size();
-                    return sub_column->entry().set_value(index * stride + *it, val);
-                } else if (sub_column->type().type() == types::logical_type::LIST) {
-                    // Silently ignored, not grown — a LIST row's slice is a packed (offset,length)
-                    // into a shared child; there's no fixed width to extend.
-                    const auto& offlen = sub_column->data<types::list_entry_t>()[index];
-                    if (*it >= offlen.length) {
-                        return;
-                    }
-                    return sub_column->entry().set_value(offlen.offset + *it, val);
-                } else {
-                    return sub_column->entries()[*it]->set_value(index, val);
-                }
-            } else {
-                sub_column = sub_column->entries()[*it].get();
-            }
-        }
-        return sub_column->set_value(index, val);
     }
 
     bool data_chunk_t::is_null(uint64_t col_idx, uint64_t index) const { return data[col_idx].is_null(index); }
@@ -542,7 +496,7 @@ namespace components::vector {
         }
     }
 
-    core::result_wrapper_t<types::logical_value_t> compact_to_bool_value(const std::pmr::vector<data_chunk_t>& chunks) {
+    core::result_wrapper_t<vector_t> compact_to_bool_value(const std::pmr::vector<data_chunk_t>& chunks) {
         bool any = false;
         for (const auto& c : chunks) {
             if (!c.empty()) {
@@ -550,11 +504,10 @@ namespace components::vector {
                 break;
             }
         }
-        return types::logical_value_t{chunks.front().resource(), any};
+        return make_scalar(chunks.front().resource(), any);
     }
 
-    core::result_wrapper_t<types::logical_value_t>
-    compact_to_single_value(const std::pmr::vector<data_chunk_t>& chunks) {
+    core::result_wrapper_t<vector_t> compact_to_single_value(const std::pmr::vector<data_chunk_t>& chunks) {
         size_t total_rows = 0;
         size_t cols = 0;
         for (const auto& c : chunks) {
@@ -566,37 +519,27 @@ namespace components::vector {
         if (cols == 1 && total_rows == 1) {
             for (const auto& c : chunks) {
                 if (c.size() == 1) {
-                    return c.value(0, 0);
+                    return make_constant_copy(c.resource(), c.data[0]);
                 }
             }
         }
-        // No cell means SQL NULL, not an error — covers an empty scalar sub-query and the zero-column
+        // No cell means SQL NULL, not an error -- covers an empty scalar sub-query and the zero-column
         // row an ungrouped aggregate emits when its filtered input matches nothing.
         if (total_rows == 0 || cols == 0) {
-            return types::logical_value_t{chunks.front().resource(), nullptr};
+            return make_null(chunks.front().resource(), types::complex_logical_type{types::logical_type::NA});
         }
         return core::error_t(
             core::error_code_t::conversion_failure,
             std::pmr::string{"could not convert data_chunk_t to a single value", chunks.front().resource()});
     }
 
-    core::result_wrapper_t<types::logical_value_t>
-    compact_to_array_value(const std::pmr::vector<data_chunk_t>& chunks) {
-        // Gathers every row of every chunk, unbounded — PostgreSQL treats `x IN (SELECT ...)` as
-        // a semi-join with no row cap, not capped at chunk 0's ≤1024.
+    core::result_wrapper_t<vector_t> compact_to_array_value(const std::pmr::vector<data_chunk_t>& chunks) {
+        // Gathers every row of every chunk, unbounded -- PostgreSQL treats `x IN (SELECT ...)` as
+        // a semi-join with no row cap, not capped at chunk 0's <=1024.
         size_t total_rows = 0;
-        for (const auto& c : chunks) {
-            total_rows += c.size();
-        }
-        if (total_rows == 0) {
-            // An empty sub-query is an empty semi-join per PostgreSQL (`IN ()` matches nothing,
-            // `NOT IN ()` everything), not a type error — reuses the zero-row scalar sub-query's NA-null sentinel.
-            return types::logical_value_t{chunks.front().resource(), nullptr};
-        }
-        std::vector<types::logical_value_t> array;
-        array.reserve(total_rows);
         const data_chunk_t* typed = nullptr;
         for (const auto& c : chunks) {
+            total_rows += c.size();
             if (c.empty()) {
                 continue;
             }
@@ -607,34 +550,34 @@ namespace components::vector {
             }
             if (typed == nullptr) {
                 typed = &c;
-            }
-            for (size_t i = 0; i < c.size(); ++i) {
-                array.emplace_back(c.value(0, i));
+            } else if (c.data[0].type() != typed->data[0].type()) {
+                return core::error_t(
+                    core::error_code_t::conversion_failure,
+                    std::pmr::string{"could not convert data_chunk_t to a array value: the column changes its type "
+                                     "between chunks",
+                                     chunks.front().resource()});
             }
         }
-        return types::logical_value_t::create_array(chunks.front().resource(), typed->data[0].type(), array);
-    }
-
-    core::result_wrapper_t<types::logical_value_t> compact_to_row_value(const std::pmr::vector<data_chunk_t>& chunks) {
-        size_t total_rows = 0;
+        if (total_rows == 0) {
+            // An empty sub-query is an empty semi-join per PostgreSQL (`IN ()` matches nothing,
+            // `NOT IN ()` everything), not a type error -- reuses the zero-row scalar sub-query's NA-null sentinel.
+            return make_null(chunks.front().resource(), types::complex_logical_type{types::logical_type::NA});
+        }
+        auto* resource = chunks.front().resource();
+        vector_t result(resource,
+                        types::complex_logical_type::create_array(typed->data[0].type(), total_rows),
+                        1);
+        result.set_vector_type(vector_type::CONSTANT);
+        auto& elements = result.entry();
+        uint64_t offset = 0;
         for (const auto& c : chunks) {
-            total_rows += c.size();
-        }
-        if (total_rows == 1) {
-            for (const auto& c : chunks) {
-                if (c.size() == 1) {
-                    std::vector<types::logical_value_t> fields;
-                    fields.reserve(c.column_count());
-                    for (size_t i = 0; i < c.column_count(); ++i) {
-                        fields.emplace_back(c.value(i, 0));
-                    }
-                    return types::logical_value_t::create_struct(c.resource(), "", fields);
-                }
+            if (c.empty()) {
+                continue;
             }
+            vector_ops::copy(c.data[0], elements, c.size(), 0, offset);
+            offset += c.size();
         }
-        return core::error_t(
-            core::error_code_t::conversion_failure,
-            std::pmr::string{"could not convert data_chunk_t to a row value", chunks.front().resource()});
+        return result;
     }
 
 } // namespace components::vector

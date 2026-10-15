@@ -156,10 +156,17 @@ static void print_cursor(components::cursor::cursor_t_ptr& cur) {
         std::cout << "  ";
         for (size_t c = 0; c < ncols; ++c) {
             if (c) std::cout << " | ";
-            auto val = cur->value(c, r);
-            auto lt  = val.type().type();
+            auto is_null = cur->is_null(c, r);
+            if (is_null.has_error()) {
+                std::cout << "ERROR";
+                continue;
+            }
+            if (is_null.value()) {
+                std::cout << "NULL";
+                continue;
+            }
             using LT = components::types::logical_type;
-            switch (lt) {
+            switch (cur->type_data()[c].type()) {
                 case LT::BIGINT:
                 case LT::INTEGER:
                 case LT::SMALLINT:
@@ -167,13 +174,22 @@ static void print_cursor(components::cursor::cursor_t_ptr& cur) {
                 case LT::UTINYINT:
                 case LT::USMALLINT:
                 case LT::UINTEGER:
-                case LT::UBIGINT:
-                    std::cout << val.value<int64_t>();
+                case LT::UBIGINT: {
+                    auto cell = cur->get<int64_t>(c, r);
+                    if (cell.has_error()) {
+                        std::cout << "ERROR";
+                    } else {
+                        std::cout << cell.value();
+                    }
                     break;
-                case LT::STRING_LITERAL:
-                case LT::ANY: {
-                    auto* sp = val.value<std::string*>();
-                    std::cout << (sp ? *sp : "NULL");
+                }
+                case LT::STRING_LITERAL: {
+                    auto cell = cur->get<std::string_view>(c, r);
+                    if (cell.has_error()) {
+                        std::cout << "ERROR";
+                    } else {
+                        std::cout << cell.value();
+                    }
                     break;
                 }
                 default:

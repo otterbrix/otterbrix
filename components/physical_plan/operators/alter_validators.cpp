@@ -3,7 +3,6 @@
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 

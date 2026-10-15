@@ -6,10 +6,11 @@ set( ${PROJECT_NAME}_SOURCES
         test_vector.cpp
         test_arrow_conversion.cpp
         test_validity_mask.cpp
-        test_arithmetic_empty.cpp
         test_apply_operator.cpp
         test_cast_copy_guards.cpp
         test_nested_null_read.cpp
+        test_vector_builders.cpp
+        test_storage_parameters.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

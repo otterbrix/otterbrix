@@ -5,7 +5,6 @@
 #include "constraint_util.hpp"
 
 #include <components/context/context.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/vector/cell_equal.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>

@@ -15,10 +15,10 @@ namespace components::operators {
     operator_match_t::operator_match_t(std::pmr::memory_resource* resource,
                                        log_t log,
                                        const expressions::expression_ptr& expression,
-                                       logical_plan::limit_t limit)
+                                       logical_plan::row_cap_t cap)
         : read_only_operator_t(resource, log, operator_type::match)
         , expression_(std::move(expression))
-        , limit_(limit) {}
+        , cap_(cap) {}
 
     // Build the predicate + the populated-column projection metadata for one input
     // chunk schema. Shared one-time setup for both the materialized and the streaming
@@ -75,10 +75,10 @@ namespace components::operators {
                                                   bool sparse,
                                                   const std::pmr::vector<types::complex_logical_type>& types,
                                                   const vector::data_chunk_t& chunk,
-                                                  int64_t& limit_total,
+                                                  uint64_t& limit_total,
                                                   chunks_vector_t& out) {
         // Already at the LIMIT, or an empty input batch: nothing to emit.
-        if (!limit_.check(limit_total) || chunk.size() == 0) {
+        if (!cap_.admits(limit_total) || chunk.size() == 0) {
             return core::error_t::no_error();
         }
 
@@ -99,7 +99,7 @@ namespace components::operators {
             // operator_limit for SELECT. OFFSET is applied by operator_limit (SELECT) and
             // does not exist for DML, so this stream is never skipped, only capped.
             ++limit_total;
-            if (!limit_.check(limit_total)) {
+            if (!cap_.admits(limit_total)) {
                 break;
             }
         }
@@ -108,7 +108,7 @@ namespace components::operators {
         }
 
         // TYPED, no-box gather, the same one operator_having uses: data_chunk_t::copy routes each
-        // column through vector_ops::copy instead of building a logical_value_t per cell, skips
+        // column through vector_ops::copy, skips
         // placeholder columns and sets the target cardinality itself. row_ids are gathered
         // unconditionally: over a SINK the input's are zero-filled placeholders, so gathering them
         // reproduces exactly the zero sentinel the per-cell path left behind.
@@ -146,7 +146,7 @@ namespace components::operators {
             condition_ = expressions::classify_condition(expression_);
             if (condition_ == expressions::condition_kind::computed) {
                 auto built = expressions::build_condition_graph(stream_resource_,
-                                                                ctx->parameters.parameters,
+                                                                ctx->parameters,
                                                                 expression_.get(),
                                                                 stream_types_);
                 if (built.has_error()) {
@@ -162,7 +162,7 @@ namespace components::operators {
         std::optional<vector::data_chunk_t> produced;
         if (graph_) {
             // rebound per outer row by LATERAL, so the parameters are re-read for every chunk
-            graph_->set_parameters(&ctx->parameters.parameters);
+            graph_->set_parameters(&ctx->parameters);
             if (auto error = graph_->process(input, ctx->execution_context); error.contains_error()) {
                 return error;
             }

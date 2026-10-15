@@ -35,10 +35,18 @@ namespace {
         using components::types::int128_t;
         INFO("w.widest row " << row);
         // NUMERIC(38,38), NUMERIC(38,0), NUMERIC(38,20), NUMERIC(19,0) -- in that column order.
-        CHECK(cursor->value(0, row).value<int128_t>() == int128_t{0});
-        CHECK(cursor->value(1, row).value<int128_t>() == int128_t{sign * 2000000000LL});
-        CHECK(cursor->value(2, row).value<int128_t>() == WIDE_SCALED_PAYLOAD * sign);
-        CHECK(cursor->value(3, row).value<int128_t>() == int128_t{sign * 1234567890LL});
+        auto cell0 = cursor->get<int128_t>(0, row);
+        REQUIRE_FALSE(cell0.has_error());
+        CHECK(cell0.value() == int128_t{0});
+        auto cell1 = cursor->get<int128_t>(1, row);
+        REQUIRE_FALSE(cell1.has_error());
+        CHECK(cell1.value() == int128_t{sign * 2000000000LL});
+        auto cell2 = cursor->get<int128_t>(2, row);
+        REQUIRE_FALSE(cell2.has_error());
+        CHECK(cell2.value() == WIDE_SCALED_PAYLOAD * sign);
+        auto cell3 = cursor->get<int128_t>(3, row);
+        REQUIRE_FALSE(cell3.has_error());
+        CHECK(cell3.value() == int128_t{sign * 1234567890LL});
     }
 
 } // namespace
@@ -110,7 +118,7 @@ TEST_CASE("integration::cpp::test_type_spec_write_gate::legal_decimal_boundaries
             auto cur = exec(d, "SELECT d38, d38z, d38s, d19 FROM w.widest ORDER BY id;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
-            REQUIRE(cur->value(2, 0).type().type() == components::types::logical_type::DECIMAL);
+            REQUIRE(cur->type_data()[2].type() == components::types::logical_type::DECIMAL);
             check_wide_row(cur, 0, 1);
             check_wide_row(cur, 1, -1);
         }
@@ -132,7 +140,7 @@ TEST_CASE("integration::cpp::test_type_spec_write_gate::legal_decimal_boundaries
             auto wide = exec(d, "SELECT d38, d38z, d38s, d19 FROM w.widest ORDER BY id;");
             REQUIRE(wide->is_success());
             REQUIRE(wide->size() == 2);
-            REQUIRE(wide->value(2, 0).type().type() == components::types::logical_type::DECIMAL);
+            REQUIRE(wide->type_data()[2].type() == components::types::logical_type::DECIMAL);
             check_wide_row(wide, 0, 1);
             check_wide_row(wide, 1, -1);
         }

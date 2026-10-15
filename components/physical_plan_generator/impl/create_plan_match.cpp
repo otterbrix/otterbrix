@@ -137,7 +137,7 @@ namespace services::planner::impl {
         plan_result_t create_plan_match_(const context_storage_t& context,
                                          components::catalog::oid_t table_oid,
                                          const components::expressions::expression_ptr& expr,
-                                         components::logical_plan::limit_t limit,
+                                         components::logical_plan::row_cap_t cap,
                                          const std::vector<size_t>& projected_cols) {
             if (context.has_table_oid(table_oid)) {
                 // TODO: function_expr in scans
@@ -150,7 +150,6 @@ namespace services::planner::impl {
                                                     : std::get<expr::key_t>(comp_expr->right());
                             auto param_id = key_on_left ? std::get<core::parameter_id_t>(comp_expr->right())
                                                         : std::get<core::parameter_id_t>(comp_expr->left());
-                            auto& value = get_parameter(context.parameters, param_id);
                             auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
                             auto preferred_index_type = context.preferred_index_type_for_compare(table_oid, key, ctype);
                             return boost::intrusive_ptr(
@@ -158,10 +157,10 @@ namespace services::planner::impl {
                                                                       context.log.clone(),
                                                                       table_oid,
                                                                       key,
-                                                                      value,
+                                                                      param_id,
                                                                       ctype,
                                                                       preferred_index_type,
-                                                                      limit,
+                                                                      cap,
                                                                       projected_cols,
                                                                       indexed_chunk_position(context, table_oid, key)));
                         }
@@ -171,7 +170,7 @@ namespace services::planner::impl {
                                                                                      context.log.clone(),
                                                                                      table_oid,
                                                                                      comp_expr,
-                                                                                     limit,
+                                                                                     cap,
                                                                                      projected_cols));
                 } else {
                     // The inner full_scan is unlimited because operator_match filters above it; capping
@@ -182,32 +181,32 @@ namespace services::planner::impl {
                         boost::intrusive_ptr(new components::operators::operator_match_t(context.resource,
                                                                                          context.log.clone(),
                                                                                          expr,
-                                                                                         limit));
+                                                                                         cap));
                     match_operator->set_children(boost::intrusive_ptr(
                         new components::operators::full_scan(context.resource,
                                                              context.log.clone(),
                                                              table_oid,
                                                              nullptr,
-                                                             components::logical_plan::limit_t::unlimit(),
+                                                             components::logical_plan::row_cap_t::uncapped(),
                                                              projected_cols)));
                     return match_operator;
                 }
             } else {
-                return boost::intrusive_ptr(new components::operators::operator_match_t(nullptr, log_t{}, expr, limit));
+                return boost::intrusive_ptr(new components::operators::operator_match_t(nullptr, log_t{}, expr, cap));
             }
         }
     } // namespace
 
     plan_result_t create_plan_match(const context_storage_t& context,
                                     const components::logical_plan::node_ptr& node,
-                                    components::logical_plan::limit_t limit) {
+                                    components::logical_plan::row_cap_t cap) {
         static const std::vector<size_t> empty_cols;
-        return create_plan_match(context, node, limit, empty_cols);
+        return create_plan_match(context, node, cap, empty_cols);
     }
 
     plan_result_t create_plan_match(const context_storage_t& context,
                                     const components::logical_plan::node_ptr& node,
-                                    components::logical_plan::limit_t limit,
+                                    components::logical_plan::row_cap_t cap,
                                     const std::vector<size_t>& projected_cols) {
         if (node->expressions().empty()) {
             // relkind::computed ('g') columns are read live by chunk_position, resolved at resolve-table
@@ -228,7 +227,7 @@ namespace services::planner::impl {
             if (context.has_table_oid(node->table_oid())) {
                 return boost::intrusive_ptr(new components::operators::transfer_scan(context.resource,
                                                                                      node->table_oid(),
-                                                                                     limit,
+                                                                                     cap,
                                                                                      std::move(effective_cols)));
             }
             // node->source() — not the oid, which is INVALID_OID either way — says which absent-table
@@ -238,7 +237,7 @@ namespace services::planner::impl {
                     // Emits a synthetic 1-row placeholder batch (transfer_scan::source_next).
                     return boost::intrusive_ptr(new components::operators::transfer_scan(context.resource,
                                                                                          node->table_oid(),
-                                                                                         limit,
+                                                                                         cap,
                                                                                          std::move(effective_cols)));
                 case components::logical_plan::match_source::table: {
                     // Validation should refuse a named table with an unresolved oid before plan generation;
@@ -257,7 +256,7 @@ namespace services::planner::impl {
             return create_plan_match_(context,
                                       match_node->table_oid(),
                                       match_node->expressions()[0],
-                                      limit,
+                                      cap,
                                       projected_cols);
         }
     }

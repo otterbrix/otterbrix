@@ -1,3 +1,4 @@
+#include "parameter_equals.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
@@ -23,14 +24,14 @@ using namespace components::sql::transform;
         auto agg = result.parameters;                                                                                  \
         REQUIRE(node->type() == components::logical_plan::node_type::delete_t);                                        \
         REQUIRE(node->to_string() == RESULT);                                                                          \
-        REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                                 \
+        REQUIRE(agg->parameters().size() == PARAMS.size());                                                            \
         for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                                   \
-            REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == PARAMS.at(i));                                \
+            REQUIRE(parameter_equals(*agg, core::parameter_id_t(uint32_t(i)), PARAMS.at(i)));                          \
         }                                                                                                              \
     }
 
-using v = components::types::logical_value_t;
-using vec = std::vector<v>;
+using components::vector::make_scalar;
+using vec = std::vector<components::vector::vector_t>;
 
 TEST_CASE("components::sql::delete_from_where") {
     auto resource = core::pmr::otterbrix_resource();
@@ -38,24 +39,24 @@ TEST_CASE("components::sql::delete_from_where") {
     transform::transformer transformer(&resource);
 
     TEST_SIMPLE_DELETE("DELETE FROM TestDatabase.TestCollection WHERE number == 10;",
-                       R"_($delete: <oid:0> {$match: {"number": {$eq: #0}}, $limit: -1})_",
-                       vec({v(&resource, 10l)}));
+                       R"_($delete: <oid:0> {$match: {"number": {$eq: #0}}})_",
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_DELETE("DELETE FROM TestDatabase.TestCollection WHERE (struct_type).number == 10;",
-                       R"_($delete: <oid:0> {$match: {"struct_type/number": {$eq: #0}}, $limit: -1})_",
-                       vec({v(&resource, 10l)}));
+                       R"_($delete: <oid:0> {$match: {"struct_type/number": {$eq: #0}}})_",
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_DELETE("DELETE FROM TestDatabase.TestCollection WHERE array_type[15] == 10;",
-                       R"_($delete: <oid:0> {$match: {"array_type/15": {$eq: #0}}, $limit: -1})_",
-                       vec({v(&resource, 10l)}));
+                       R"_($delete: <oid:0> {$match: {"array_type/15": {$eq: #0}}})_",
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_DELETE(
         "DELETE FROM TestDatabase.TestCollection WHERE NOT (number = 10) AND NOT(name = 'doc 10' OR count = 2);",
-        R"_($delete: <oid:0> {$match: {$and: [$not: ["number": {$eq: #0}], $not: [$or: ["name": {$eq: #1}, "count": {$eq: #2}]]]}, $limit: -1})_",
-        vec({v(&resource, 10l), v(&resource, std::string("doc 10")), v(&resource, 2l)}));
+        R"_($delete: <oid:0> {$match: {$and: [$not: ["number": {$eq: #0}], $not: [$or: ["name": {$eq: #1}, "count": {$eq: #2}]]]}})_",
+        vec({make_scalar(&resource, 10l), make_scalar(&resource, std::string("doc 10")), make_scalar(&resource, 2l)}));
 
     TEST_SIMPLE_DELETE("DELETE FROM TestDatabase.TestCollection USING TestDatabase.OtherTestCollection WHERE "
                        "TestCollection.number = OtherTestCollection.number;",
-                       R"_($delete: <oid:0> {$match: {"number": {$eq: "number"}}, $limit: -1, $aggregate: {}})_",
+                       R"_($delete: <oid:0> {$match: {"number": {$eq: "number"}}, $aggregate: {}})_",
                        vec());
 }

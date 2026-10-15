@@ -72,7 +72,7 @@ namespace components::operators {
                                                        vector::DEFAULT_VECTOR_CAPACITY);
             }
         }
-        computed_keys_graph_->set_parameters(&pipeline_context->parameters.parameters);
+        computed_keys_graph_->set_parameters(&pipeline_context->parameters);
         if (auto error = computed_keys_graph_->process(*chunk, pipeline_context->execution_context);
             error.contains_error()) {
             return error;
@@ -118,7 +118,7 @@ namespace components::operators {
             auto expression =
                 expressions::make_scalar_expression(resource_, expressions::scalar_type::get_field, field);
             auto slot = expressions::build_expression(graph_.get(),
-                                                      pipeline_context->parameters.parameters,
+                                                      pipeline_context->parameters,
                                                       expression.get(),
                                                       types);
             if (slot.has_error()) {
@@ -132,7 +132,7 @@ namespace components::operators {
         outputs.reserve(outputs_.size());
         for (const auto& output : outputs_) {
             auto slot = expressions::build_expression(graph_.get(),
-                                                      pipeline_context->parameters.parameters,
+                                                      pipeline_context->parameters,
                                                       output.get(),
                                                       types);
             if (slot.has_error()) {
@@ -141,7 +141,7 @@ namespace components::operators {
             outputs.push_back(slot.value());
         }
         graph_->set_output(outputs);
-        graph_->set_parameters(&pipeline_context->parameters.parameters);
+        graph_->set_parameters(&pipeline_context->parameters);
         if (auto error = graph_->prepare(); error.contains_error()) {
             return error;
         }
@@ -180,12 +180,7 @@ namespace components::operators {
     bool operator_hash_group_t::keys_equal(const vector::data_chunk_t& keys, uint64_t row, uint32_t group) const {
         const auto& block = key_blocks_[group / vector::DEFAULT_VECTOR_CAPACITY];
         const uint64_t block_row = group % vector::DEFAULT_VECTOR_CAPACITY;
-        for (size_t key = 0; key < keys.column_count(); key++) {
-            if (!vector::cells_equal(keys.data[key], row, block.data[key], block_row)) {
-                return false;
-            }
-        }
-        return true;
+        return vector::rows_equal(keys, row, block, block_row);
     }
 
     void operator_hash_group_t::grow_index() {

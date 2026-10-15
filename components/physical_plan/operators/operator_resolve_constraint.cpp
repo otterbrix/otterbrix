@@ -7,7 +7,6 @@
 #include <components/context/context.hpp>
 #include <components/logical_plan/forward.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>

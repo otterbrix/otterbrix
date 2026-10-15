@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "index_fixture_path.hpp"
+#include <cstring>
 
 using services::index::tests::index_fixture_path;
 using services::index::tests::index_fixture_root;

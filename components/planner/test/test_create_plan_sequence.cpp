@@ -49,7 +49,7 @@ TEST_CASE("physical_plan_generator::sequence::an_unlowerable_first_child_refuses
     seq->append_child(make_unlowerable_leaf(res));
     seq->append_child(make_lowerable_alter_add(res, "c1"));
 
-    auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+    auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::all(), nullptr);
 
     INFO("the first child failed to lower: the whole sequence must refuse, not silently run without its first "
          "step");
@@ -67,7 +67,7 @@ TEST_CASE("physical_plan_generator::sequence::an_unlowerable_later_child_refuses
     seq->append_child(make_lowerable_alter_add(res, "c1"));
     seq->append_child(make_unlowerable_leaf(res));
 
-    auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+    auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::all(), nullptr);
 
     REQUIRE(plan.has_error());
 }
@@ -82,7 +82,7 @@ TEST_CASE("physical_plan_generator::sequence::all_lowerable_children_still_chain
     seq->append_child(make_lowerable_alter_add(res, "c1"));
     seq->append_child(make_lowerable_alter_add(res, "c2"));
 
-    auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+    auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::all(), nullptr);
 
     REQUIRE_FALSE(plan.has_error());
     const auto& root = plan.value();
@@ -104,7 +104,7 @@ TEST_CASE("physical_plan_generator::sequence::the_first_written_clause_executes_
     rename->set_new_name(core::columnname_t{std::string{"b"}});
     seq->append_child(rename);
 
-    auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+    auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::all(), nullptr);
     REQUIRE_FALSE(plan.has_error());
     const auto& root = plan.value();
 

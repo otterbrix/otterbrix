@@ -28,7 +28,7 @@ namespace components::operators {
                                      components::catalog::oid_t table_oid,
                                      std::pmr::vector<projected_column_t> returning,
                                      expressions::expression_ptr expr,
-                                     std::int64_t affected_bound)
+                                     logical_plan::row_cap_t affected_bound)
         : read_write_operator_t(resource, log, operator_type::remove)
         , table_oid_(table_oid)
         , expression_(std::move(expr))
@@ -73,7 +73,7 @@ namespace components::operators {
         if (condition_ == expressions::condition_kind::computed) {
             if (!graph_) {
                 auto built = expressions::build_condition_graph(resource_,
-                                                                pipeline_context->parameters.parameters,
+                                                                pipeline_context->parameters,
                                                                 expression_.get(),
                                                                 types);
                 if (built.has_error()) {
@@ -82,7 +82,7 @@ namespace components::operators {
                 graph_ = std::move(built.value());
             }
             auto decided = expressions::run_graph(graph_.get(),
-                                                  pipeline_context->parameters.parameters,
+                                                  pipeline_context->parameters,
                                                   chunk,
                                                   pipeline_context->execution_context);
             if (decided.has_error()) {
@@ -174,7 +174,7 @@ namespace components::operators {
                 merged_types.insert(merged_types.end(), types_left.begin(), types_left.end());
                 merged_types.insert(merged_types.end(), types_right.begin(), types_right.end());
                 auto built = expressions::build_condition_graph(resource_,
-                                                                pipeline_context->parameters.parameters,
+                                                                pipeline_context->parameters,
                                                                 expression_.get(),
                                                                 merged_types,
                                                                 types_left.size());
@@ -192,13 +192,18 @@ namespace components::operators {
         vector::vector_t batch_ids(resource_, types::logical_type::BIGINT, chunk_left.size());
         vector::indexing_vector_t matched_indexing(resource_);
         matched_indexing.reset(chunk_left.size());
-        // Gathered per-row, not via an indexing gather — a batch can match more right rows than the chunk holds.
+        // Filled after the loop from the partners recorded below.
         data_chunk_t affected_right(resource_, types_right, chunk_left.size());
 
+        // Where output row k's right-side partner lives: (right chunk, row).
+        std::pmr::vector<std::pair<uint32_t, uint32_t>> partners(resource_);
+        if (collect_returning) {
+            partners.reserve(chunk_left.size());
+        }
         size_t index = 0;
         for (size_t i = 0; i < chunk_left.size(); i++) {
-            // Stops once matched_total_ + this batch's index reaches affected_bound_; -1 = unbounded.
-            if (affected_bound_ >= 0 && matched_total_ + index >= static_cast<uint64_t>(affected_bound_)) {
+            // Stops once matched_total_ + this batch's index reaches affected_bound_.
+            if (!affected_bound_.admits(matched_total_ + index)) {
                 break;
             }
             bool row_matched = false;
@@ -211,7 +216,7 @@ namespace components::operators {
                 if (graph_) {
                     join_detail::point_at_probe_row(resource_, merged[ci], chunk_left, i);
                     auto decided = expressions::run_graph(graph_.get(),
-                                                          pipeline_context->parameters.parameters,
+                                                          pipeline_context->parameters,
                                                           merged[ci],
                                                           pipeline_context->execution_context);
                     if (decided.has_error()) {
@@ -228,9 +233,7 @@ namespace components::operators {
                     batch_ids.data<int64_t>()[index] = dml_detail::row_id_of(chunk_left, i);
                     matched_indexing.set_index(index, i);
                     if (collect_returning) {
-                        for (size_t k = 0; k < chunk_right.column_count(); ++k) {
-                            vector::vector_ops::copy(chunk_right.data[k], affected_right.data[k], j + 1, j, index);
-                        }
+                        partners.emplace_back(static_cast<uint32_t>(ci), static_cast<uint32_t>(j));
                     }
                     index++;
                     vector::validate_chunk_capacity(affected_right, index);
@@ -247,6 +250,28 @@ namespace components::operators {
             return core::error_t::no_error();
         }
         affected_right.set_cardinality(index);
+
+        // One gather per column for each run of output rows whose partners come from the same right chunk.
+        for (size_t run_begin = 0; run_begin < partners.size();) {
+            size_t run_end = run_begin + 1;
+            while (run_end < partners.size() && partners[run_end].first == partners[run_begin].first) {
+                ++run_end;
+            }
+            const auto& source = right_chunks[partners[run_begin].first];
+            vector::indexing_vector_t selection(resource_, run_end - run_begin);
+            for (size_t k = run_begin; k < run_end; ++k) {
+                selection.set_index(k - run_begin, partners[k].second);
+            }
+            for (size_t column = 0; column < source.column_count(); ++column) {
+                vector::vector_ops::copy(source.data[column],
+                                         affected_right.data[column],
+                                         selection,
+                                         run_end - run_begin,
+                                         0,
+                                         run_begin);
+            }
+            run_begin = run_end;
+        }
 
         for (size_t i = 0; i < index; i++) {
             modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));

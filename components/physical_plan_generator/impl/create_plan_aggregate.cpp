@@ -222,7 +222,7 @@ namespace services::planner::impl {
             ce::compare_expression_ptr where_expr; // null == no WHERE
             std::vector<size_t> projected_cols;
             if (match_child != nullptr) {
-                auto m = create_plan_match(context, *match_child, lp::limit_t::unlimit(), base_projected_cols);
+                auto m = create_plan_match(context, *match_child, lp::row_cap_t::uncapped(), base_projected_cols);
                 // A refused WHERE is reported by the coordinator chain, which lowers it again.
                 if (m.has_error() || m.value()->type() != ops::operator_type::full_scan) {
                     return nullptr; // index_scan / operator_match / transfer_scan — not pushable
@@ -282,11 +282,9 @@ namespace services::planner::impl {
         const auto& projected_cols = agg_node->projected_cols();
 
         // operator_limit is the single authoritative limiter; sources below only get an advisory read-cap.
-        const bool limit_effective =
-            limit.limit() != components::logical_plan::limit_t::unlimit().limit() || limit.offset() != 0;
 
         auto wrap_limit = [&](components::operators::operator_ptr op) -> components::operators::operator_ptr {
-            if (!limit_effective) {
+            if (!limit.is_effective()) {
                 return op;
             }
             auto limit_op = boost::intrusive_ptr(
@@ -369,7 +367,7 @@ namespace services::planner::impl {
                                     create_plan(context,
                                                 function_registry,
                                                 child,
-                                                components::logical_plan::limit_t::unlimit(),
+                                                components::logical_plan::limit_t::all(),
                                                 params));
                     break;
                 }
@@ -396,7 +394,7 @@ namespace services::planner::impl {
                                     create_plan(context,
                                                 function_registry,
                                                 child,
-                                                components::logical_plan::limit_t::unlimit(),
+                                                components::logical_plan::limit_t::all(),
                                                 params));
                     break;
                 }

@@ -80,18 +80,18 @@ namespace services::disk::test_probe {
     };
 
     // Local key-chunk builder (mirrors components::operators::make_key_chunk): disk tests do not
-    // link physical_plan/operators, so the 1-row columnar key carrier is rebuilt here.
-    inline components::vector::data_chunk_t
-    build_key_chunk(std::pmr::memory_resource* resource, std::pmr::vector<components::types::logical_value_t> values) {
-        std::pmr::vector<components::types::complex_logical_type> types(resource);
-        types.reserve(values.size());
-        for (const auto& v : values) {
-            types.emplace_back(v.type());
-        }
-        components::vector::data_chunk_t chunk(resource, types, 1);
-        for (std::size_t j = 0; j < values.size(); ++j) {
-            chunk.set_value(static_cast<std::uint64_t>(j), 0, values[j]);
-        }
+    // link physical_plan/operators, so the 1-row columnar key carrier is rebuilt here. Pass string keys
+    // as std::string_view.
+    template<typename Val, typename... Vals>
+    components::vector::data_chunk_t test_key_chunk(std::pmr::memory_resource* resource, Val&& val, Vals&&... vals) {
+        std::pmr::vector<components::types::complex_logical_type> col_types(resource);
+        col_types.reserve(1 + sizeof...(Vals));
+        col_types.emplace_back(components::types::to_logical_type<std::remove_cvref_t<Val>>());
+        (col_types.emplace_back(components::types::to_logical_type<std::remove_cvref_t<Vals>>()), ...);
+        components::vector::data_chunk_t chunk(resource, col_types, 1);
+        std::uint64_t col = 0;
+        chunk.set_value(col++, std::uint64_t{0}, std::forward<Val>(val));
+        (chunk.set_value(col++, std::uint64_t{0}, std::forward<Vals>(vals)), ...);
         chunk.set_cardinality(1);
         return chunk;
     }
@@ -104,9 +104,8 @@ namespace services::disk::test_probe {
                components::execution_context_t ctx,
                catalog::oid_t table_oid,
                std::pmr::vector<std::uint64_t> key_cols,
-               std::pmr::vector<components::types::logical_value_t> key_vals,
+               components::vector::data_chunk_t keys,
                bool committed_scan = true) {
-        auto keys = build_key_chunk(&fx.resource, std::move(key_vals));
         // committed_scan=true (default) scans committed-only (transaction_data::committed()), mirroring the deleted
         // resolve_* disk path; committed_scan=false uses the caller's real ctx.txn, matching production
         // operator_resolve_* semantics (read-your-own-uncommitted-catalog-writes).
@@ -149,23 +148,17 @@ namespace services::disk::test_probe {
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_class_col::relnamespace);
             keys.emplace_back(catalog::pg_class_col::relname);
-            std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
-            vals.emplace_back(&fx.resource, namespace_oid);
-            vals.emplace_back(&fx.resource, name);
-            auto batches = probe_read(fx, ctx, pg_class, std::move(keys), std::move(vals), committed_scan);
+            auto batches = probe_read(fx, ctx, pg_class, std::move(keys), test_key_chunk(&fx.resource, namespace_oid, std::string_view{name}), committed_scan);
             for (const auto& chunk : batches) {
                 bool stop = false;
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto oid_v = chunk.value(0, i);
-                    if (oid_v.is_null())
+                    if (chunk.data[0].is_null(i))
                         continue;
                     out.found = true;
-                    out.oid = static_cast<catalog::oid_t>(oid_v.template value<std::uint32_t>());
+                    out.oid = static_cast<catalog::oid_t>(chunk.data[0].template get_value<std::uint32_t>(i));
                     out.name = name;
-                    auto kind_v = chunk.value(3, i);
-                    if (!kind_v.is_null()) {
-                        const auto kind_cell = kind_v;
-                        const auto ks = kind_cell.template value<std::string_view>();
+                    if (!chunk.data[3].is_null(i)) {
+                        const auto ks = chunk.data[3].template get_value<std::string_view>(i);
                         if (!ks.empty())
                             out.relkind = ks.front();
                     }
@@ -195,35 +188,26 @@ namespace services::disk::test_probe {
 
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_computed_column_col::relid);
-            std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
-            vals.emplace_back(&fx.resource, out.oid);
-            auto batches = probe_read(fx, ctx, pg_computed_column, std::move(keys), std::move(vals), committed_scan);
+            auto batches = probe_read(fx, ctx, pg_computed_column, std::move(keys), test_key_chunk(&fx.resource, out.oid), committed_scan);
             for (const auto& chunk : batches) {
                 if (chunk.column_count() < 7)
                     continue;
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                     cc_row_t row;
-                    auto attoid_v = chunk.value(1, i);
-                    row.attoid = attoid_v.is_null()
+                    row.attoid = chunk.data[1].is_null(i)
                                      ? catalog::INVALID_OID
-                                     : static_cast<catalog::oid_t>(attoid_v.template value<std::uint32_t>());
-                    auto name_v = chunk.value(2, i);
-                    if (!name_v.is_null()) {
-                        const auto name_cell = name_v;
-                        row.attname = std::string(name_cell.template value<std::string_view>());
+                                     : static_cast<catalog::oid_t>(chunk.data[1].template get_value<std::uint32_t>(i));
+                    if (!chunk.data[2].is_null(i)) {
+                        row.attname = std::string(chunk.data[2].template get_value<std::string_view>(i));
                     }
-                    auto typid_v = chunk.value(3, i);
-                    row.atttypid = typid_v.is_null()
+                    row.atttypid = chunk.data[3].is_null(i)
                                        ? catalog::INVALID_OID
-                                       : static_cast<catalog::oid_t>(typid_v.template value<std::uint32_t>());
-                    auto spec_v = chunk.value(4, i);
-                    if (!spec_v.is_null()) {
-                        const auto spec_cell = spec_v;
-                        row.atttypspec = std::string(spec_cell.template value<std::string_view>());
+                                       : static_cast<catalog::oid_t>(chunk.data[3].template get_value<std::uint32_t>(i));
+                    if (!chunk.data[4].is_null(i)) {
+                        row.atttypspec = std::string(chunk.data[4].template get_value<std::string_view>(i));
                     }
-                    row.attversion = chunk.value(5, i).template value<std::int64_t>();
-                    auto rc_v = chunk.value(6, i);
-                    row.attrefcount = rc_v.is_null() ? 0 : rc_v.template value<std::int64_t>();
+                    row.attversion = chunk.data[5].template get_value<std::int64_t>(i);
+                    row.attrefcount = chunk.data[6].is_null(i) ? 0 : chunk.data[6].template get_value<std::int64_t>(i);
                     auto it = latest_any.find(row.attname);
                     if (it == latest_any.end() || it->second.attversion < row.attversion) {
                         latest_any[row.attname] = std::move(row);
@@ -262,51 +246,37 @@ namespace services::disk::test_probe {
             std::vector<probe_column_info_t> rows;
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_attribute_col::attrelid);
-            std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
-            vals.emplace_back(&fx.resource, out.oid);
-            auto batches = probe_read(fx, ctx, pg_attribute, std::move(keys), std::move(vals), committed_scan);
+            auto batches = probe_read(fx, ctx, pg_attribute, std::move(keys), test_key_chunk(&fx.resource, out.oid), committed_scan);
             for (const auto& chunk : batches) {
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto dropped = chunk.value(7, i);
-                    if (!dropped.is_null() && dropped.template value<bool>())
+                    if (!chunk.data[7].is_null(i) && chunk.data[7].template get_value<bool>(i))
                         continue;
-                    auto added_at_v = chunk.value(10, i);
-                    if (!added_at_v.is_null()) {
-                        const auto added_at = static_cast<std::uint64_t>(added_at_v.template value<std::int64_t>());
+                    if (!chunk.data[10].is_null(i)) {
+                        const auto added_at = static_cast<std::uint64_t>(chunk.data[10].template get_value<std::int64_t>(i));
                         if (added_at > snapshot_start_time)
                             continue;
                     }
-                    auto dropped_at_v = chunk.value(11, i);
-                    if (!dropped_at_v.is_null()) {
-                        const auto dropped_at = static_cast<std::uint64_t>(dropped_at_v.template value<std::int64_t>());
+                    if (!chunk.data[11].is_null(i)) {
+                        const auto dropped_at = static_cast<std::uint64_t>(chunk.data[11].template get_value<std::int64_t>(i));
                         if (dropped_at != 0 && dropped_at <= snapshot_start_time)
                             continue;
                     }
                     probe_column_info_t info;
-                    info.attoid = static_cast<catalog::oid_t>(chunk.value(0, i).template value<std::uint32_t>());
-                    auto name_v = chunk.value(2, i);
-                    if (!name_v.is_null()) {
-                        const auto name_cell = name_v;
-                        info.attname = std::string(name_cell.template value<std::string_view>());
+                    info.attoid = static_cast<catalog::oid_t>(chunk.data[0].template get_value<std::uint32_t>(i));
+                    if (!chunk.data[2].is_null(i)) {
+                        info.attname = std::string(chunk.data[2].template get_value<std::string_view>(i));
                     }
-                    auto typid_v = chunk.value(3, i);
-                    if (!typid_v.is_null())
-                        info.atttypid = static_cast<catalog::oid_t>(typid_v.template value<std::uint32_t>());
-                    info.attnum = chunk.value(4, i).template value<std::int32_t>();
-                    auto nn_v = chunk.value(5, i);
-                    info.attnotnull = !nn_v.is_null() && nn_v.template value<bool>();
-                    auto def_v = chunk.value(6, i);
-                    info.atthasdefault = !def_v.is_null() && def_v.template value<bool>();
+                    if (!chunk.data[3].is_null(i))
+                        info.atttypid = static_cast<catalog::oid_t>(chunk.data[3].template get_value<std::uint32_t>(i));
+                    info.attnum = chunk.data[4].template get_value<std::int32_t>(i);
+                    info.attnotnull = !chunk.data[5].is_null(i) && chunk.data[5].template get_value<bool>(i);
+                    info.atthasdefault = !chunk.data[6].is_null(i) && chunk.data[6].template get_value<bool>(i);
                     info.attisdropped = false;
-                    auto typspec_v = chunk.value(8, i);
-                    if (!typspec_v.is_null()) {
-                        const auto typspec_cell = typspec_v;
-                        info.atttypspec = std::string(typspec_cell.template value<std::string_view>());
+                    if (!chunk.data[8].is_null(i)) {
+                        info.atttypspec = std::string(chunk.data[8].template get_value<std::string_view>(i));
                     }
-                    auto defspec_v = chunk.value(9, i);
-                    if (!defspec_v.is_null()) {
-                        const auto defspec_cell = defspec_v;
-                        info.attdefspec = std::string(defspec_cell.template value<std::string_view>());
+                    if (!chunk.data[9].is_null(i)) {
+                        info.attdefspec = std::string(chunk.data[9].template get_value<std::string_view>(i));
                     }
                     rows.push_back(std::move(info));
                 }
@@ -336,23 +306,17 @@ namespace services::disk::test_probe {
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_type_col::typnamespace);
             keys.emplace_back(catalog::pg_type_col::typname);
-            std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
-            vals.emplace_back(&fx.resource, namespace_oid);
-            vals.emplace_back(&fx.resource, name);
-            auto batches = probe_read(fx, ctx, pg_type, std::move(keys), std::move(vals));
+            auto batches = probe_read(fx, ctx, pg_type, std::move(keys), test_key_chunk(&fx.resource, namespace_oid, std::string_view{name}));
             for (const auto& chunk : batches) {
                 bool stop = false;
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto oid_v = chunk.value(0, i);
-                    if (oid_v.is_null())
+                    if (chunk.data[0].is_null(i))
                         continue;
                     out.found = true;
-                    out.oid = static_cast<catalog::oid_t>(oid_v.template value<std::uint32_t>());
+                    out.oid = static_cast<catalog::oid_t>(chunk.data[0].template get_value<std::uint32_t>(i));
                     out.name = name;
-                    auto def_v = chunk.value(3, i);
-                    if (!def_v.is_null()) {
-                        const auto def_cell = def_v;
-                        out.typdefspec = std::string(def_cell.template value<std::string_view>());
+                    if (!chunk.data[3].is_null(i)) {
+                        out.typdefspec = std::string(chunk.data[3].template get_value<std::string_view>(i));
                     }
                     stop = true;
                     break;
@@ -369,21 +333,16 @@ namespace services::disk::test_probe {
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_class_col::relnamespace);
             keys.emplace_back(catalog::pg_class_col::relname);
-            std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
-            vals.emplace_back(&fx.resource, namespace_oid);
-            vals.emplace_back(&fx.resource, name);
-            auto batches = probe_read(fx, ctx, pg_class, std::move(keys), std::move(vals));
+            auto batches = probe_read(fx, ctx, pg_class, std::move(keys), test_key_chunk(&fx.resource, namespace_oid, std::string_view{name}));
             for (const auto& chunk : batches) {
                 bool stop = false;
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto kind_v = chunk.value(3, i);
-                    if (kind_v.is_null())
+                    if (chunk.data[3].is_null(i))
                         continue;
-                    const auto kind_cell = kind_v;
-                    const auto kind_s = kind_cell.template value<std::string_view>();
+                    const auto kind_s = chunk.data[3].template get_value<std::string_view>(i);
                     if (kind_s.empty() || kind_s.front() != catalog::relkind::composite_type)
                         continue;
-                    composite_oid = static_cast<catalog::oid_t>(chunk.value(0, i).template value<std::uint32_t>());
+                    composite_oid = static_cast<catalog::oid_t>(chunk.data[0].template get_value<std::uint32_t>(i));
                     stop = true;
                     break;
                 }
@@ -404,28 +363,20 @@ namespace services::disk::test_probe {
         {
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_attribute_col::attrelid);
-            std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
-            vals.emplace_back(&fx.resource, composite_oid);
-            auto batches = probe_read(fx, ctx, pg_attribute, std::move(keys), std::move(vals));
+            auto batches = probe_read(fx, ctx, pg_attribute, std::move(keys), test_key_chunk(&fx.resource, composite_oid));
             for (const auto& chunk : batches) {
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                    auto dropped = chunk.value(7, i);
-                    if (!dropped.is_null() && dropped.template value<bool>())
+                    if (!chunk.data[7].is_null(i) && chunk.data[7].template get_value<bool>(i))
                         continue;
                     field_row r;
-                    auto name_v = chunk.value(2, i);
-                    if (!name_v.is_null()) {
-                        const auto name_cell = name_v;
-                        r.attname = std::string(name_cell.template value<std::string_view>());
+                    if (!chunk.data[2].is_null(i)) {
+                        r.attname = std::string(chunk.data[2].template get_value<std::string_view>(i));
                     }
-                    auto typid_v = chunk.value(3, i);
-                    if (!typid_v.is_null())
-                        r.atttypid = static_cast<catalog::oid_t>(typid_v.template value<std::uint32_t>());
-                    r.attnum = chunk.value(4, i).template value<std::int32_t>();
-                    auto spec_v = chunk.value(8, i);
-                    if (!spec_v.is_null()) {
-                        const auto spec_cell = spec_v;
-                        r.atttypspec = std::string(spec_cell.template value<std::string_view>());
+                    if (!chunk.data[3].is_null(i))
+                        r.atttypid = static_cast<catalog::oid_t>(chunk.data[3].template get_value<std::uint32_t>(i));
+                    r.attnum = chunk.data[4].template get_value<std::int32_t>(i);
+                    if (!chunk.data[8].is_null(i)) {
+                        r.atttypspec = std::string(chunk.data[8].template get_value<std::string_view>(i));
                     }
                     fields.push_back(std::move(r));
                 }
@@ -479,34 +430,25 @@ namespace services::disk::test_probe {
         std::pmr::vector<std::uint64_t> keys{&fx.resource};
         keys.emplace_back(catalog::pg_proc_col::pronamespace);
         keys.emplace_back(catalog::pg_proc_col::proname);
-        std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
-        vals.emplace_back(&fx.resource, namespace_oid);
-        vals.emplace_back(&fx.resource, name);
-        auto batches = probe_read(fx, ctx, pg_proc, std::move(keys), std::move(vals));
+        auto batches = probe_read(
+            fx, ctx, pg_proc, std::move(keys), test_key_chunk(&fx.resource, namespace_oid, std::string_view{name}));
         for (const auto& chunk : batches) {
             bool stop = false;
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                auto oid_v = chunk.value(0, i);
-                if (oid_v.is_null())
+                if (chunk.data[0].is_null(i))
                     continue;
                 out.found = true;
-                out.oid = static_cast<catalog::oid_t>(oid_v.template value<std::uint32_t>());
+                out.oid = static_cast<catalog::oid_t>(chunk.data[0].template get_value<std::uint32_t>(i));
                 out.name = name;
-                auto nargs_v = chunk.value(3, i);
-                if (!nargs_v.is_null())
-                    out.pronargs = nargs_v.template value<std::int32_t>();
-                auto uid_v = chunk.value(4, i);
-                if (!uid_v.is_null())
-                    out.prouid = uid_v.template value<std::uint64_t>();
-                auto args_v = chunk.value(5, i);
-                if (!args_v.is_null()) {
-                    const auto args_cell = args_v;
-                    out.proargmatchers = std::string(args_cell.template value<std::string_view>());
+                if (!chunk.data[3].is_null(i))
+                    out.pronargs = chunk.data[3].template get_value<std::int32_t>(i);
+                if (!chunk.data[4].is_null(i))
+                    out.prouid = static_cast<std::uint64_t>(chunk.data[4].template get_value<std::int64_t>(i));
+                if (!chunk.data[5].is_null(i)) {
+                    out.proargmatchers = std::string(chunk.data[5].template get_value<std::string_view>(i));
                 }
-                auto ret_v = chunk.value(6, i);
-                if (!ret_v.is_null()) {
-                    const auto ret_cell = ret_v;
-                    out.prorettype = std::string(ret_cell.template value<std::string_view>());
+                if (!chunk.data[6].is_null(i)) {
+                    out.prorettype = std::string(chunk.data[6].template get_value<std::string_view>(i));
                 }
                 stop = true;
                 break;

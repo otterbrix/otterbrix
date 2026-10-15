@@ -4,6 +4,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
+#include <components/catalog/type_display.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>
 #include <components/expressions/function_expression.hpp>
@@ -159,8 +160,8 @@ namespace services::collection {
             }
             if (!(view_column_type(types[i]) == stored.type)) {
                 return stale("its column \"" + stored.attname + "\" is now " +
-                             dispatcher::validation::describe_type(types[i]) + ", it was created as " +
-                             dispatcher::validation::describe_type(stored.type));
+                             components::catalog::describe_type(types[i]) + ", it was created as " +
+                             components::catalog::describe_type(stored.type));
             }
         }
         return core::error_t::no_error();
@@ -230,8 +231,8 @@ namespace services::collection {
             }
             if (!(columns[i].type() == before.type)) {
                 return refuse("cannot change data type of view column \"" + before.attname + "\" from " +
-                              dispatcher::validation::describe_type(before.type) + " to " +
-                              dispatcher::validation::describe_type(columns[i].type()));
+                              components::catalog::describe_type(before.type) + " to " +
+                              components::catalog::describe_type(columns[i].type()));
             }
         }
         return core::error_t::no_error();

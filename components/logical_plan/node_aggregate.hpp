@@ -35,8 +35,8 @@ namespace components::logical_plan {
 
         // Set by pushdown_limit: a pure COUNT read-cap (offset always 0), advisory only.
         // EXCLUDED from hash_impl()/operator== — see node_match_t::read_cap_ for the rationale.
-        void set_read_cap(const limit_t& read_cap) noexcept { read_cap_ = read_cap; }
-        const limit_t& read_cap() const noexcept { return read_cap_; }
+        void set_read_cap(const row_cap_t& read_cap) noexcept { read_cap_ = read_cap; }
+        const row_cap_t& read_cap() const noexcept { return read_cap_; }
 
         // Must run once the view body is spliced in as child[0], or bind_catalog_data re-stamps
         // table_oid and collect_view_references re-expands it.
@@ -50,7 +50,7 @@ namespace components::logical_plan {
         bool distinct_{false};
         std::pmr::vector<expressions::key_t> distinct_on_keys_;
         std::vector<size_t> projected_cols_;
-        limit_t read_cap_{};
+        row_cap_t read_cap_{};
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };

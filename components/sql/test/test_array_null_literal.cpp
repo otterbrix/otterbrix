@@ -3,6 +3,8 @@
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/vector/cell_equal.hpp>
+#include <components/vector/vector_builders.hpp>
 
 using namespace components::sql;
 using namespace components::sql::transform;
@@ -10,7 +12,7 @@ using namespace components::types;
 
 namespace {
 
-    logical_value_t
+    components::vector::vector_t
     inserted_literal(transformer& transformer, std::pmr::monotonic_buffer_resource& arena, const char* sql) {
         auto stmt = linitial(raw_parser(&arena, sql));
         auto transformed = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
@@ -23,7 +25,7 @@ namespace {
         const auto& chunk =
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        return chunk.value(0, 0);
+        return components::vector::make_constant_copy(&arena, chunk.data[0], 0);
     }
 
 } // namespace
@@ -37,15 +39,16 @@ TEST_CASE("components::sql::array_null_literal::an_array_of_only_NULL_is_text") 
         auto v = inserted_literal(transformer, arena, "INSERT INTO t (v) VALUES (ARRAY[NULL]);");
         REQUIRE(v.type().type() == logical_type::ARRAY);
         CHECK(v.type().child_type().type() == logical_type::STRING_LITERAL);
-        REQUIRE(v.children().size() == 1);
-        CHECK(v.children()[0].is_null());
+        const auto seq = components::vector::sequence_of(v, 0);
+        REQUIRE(seq.length == 1);
+        CHECK(seq.child->is_null(seq.offset));
     }
 
     SECTION("array[NULL, NULL]") {
         auto v = inserted_literal(transformer, arena, "INSERT INTO t (v) VALUES (ARRAY[NULL, NULL]);");
         REQUIRE(v.type().type() == logical_type::ARRAY);
         CHECK(v.type().child_type().type() == logical_type::STRING_LITERAL);
-        REQUIRE(v.children().size() == 2);
+        REQUIRE(components::vector::sequence_of(v, 0).length == 2);
     }
 
     SECTION("array[array[NULL]]") {
@@ -65,6 +68,6 @@ TEST_CASE("components::sql::array_null_literal::an_array_of_only_NULL_is_text") 
         auto v = inserted_literal(transformer, arena, "INSERT INTO t (v) VALUES (ARRAY[]);");
         REQUIRE(v.type().type() == logical_type::ARRAY);
         CHECK(v.type().child_type().type() == logical_type::NA);
-        CHECK(v.children().empty());
+        CHECK(components::vector::sequence_of(v, 0).length == 0);
     }
 }

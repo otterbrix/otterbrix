@@ -62,12 +62,24 @@ namespace components::vector::vector_ops {
             }
         }
 
+        // std::hash hashes the bits of a float, so NaNs of another sign or payload would hash apart. They are one
+        // value (as in PostgreSQL's hashfloat8), so they hash as one. +0 and -0 already hash alike.
+        template<class T>
+        static uint64_t hash_value(const T& input) {
+            if constexpr (std::is_floating_point_v<T>) {
+                if (std::isnan(input)) {
+                    return std::hash<T>{}(std::numeric_limits<T>::quiet_NaN());
+                }
+            }
+            return std::hash<T>{}(input);
+        }
+
         struct hasher_t {
             static constexpr uint64_t NULL_HASH = 0xbf58476d1ce4e5b9;
 
             template<class T>
             static uint64_t operation(T input, bool is_null) {
-                return is_null ? NULL_HASH : std::hash<T>{}(input);
+                return is_null ? NULL_HASH : hash_value(input);
             }
         };
 
@@ -90,7 +102,7 @@ namespace components::vector::vector_ops {
                 for (uint64_t i = 0; i < count; i++) {
                     auto ridx = HAS_RINDEXING ? rindexing->get_index(i) : i;
                     auto idx = indexing_vector->get_index(ridx);
-                    result_data[ridx] = std::hash<T>{}(ldata[idx]);
+                    result_data[ridx] = hash_value(ldata[idx]);
                 }
             }
         }
@@ -205,6 +217,40 @@ namespace components::vector::vector_ops {
                             combine_hash_scalar(hd[ridx],
                                                 hash_128_value<T128>(ldata[idx], !idata.validity.row_is_valid(idx)));
                     }
+                }
+            }
+        }
+
+        // INTERVAL equality is by the total (a month is 30 days), so the hash is of the total too and
+        // not of the three stored components.
+        template<bool HAS_RINDEXING, bool FIRST_HASH>
+        static void
+        interval_loop_hash(vector_t& input, vector_t& hashes, const indexing_vector_t* rindexing, uint64_t count) {
+            const auto row_hash = [&input](uint64_t row) {
+                return input.is_null(row) ? hasher_t::NULL_HASH
+                                          : std::hash<uint64_t>{}(absl::Int128Low64(
+                                                core::date::interval_total(input.get_value<core::date::interval_t>(row))));
+            };
+            if (input.get_vector_type() == vector_type::CONSTANT &&
+                (FIRST_HASH || hashes.get_vector_type() == vector_type::CONSTANT)) {
+                hashes.set_vector_type(vector_type::CONSTANT);
+                auto* hd = hashes.data<uint64_t>();
+                *hd = FIRST_HASH ? row_hash(0) : combine_hash_scalar(*hd, row_hash(0));
+                return;
+            }
+            uint64_t constant_hash = 0;
+            const bool from_constant = !FIRST_HASH && hashes.get_vector_type() == vector_type::CONSTANT;
+            if (from_constant) {
+                constant_hash = *hashes.data<uint64_t>();
+            }
+            hashes.set_vector_type(vector_type::FLAT);
+            auto* hd = hashes.data<uint64_t>();
+            for (uint64_t i = 0; i < count; i++) {
+                const auto ridx = HAS_RINDEXING ? rindexing->get_index(i) : i;
+                if (FIRST_HASH) {
+                    hd[ridx] = row_hash(ridx);
+                } else {
+                    hd[ridx] = combine_hash_scalar(from_constant ? constant_hash : hd[ridx], row_hash(ridx));
                 }
             }
         }
@@ -463,6 +509,10 @@ namespace components::vector::vector_ops {
                     templated_loop_hash<HAS_RINDEXING, std::string_view>(input, result, rindexing, count);
                     break;
                 case types::physical_type::STRUCT:
+                    if (input.type().type() == types::logical_type::INTERVAL) {
+                        interval_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
+                        break;
+                    }
                     struct_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
                     break;
                 case types::physical_type::LIST:
@@ -498,7 +548,7 @@ namespace components::vector::vector_ops {
                 for (uint64_t i = 0; i < count; i++) {
                     auto ridx = HAS_RINDEXING ? rindexing->get_index(i) : i;
                     auto idx = indexing_vector->get_index(ridx);
-                    auto other_hash = std::hash<T>{}(ldata[idx]);
+                    auto other_hash = hash_value(ldata[idx]);
                     hash_data[ridx] = combine_hash_scalar(constant_hash, other_hash);
                 }
             }
@@ -522,7 +572,7 @@ namespace components::vector::vector_ops {
                 for (uint64_t i = 0; i < count; i++) {
                     auto ridx = HAS_RINDEXING ? rindexing->get_index(i) : i;
                     auto idx = indexing_vector->get_index(ridx);
-                    auto other_hash = std::hash<T>{}(ldata[idx]);
+                    auto other_hash = hash_value(ldata[idx]);
                     hash_data[ridx] = combine_hash_scalar(hash_data[ridx], other_hash);
                 }
             }
@@ -615,6 +665,10 @@ namespace components::vector::vector_ops {
                     templated_loop_combine_hash<HAS_RINDEXING, std::string_view>(input, hashes, rindexing, count);
                     break;
                 case types::physical_type::STRUCT:
+                    if (input.type().type() == types::logical_type::INTERVAL) {
+                        interval_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
+                        break;
+                    }
                     struct_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
                     break;
                 case types::physical_type::LIST:

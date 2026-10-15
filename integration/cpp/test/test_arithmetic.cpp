@@ -1359,9 +1359,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
-        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-16"));
-        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-01"));
+        auto cell0 = cur->get<core::date::date_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == *core::date::parse_date("2024-01-02"));
+        auto cell1 = cur->get<core::date::date_t>(0, 1);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == *core::date::parse_date("2024-03-16"));
+        auto cell2 = cur->get<core::date::date_t>(0, 2);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == *core::date::parse_date("2025-01-01"));
     }
 
     INFO("N2. DATE - INTERVAL '7 days' = DATE");
@@ -1373,9 +1379,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2023-12-25"));
-        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-08"));
-        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2024-12-24"));
+        auto cell3 = cur->get<core::date::date_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == *core::date::parse_date("2023-12-25"));
+        auto cell4 = cur->get<core::date::date_t>(0, 1);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == *core::date::parse_date("2024-03-08"));
+        auto cell5 = cur->get<core::date::date_t>(0, 2);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == *core::date::parse_date("2024-12-24"));
     }
 
     INFO("N3. DATE column + INTERVAL column = DATE");
@@ -1387,9 +1399,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
-        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-22"));
-        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-30"));
+        auto cell6 = cur->get<core::date::date_t>(0, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == *core::date::parse_date("2024-01-02"));
+        auto cell7 = cur->get<core::date::date_t>(0, 1);
+        REQUIRE_FALSE(cell7.has_error());
+        REQUIRE(cell7.value() == *core::date::parse_date("2024-03-22"));
+        auto cell8 = cur->get<core::date::date_t>(0, 2);
+        REQUIRE_FALSE(cell8.has_error());
+        REQUIRE(cell8.value() == *core::date::parse_date("2025-01-30"));
     }
 
     INFO("N4. TIMESTAMP + INTERVAL '1 day' = TIMESTAMP");
@@ -1401,11 +1419,17 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY ts ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::timestamp_t>() ==
+        auto cell9 = cur->get<core::date::timestamp_t>(0, 0);
+        REQUIRE_FALSE(cell9.has_error());
+        REQUIRE(cell9.value() ==
                 *core::date::parse_timestamp("2024-01-02 00:00:00"));
-        REQUIRE(cur->value(0, 1).value<core::date::timestamp_t>() ==
+        auto cell10 = cur->get<core::date::timestamp_t>(0, 1);
+        REQUIRE_FALSE(cell10.has_error());
+        REQUIRE(cell10.value() ==
                 *core::date::parse_timestamp("2024-03-16 12:30:00"));
-        REQUIRE(cur->value(0, 2).value<core::date::timestamp_t>() ==
+        auto cell11 = cur->get<core::date::timestamp_t>(0, 2);
+        REQUIRE_FALSE(cell11.has_error());
+        REQUIRE(cell11.value() ==
                 *core::date::parse_timestamp("2025-01-01 23:59:00"));
     }
 
@@ -1418,11 +1442,17 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY ts ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::timestamp_t>() ==
+        auto cell12 = cur->get<core::date::timestamp_t>(0, 0);
+        REQUIRE_FALSE(cell12.has_error());
+        REQUIRE(cell12.value() ==
                 *core::date::parse_timestamp("2023-12-31 00:00:00"));
-        REQUIRE(cur->value(0, 1).value<core::date::timestamp_t>() ==
+        auto cell13 = cur->get<core::date::timestamp_t>(0, 1);
+        REQUIRE_FALSE(cell13.has_error());
+        REQUIRE(cell13.value() ==
                 *core::date::parse_timestamp("2024-03-14 12:30:00"));
-        REQUIRE(cur->value(0, 2).value<core::date::timestamp_t>() ==
+        auto cell14 = cur->get<core::date::timestamp_t>(0, 2);
+        REQUIRE_FALSE(cell14.has_error());
+        REQUIRE(cell14.value() ==
                 *core::date::parse_timestamp("2024-12-30 23:59:00"));
     }
 
@@ -1435,11 +1465,17 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY ts ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::timestamp_t>() ==
+        auto cell15 = cur->get<core::date::timestamp_t>(0, 0);
+        REQUIRE_FALSE(cell15.has_error());
+        REQUIRE(cell15.value() ==
                 *core::date::parse_timestamp("2024-01-02 00:00:00"));
-        REQUIRE(cur->value(0, 1).value<core::date::timestamp_t>() ==
+        auto cell16 = cur->get<core::date::timestamp_t>(0, 1);
+        REQUIRE_FALSE(cell16.has_error());
+        REQUIRE(cell16.value() ==
                 *core::date::parse_timestamp("2024-03-22 12:30:00"));
-        REQUIRE(cur->value(0, 2).value<core::date::timestamp_t>() ==
+        auto cell17 = cur->get<core::date::timestamp_t>(0, 2);
+        REQUIRE_FALSE(cell17.has_error());
+        REQUIRE(cell17.value() ==
                 *core::date::parse_timestamp("2025-01-30 23:59:00"));
     }
 
@@ -1452,7 +1488,9 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "WHERE d = DATE '2024-03-15';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto iv = cur->value(0, 0).value<core::date::interval_t>();
+        auto cell18 = cur->get<core::date::interval_t>(0, 0);
+        REQUIRE_FALSE(cell18.has_error());
+        auto iv = cell18.value();
         REQUIRE(iv.day.count() == 74);
         REQUIRE(iv.time.count() == 0);
         REQUIRE(iv.month.count() == 0);
@@ -1467,9 +1505,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::interval_t>().day.count() == 4);
-        REQUIRE(cur->value(0, 1).value<core::date::interval_t>().day.count() == 10);
-        REQUIRE(cur->value(0, 2).value<core::date::interval_t>().day.count() == 33);
+        auto cell19 = cur->get<core::date::interval_t>(0, 0);
+        REQUIRE_FALSE(cell19.has_error());
+        REQUIRE(cell19.value().day.count() == 4);
+        auto cell20 = cur->get<core::date::interval_t>(0, 1);
+        REQUIRE_FALSE(cell20.has_error());
+        REQUIRE(cell20.value().day.count() == 10);
+        auto cell21 = cur->get<core::date::interval_t>(0, 2);
+        REQUIRE_FALSE(cell21.has_error());
+        REQUIRE(cell21.value().day.count() == 33);
     }
 
     INFO("N9. INTERVAL - INTERVAL = INTERVAL");
@@ -1481,9 +1525,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::interval_t>().day.count() == 0);
-        REQUIRE(cur->value(0, 1).value<core::date::interval_t>().day.count() == 6);
-        REQUIRE(cur->value(0, 2).value<core::date::interval_t>().day.count() == 29);
+        auto cell22 = cur->get<core::date::interval_t>(0, 0);
+        REQUIRE_FALSE(cell22.has_error());
+        REQUIRE(cell22.value().day.count() == 0);
+        auto cell23 = cur->get<core::date::interval_t>(0, 1);
+        REQUIRE_FALSE(cell23.has_error());
+        REQUIRE(cell23.value().day.count() == 6);
+        auto cell24 = cur->get<core::date::interval_t>(0, 2);
+        REQUIRE_FALSE(cell24.has_error());
+        REQUIRE(cell24.value().day.count() == 29);
     }
 
     INFO("N10. WHERE d + INTERVAL '1 day' > DATE '2024-03-15'");
@@ -1505,7 +1555,9 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "WHERE ts = TIMESTAMP '2024-03-15 12:30:00';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto iv = cur->value(0, 0).value<core::date::interval_t>();
+        auto cell25 = cur->get<core::date::interval_t>(0, 0);
+        REQUIRE_FALSE(cell25.has_error());
+        auto iv = cell25.value();
         // A TIMESTAMP-TIMESTAMP result stores the whole span in .time; .day stays 0.
         auto expected_us =
             int64_t{74} * 86400LL * 1'000'000LL + 12LL * 3600LL * 1'000'000LL + 30LL * 60LL * 1'000'000LL;
@@ -1523,9 +1575,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::interval_t>().day.count() == 3);
-        REQUIRE(cur->value(0, 1).value<core::date::interval_t>().day.count() == 21);
-        REQUIRE(cur->value(0, 2).value<core::date::interval_t>().day.count() == 90);
+        auto cell26 = cur->get<core::date::interval_t>(0, 0);
+        REQUIRE_FALSE(cell26.has_error());
+        REQUIRE(cell26.value().day.count() == 3);
+        auto cell27 = cur->get<core::date::interval_t>(0, 1);
+        REQUIRE_FALSE(cell27.has_error());
+        REQUIRE(cell27.value().day.count() == 21);
+        auto cell28 = cur->get<core::date::interval_t>(0, 2);
+        REQUIRE_FALSE(cell28.has_error());
+        REQUIRE(cell28.value().day.count() == 90);
     }
 
     INFO("N13. INTERVAL column / 2 = INTERVAL");
@@ -1538,9 +1596,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // Fractional days round via llround (half away from zero), not truncation.
-        REQUIRE(cur->value(0, 0).value<core::date::interval_t>().day.count() == 1);
-        REQUIRE(cur->value(0, 1).value<core::date::interval_t>().day.count() == 4);
-        REQUIRE(cur->value(0, 2).value<core::date::interval_t>().day.count() == 15);
+        auto cell29 = cur->get<core::date::interval_t>(0, 0);
+        REQUIRE_FALSE(cell29.has_error());
+        REQUIRE(cell29.value().day.count() == 1);
+        auto cell30 = cur->get<core::date::interval_t>(0, 1);
+        REQUIRE_FALSE(cell30.has_error());
+        REQUIRE(cell30.value().day.count() == 4);
+        auto cell31 = cur->get<core::date::interval_t>(0, 2);
+        REQUIRE_FALSE(cell31.has_error());
+        REQUIRE(cell31.value().day.count() == 15);
     }
 
     INFO("N14. 2 * INTERVAL column = INTERVAL");
@@ -1552,9 +1616,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::interval_t>().day.count() == 2);
-        REQUIRE(cur->value(0, 1).value<core::date::interval_t>().day.count() == 14);
-        REQUIRE(cur->value(0, 2).value<core::date::interval_t>().day.count() == 60);
+        auto cell32 = cur->get<core::date::interval_t>(0, 0);
+        REQUIRE_FALSE(cell32.has_error());
+        REQUIRE(cell32.value().day.count() == 2);
+        auto cell33 = cur->get<core::date::interval_t>(0, 1);
+        REQUIRE_FALSE(cell33.has_error());
+        REQUIRE(cell33.value().day.count() == 14);
+        auto cell34 = cur->get<core::date::interval_t>(0, 2);
+        REQUIRE_FALSE(cell34.has_error());
+        REQUIRE(cell34.value().day.count() == 60);
     }
 
     INFO("N15. INTERVAL '10 days' * 1.5 = INTERVAL '15 days'");
@@ -1566,7 +1636,9 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "WHERE d = DATE '2024-01-01';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<core::date::interval_t>().day.count() == 15);
+        auto cell35 = cur->get<core::date::interval_t>(0, 0);
+        REQUIRE_FALSE(cell35.has_error());
+        REQUIRE(cell35.value().day.count() == 15);
     }
 
     INFO("N16. TIME + INTERVAL '1 hour' = TIME");
@@ -1578,9 +1650,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY t ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::time_t>() == *core::date::parse_time("09:00:00"));
-        REQUIRE(cur->value(0, 1).value<core::date::time_t>() == *core::date::parse_time("13:30:00"));
-        REQUIRE(cur->value(0, 2).value<core::date::time_t>() == *core::date::parse_time("00:59:00"));
+        auto cell36 = cur->get<core::date::time_t>(0, 0);
+        REQUIRE_FALSE(cell36.has_error());
+        REQUIRE(cell36.value() == *core::date::parse_time("09:00:00"));
+        auto cell37 = cur->get<core::date::time_t>(0, 1);
+        REQUIRE_FALSE(cell37.has_error());
+        REQUIRE(cell37.value() == *core::date::parse_time("13:30:00"));
+        auto cell38 = cur->get<core::date::time_t>(0, 2);
+        REQUIRE_FALSE(cell38.has_error());
+        REQUIRE(cell38.value() == *core::date::parse_time("00:59:00"));
     }
 
     INFO("N17. TIME - INTERVAL '30 minutes' = TIME");
@@ -1592,9 +1670,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY t ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::time_t>() == *core::date::parse_time("07:30:00"));
-        REQUIRE(cur->value(0, 1).value<core::date::time_t>() == *core::date::parse_time("12:00:00"));
-        REQUIRE(cur->value(0, 2).value<core::date::time_t>() == *core::date::parse_time("23:29:00"));
+        auto cell39 = cur->get<core::date::time_t>(0, 0);
+        REQUIRE_FALSE(cell39.has_error());
+        REQUIRE(cell39.value() == *core::date::parse_time("07:30:00"));
+        auto cell40 = cur->get<core::date::time_t>(0, 1);
+        REQUIRE_FALSE(cell40.has_error());
+        REQUIRE(cell40.value() == *core::date::parse_time("12:00:00"));
+        auto cell41 = cur->get<core::date::time_t>(0, 2);
+        REQUIRE_FALSE(cell41.has_error());
+        REQUIRE(cell41.value() == *core::date::parse_time("23:29:00"));
     }
 
     INFO("N18. TIME '08:00:00' - INTERVAL '10 hours' wraps to 22:00:00");
@@ -1606,7 +1690,9 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "WHERE t = TIME '08:00:00';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<core::date::time_t>() == *core::date::parse_time("22:00:00"));
+        auto cell42 = cur->get<core::date::time_t>(0, 0);
+        REQUIRE_FALSE(cell42.has_error());
+        REQUIRE(cell42.value() == *core::date::parse_time("22:00:00"));
     }
 
     INFO("N19. TIME column - TIME '06:00:00' = INTERVAL");
@@ -1618,7 +1704,9 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "WHERE t = TIME '08:00:00';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto iv = cur->value(0, 0).value<core::date::interval_t>();
+        auto cell43 = cur->get<core::date::interval_t>(0, 0);
+        REQUIRE_FALSE(cell43.has_error());
+        auto iv = cell43.value();
         REQUIRE(iv.time.count() == 2LL * 3600LL * 1'000'000LL);
         REQUIRE(iv.day.count() == 0);
         REQUIRE(iv.month.count() == 0);
@@ -1633,9 +1721,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-02-01"));
-        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-04-15"));
-        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-31"));
+        auto cell44 = cur->get<core::date::date_t>(0, 0);
+        REQUIRE_FALSE(cell44.has_error());
+        REQUIRE(cell44.value() == *core::date::parse_date("2024-02-01"));
+        auto cell45 = cur->get<core::date::date_t>(0, 1);
+        REQUIRE_FALSE(cell45.has_error());
+        REQUIRE(cell45.value() == *core::date::parse_date("2024-04-15"));
+        auto cell46 = cur->get<core::date::date_t>(0, 2);
+        REQUIRE_FALSE(cell46.has_error());
+        REQUIRE(cell46.value() == *core::date::parse_date("2025-01-31"));
     }
 
     INFO("N21. DATE '2024-01-31' + INTERVAL '1 month' clamps to 2024-02-29");
@@ -1647,7 +1741,9 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "WHERE d = DATE '2024-01-01';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-02-29"));
+        auto cell47 = cur->get<core::date::date_t>(0, 0);
+        REQUIRE_FALSE(cell47.has_error());
+        REQUIRE(cell47.value() == *core::date::parse_date("2024-02-29"));
     }
 
     INFO("N22. TIMESTAMP + INTERVAL '2 months' = TIMESTAMP");
@@ -1659,11 +1755,17 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY ts ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::timestamp_t>() ==
+        auto cell48 = cur->get<core::date::timestamp_t>(0, 0);
+        REQUIRE_FALSE(cell48.has_error());
+        REQUIRE(cell48.value() ==
                 *core::date::parse_timestamp("2024-03-01 00:00:00"));
-        REQUIRE(cur->value(0, 1).value<core::date::timestamp_t>() ==
+        auto cell49 = cur->get<core::date::timestamp_t>(0, 1);
+        REQUIRE_FALSE(cell49.has_error());
+        REQUIRE(cell49.value() ==
                 *core::date::parse_timestamp("2024-05-15 12:30:00"));
-        REQUIRE(cur->value(0, 2).value<core::date::timestamp_t>() ==
+        auto cell50 = cur->get<core::date::timestamp_t>(0, 2);
+        REQUIRE_FALSE(cell50.has_error());
+        REQUIRE(cell50.value() ==
                 *core::date::parse_timestamp("2025-02-28 23:59:00"));
     }
 
@@ -1676,9 +1778,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
-        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-22"));
-        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-30"));
+        auto cell51 = cur->get<core::date::date_t>(0, 0);
+        REQUIRE_FALSE(cell51.has_error());
+        REQUIRE(cell51.value() == *core::date::parse_date("2024-01-02"));
+        auto cell52 = cur->get<core::date::date_t>(0, 1);
+        REQUIRE_FALSE(cell52.has_error());
+        REQUIRE(cell52.value() == *core::date::parse_date("2024-03-22"));
+        auto cell53 = cur->get<core::date::date_t>(0, 2);
+        REQUIRE_FALSE(cell53.has_error());
+        REQUIRE(cell53.value() == *core::date::parse_date("2025-01-30"));
     }
 
     INFO("N24. WHERE ts - INTERVAL '1 day' > TIMESTAMP '2024-01-01 00:00:00'");
@@ -1700,11 +1808,17 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY tstz ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::timestamptz_t>() ==
+        auto cell54 = cur->get<core::date::timestamptz_t>(0, 0);
+        REQUIRE_FALSE(cell54.has_error());
+        REQUIRE(cell54.value() ==
                 *core::date::parse_timestamptz("2024-01-02 00:00:00+00:00"));
-        REQUIRE(cur->value(0, 1).value<core::date::timestamptz_t>() ==
+        auto cell55 = cur->get<core::date::timestamptz_t>(0, 1);
+        REQUIRE_FALSE(cell55.has_error());
+        REQUIRE(cell55.value() ==
                 *core::date::parse_timestamptz("2024-03-16 12:30:00+00:00"));
-        REQUIRE(cur->value(0, 2).value<core::date::timestamptz_t>() ==
+        auto cell56 = cur->get<core::date::timestamptz_t>(0, 2);
+        REQUIRE_FALSE(cell56.has_error());
+        REQUIRE(cell56.value() ==
                 *core::date::parse_timestamptz("2025-01-01 23:59:00+00:00"));
     }
 
@@ -1717,7 +1831,9 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "WHERE tstz = TIMESTAMPTZ '2024-03-15 12:30:00+00:00';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        auto iv = cur->value(0, 0).value<core::date::interval_t>();
+        auto cell57 = cur->get<core::date::interval_t>(0, 0);
+        REQUIRE_FALSE(cell57.has_error());
+        auto iv = cell57.value();
         auto expected_us =
             int64_t{74} * 86400LL * 1'000'000LL + 12LL * 3600LL * 1'000'000LL + 30LL * 60LL * 1'000'000LL;
         REQUIRE(iv.time.count() == expected_us);
@@ -1735,9 +1851,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-02"));
-        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-03-15"));
-        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2024-12-31"));
+        auto cell58 = cur->get<core::date::date_t>(0, 0);
+        REQUIRE_FALSE(cell58.has_error());
+        REQUIRE(cell58.value() == *core::date::parse_date("2024-01-02"));
+        auto cell59 = cur->get<core::date::date_t>(0, 1);
+        REQUIRE_FALSE(cell59.has_error());
+        REQUIRE(cell59.value() == *core::date::parse_date("2024-03-15"));
+        auto cell60 = cur->get<core::date::date_t>(0, 2);
+        REQUIRE_FALSE(cell60.has_error());
+        REQUIRE(cell60.value() == *core::date::parse_date("2024-12-31"));
     }
 
     INFO("N28. SELECT d + INTERVAL '1 month' ... GROUP BY d exercises operator_group.cpp");
@@ -1750,9 +1872,15 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                            "ORDER BY d ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-02-01"));
-        REQUIRE(cur->value(0, 1).value<core::date::date_t>() == *core::date::parse_date("2024-04-15"));
-        REQUIRE(cur->value(0, 2).value<core::date::date_t>() == *core::date::parse_date("2025-01-31"));
+        auto cell61 = cur->get<core::date::date_t>(0, 0);
+        REQUIRE_FALSE(cell61.has_error());
+        REQUIRE(cell61.value() == *core::date::parse_date("2024-02-01"));
+        auto cell62 = cur->get<core::date::date_t>(0, 1);
+        REQUIRE_FALSE(cell62.has_error());
+        REQUIRE(cell62.value() == *core::date::parse_date("2024-04-15"));
+        auto cell63 = cur->get<core::date::date_t>(0, 2);
+        REQUIRE_FALSE(cell63.has_error());
+        REQUIRE(cell63.value() == *core::date::parse_date("2025-01-31"));
     }
 
     INFO("N29. UPDATE SET d = d + INTERVAL '7 days' exercises update_expression.cpp");
@@ -1773,7 +1901,9 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
                                                "WHERE d = DATE '2024-01-08';");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<core::date::date_t>() == *core::date::parse_date("2024-01-08"));
+            auto cell64 = cur->get<core::date::date_t>(0, 0);
+            REQUIRE_FALSE(cell64.has_error());
+            REQUIRE(cell64.value() == *core::date::parse_date("2024-01-08"));
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1823,10 +1953,14 @@ TEST_CASE("integration::cpp::test_arithmetic::update_bitshift_non_integer_reject
         auto cur = dispatcher->execute_sql(session, "SELECT f, s FROM t.b;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        const double f = cur->value(0, 0).value<double>();
+        auto cell65 = cur->get<double>(0, 0);
+        REQUIRE_FALSE(cell65.has_error());
+        const double f = cell65.value();
         CHECK(f > 1.4999); // was: silently overwritten with 0
         CHECK(f < 1.5001);
-        CHECK(cur->value(1, 0).value<std::string_view>() == "ab"); // was: ''
+        auto cell66 = cur->get<std::string_view>(1, 0);
+        REQUIRE_FALSE(cell66.has_error());
+        CHECK(cell66.value() == "ab"); // was: ''
     }
     // Bitshift on a genuinely integer column keeps working.
     {
@@ -1834,7 +1968,9 @@ TEST_CASE("integration::cpp::test_arithmetic::update_bitshift_non_integer_reject
         REQUIRE(dispatcher->execute_sql(session, "UPDATE t.b SET x = x << 1 WHERE x > 0;")->is_success());
         auto cur = dispatcher->execute_sql(session, "SELECT x FROM t.b;");
         REQUIRE(cur->is_success());
-        CHECK(cur->value(0, 0).value<int64_t>() == 6);
+        auto cell67 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell67.has_error());
+        CHECK(cell67.value() == 6);
     }
 }
 
@@ -1894,9 +2030,15 @@ TEST_CASE("integration::cpp::test_arithmetic::constant_folding_still_folds") {
         auto cur = exec("SELECT x FROM z.t ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        CHECK(cur->value(0, 0).value<int64_t>() == 5);
-        CHECK(cur->value(0, 1).value<int64_t>() == 5);
-        CHECK(cur->value(0, 2).value<int64_t>() == 2);
+        auto cell68 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell68.has_error());
+        CHECK(cell68.value() == 5);
+        auto cell69 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell69.has_error());
+        CHECK(cell69.value() == 5);
+        auto cell70 = cur->get<int64_t>(0, 2);
+        REQUIRE_FALSE(cell70.has_error());
+        CHECK(cell70.value() == 2);
     }
 
     // Temporal constant arithmetic in a VALUES list goes through the same fold.
@@ -1921,4 +2063,53 @@ TEST_CASE("integration::cpp::test_arithmetic::constant_folding_still_folds") {
         REQUIRE(cur->size() == 1);
         CHECK(cur->chunks().front().data[0].is_null(0));
     }
+}
+
+// The optimizer folds a constant pair through the vector kernel; whatever the kernel refuses stays for the
+// runtime, which answers the same way.
+TEST_CASE("integration::cpp::test_arithmetic::constant_folding_on_vectors_matches_runtime") {
+    auto config = test_create_config(integration_fixture_path("test_arithmetic_const_fold_vectors"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(exec("CREATE DATABASE z;")->is_success());
+    REQUIRE(exec("CREATE TABLE z.t (id BIGINT, s TEXT, d DOUBLE);")->is_success());
+    REQUIRE(exec("INSERT INTO z.t (id, s, d) VALUES (1, 'abc', 7.5), (2, 'abd', 1.0);")->is_success());
+
+    // BIGINT * DOUBLE meets a cast before the optimizer; the product is the same either way.
+    {
+        auto cur = exec("SELECT id FROM z.t WHERE d = 3 * 2.5;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        auto cell71 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell71.has_error());
+        CHECK(cell71.value() == 1);
+    }
+    {
+        auto cur = exec("SELECT id FROM z.t WHERE 'abc' < 'abd' AND id = 1;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->size() == 1);
+    }
+    {
+        auto cur = exec("SELECT id FROM z.t WHERE 'abd' < 'abc';");
+        REQUIRE(cur->is_success());
+        CHECK(cur->size() == 0);
+    }
+    // A SELECT-list expression is not folded (only WHERE is); this guards the runtime answer.
+    {
+        auto cur =
+            exec("SELECT DATE '2024-01-31' + INTERVAL '1 day' = DATE '2024-02-01' AS same FROM z.t WHERE id = 1;");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        auto cell72 = cur->get<bool>(0, 0);
+        REQUIRE_FALSE(cell72.has_error());
+        CHECK(cell72.value());
+    }
+    // The kernel refuses these, so the runtime reports them.
+    CHECK(exec("SELECT id FROM z.t WHERE (-9223372036854775807 - 1) / -1 = 0;")->is_error());
 }

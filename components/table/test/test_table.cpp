@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <components/expressions/execution_dag_builder.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
@@ -7,6 +8,7 @@
 #include <core/file/local_file_system.hpp>
 #include <cstdio>
 #include <math.h>
+#include <components/vector/cell_equal.hpp>
 #include <string>
 #include <unistd.h>
 
@@ -162,51 +164,32 @@ TEST_CASE("components::table::data_table") {
                 break;
             }
             case 6: { // STRUCT
-                std::vector<logical_value_t> arr;
-                arr.reserve(i);
-                for (size_t j = 0; j < i; j++) {
-                    arr.emplace_back(&resource, test_data[i].array[j]);
-                }
-                std::vector<logical_value_t> value_fiels;
-                value_fiels.emplace_back(&resource, test_data[i].flag);
-                value_fiels.emplace_back(&resource, test_data[i].number);
-                value_fiels.emplace_back(&resource, test_data[i].name);
-                value_fiels.emplace_back(logical_value_t::create_list(&resource, logical_type::USMALLINT, arr));
-                chunk.set_value(col, row, logical_value_t::create_struct(&resource, struct_type, value_fiels));
+                auto& fields = chunk.data[col].entries();
+                fields[0]->set_value(row, test_data[i].flag);
+                fields[1]->set_value(row, test_data[i].number);
+                fields[2]->set_value(row, std::string_view{test_data[i].name});
+                fields[3]->set_value(row, test_data[i].array);
                 break;
             }
             case 7: { // UNION
-                switch (i % 3) {
+                auto& members = chunk.data[col].entries();
+                const auto tag = static_cast<uint8_t>(i % 3);
+                members[0]->set_value(row, tag);
+                for (size_t m = 1; m < members.size(); ++m) {
+                    members[m]->set_null(row, m != static_cast<size_t>(tag) + 1);
+                }
+                switch (tag) {
                     case 0:
-                        chunk.set_value(col,
-                                        row,
-                                        logical_value_t::create_union(&resource,
-                                                                      union_fields,
-                                                                      0,
-                                                                      logical_value_t{&resource, i % 2 == 0}));
+                        members[1]->set_value(row, i % 2 == 0);
                         break;
                     case 1:
-                        chunk.set_value(
-                            col,
-                            row,
-                            logical_value_t::create_union(&resource,
-                                                          union_fields,
-                                                          1,
-                                                          logical_value_t{&resource, static_cast<int32_t>(i)}));
+                        members[2]->set_value(row, static_cast<int32_t>(i));
                         break;
-                    case 2:
-                        chunk.set_value(
-                            col,
-                            row,
-                            logical_value_t::create_union(
-                                &resource,
-                                union_fields,
-                                2,
-                                logical_value_t{&resource,
-                                                std::string{"long_string_with_index_" + std::to_string(i)}}));
+                    default: {
+                        const std::string text{"long_string_with_index_" + std::to_string(i)};
+                        members[3]->set_value(row, std::string_view{text});
                         break;
-                    default:
-                        break;
+                    }
                 }
                 break;
             }
@@ -225,91 +208,99 @@ TEST_CASE("components::table::data_table") {
     // Verify result row `local` carries the values expected for logical index `idx`.
     auto check_cols = [&](data_chunk_t& result, size_t local, size_t idx, const col_layout& L) {
         if (L.ubigint != absent) {
-            logical_value_t value = result.data[L.ubigint].value(local);
-            REQUIRE(value.type().type() == logical_type::UBIGINT);
-            REQUIRE(value.value<uint64_t>() == idx);
+            const auto& column = result.data[L.ubigint];
+            REQUIRE(column.type().type() == logical_type::UBIGINT);
+            REQUIRE(column.get_value<uint64_t>(local) == idx);
         }
         {
-            logical_value_t value = result.data[L.str].value(local);
-            REQUIRE(value.type().type() == logical_type::STRING_LITERAL);
-            REQUIRE(*value.value<std::string*>() == generate_string(idx));
+            const auto& column = result.data[L.str];
+            REQUIRE(column.type().type() == logical_type::STRING_LITERAL);
+            REQUIRE(column.get_value<std::string_view>(local) == generate_string(idx));
         }
         {
-            logical_value_t value = result.data[L.arr_ub].value(local);
-            REQUIRE(value.type().type() == logical_type::ARRAY);
+            const auto& column = result.data[L.arr_ub];
+            REQUIRE(column.type().type() == logical_type::ARRAY);
+            const auto seq = sequence_of(column, local);
+            REQUIRE(seq.length == array_size);
             for (size_t j = 0; j < array_size; j++) {
-                REQUIRE(value.children()[j].type().type() == logical_type::UBIGINT);
-                REQUIRE(value.children()[j].value<uint64_t>() == idx * array_size + j);
+                REQUIRE(seq.child->type().type() == logical_type::UBIGINT);
+                REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == idx * array_size + j);
             }
         }
         {
-            logical_value_t value = result.data[L.arr_str].value(local);
-            REQUIRE(value.type().type() == logical_type::ARRAY);
+            const auto& column = result.data[L.arr_str];
+            REQUIRE(column.type().type() == logical_type::ARRAY);
+            const auto seq = sequence_of(column, local);
+            REQUIRE(seq.length == array_size);
             for (size_t j = 0; j < array_size; j++) {
-                REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                REQUIRE(*value.children()[j].value<std::string*>() == generate_string(idx * array_size + j));
+                REQUIRE(seq.child->type().type() == logical_type::STRING_LITERAL);
+                REQUIRE(seq.child->get_value<std::string_view>(seq.offset + j) == generate_string(idx * array_size + j));
             }
         }
         {
-            logical_value_t value = result.data[L.list_ub].value(local);
-            REQUIRE(value.type().type() == logical_type::LIST);
+            const auto& column = result.data[L.list_ub];
+            REQUIRE(column.type().type() == logical_type::LIST);
+            const auto seq = sequence_of(column, local);
+            REQUIRE(seq.length == list_length(idx));
             for (size_t j = 0; j < list_length(idx); j++) {
-                REQUIRE(value.children()[j].type().type() == logical_type::UBIGINT);
-                REQUIRE(value.children()[j].value<uint64_t>() == idx * list_length(idx) + j);
+                REQUIRE(seq.child->type().type() == logical_type::UBIGINT);
+                REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == idx * list_length(idx) + j);
             }
         }
         {
-            logical_value_t value = result.data[L.list_str].value(local);
-            REQUIRE(value.type().type() == logical_type::LIST);
+            const auto& column = result.data[L.list_str];
+            REQUIRE(column.type().type() == logical_type::LIST);
+            const auto seq = sequence_of(column, local);
+            REQUIRE(seq.length == list_length(idx));
             for (size_t j = 0; j < list_length(idx); j++) {
-                REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                REQUIRE(*value.children()[j].value<std::string*>() == generate_string(idx * list_length(idx) + j));
+                REQUIRE(seq.child->type().type() == logical_type::STRING_LITERAL);
+                REQUIRE(seq.child->get_value<std::string_view>(seq.offset + j) ==
+                        generate_string(idx * list_length(idx) + j));
             }
         }
         {
-            logical_value_t value = result.data[L.strct].value(local);
-            REQUIRE(value.type().type() == logical_type::STRUCT);
-            REQUIRE(value.type().alias() == "test_struct");
-            REQUIRE(value.type().child_types()[0].type() == logical_type::BOOLEAN);
-            REQUIRE(value.type().child_types()[0].alias() == "flag");
-            REQUIRE(value.type().child_types()[1].type() == logical_type::INTEGER);
-            REQUIRE(value.type().child_types()[1].alias() == "number");
-            REQUIRE(value.type().child_types()[2].type() == logical_type::STRING_LITERAL);
-            REQUIRE(value.type().child_types()[2].alias() == "name");
-            REQUIRE(value.type().child_types()[3].type() == logical_type::LIST);
-            REQUIRE(value.type().child_types()[3].child_type().type() == logical_type::USMALLINT);
-            REQUIRE(value.type().child_types()[3].alias() == "array");
+            const auto& column = result.data[L.strct];
+            REQUIRE(column.type().type() == logical_type::STRUCT);
+            REQUIRE(column.type().alias() == "test_struct");
+            REQUIRE(column.type().child_types()[0].type() == logical_type::BOOLEAN);
+            REQUIRE(column.type().child_types()[0].alias() == "flag");
+            REQUIRE(column.type().child_types()[1].type() == logical_type::INTEGER);
+            REQUIRE(column.type().child_types()[1].alias() == "number");
+            REQUIRE(column.type().child_types()[2].type() == logical_type::STRING_LITERAL);
+            REQUIRE(column.type().child_types()[2].alias() == "name");
+            REQUIRE(column.type().child_types()[3].type() == logical_type::LIST);
+            REQUIRE(column.type().child_types()[3].child_type().type() == logical_type::USMALLINT);
+            REQUIRE(column.type().child_types()[3].alias() == "array");
 
-            REQUIRE(value.children()[0].value<bool>() == test_data[idx].flag);
-            REQUIRE(value.children()[1].value<int32_t>() == test_data[idx].number);
-            REQUIRE(*value.children()[2].value<std::string*>() == test_data[idx].name);
-            std::vector arr(value.children()[3].children());
-            REQUIRE(arr.size() == test_data[idx].array.size());
-            for (size_t j = 0; j < arr.size(); j++) {
-                REQUIRE(arr[j].value<uint16_t>() == test_data[idx].array[j]);
-            }
+            const auto cell = resolve_cell(column, local);
+            REQUIRE(cell.vec->entries()[0]->get_value<bool>(cell.index) == test_data[idx].flag);
+            REQUIRE(cell.vec->entries()[1]->get_value<int32_t>(cell.index) == test_data[idx].number);
+            REQUIRE(cell.vec->entries()[2]->get_value<std::string_view>(cell.index) == test_data[idx].name);
+            REQUIRE(cell.vec->entries()[3]->get_value<std::vector<uint16_t>>(cell.index) == test_data[idx].array);
         }
         {
-            logical_value_t value = result.data[L.uni].value(local);
-            REQUIRE(value.type().type() == logical_type::UNION);
-            REQUIRE(value.type().alias() == "test_union");
+            const auto& column = result.data[L.uni];
+            REQUIRE(column.type().type() == logical_type::UNION);
+            REQUIRE(column.type().alias() == "test_union");
 
-            auto tag = value.children()[0].value<uint8_t>();
+            const auto cell = resolve_cell(column, local);
+            const auto& members = cell.vec->entries();
+            auto tag = members[0]->get_value<uint8_t>(cell.index);
             switch (tag) {
                 case 0:
-                    REQUIRE(value.type().child_types()[1].type() == logical_type::BOOLEAN);
-                    REQUIRE(value.type().child_types()[1].alias() == "bool");
-                    REQUIRE(value.children()[1].value<bool>() == (idx % 2 == 0));
+                    REQUIRE(column.type().child_types()[1].type() == logical_type::BOOLEAN);
+                    REQUIRE(column.type().child_types()[1].alias() == "bool");
+                    REQUIRE(members[1]->get_value<bool>(cell.index) == (idx % 2 == 0));
                     break;
                 case 1:
-                    REQUIRE(value.type().child_types()[2].type() == logical_type::INTEGER);
-                    REQUIRE(value.type().child_types()[2].alias() == "int");
-                    REQUIRE(value.children()[2].value<int32_t>() == static_cast<int32_t>(idx));
+                    REQUIRE(column.type().child_types()[2].type() == logical_type::INTEGER);
+                    REQUIRE(column.type().child_types()[2].alias() == "int");
+                    REQUIRE(members[2]->get_value<int32_t>(cell.index) == static_cast<int32_t>(idx));
                     break;
                 case 2:
-                    REQUIRE(value.type().child_types()[3].type() == logical_type::STRING_LITERAL);
-                    REQUIRE(value.type().child_types()[3].alias() == "string");
-                    REQUIRE(value.children()[3].value<std::string_view>() ==
+                    REQUIRE(column.type().child_types()[3].type() == logical_type::STRING_LITERAL);
+                    REQUIRE(column.type().child_types()[3].alias() == "string");
+                    REQUIRE(members[3]->get_value<std::string_view>(cell.index) ==
                             std::string{"long_string_with_index_" + std::to_string(idx)});
                     break;
                 default:
@@ -317,10 +308,10 @@ TEST_CASE("components::table::data_table") {
             }
         }
         if (L.smallint != absent) {
-            logical_value_t value = result.data[L.smallint].value(local);
+            const auto& column = result.data[L.smallint];
             CAPTURE(idx, local, L.smallint, result.size());
-            REQUIRE(value.type().type() == logical_type::SMALLINT);
-            REQUIRE(value.value<int16_t>() == static_cast<int16_t>(idx));
+            REQUIRE(column.type().type() == logical_type::SMALLINT);
+            REQUIRE(column.get_value<int16_t>(local) == static_cast<int16_t>(idx));
         }
     };
 
@@ -418,9 +409,11 @@ TEST_CASE("components::table::data_table") {
         namespace expr = components::expressions;
         const core::parameter_id_t lo_id{0};
         const core::parameter_id_t hi_id{1};
-        components::types::parameter_map_t parameters(&resource);
-        parameters.emplace(lo_id, logical_value_t{&resource, row_range.first});
-        parameters.emplace(hi_id, logical_value_t{&resource, generate_string(row_range.second)});
+        components::vector::storage_parameters parameters(&resource);
+        REQUIRE(parameters.add(components::vector::make_scalar(&resource, row_range.first),
+                               components::vector::parameter_kind::literal) == lo_id);
+        REQUIRE(parameters.add(components::vector::make_scalar(&resource, generate_string(row_range.second)),
+                               components::vector::parameter_kind::literal) == hi_id);
 
         auto column_key = [&](size_t ordinal) {
             expr::key_t key{&resource};
@@ -434,7 +427,7 @@ TEST_CASE("components::table::data_table") {
 
         auto built = expr::build_condition_graph(&resource, parameters, predicate.get(), data_table->copy_types());
         REQUIRE_FALSE(built.has_error());
-        table_filter_t filter{parameters,
+        table_filter_t filter{std::move(parameters),
                               components::graph_execution_context{},
                               std::move(built.value()),
                               expr::condition_kind::computed};

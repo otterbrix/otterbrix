@@ -9,16 +9,23 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_update.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/catalog/type_display.hpp>
+#include <components/execution_context/graph_execution_context.hpp>
+#include <components/operators/operator_code.hpp>
+#include <components/vector/operations/apply_operator.hpp>
+#include <components/vector/vector_operations.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/date/date_parse.hpp>
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cassert>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
 #include <string_view>
+#include <cstring>
 
 namespace components::sql::transform {
     namespace {
@@ -845,10 +852,12 @@ namespace components::sql::transform {
         return static_cast<types::int128_t>(negative ? (~acc + types::uint128_t{1}) : acc);
     }
 
-    core::result_wrapper_t<types::logical_value_t> numeric_literal_value(std::pmr::memory_resource* resource,
-                                                                         Value* value) {
+    core::result_wrapper_t<numeric_literal_t> parse_numeric_literal(std::pmr::memory_resource* resource, Value* value) {
+        numeric_literal_t literal;
         if (nodeTag(value) == T_Integer) {
-            return types::logical_value_t(resource, static_cast<int64_t>(intVal(value)));
+            literal.type = types::logical_type::BIGINT;
+            literal.as_int64 = static_cast<int64_t>(intVal(value));
+            return literal;
         }
         if (nodeTag(value) != T_Float) {
             return core::error_t(
@@ -861,13 +870,19 @@ namespace components::sql::transform {
             case integer_text_t::exact:
                 if (exact >= types::int128_t{std::numeric_limits<int64_t>::min()} &&
                     exact <= types::int128_t{std::numeric_limits<int64_t>::max()}) {
-                    return types::logical_value_t(resource, static_cast<int64_t>(exact));
+                    literal.type = types::logical_type::BIGINT;
+                    literal.as_int64 = static_cast<int64_t>(exact);
+                    return literal;
                 }
-                return types::logical_value_t(resource, exact);
+                literal.type = types::logical_type::HUGEINT;
+                literal.as_int128 = exact;
+                return literal;
             case integer_text_t::out_of_range: {
                 types::uint128_t unsigned_exact{0};
                 if (parse_exact_unsigned_integer(text, unsigned_exact) == integer_text_t::exact) {
-                    return types::logical_value_t(resource, unsigned_exact);
+                    literal.type = types::logical_type::UHUGEINT;
+                    literal.as_uint128 = unsigned_exact;
+                    return literal;
                 }
                 // PostgreSQL would widen to arbitrary-precision numeric; refuse instead of rounding to double.
                 return core::error_t(core::error_code_t::sql_parse_error,
@@ -889,7 +904,26 @@ namespace components::sql::transform {
                 std::pmr::string{"numeric literal out of range: " + std::string(text) + " does not fit a double",
                                  resource});
         }
-        return types::logical_value_t(resource, parsed);
+        literal.type = types::logical_type::DOUBLE;
+        literal.as_double = parsed;
+        return literal;
+    }
+
+    core::result_wrapper_t<vector::vector_t> numeric_literal_value(std::pmr::memory_resource* resource, Value* value) {
+        VALUE_OR_RETURN(auto literal, parse_numeric_literal(resource, value));
+        switch (literal.type) {
+            case types::logical_type::BIGINT:
+                return vector::make_scalar(resource, literal.as_int64);
+            case types::logical_type::HUGEINT:
+                return vector::make_scalar(resource, literal.as_int128);
+            case types::logical_type::UHUGEINT:
+                return vector::make_scalar(resource, literal.as_uint128);
+            case types::logical_type::DOUBLE:
+                return vector::make_scalar(resource, literal.as_double);
+            default:
+                assert(false);
+                return vector::make_scalar(resource, literal.as_double);
+        }
     }
 
     std::string_view fractional_literal_text(Node* node) {
@@ -1029,29 +1063,29 @@ namespace components::sql::transform {
             }
         }
 
-        types::logical_value_t
+        vector::vector_t
         make_integer_value(std::pmr::memory_resource* resource, types::logical_type t, types::int128_t v) {
             using LT = types::logical_type;
             switch (t) {
                 case LT::TINYINT:
-                    return types::logical_value_t(resource, static_cast<int8_t>(v));
+                    return vector::make_scalar(resource, static_cast<int8_t>(v));
                 case LT::SMALLINT:
-                    return types::logical_value_t(resource, static_cast<int16_t>(v));
+                    return vector::make_scalar(resource, static_cast<int16_t>(v));
                 case LT::INTEGER:
-                    return types::logical_value_t(resource, static_cast<int32_t>(v));
+                    return vector::make_scalar(resource, static_cast<int32_t>(v));
                 case LT::BIGINT:
-                    return types::logical_value_t(resource, static_cast<int64_t>(v));
+                    return vector::make_scalar(resource, static_cast<int64_t>(v));
                 case LT::UTINYINT:
-                    return types::logical_value_t(resource, static_cast<uint8_t>(v));
+                    return vector::make_scalar(resource, static_cast<uint8_t>(v));
                 case LT::USMALLINT:
-                    return types::logical_value_t(resource, static_cast<uint16_t>(v));
+                    return vector::make_scalar(resource, static_cast<uint16_t>(v));
                 case LT::UINTEGER:
-                    return types::logical_value_t(resource, static_cast<uint32_t>(v));
+                    return vector::make_scalar(resource, static_cast<uint32_t>(v));
                 case LT::UBIGINT:
-                    return types::logical_value_t(resource, static_cast<uint64_t>(v));
+                    return vector::make_scalar(resource, static_cast<uint64_t>(v));
                 case LT::HUGEINT:
                 default:
-                    return types::logical_value_t(resource, v);
+                    return vector::make_scalar(resource, v);
             }
         }
 
@@ -1063,10 +1097,10 @@ namespace components::sql::transform {
         }
 
         // `is_string_literal` distinguishes '1.5'::int (PostgreSQL refuses) from 1.5::int (rounds).
-        core::result_wrapper_t<types::logical_value_t> cast_literal_text(std::pmr::memory_resource* resource,
-                                                                         const types::complex_logical_type& target,
-                                                                         const std::string& text,
-                                                                         bool is_string_literal) {
+        core::result_wrapper_t<vector::vector_t> cast_literal_text(std::pmr::memory_resource* resource,
+                                                                   const types::complex_logical_type& target,
+                                                                   const std::string& text,
+                                                                   bool is_string_literal) {
             using LT = types::logical_type;
             const LT t = target.type();
             types::int128_t lo{0};
@@ -1103,17 +1137,14 @@ namespace components::sql::transform {
                         return invalid_cast_input(resource, t, is_string_literal ? "'" + text + "'" : text);
                     }
                     if (t == LT::DOUBLE) {
-                        return types::logical_value_t(resource, parsed);
+                        return vector::make_scalar(resource, parsed);
                     }
-                    return types::logical_value_t(resource, static_cast<float>(parsed));
+                    return vector::make_scalar(resource, static_cast<float>(parsed));
                 }
                 case LT::DECIMAL: {
                     const auto* ext = static_cast<const types::decimal_logical_type_extension*>(target.extension());
                     VALUE_OR_RETURN(auto scaled, parse_exact_decimal(resource, text, ext->width(), ext->scale()));
-                    if (target.to_physical_type() == types::physical_type::INT64) {
-                        return types::logical_value_t::create_decimal(resource, target, static_cast<int64_t>(scaled));
-                    }
-                    return types::logical_value_t::create_decimal(resource, target, scaled);
+                    return vector::make_decimal(resource, target, scaled);
                 }
                 case LT::BOOLEAN: {
                     if (is_string_literal) {
@@ -1124,11 +1155,11 @@ namespace components::sql::transform {
                         });
                         if (lowered == "t" || lowered == "true" || lowered == "y" || lowered == "yes" ||
                             lowered == "on" || lowered == "1") {
-                            return types::logical_value_t(resource, true);
+                            return vector::make_scalar(resource, true);
                         }
                         if (lowered == "f" || lowered == "false" || lowered == "n" || lowered == "no" ||
                             lowered == "off" || lowered == "0") {
-                            return types::logical_value_t(resource, false);
+                            return vector::make_scalar(resource, false);
                         }
                         return invalid_cast_input(resource, t, "'" + text + "'");
                     }
@@ -1136,16 +1167,16 @@ namespace components::sql::transform {
                     types::int128_t exact{0};
                     switch (parse_exact_integer(text, exact)) {
                         case integer_text_t::exact:
-                            return types::logical_value_t(resource, exact != types::int128_t{0});
+                            return vector::make_scalar(resource, exact != types::int128_t{0});
                         case integer_text_t::out_of_range:
-                            return types::logical_value_t(resource, true);
+                            return vector::make_scalar(resource, true);
                         case integer_text_t::not_an_integer:
                             return invalid_cast_input(resource, t, text);
                     }
                     return invalid_cast_input(resource, t, text);
                 }
                 case LT::STRING_LITERAL:
-                    return types::logical_value_t(resource, text);
+                    return vector::make_scalar(resource, std::string_view{text});
                 default:
                     return core::error_t(
                         core::error_code_t::unimplemented_yet,
@@ -1156,7 +1187,76 @@ namespace components::sql::transform {
 
     } // namespace
 
-    core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node) {
+    namespace {
+    core::result_wrapper_t<vector::vector_t>
+    cast_string_literal(std::pmr::memory_resource* resource,
+                        const types::complex_logical_type& target_type,
+                        std::string_view str) {
+        if (types::is_duration(target_type.type())) {
+            switch (target_type.type()) {
+                case types::logical_type::DATE:
+                    if (auto parsed = core::date::parse_date(str)) {
+                        return vector::make_scalar(resource,
+                                                   types::complex_logical_type{types::logical_type::DATE},
+                                                   *parsed);
+                    }
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"invalid DATE literal: " + std::string(str), resource});
+                case types::logical_type::TIME:
+                    if (auto parsed = core::date::parse_time(str)) {
+                        return vector::make_scalar(resource,
+                                                   types::complex_logical_type{types::logical_type::TIME},
+                                                   *parsed);
+                    }
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"invalid TIME literal: " + std::string(str), resource});
+                case types::logical_type::TIME_TZ:
+                    if (auto parsed = core::date::parse_timetz(str)) {
+                        return vector::make_scalar(resource,
+                                                   types::complex_logical_type{types::logical_type::TIME_TZ},
+                                                   *parsed);
+                    }
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"invalid TIMETZ literal: " + std::string(str), resource});
+                case types::logical_type::TIMESTAMP:
+                    if (auto parsed = core::date::parse_timestamp(str)) {
+                        return vector::make_scalar(resource,
+                                                   types::complex_logical_type{types::logical_type::TIMESTAMP},
+                                                   *parsed);
+                    }
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"invalid TIMESTAMP literal: " + std::string(str), resource});
+                case types::logical_type::TIMESTAMP_TZ:
+                    if (auto parsed = core::date::parse_timestamptz(str)) {
+                        return vector::make_scalar(resource,
+                                                   types::complex_logical_type{types::logical_type::TIMESTAMP_TZ},
+                                                   *parsed);
+                    }
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"invalid TIMESTAMPTZ literal: " + std::string(str), resource});
+                case types::logical_type::INTERVAL:
+                    if (auto parsed = core::date::parse_interval(str)) {
+                        return vector::make_scalar(resource,
+                                                   types::complex_logical_type{types::logical_type::INTERVAL},
+                                                   *parsed);
+                    }
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"invalid INTERVAL literal: " + std::string(str), resource});
+                default:
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"unsupported duration cast target", resource});
+            }
+        }
+        if (target_type.type() == types::logical_type::UNKNOWN) {
+            return vector::make_scalar(resource, str);
+        }
+        return cast_literal_text(resource, target_type, std::string(str), /*is_string_literal=*/true);
+    }
+
+    } // namespace
+
+    core::result_wrapper_t<vector::vector_t> get_value(std::pmr::memory_resource* resource, Node* node) {
         switch (nodeTag(node)) {
             case T_TypeCast: {
                 auto cast = pg_ptr_cast<TypeCast>(node);
@@ -1168,7 +1268,7 @@ namespace components::sql::transform {
                 }
                 auto constant = pg_ptr_cast<A_Const>(cast->arg);
                 if (constant->val.type == T_Null) {
-                    return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                    return vector::make_null(resource, types::complex_logical_type{types::logical_type::NA});
                 }
                 VALUE_OR_RETURN(auto target_type, get_type(resource, cast->typeName));
                 if (constant->val.type != T_String) {
@@ -1193,73 +1293,18 @@ namespace components::sql::transform {
                                              numeric_literal_text(&constant->val),
                                              /*is_string_literal=*/false);
                 }
-                std::string_view str = strVal(&constant->val);
-                if (types::is_duration(target_type.type())) {
-                    switch (target_type.type()) {
-                        case types::logical_type::DATE:
-                            if (auto parsed = core::date::parse_date(str)) {
-                                return types::logical_value_t(resource, *parsed);
-                            }
-                            return core::error_t(
-                                core::error_code_t::sql_parse_error,
-                                std::pmr::string{"invalid DATE literal: " + std::string(str), resource});
-                        case types::logical_type::TIME:
-                            if (auto parsed = core::date::parse_time(str)) {
-                                return types::logical_value_t(resource, *parsed);
-                            }
-                            return core::error_t(
-                                core::error_code_t::sql_parse_error,
-                                std::pmr::string{"invalid TIME literal: " + std::string(str), resource});
-                        case types::logical_type::TIME_TZ:
-                            if (auto parsed = core::date::parse_timetz(str)) {
-                                return types::logical_value_t(resource, *parsed);
-                            }
-                            return core::error_t(
-                                core::error_code_t::sql_parse_error,
-                                std::pmr::string{"invalid TIMETZ literal: " + std::string(str), resource});
-                        case types::logical_type::TIMESTAMP:
-                            if (auto parsed = core::date::parse_timestamp(str)) {
-                                return types::logical_value_t(resource, *parsed);
-                            }
-                            return core::error_t(
-                                core::error_code_t::sql_parse_error,
-                                std::pmr::string{"invalid TIMESTAMP literal: " + std::string(str), resource});
-                        case types::logical_type::TIMESTAMP_TZ:
-                            if (auto parsed = core::date::parse_timestamptz(str)) {
-                                return types::logical_value_t(resource, *parsed);
-                            }
-                            return core::error_t(
-                                core::error_code_t::sql_parse_error,
-                                std::pmr::string{"invalid TIMESTAMPTZ literal: " + std::string(str), resource});
-                        case types::logical_type::INTERVAL:
-                            if (auto parsed = core::date::parse_interval(str)) {
-                                return types::logical_value_t(resource, *parsed);
-                            }
-                            return core::error_t(
-                                core::error_code_t::sql_parse_error,
-                                std::pmr::string{"invalid INTERVAL literal: " + std::string(str), resource});
-                        default:
-                            return core::error_t(core::error_code_t::sql_parse_error,
-                                                 std::pmr::string{"unsupported duration cast target", resource});
-                    }
-                }
-                if (target_type.type() == types::logical_type::UNKNOWN) {
-                    return types::logical_value_t(resource, std::string(str));
-                }
-                return cast_literal_text(resource, target_type, std::string(str), /*is_string_literal=*/true);
+                return cast_string_literal(resource, target_type, strVal(&constant->val));
             }
             case T_A_Const: {
                 auto* value = &(pg_ptr_cast<A_Const>(node)->val);
                 switch (nodeTag(value)) {
-                    case T_String: {
-                        std::string str = strVal(value);
-                        return types::logical_value_t(resource, str);
-                    }
+                    case T_String:
+                        return vector::make_scalar(resource, std::string_view{strVal(value)});
                     case T_Integer: // fall-through
                     case T_Float:
                         return numeric_literal_value(resource, value);
                     case T_Null:
-                        return types::logical_value_t(resource, types::complex_logical_type{types::logical_type::NA});
+                        return vector::make_null(resource, types::complex_logical_type{types::logical_type::NA});
                     default:
                         return core::error_t(
                             core::error_code_t::sql_parse_error,
@@ -1273,16 +1318,18 @@ namespace components::sql::transform {
             }
             case T_RowExpr: {
                 auto row = pg_ptr_cast<RowExpr>(node);
-                std::vector<types::logical_value_t> fields;
+                std::pmr::vector<vector::vector_t> fields(resource);
+                std::pmr::vector<types::complex_logical_type> field_types(resource);
                 fields.reserve(row->args->lst.size());
+                field_types.reserve(row->args->lst.size());
                 for (auto& field : row->args->lst) {
-                    if (auto res = get_value(resource, pg_ptr_cast<Node>(field.data)); res.has_error()) {
-                        return res;
-                    } else {
-                        fields.emplace_back(std::move(res.value()));
-                    }
+                    VALUE_OR_RETURN(auto value, get_value(resource, pg_ptr_cast<Node>(field.data)));
+                    field_types.push_back(value.type());
+                    fields.push_back(std::move(value));
                 }
-                return types::logical_value_t::create_struct(resource, "", fields);
+                return vector::make_struct(resource,
+                                           types::complex_logical_type::create_struct("", field_types),
+                                           fields);
             }
             default:
                 return core::error_t(core::error_code_t::sql_parse_error,
@@ -1290,20 +1337,15 @@ namespace components::sql::transform {
         }
     }
 
-    core::result_wrapper_t<types::logical_value_t> get_array(std::pmr::memory_resource* resource, PGList* list) {
-        std::vector<types::logical_value_t> values;
+    core::result_wrapper_t<vector::vector_t> get_array(std::pmr::memory_resource* resource, PGList* list) {
+        std::pmr::vector<vector::vector_t> values(resource);
         values.reserve(list->lst.size());
         for (auto& elem : list->lst) {
-            if (auto res = get_value(resource, pg_ptr_cast<Node>(elem.data)); res.has_error()) {
-                return res;
-            } else {
-                values.emplace_back(std::move(res.value()));
-            }
+            VALUE_OR_RETURN(auto value, get_value(resource, pg_ptr_cast<Node>(elem.data)));
+            values.push_back(std::move(value));
         }
         if (values.empty()) {
-            return types::logical_value_t::create_array(resource,
-                                                        types::complex_logical_type{types::logical_type::NA},
-                                                        std::move(values));
+            return vector::make_array(resource, types::complex_logical_type{types::logical_type::NA}, values);
         }
         types::complex_logical_type element_type{types::logical_type::UNKNOWN};
         bool element_type_found = false;
@@ -1322,27 +1364,31 @@ namespace components::sql::transform {
         if (!element_type_found) {
             element_type = types::complex_logical_type{types::logical_type::STRING_LITERAL};
         }
-        return types::logical_value_t::create_array(resource, element_type, std::move(values));
+        // A NULL element is typed as the element type: an NA child would not fit the array's child vector.
+        for (auto& value : values) {
+            if (value.type().type() == types::logical_type::NA) {
+                value = vector::make_null(resource, element_type);
+            }
+        }
+        return vector::make_array(resource, element_type, values);
     }
 
-    core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource,
-                                                                         A_Expr* node) {
+    core::result_wrapper_t<vector::vector_t> evaluate_const_a_expr(std::pmr::memory_resource* resource, A_Expr* node) {
         if (node->kind != AEXPR_OP) {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"Only AEXPR_OP supported in constant arithmetic", resource});
         }
         auto op_str = std::string_view(strVal(node->name->lst.front().data));
 
-        auto resolve = [resource](Node* n) -> core::result_wrapper_t<types::logical_value_t> {
+        auto resolve = [resource](Node* n) -> core::result_wrapper_t<vector::vector_t> {
             if (nodeTag(n) == T_A_Expr) {
                 return evaluate_const_a_expr(resource, pg_ptr_cast<A_Expr>(n));
             }
             return get_value(resource, n);
         };
 
-        auto left = node->lexpr
-                        ? resolve(node->lexpr)
-                        : core::result_wrapper_t<types::logical_value_t>{types::logical_value_t(resource, int64_t(0))};
+        auto left = node->lexpr ? resolve(node->lexpr)
+                                : core::result_wrapper_t<vector::vector_t>{vector::make_scalar(resource, int64_t{0})};
         auto right = resolve(node->rexpr);
         if (left.has_error()) {
             return left;
@@ -1351,33 +1397,94 @@ namespace components::sql::transform {
             return right;
         }
 
-        if (op_str == "/" || op_str == "%") {
-            const auto& divisor = right.value();
-            if (!divisor.is_null() && divisor == types::logical_value_t{resource, divisor.type()}) {
+        using op_t = operators::operator_code;
+        op_t code;
+        if (op_str == "+") {
+            code = op_t::add;
+        } else if (op_str == "-") {
+            code = op_t::subtract;
+        } else if (op_str == "*") {
+            code = op_t::multiply;
+        } else if (op_str == "/") {
+            code = op_t::divide;
+        } else if (op_str == "%") {
+            code = op_t::mod;
+        } else {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"Unknown arithmetic operator in constant expression: " +
+                                                      std::string(op_str),
+                                                  resource});
+        }
+
+        auto& lhs = left.value();
+        auto& rhs = right.value();
+        const auto lhs_type = lhs.type().type();
+        const auto rhs_type = rhs.type().type();
+
+        if ((code == op_t::divide || code == op_t::mod) && !rhs.is_null(0) && types::is_arithmetic_numeric(rhs_type)) {
+            VALUE_OR_RETURN(auto as_double,
+                            vector::vector_ops::cast_vector(resource,
+                                                            vector::make_flat_copy(resource, rhs, 1),
+                                                            types::complex_logical_type{types::logical_type::DOUBLE},
+                                                            1));
+            if (as_double.get_value<double>(0) == 0.0) {
                 return core::error_t(core::error_code_t::invalid_parameter,
                                      std::pmr::string{"division by zero", resource});
             }
         }
 
-        if (left.value().type().type() == types::logical_type::DECIMAL ||
-            right.value().type().type() == types::logical_type::DECIMAL) {
+        if (lhs_type == types::logical_type::DECIMAL || rhs_type == types::logical_type::DECIMAL) {
             return core::error_t(
                 core::error_code_t::unimplemented_yet,
                 std::pmr::string{"constant arithmetic over a DECIMAL literal is not supported yet", resource});
         }
-        if (op_str == "+")
-            return types::logical_value_t::sum(left.value(), right.value());
-        if (op_str == "-")
-            return types::logical_value_t::subtract(left.value(), right.value());
-        if (op_str == "*")
-            return types::logical_value_t::mult(left.value(), right.value());
-        if (op_str == "/")
-            return types::logical_value_t::divide(left.value(), right.value());
-        if (op_str == "%")
-            return types::logical_value_t::modulus(left.value(), right.value());
-        return core::error_t(
-            core::error_code_t::sql_parse_error,
-            std::pmr::string{"Unknown arithmetic operator in constant expression: " + std::string(op_str), resource});
+        if (lhs.is_null(0) || rhs.is_null(0)) {
+            return vector::make_null(resource, types::complex_logical_type{types::logical_type::NA});
+        }
+
+        const auto kind = [code] {
+            switch (code) {
+                case op_t::add:
+                    return vector::arithmetic_op::add;
+                case op_t::subtract:
+                    return vector::arithmetic_op::subtract;
+                case op_t::multiply:
+                    return vector::arithmetic_op::multiply;
+                case op_t::divide:
+                    return vector::arithmetic_op::divide;
+                default:
+                    return vector::arithmetic_op::mod;
+            }
+        }();
+        const auto result_type = types::arithmetic_result_type(lhs_type, rhs_type, kind);
+        if (result_type == types::logical_type::NA) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"operator " + std::string(op_str) + " is not defined for " +
+                                                      components::catalog::format_type_be(lhs.type()) + " and " +
+                                                      components::catalog::format_type_be(rhs.type()),
+                                                  resource});
+        }
+        const types::complex_logical_type result_complex{result_type};
+        if (types::is_arithmetic_numeric(lhs_type) && types::is_arithmetic_numeric(rhs_type)) {
+            const auto to_result = [&](const vector::vector_t& operand) {
+                return vector::vector_ops::cast_vector(resource,
+                                                       vector::make_flat_copy(resource, operand, 1),
+                                                       result_complex,
+                                                       1);
+            };
+            if (lhs_type != result_type) {
+                VALUE_OR_RETURN(lhs, to_result(lhs));
+            }
+            if (rhs_type != result_type) {
+                VALUE_OR_RETURN(rhs, to_result(rhs));
+            }
+        }
+        vector::vector_t output(resource, result_complex, 1);
+        if (auto error = vector::operations::apply_binary(code, lhs, rhs, &output, graph_execution_context{}, 1);
+            error.contains_error()) {
+            return error;
+        }
+        return vector::make_constant_copy(resource, output);
     }
 
     components::catalog::drop_behavior_t drop_behavior_of(DropBehavior written) noexcept {
@@ -1397,9 +1504,9 @@ namespace components::sql::transform {
         // parsed exactly against (width, scale) instead of typed DOUBLE (measured 2026-09-05:
         // numeric(38,20) DEFAULT 0.12345678901234567890 became ...168, short by 722 at the 20th place).
         // INSERT/UPDATE values still lose the digits this way; don't duplicate the fix here.
-        core::result_wrapper_t<types::logical_value_t> default_clause_value(std::pmr::memory_resource* resource,
-                                                                            const types::complex_logical_type& declared,
-                                                                            Node* expr) {
+        core::result_wrapper_t<vector::vector_t> default_clause_value(std::pmr::memory_resource* resource,
+                                                                     const types::complex_logical_type& declared,
+                                                                     Node* expr) {
             if (declared.type() == types::logical_type::DECIMAL && declared.extension() != nullptr &&
                 nodeTag(expr) == T_A_Const) {
                 Value* value = &pg_ptr_cast<A_Const>(expr)->val;
@@ -1412,6 +1519,16 @@ namespace components::sql::transform {
                 }
             }
             return get_value(resource, expr);
+        }
+
+        // A NULL literal is typed with the declared type, never NA.
+        vector::vector_t declared_default(std::pmr::memory_resource* resource,
+                                          const types::complex_logical_type& declared,
+                                          vector::vector_t literal) {
+            if (literal.is_null(0)) {
+                return vector::make_null(resource, declared);
+            }
+            return literal;
         }
 
     } // namespace
@@ -1436,7 +1553,7 @@ namespace components::sql::transform {
             }
             type.value().set_alias(coldef->colname);
             bool not_null = coldef->is_not_null;
-            std::optional<types::logical_value_t> default_val;
+            std::optional<vector::vector_t> default_val;
 
             if (coldef->constraints) {
                 for (auto cdata : coldef->constraints->lst) {
@@ -1451,7 +1568,7 @@ namespace components::sql::transform {
                                     val.has_error()) {
                                     return val.convert_error<std::vector<table::column_definition_t>>();
                                 } else {
-                                    default_val = std::move(val.value());
+                                    default_val = declared_default(resource, type.value(), std::move(val.value()));
                                 }
                             }
                             break;
@@ -1468,7 +1585,7 @@ namespace components::sql::transform {
                 if (auto val = default_clause_value(resource, type.value(), coldef->raw_default); val.has_error()) {
                     return val.convert_error<std::vector<table::column_definition_t>>();
                 } else {
-                    default_val = std::move(val.value());
+                    default_val = declared_default(resource, type.value(), std::move(val.value()));
                 }
             }
 

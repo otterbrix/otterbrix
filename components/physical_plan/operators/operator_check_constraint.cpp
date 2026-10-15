@@ -6,7 +6,7 @@
 #include <components/expressions/clone_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/vector/cell_equal.hpp>
 
 #include <optional>
 #include <string>
@@ -37,13 +37,12 @@ namespace components::operators {
         std::vector<std::string> not_null_columns,
         std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates,
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs,
-        types::parameter_map_t check_params)
+        vector::storage_parameters&& check_params)
         : read_write_operator_t(resource, log, operator_type::check_constraint)
         , not_null_columns_(std::move(not_null_columns))
         , array_size_reqs_(std::move(array_size_reqs))
-        , check_predicates_(std::move(check_predicates)) {
-        check_params_.insert(check_params.begin(), check_params.end());
-    }
+        , check_predicates_(std::move(check_predicates))
+        , check_params_(std::move(check_params)) {}
 
     actor_zeta::unique_future<void> operator_check_constraint_t::await_async_and_resume(pipeline::context_t* /*ctx*/) {
         // SYNCHRONOUS validation routed through the async-finalize drive so it runs
@@ -238,10 +237,10 @@ namespace components::operators {
                     for (uint64_t row = 0; row < chunk.size(); ++row) {
                         if (!chunk.data[col].validity().row_is_valid(row))
                             continue; // NULL handled by the NOT NULL check above
-                        const auto elements = chunk.data[col].value(row).children();
-                        bool has_null_element = elements.size() < required_size;
-                        for (const auto& element : elements) {
-                            if (element.is_null()) {
+                        const auto elements = vector::sequence_of(chunk.data[col], row);
+                        bool has_null_element = elements.length < required_size;
+                        for (size_t i = 0; i < elements.length; ++i) {
+                            if (elements.child->is_null(elements.offset + i)) {
                                 has_null_element = true;
                                 break;
                             }

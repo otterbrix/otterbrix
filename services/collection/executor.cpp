@@ -12,6 +12,7 @@
 #include <components/catalog/helpers.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/planner/planner.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
 
@@ -277,7 +278,7 @@ namespace services::collection::executor {
 
         components::table::transaction_data txn_data = txn;
 
-        auto limit = components::logical_plan::limit_t::unlimit();
+        auto limit = components::logical_plan::limit_t::all();
         auto* limit_lookup_node = plan.sub_queries.back().get();
         if (limit_lookup_node && limit_lookup_node->type() == components::logical_plan::node_type::sequence_t) {
             auto is_catalog_resolve = [](components::logical_plan::node_type t) {
@@ -907,14 +908,6 @@ namespace services::collection::executor {
             }
             const auto& mapping = plan.sub_query_results[i];
 
-            if (plan.sub_queries[i]->has_output_types()) {
-                const auto& column_type = plan.sub_queries[i]->output_types().front();
-                plan.parameters->set_parameter(
-                    mapping.id,
-                    mapping.compacter == &components::vector::compact_to_single_value
-                        ? components::types::logical_value_t{resource(), column_type}
-                        : components::types::logical_value_t::create_array(resource(), column_type, {}));
-            }
             if (mapping.boolean_required) {
                 const auto& sub_node = plan.sub_queries[i];
                 if (!sub_node->has_output_types()) {
@@ -939,6 +932,19 @@ namespace services::collection::executor {
                 captured_subplans.push_back(std::move(*sub_result.captured_explain_ir));
             }
             if (plan_only) {
+                // Nothing runs, so no result will type the slot: the schema does, for the plan the EXPLAIN renders.
+                if (plan.sub_queries[i]->has_output_types()) {
+                    const auto& column_type = plan.sub_queries[i]->output_types().front();
+                    plan.parameters->set_parameter(
+                        mapping.id,
+                        mapping.compacter == &components::vector::compact_to_single_value
+                            ? components::vector::make_null(resource(), column_type)
+                        : mapping.compacter == &components::vector::compact_to_bool_value
+                            ? components::vector::make_null(
+                                  resource(),
+                                  components::types::complex_logical_type{components::types::logical_type::BOOLEAN})
+                            : components::vector::make_array(resource(), column_type, {}));
+                }
                 continue;
             }
             trace(log_,
@@ -948,15 +954,13 @@ namespace services::collection::executor {
                   sub_result.cursor->size(),
                   sub_result.cursor->column_count());
             auto compacted = mapping.compacter(sub_result.cursor->chunks());
-            trace(log_,
-                  "DBG subq[{}] compacted has_error={} is_null={}",
-                  i,
-                  compacted.has_error(),
-                  compacted.has_error() ? false : compacted.value().is_null());
+            trace(log_, "DBG subq[{}] compacted has_error={}", i, compacted.has_error());
             if (compacted.has_error()) {
                 co_return execute_result_t{make_cursor(resource(), compacted.error())};
             }
-            if (mapping.array_equality && compacted.value().is_null()) {
+            const bool compacted_is_null = compacted.value().is_null(0);
+            const bool compacted_is_untyped = compacted.value().type().type() == components::types::logical_type::NA;
+            if (mapping.array_equality && compacted_is_null) {
                 const auto& sub_node = plan.sub_queries[i];
                 if (!sub_node->has_output_types()) {
                     co_return execute_result_t{make_cursor(
@@ -968,7 +972,15 @@ namespace services::collection::executor {
                 }
                 plan.parameters->set_parameter(
                     mapping.id,
-                    components::types::logical_value_t::create_array(resource(), sub_node->output_types().front(), {}));
+                    components::vector::make_array(resource(), sub_node->output_types().front(), {}));
+                continue;
+            }
+            if (mapping.compacter == &components::vector::compact_to_single_value && compacted_is_untyped &&
+                plan.sub_queries[i]->has_output_types()) {
+                // A zero-row sub-query has no cell to take a type from; the schema knows it.
+                plan.parameters->set_parameter(
+                    mapping.id,
+                    components::vector::make_null(resource(), plan.sub_queries[i]->output_types().front()));
                 continue;
             }
             plan.parameters->set_parameter(mapping.id, std::move(compacted.value()));
@@ -1467,38 +1479,15 @@ namespace services::collection::executor {
                 if (vt_err.contains_error()) {
                     error = make_cursor(resource(), vt_err);
                 } else {
-                    const auto& bound_params = plan.parameters->parameters();
-                    components::logical_plan::storage_parameters validate_params(resource());
-                    bool overridden = false;
-                    for (size_t i = 0; i + 1 < plan.sub_queries.size(); ++i) {
-                        const auto& m = plan.sub_query_results[i];
-                        if (m.compacter != &components::vector::compact_to_single_value) {
-                            continue;
-                        }
-                        auto it = bound_params.parameters.find(m.id);
-                        if (it == bound_params.parameters.end() || !it->second.is_null() ||
-                            !plan.sub_queries[i]->has_output_types()) {
-                            continue;
-                        }
-                        if (!overridden) {
-                            validate_params.parameters = bound_params.parameters;
-                            overridden = true;
-                        }
-                        validate_params.parameters.insert_or_assign(
-                            m.id,
-                            components::types::logical_value_t(resource(),
-                                                               plan.sub_queries[i]->output_types().front()));
-                    }
                     services::dispatcher::validation::validation_context_t validation_context{
                         resource(),
                         &plan.catalog_resolves,
                         cast_registry_,
                         function_registry_,
                         context_storage.execution_context};
-                    auto schema_res =
-                        services::dispatcher::validate_schema(validation_context,
-                                                              plan.sub_queries.back().get(),
-                                                              overridden ? validate_params : bound_params);
+                    auto schema_res = services::dispatcher::validate_schema(validation_context,
+                                                                            plan.sub_queries.back().get(),
+                                                                            plan.parameters->parameters());
                     if (schema_res.has_error()) {
                         error = make_cursor(resource(), schema_res.error());
                     }
@@ -1583,7 +1572,7 @@ namespace services::collection::executor {
                 auto planned = services::planner::create_plan(cstor,
                                                               function_registry_,
                                                               node,
-                                                              components::logical_plan::limit_t::unlimit(),
+                                                              components::logical_plan::limit_t::all(),
                                                               /*params=*/nullptr);
                 if (planned.has_error()) {
                     co_return core::result_wrapper_t<std::vector<components::catalog::oid_t>>{
@@ -1821,18 +1810,13 @@ namespace services::collection::executor {
         }
 
         const bool can_push_to_agent = disk_address_ != actor_zeta::address_t::empty_address();
-        // Every sub-query's result slot, so folding cannot read placeholders
-        std::pmr::set<core::parameter_id_t> deferred_parameters{resource()};
-        for (const auto& mapping : plan.sub_query_results) {
-            deferred_parameters.insert(mapping.id);
-        }
         plan.sub_queries.back() = components::planner::optimize(resource(),
                                                                 std::move(plan.sub_queries.back()),
                                                                 plan.parameters.get(),
+                                                                context_storage.execution_context,
                                                                 &plan.catalog_resolves,
                                                                 can_push_to_agent,
-                                                                optimizer_rules_,
-                                                                &deferred_parameters);
+                                                                optimizer_rules_);
 
         if (can_push_to_agent) {
             std::pmr::set<components::catalog::oid_t> inner_hash_join_oids{resource()};
@@ -2558,10 +2542,27 @@ namespace services::collection::executor {
         std::pmr::vector<components::operators::operator_t*> ops{resource()};
         collect_unexecuted(root, ops);
         for (auto* op : ops) {
-            if (op->role() == components::operators::pipeline_role::source) {
+            if (op->role() == components::operators::pipeline_role::source || op->opens_at_start()) {
                 opened.push_back(opened_source_t{op, op->open(ctx)});
             }
         }
+    }
+
+    executor_t::unique_future<core::error_t>
+    executor_t::await_opens_at_start_(opened_sources_t& opened,
+                                      const std::pmr::vector<components::operators::operator_t*>& wanted) {
+        for (auto* op : wanted) {
+            for (auto& source : opened) {
+                if (source.op != op || !source.ready.valid()) {
+                    continue;
+                }
+                auto err = co_await std::move(source.ready);
+                if (err.contains_error()) {
+                    co_return err;
+                }
+            }
+        }
+        co_return core::error_t::no_error();
     }
 
     executor_t::unique_future<core::error_t> executor_t::await_opened_(opened_sources_t& opened,
@@ -2653,6 +2654,62 @@ namespace services::collection::executor {
         return context;
     }
 
+    namespace {
+        // A piece is what traverse_plan_ drives as one pipeline: the left chain from its root down to the first
+        // operator with a right input (that operator included). Its left and right inputs are pieces of their own.
+        struct piece_t {
+            components::operators::operator_t* root;
+            std::size_t parent; // no_piece for the plan root
+            std::pmr::vector<components::operators::operator_t*> opens_at_start;
+        };
+        constexpr std::size_t no_piece = static_cast<std::size_t>(-1);
+
+        void collect_pieces(components::operators::operator_t* root,
+                            std::size_t parent,
+                            std::pmr::vector<piece_t>& pieces) {
+            const std::size_t self = pieces.size();
+            pieces.push_back(
+                piece_t{root,
+                        parent,
+                        std::pmr::vector<components::operators::operator_t*>{pieces.get_allocator().resource()}});
+            for (auto* op = root; op != nullptr; op = op->left().get()) {
+                if (op->opens_at_start()) {
+                    pieces[self].opens_at_start.push_back(op);
+                }
+                if (op->right()) {
+                    collect_pieces(op->right().get(), self, pieces);
+                    if (op->left()) {
+                        collect_pieces(op->left().get(), self, pieces);
+                    }
+                    return;
+                }
+            }
+        }
+
+        // The operators that open at start in the piece rooted at `root` and in every piece above it, outermost first.
+        std::pmr::vector<components::operators::operator_t*>
+        opens_at_start_on_path(const std::pmr::vector<piece_t>& pieces,
+                               components::operators::operator_t* root,
+                               std::pmr::memory_resource* resource) {
+            std::pmr::vector<components::operators::operator_t*> wanted{resource};
+            std::size_t at = no_piece;
+            for (std::size_t i = 0; i < pieces.size(); ++i) {
+                if (pieces[i].root == root) {
+                    at = i;
+                    break;
+                }
+            }
+            std::pmr::vector<std::size_t> path{resource};
+            for (; at != no_piece; at = pieces[at].parent) {
+                path.push_back(at);
+            }
+            for (auto it = path.rbegin(); it != path.rend(); ++it) {
+                wanted.insert(wanted.end(), pieces[*it].opens_at_start.begin(), pieces[*it].opens_at_start.end());
+            }
+            return wanted;
+        }
+    } // namespace
+
     executor_t::unique_future<sub_plan_result_t>
     executor_t::execute_sub_plan_(components::session::session_id_t session,
                                   plan_t plan_data,
@@ -2664,6 +2721,9 @@ namespace services::collection::executor {
         opened_sources_t opened{resource()};
         auto open_context = make_pipeline_context_(session, plan_data, txn, lowest_active_start_time);
         open_sources_(plan_data.root.get(), &open_context, opened);
+
+        std::pmr::vector<piece_t> pieces{resource()};
+        collect_pieces(plan_data.root.get(), no_piece, pieces);
 
         while (!plan_data.sub_plans.empty()) {
             auto plan = plan_data.sub_plans.top();
@@ -2680,6 +2740,16 @@ namespace services::collection::executor {
             pipeline_context.analyze = plan_data.analyze;
 
             plan->prepare();
+
+            // Top-down, as PostgreSQL starts a Limit before it asks below for a row: the Limit nodes of this piece
+            // and of the pieces above it (the path up to the plan root, outermost first) are started first; those of
+            // a piece beside it are not, they start when that piece runs.
+            if (auto start_err = co_await await_opens_at_start_(
+                    opened, opens_at_start_on_path(pieces, plan.get(), resource()));
+                start_err.contains_error()) {
+                cursor = make_cursor(resource(), std::move(start_err));
+                break;
+            }
 
             if (auto open_err = co_await await_opened_(opened, plan.get()); open_err.contains_error()) {
                 cursor = make_cursor(resource(), std::move(open_err));

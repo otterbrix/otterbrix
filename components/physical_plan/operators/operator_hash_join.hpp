@@ -42,8 +42,7 @@ namespace components::operators {
     //
     // The index is HASH+VERIFY and TYPED: the bucket key is a uint64 hash of the
     // key cells (per physical_type), the payload is a build-row ref, and every
-    // probe match is confirmed by a typed cell-by-cell comparison — no
-    // logical_value_t on the build or probe hot path. ONE uniform build+probe path
+    // probe match is confirmed by a typed cell-by-cell comparison. ONE uniform build+probe path
     // serves single- AND multi-column keys (the key column list is iterated) and
     // ALL hash-join types (inner / left / right / full).
     //

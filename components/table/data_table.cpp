@@ -5,6 +5,7 @@
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/types/type_spec_codec.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <cstdlib>
 #include <unordered_set>
@@ -305,7 +306,7 @@ namespace components::table {
         std::pmr::vector<storage_index_t> unseen_columns(resource_);
         for (uint64_t position = 0; position < column_definitions_.size(); position++) {
             const auto& column = column_definitions_[position];
-            bool fills_with_a_value = column.has_default_value() && !column.default_value().is_null();
+            bool fills_with_a_value = column.has_default_value() && !column.default_value().is_null(0);
             if (!column.is_not_null() || fills_with_a_value || !stands_at_commit(txn, column.added_at()) ||
                 stands_at_commit(txn, column.dropped_at())) {
                 continue;
@@ -339,9 +340,13 @@ namespace components::table {
 
     vector::vector_t data_table_t::default_column(uint64_t position, const vector::data_chunk_t& chunk) const {
         const auto& column = column_definitions_[position];
-        if (column.has_default_value() && !column.default_value().is_null()) {
-            vector::vector_t filled(resource_, column.default_value(), chunk.capacity());
-            filled.flatten(chunk.size());
+        if (column.has_default_value() && !column.default_value().is_null(0)) {
+            vector::vector_t filled(resource_, column.default_value().type(), chunk.capacity());
+            vector::vector_ops::copy(vector::make_constant_copy(resource_, column.default_value()),
+                                     filled,
+                                     chunk.size(),
+                                     0,
+                                     0);
             filled.set_type_alias(column.name());
             return filled;
         }

@@ -2,6 +2,7 @@
 #include <limits>
 #include <unordered_set>
 
+#include <components/catalog/type_display.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/expressions/function_expression.hpp>
@@ -22,6 +23,8 @@
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/vector/vector_builders.hpp>
+#include <components/vector/vector_operations.hpp>
 
 using namespace components::expressions;
 
@@ -410,7 +413,9 @@ namespace components::sql::transform {
         if (!limit_count && !limit_offset) {
             return nullptr;
         }
-        int64_t limit_val = logical_plan::limit_t::unlimit().limit();
+        // Stored as written: a negative value is refused when the Limit node starts to run, not here.
+        int64_t limit_val = 0;
+        bool has_count = false; // false = LIMIT ALL / LIMIT NULL
         int64_t offset_val = 0;
         std::optional<core::parameter_id_t> limit_param;
         std::optional<core::parameter_id_t> offset_param;
@@ -424,6 +429,7 @@ namespace components::sql::transform {
                             break;
                         case T_Integer:
                             limit_val = intVal(value);
+                            has_count = true;
                             break;
                         case T_Float:
                             // Past-int32 literals don't fit the scanner's `ival` and land here as T_Float
@@ -435,6 +441,7 @@ namespace components::sql::transform {
                                         "Forbidden expression in limit clause: allowed only LIMIT <integer>/ALL",
                                         resource_});
                             }
+                            has_count = true;
                             break;
                         default:
                             return core::error_t(
@@ -498,7 +505,13 @@ namespace components::sql::transform {
             }
         }
 
-        auto limit_node = logical_plan::make_node_limit(resource_, logical_plan::limit_t(limit_val, offset_val));
+        const auto limit = has_count ? logical_plan::limit_t(limit_val, offset_val)
+                                     : logical_plan::limit_t::all_from(offset_val);
+        // A window that changes nothing needs no Limit node; a parameter may still turn into one.
+        if (!limit.is_effective() && !limit_param && !offset_param) {
+            return nullptr;
+        }
+        auto limit_node = logical_plan::make_node_limit(resource_, limit);
         if (limit_param || offset_param) {
             deferred_limits_.push_back(deferred_limit_t{limit_node.get(), limit_param, offset_param});
         }
@@ -508,11 +521,11 @@ namespace components::sql::transform {
     core::result_wrapper_t<logical_plan::node_limit_ptr>
     transformer::build_dml_limit(Node* limit_count, logical_plan::execution_plan_t* plan) {
         if (!limit_count) {
-            return logical_plan::make_node_limit(resource_, logical_plan::limit_t::unlimit());
+            return logical_plan::make_node_limit(resource_, logical_plan::limit_t::all());
         }
         VALUE_OR_RETURN(auto built, build_limit_node(limit_count, nullptr, plan));
         if (!built) {
-            return logical_plan::node_limit_ptr{nullptr};
+            return logical_plan::make_node_limit(resource_, logical_plan::limit_t::all());
         }
         return logical_plan::node_limit_ptr{static_cast<logical_plan::node_limit_t*>(built.get())};
     }
@@ -660,11 +673,13 @@ namespace components::sql::transform {
             const uint64_t cap = vector::DEFAULT_VECTOR_CAPACITY;
             const uint64_t total = node.valuesLists->lst.size();
             std::pmr::vector<vector::data_chunk_t> chunks(resource_);
+            std::pmr::vector<types::complex_logical_type> schema(resource_);
             auto row_it = node.valuesLists->lst.begin();
             uint64_t global_row = 0;
             while (global_row < total) {
                 const uint64_t batch = std::min<uint64_t>(cap, total - global_row);
-                vector::data_chunk_t chunk(resource_, {}, batch);
+                // The columns carry over, so the types fixed by earlier chunks bind later ones too.
+                vector::data_chunk_t chunk(resource_, schema, batch);
                 chunk.set_cardinality(batch);
                 for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
                     auto values = pg_ptr_cast<List>(row_it->data)->lst;
@@ -679,10 +694,45 @@ namespace components::sql::transform {
                                 chunk.data[column_index].set_type_alias("column" + std::to_string(column_index + 1));
                             }
                         }
-                        chunk.set_value(column_index, chunk_row, std::move(value));
+                        auto& column = chunk.data[column_index];
+                        if (value.is_null(0)) {
+                            column.set_null(chunk_row, true);
+                            continue;
+                        }
+                        if (column.type().type() == types::logical_type::NA) {
+                            // The rows before this one were all NULL: the column takes the type of its first value.
+                            auto retyped_type = value.type();
+                            retyped_type.set_alias(std::string(column.type().alias()));
+                            vector::vector_t retyped(resource_, std::move(retyped_type), chunk.capacity());
+                            for (uint64_t row = 0; row < chunk_row; ++row) {
+                                retyped.set_null(row, true);
+                            }
+                            column = std::move(retyped);
+                        } else if (column.type() != value.type()) {
+                            return core::error_t(
+                                core::error_code_t::sql_parse_error,
+                                std::pmr::string{"VALUES types " + components::catalog::format_type_be(column.type()) +
+                                                     " and " + components::catalog::format_type_be(value.type()) +
+                                                     " cannot be matched",
+                                                 resource_});
+                        }
+                        vector::vector_ops::copy(value, column, 1, 0, chunk_row);
                     }
                 }
+                schema = chunk.types();
                 chunks.emplace_back(std::move(chunk));
+            }
+            // A chunk of only NULLs ahead of the first value still has the NA column.
+            for (auto& chunk : chunks) {
+                for (size_t i = 0; i < chunk.data.size() && i < schema.size(); ++i) {
+                    if (chunk.data[i].type() != schema[i]) {
+                        vector::vector_t typed(resource_, schema[i], chunk.capacity());
+                        for (uint64_t row = 0; row < chunk.size(); ++row) {
+                            typed.set_null(row, true);
+                        }
+                        chunk.data[i] = std::move(typed);
+                    }
+                }
             }
 
             auto raw = logical_plan::make_node_raw_data(resource_, std::move(chunks));
@@ -815,17 +865,12 @@ namespace components::sql::transform {
                         break;
                     }
                     case T_ParamRef: {
+                        // A bound value, like a literal: a constant column, not a field of the input.
                         has_non_star = true;
-                        std::string field_name;
-                        if (res->name) {
-                            field_name = res->name;
-                        } else {
-                            VALUE_OR_RETURN(auto name_res, get_str_value(res->val));
-                            field_name = name_res;
-                        }
                         auto expr = make_scalar_expression(resource_,
-                                                           scalar_type::get_field,
-                                                           expressions::key_t{resource_, std::move(field_name)});
+                                                           scalar_type::constant,
+                                                           res->name ? expressions::key_t{resource_, res->name}
+                                                                     : expressions::key_t{resource_});
                         VALUE_OR_RETURN(auto param, add_param_value(res->val, plan->parameters.get()));
                         expr->append_param(param);
                         select_node->append_expression(expr);
@@ -1138,9 +1183,11 @@ namespace components::sql::transform {
                     agg = container;
                 } else {
                     // Flattens the reused body like transform_sublink_expr's EXISTS_SUBLINK arm.
-                    auto param_true = plan->parameters->add_parameter(types::logical_value_t{resource_, true});
-                    auto param_exists =
-                        plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                    auto param_true = plan->parameters->add_parameter(vector::make_scalar(resource_, true),
+                                                                      vector::parameter_kind::literal);
+                    auto param_exists = plan->parameters->add_parameter(
+                        vector::make_null(resource_, types::complex_logical_type{types::logical_type::NA}),
+                        vector::parameter_kind::execution);
                     plan->sub_query_results.push_back({&vector::compact_to_bool_value, param_exists});
                     if (body && body->type() == logical_plan::node_type::aggregate_t) {
                         const auto* body_agg = static_cast<const logical_plan::node_aggregate_t*>(body.get());

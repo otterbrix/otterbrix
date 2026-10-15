@@ -41,10 +41,13 @@ namespace components::expressions {
                                                    clone_param(resource, src->right()));
                 dst->set_key(src->key());
                 dst->set_inner_op(src->inner_op());
+                dst->set_set_element_cast(src->set_element_type(), src->set_element_cast());
                 if (src->do_not_fold()) {
                     dst->make_unfoldable();
                 }
-                dst->set_regex_flags(src->regex_flags_param());
+                if (const auto flags = src->regex_flags_param()) {
+                    dst->set_regex_flags(*flags);
+                }
                 dst->add_function_uid(src->function_uid());
                 dst->set_function(copy_function(resource, src->function()));
                 for (const auto& child : src->children()) {

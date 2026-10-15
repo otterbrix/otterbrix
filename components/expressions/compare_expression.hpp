@@ -2,8 +2,10 @@
 
 #include "expression.hpp"
 #include "key.hpp"
+#include <components/casts/cast_function.hpp>
 #include <components/compute/function.hpp>
 #include <memory_resource>
+#include <optional>
 
 namespace components::expressions {
 
@@ -42,11 +44,17 @@ namespace components::expressions {
         compare_type inner_op() const noexcept;
         void set_inner_op(compare_type op) noexcept;
 
+        // ANY / ALL over a bound set only: the type the set's elements are cast to, once, when the set is first
+        // read. Invalid (and the cast empty) when the set already has the probe's type.
+        const types::complex_logical_type& set_element_type() const noexcept;
+        const casts::cast_t& set_element_cast() const noexcept;
+        void set_set_element_cast(types::complex_logical_type type, casts::cast_t cast);
+
         bool do_not_fold() const noexcept;
         void make_unfoldable() noexcept;
 
         // Flags for SQL LIKE -> regex transformation ('i' case-insensitive, 'l' glob, 'n' negated)
-        core::parameter_id_t regex_flags_param() const noexcept;
+        std::optional<core::parameter_id_t> regex_flags_param() const noexcept;
         void set_regex_flags(core::parameter_id_t flags) noexcept;
 
         // The match function, resolved by validation. Should become a plain function call operand.
@@ -58,8 +66,10 @@ namespace components::expressions {
     private:
         compare_type type_;
         compare_type inner_op_ = compare_type::invalid;
+        types::complex_logical_type set_element_type_{types::logical_type::INVALID};
+        casts::cast_t set_element_cast_;
         bool do_not_fold_ = false;
-        core::parameter_id_t regex_flags_param_{0};
+        std::optional<core::parameter_id_t> regex_flags_param_;
         compute::function_uid function_uid_{compute::invalid_function_uid};
         compute::function_ptr function_{compute::no_function()};
         param_storage left_;

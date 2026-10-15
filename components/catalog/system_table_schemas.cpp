@@ -1,12 +1,11 @@
 #include "system_table_schemas.hpp"
 #include "catalog_codes.hpp"
 
+#include "default_cell_codec.hpp"
 #include <array>
 #include <cassert>
 #include <charconv>
-#include <components/index/logical_value_binary_codec.hpp>
 
-#include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 
 // Deviations below from stock PostgreSQL catalog shapes (missing owner/statistics columns;
@@ -853,10 +852,9 @@ namespace components::catalog {
                 if (!first)
                     out += ',';
                 first = false;
-                const auto& etype = entry.type();
-                out += escape_flat_name(etype.has_alias() ? etype.alias() : std::string{});
+                out += escape_flat_name(entry.label);
                 out += '=';
-                out += std::to_string(entry.value<std::int32_t>());
+                out += std::to_string(entry.value);
             }
             return out;
         }
@@ -882,7 +880,7 @@ namespace components::catalog {
             if (!unescape_flat_name(rest.substr(0, colon), name)) {
                 return corrupt("type spec: malformed escape in an ENUM name");
             }
-            std::vector<components::types::logical_value_t> entries;
+            std::vector<components::types::enum_entry_t> entries;
             auto entries_str = rest.substr(colon + 1);
             if (!entries_str.empty()) {
                 std::size_t i = 0;
@@ -904,9 +902,7 @@ namespace components::catalog {
                     if (vec_ != std::errc{} || vp != val_str.data() + val_str.size()) {
                         return corrupt("type spec: ENUM entry value is not a number");
                     }
-                    components::types::logical_value_t lv(resource, v);
-                    lv.set_alias(label);
-                    entries.push_back(std::move(lv));
+                    entries.push_back(components::types::enum_entry_t{std::move(label), v});
                     if (comma == std::string_view::npos) {
                         break;
                     }
@@ -1217,20 +1213,20 @@ namespace components::catalog {
     } // namespace
 
     core::error_t
-    encode_default_spec(std::pmr::memory_resource* resource, const types::logical_value_t& v, std::string& out) {
+    encode_default_spec(std::pmr::memory_resource* resource, const vector::vector_t& v, std::string& out) {
         out.clear();
-        if (v.is_null()) { // must be recorded — "" would be indistinguishable from having no default
+        if (v.is_null(0)) { // must be recorded — "" would be indistinguishable from having no default
             out.push_back(kDefaultSpecNull);
             return core::error_t::no_error();
         }
-        if (!index::codec::is_encodable_value_type(v.type())) {
+        if (!cell_codec::is_encodable_type(v.type())) {
             return default_spec_error(resource,
                                       core::error_code_t::schema_error,
                                       std::string{"DEFAULT of type "} + describe_default_type(v.type()) +
                                           " cannot be persisted");
         }
         std::pmr::string payload{resource};
-        if (!index::codec::append_typed_value(payload, v)) {
+        if (!cell_codec::append_cell(payload, v, 0)) {
             return default_spec_error(resource,
                                       core::error_code_t::schema_error,
                                       std::string{"DEFAULT of type "} + describe_default_type(v.type()) +
@@ -1244,13 +1240,13 @@ namespace components::catalog {
     core::error_t decode_default_spec(std::pmr::memory_resource* resource,
                                       const types::complex_logical_type& column_type,
                                       std::string_view spec,
-                                      std::optional<types::logical_value_t>& out) {
+                                      std::optional<vector::vector_t>& out) {
         out.reset();
         if (spec.empty()) {
             return core::error_t::no_error();
         }
-        if (spec.size() == 1 && spec.front() == kDefaultSpecNull) { // NA-typed; caller holds column_type separately
-            out.emplace(resource, types::complex_logical_type{types::logical_type::NA});
+        if (spec.size() == 1 && spec.front() == kDefaultSpecNull) {
+            out.emplace(vector::make_null(resource, column_type));
             return core::error_t::no_error();
         }
         if (spec.front() != kDefaultSpecValue) {
@@ -1266,7 +1262,7 @@ namespace components::catalog {
         }
         std::size_t pos = 0;
         bool ok = true;
-        auto value = index::codec::read_typed_value(resource, column_type, payload, pos, ok);
+        auto value = cell_codec::read_cell(resource, column_type, payload, pos, ok);
         if (!ok || pos != payload.size()) {
             return default_spec_error(resource,
                                       core::error_code_t::data_corruption,

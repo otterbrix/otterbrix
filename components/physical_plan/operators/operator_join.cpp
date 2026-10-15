@@ -46,7 +46,7 @@ namespace components::operators {
             merged_types.insert(merged_types.end(), build_types.begin(), build_types.end());
 
             auto built = expressions::build_condition_graph(resource_,
-                                                            context->parameters.parameters,
+                                                            context->parameters,
                                                             expression_.get(),
                                                             merged_types,
                                                             probe_front.column_count());
@@ -101,7 +101,7 @@ namespace components::operators {
             }
         }
         if (graph_) {
-            graph_->set_parameters(&context->parameters.parameters);
+            graph_->set_parameters(&context->parameters);
         }
 
         const uint64_t n = probe.size();

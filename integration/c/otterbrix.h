@@ -103,6 +103,7 @@ bool value_is_uint(value_ptr ptr);
 bool value_is_double(value_ptr ptr);
 bool value_is_string(value_ptr ptr);
 
+// A value_get_* whose value_is_* answered false is asserted; a release build answers 0, false, 0.0 or "".
 bool value_get_bool(value_ptr ptr);
 int64_t value_get_int(value_ptr ptr);
 uint64_t value_get_uint(value_ptr ptr);

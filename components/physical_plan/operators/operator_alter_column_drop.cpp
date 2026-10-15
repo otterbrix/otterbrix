@@ -86,8 +86,6 @@ namespace components::operators {
                     continue;
                 if (chunk.is_null(2, i))
                     continue;
-                // get_value<string_view>, not chunk.value(): the latter's logical_value_t is a temporary the
-                // view would outlive.
                 const auto attname_cell = chunk.get_value<std::string_view>(2, i);
                 if (attname_cell != column_name_.t)
                     continue;

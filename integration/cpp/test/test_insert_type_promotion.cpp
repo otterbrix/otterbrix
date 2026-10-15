@@ -17,7 +17,7 @@ namespace {
     }
 } // namespace
 
-// promote_column rebuilds a whole column, cell by cell through logical_value_t, whenever a later
+// promote_column rebuilds a whole column, cell by cell, whenever a later
 // row widens that column's type (the shape usually called quadratic promotion); a workload with
 // one type per column never enters this path.
 //
@@ -97,9 +97,10 @@ namespace {
         auto cursor = store_literal(dispatcher, table, std::to_string(expected));
         INFO("literal " << expected);
         REQUIRE(cursor->size() == 1);
-        const auto value = cursor->value(column_of(cursor, "v"), 0);
-        CHECK(value.type().type() == components::types::logical_type::BIGINT);
-        CHECK(value.value<int64_t>() == expected);
+        CHECK(cursor->type_data()[column_of(cursor, "v")].type() == components::types::logical_type::BIGINT);
+        auto cell5 = cursor->get<int64_t>(column_of(cursor, "v"), 0);
+        REQUIRE_FALSE(cell5.has_error());
+        CHECK(cell5.value() == expected);
     }
 
     // Past 64 bits there is no BIGINT to hold the value, so it takes the next integer type
@@ -113,7 +114,10 @@ namespace {
         auto cursor = store_literal(dispatcher, table, literal);
         INFO("literal " << literal);
         REQUIRE(cursor->size() == 1);
-        CHECK(cursor->value(column_of(cursor, "v"), 0).type().type() == expected_type);
+        CHECK(cursor->type_data()[column_of(cursor, "v")].type() == expected_type);
+        auto cell6 = cursor->is_null(column_of(cursor, "v"), 0);
+        REQUIRE_FALSE(cell6.has_error());
+        CHECK_FALSE(cell6.value());
 
         auto session = otterbrix::session_id_t();
         auto exact = dispatcher->execute_sql(session, "SELECT v FROM " + table + " WHERE v = " + literal + ";");
@@ -277,8 +281,12 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::string_literals_assign_
     auto stored = exec("SELECT n, flag FROM sl.t;");
     REQUIRE(stored->is_success());
     REQUIRE(stored->size() == 1);
-    REQUIRE(stored->value(0, 0).value<int64_t>() == 42);
-    REQUIRE(stored->value(1, 0).value<bool>());
+    auto cell0 = stored->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    REQUIRE(cell0.value() == 42);
+    auto cell1 = stored->get<bool>(1, 0);
+    REQUIRE_FALSE(cell1.has_error());
+    REQUIRE(cell1.value());
 
     // The date and the decimal kept their values, not merely a non-null cell.
     auto matched = exec("SELECT n FROM sl.t WHERE d = '2020-01-15'::date AND amount = 1.50;");
@@ -309,7 +317,13 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::boolean_column_takes_li
     auto stored = exec("SELECT flag FROM bl.t ORDER BY id;");
     REQUIRE(stored->is_success());
     REQUIRE(stored->size() == 3);
-    REQUIRE(stored->value(0, 0).value<bool>());
-    REQUIRE_FALSE(stored->value(0, 1).value<bool>());
-    REQUIRE(stored->value(0, 2).value<bool>());
+    auto cell2 = stored->get<bool>(0, 0);
+    REQUIRE_FALSE(cell2.has_error());
+    REQUIRE(cell2.value());
+    auto cell3 = stored->get<bool>(0, 1);
+    REQUIRE_FALSE(cell3.has_error());
+    REQUIRE_FALSE(cell3.value());
+    auto cell4 = stored->get<bool>(0, 2);
+    REQUIRE_FALSE(cell4.has_error());
+    REQUIRE(cell4.value());
 }

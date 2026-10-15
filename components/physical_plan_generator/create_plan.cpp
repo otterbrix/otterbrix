@@ -107,7 +107,10 @@ namespace services::planner {
             case node_type::insert_on_conflict_t:
                 return impl::create_plan_insert_on_conflict(context, function_registry, node, params);
             case node_type::match_t:
-                return impl::create_plan_match(context, node, std::move(limit));
+                // The window of an aggregate is lowered by create_plan_aggregate, that of a DML node by
+                // create_plan_delete/update; none reaches a bare WHERE scan.
+                assert(!limit.is_effective());
+                return impl::create_plan_match(context, node, components::logical_plan::row_cap_t::uncapped());
             // No having_t case: a HAVING node exists only as an aggregate child and is lowered
             // inline by create_plan_aggregate, so it never reaches this generic dispatch.
             case node_type::group_t:
@@ -223,7 +226,7 @@ namespace services::planner {
                                     create_plan(context,
                                                 function_registry,
                                                 node->children().front(),
-                                                components::logical_plan::limit_t::unlimit(),
+                                                components::logical_plan::limit_t::all(),
                                                 params));
                     op->set_children(std::move(child));
                 }

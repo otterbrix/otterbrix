@@ -4,6 +4,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/column_definition.hpp>
+#include <components/vector/vector_builders.hpp>
+#include <core/pmr.hpp>
 
 using namespace components::table;
 
@@ -22,4 +24,31 @@ TEST_CASE("components::table::column_definition::a_disagreeing_attoid_restamp_is
     col.set_attoid(43);
     INFO("attoid after a disagreeing re-stamp: " << col.attoid());
     REQUIRE(col.attoid() == 42);
+}
+
+// vector_t copies are shallow, and a column_definition_t is sent between actors: the copy must own its default.
+TEST_CASE("components::table::column_definition::a_copy_owns_its_default") {
+    core::pmr::otterbrix_resource resource;
+    column_definition_t original(
+        "name",
+        components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL},
+        components::vector::make_scalar(&resource, std::string{"original"}));
+    REQUIRE(original.has_default_value());
+
+    column_definition_t copy(original);
+    REQUIRE(copy.has_default_value());
+    CHECK(copy.default_value().get_value<std::string_view>(0) == "original");
+    CHECK(copy.default_value().auxiliary().get() != original.default_value().auxiliary().get());
+    CHECK(copy.default_value().data() != original.default_value().data());
+
+    column_definition_t assigned("other",
+                                 components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    assigned = original;
+    CHECK(assigned.default_value().get_value<std::string_view>(0) == "original");
+    CHECK(assigned.default_value().auxiliary().get() != original.default_value().auxiliary().get());
+
+    copy.set_default_value(components::vector::make_null(&resource, copy.type()));
+    CHECK(copy.default_value().is_null(0));
+    CHECK_FALSE(original.default_value().is_null(0));
+    CHECK(original.default_value().get_value<std::string_view>(0) == "original");
 }

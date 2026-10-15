@@ -86,10 +86,14 @@ TEST_CASE("integration::cpp::dml_dictionary_rowids::update_past_first_vector_hit
     auto requested = exec("SELECT v FROM b.t WHERE id = 2905;");
     REQUIRE(requested->is_success());
     REQUIRE(requested->size() == 1);
-    CHECK(requested->value(0, 0).value<int64_t>() == 0);
+    auto cell0 = requested->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    CHECK(cell0.value() == 0);
 
     auto innocent = exec("SELECT v FROM b.t WHERE id = 858;");
     REQUIRE(innocent->is_success());
     REQUIRE(innocent->size() == 1);
-    CHECK(innocent->value(0, 0).value<int64_t>() == 858);
+    auto cell1 = innocent->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell1.has_error());
+    CHECK(cell1.value() == 858);
 }

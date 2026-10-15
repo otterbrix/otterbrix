@@ -241,17 +241,14 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
         REQUIRE_NOTHROW(fx_reopen.disk->restore_oid_generator_sync());
 
         constexpr components::catalog::oid_t pg_cc = components::catalog::well_known_oid::pg_computed_column_table;
-        components::types::logical_value_t toid_lv(&fx_reopen.resource, table_oid);
         std::pmr::vector<std::uint64_t> rk{&fx_reopen.resource};
         rk.emplace_back(components::catalog::pg_computed_column_col::relid);
-        std::pmr::vector<components::types::logical_value_t> rv{&fx_reopen.resource};
-        rv.emplace_back(toid_lv);
         auto batches =
             disk_test_helpers::read_ok(fx_reopen.invoke(&manager_disk_t::read_chunks_by_key,
                                                         fx_reopen.ctx(),
                                                         pg_cc,
                                                         std::move(rk),
-                                                        test_probe::build_key_chunk(&fx_reopen.resource, std::move(rv)),
+                                                        test_probe::test_key_chunk(&fx_reopen.resource, table_oid),
                                                         std::pmr::vector<std::uint64_t>{&fx_reopen.resource}));
         std::uint64_t total = 0;
         for (const auto& c : batches) total += c.size();
@@ -264,9 +261,9 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
                 // pg_computed_column layout: [0]=relid [1]=attoid [2]=attname [3]=atttypid [4]=atttypspec
                 // [5]=attversion [6]=attrefcount.
                 const auto attname =
-                    chunk.value(2, i).is_null() ? std::string{} : std::string(chunk.get_value<std::string_view>(2, i));
+                    chunk.is_null(2, i) ? std::string{} : std::string(chunk.get_value<std::string_view>(2, i));
                 const auto atttypid =
-                    chunk.value(3, i).is_null()
+                    chunk.is_null(3, i)
                         ? components::catalog::INVALID_OID
                         : static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
                 const auto refcount = chunk.get_value<std::int64_t>(6, i);

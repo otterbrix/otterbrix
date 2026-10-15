@@ -1,6 +1,5 @@
 #include "kernel_signature.hpp"
 
-#include "types/logical_value.hpp"
 
 #include <algorithm>
 

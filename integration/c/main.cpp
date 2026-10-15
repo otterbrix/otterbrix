@@ -2,8 +2,8 @@
 
 #include <components/cursor/cursor.hpp>
 #include <components/sql/transformer/utils.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/result_wrapper.hpp>
 #include <integration/cpp/otterbrix.hpp>
 
@@ -12,6 +12,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <memory>
+#include <memory_resource>
 #include <new>
 #include <string>
 #include <string_view>
@@ -19,7 +21,6 @@
 #include <vector>
 
 using cursor_t = components::cursor::cursor_t;
-using logical_value_t = components::types::logical_value_t;
 using otterbrix::otterbrix_t;
 
 namespace {
@@ -29,9 +30,26 @@ namespace {
         boost::intrusive_ptr<cursor_t> cursor;
     };
 
+    enum class value_kind_t
+    {
+        null,
+        boolean,
+        signed_int,
+        unsigned_int,
+        floating,
+        string,
+        other
+    };
+
+    // `engine` is declared first: it owns the resource `text` lives on, and members are destroyed bottom-up.
     struct value_storage_t {
         otterbrix::otterbrix_ptr engine;
-        logical_value_t value;
+        value_kind_t kind;
+        bool boolean;
+        int64_t signed_int;
+        uint64_t unsigned_int;
+        double floating;
+        std::pmr::string text;
     };
 
     configuration::config create_config() { return configuration::config::default_config(); }
@@ -147,7 +165,7 @@ execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_param_t* pa
     otterbrix_t* engine = live_otterbrix(ptr);
     try {
         auto* resource = engine->dispatcher()->resource();
-        std::vector<std::pair<size_t, logical_value_t>> bound;
+        std::vector<std::pair<size_t, components::vector::vector_t>> bound;
         bound.reserve(param_count);
         for (size_t i = 0; i < param_count; ++i) {
             const sql_param_t& p = params[i];
@@ -159,22 +177,26 @@ execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_param_t* pa
             const size_t id = static_cast<size_t>(p.index);
             switch (p.kind) {
                 case SQL_PARAM_NULL:
-                    bound.emplace_back(id, logical_value_t(resource, nullptr));
+                    bound.emplace_back(
+                        id,
+                        components::vector::make_null(
+                            resource,
+                            components::types::complex_logical_type{components::types::logical_type::NA}));
                     break;
                 case SQL_PARAM_BOOL:
-                    bound.emplace_back(id, logical_value_t(resource, p.bool_value != 0));
+                    bound.emplace_back(id, components::vector::make_scalar(resource, p.bool_value != 0));
                     break;
                 case SQL_PARAM_INT64:
-                    bound.emplace_back(id, logical_value_t(resource, p.int64_value));
+                    bound.emplace_back(id, components::vector::make_scalar(resource, p.int64_value));
                     break;
                 case SQL_PARAM_UINT64:
-                    bound.emplace_back(id, logical_value_t(resource, p.uint64_value));
+                    bound.emplace_back(id, components::vector::make_scalar(resource, p.uint64_value));
                     break;
                 case SQL_PARAM_DOUBLE:
-                    bound.emplace_back(id, logical_value_t(resource, p.double_value));
+                    bound.emplace_back(id, components::vector::make_scalar(resource, p.double_value));
                     break;
                 case SQL_PARAM_STRING:
-                    bound.emplace_back(id, logical_value_t(resource, to_view(p.string_value)));
+                    bound.emplace_back(id, components::vector::make_scalar(resource, to_view(p.string_value)));
                     break;
                 default:
                     return error_cursor(engine, core::error_code_t::invalid_parameter, "sql_param_t: unknown kind");
@@ -274,12 +296,83 @@ extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t
         return nullptr;
     }
 
+    const auto row = static_cast<uint64_t>(row_index);
+    const auto col = static_cast<uint64_t>(column_index);
+
     try {
-        // value() spans the result batch — it locates the chunk owning the global row.
-        std::unique_ptr<value_storage_t> value_storage{
-            new value_storage_t{storage->engine,
-                                cursor.value(static_cast<uint64_t>(column_index), static_cast<uint64_t>(row_index))}};
-        return reinterpret_cast<value_ptr>(value_storage.release());
+        const auto location = cursor.locate(row);
+        if (location.has_error()) {
+            return nullptr;
+        }
+        const auto null_cell = cursor.is_null(col, row);
+        if (null_cell.has_error()) {
+            return nullptr;
+        }
+        auto* resource = storage->engine->dispatcher()->resource();
+        std::unique_ptr<value_storage_t> value{
+            new value_storage_t{storage->engine, value_kind_t::null, false, 0, 0, 0.0, std::pmr::string{resource}}};
+        if (!null_cell.value()) {
+            using components::types::physical_type;
+            const auto& vec = cursor.chunks()[location.value().chunk].data[col];
+            switch (vec.type().to_physical_type()) {
+                case physical_type::BOOL: {
+                    const auto cell = cursor.get<bool>(col, row);
+                    if (cell.has_error()) {
+                        return nullptr;
+                    }
+                    value->kind = value_kind_t::boolean;
+                    value->boolean = cell.value();
+                    break;
+                }
+                case physical_type::INT8:
+                case physical_type::INT16:
+                case physical_type::INT32:
+                case physical_type::INT64: {
+                    const auto cell = cursor.get<int64_t>(col, row);
+                    if (cell.has_error()) {
+                        return nullptr;
+                    }
+                    value->kind = value_kind_t::signed_int;
+                    value->signed_int = cell.value();
+                    break;
+                }
+                case physical_type::UINT8:
+                case physical_type::UINT16:
+                case physical_type::UINT32:
+                case physical_type::UINT64: {
+                    const auto cell = cursor.get<uint64_t>(col, row);
+                    if (cell.has_error()) {
+                        return nullptr;
+                    }
+                    value->kind = value_kind_t::unsigned_int;
+                    value->unsigned_int = cell.value();
+                    break;
+                }
+                case physical_type::FLOAT:
+                case physical_type::DOUBLE: {
+                    const auto cell = cursor.get<double>(col, row);
+                    if (cell.has_error()) {
+                        return nullptr;
+                    }
+                    value->kind = value_kind_t::floating;
+                    value->floating = cell.value();
+                    break;
+                }
+                case physical_type::STRING: {
+                    const auto cell = cursor.get<std::string_view>(col, row);
+                    if (cell.has_error()) {
+                        return nullptr;
+                    }
+                    value->kind = value_kind_t::string;
+                    value->text.assign(cell.value());
+                    break;
+                }
+                default:
+                    value->kind = value_kind_t::other;
+                    break;
+            }
+        }
+        return reinterpret_cast<value_ptr>(value.release());
     } catch (const std::bad_alloc&) {
         out_of_memory();
     }
@@ -303,92 +396,46 @@ extern "C" value_ptr cursor_get_value_by_name(cursor_ptr ptr, int32_t row_index,
 
 extern "C" void release_value(value_ptr ptr) { delete convert_value(ptr); }
 
-extern "C" bool value_is_null(value_ptr ptr) {
-    auto storage = convert_value(ptr);
-    return storage->value.is_null();
-}
+extern "C" bool value_is_null(value_ptr ptr) { return convert_value(ptr)->kind == value_kind_t::null; }
 
-extern "C" bool value_is_bool(value_ptr ptr) {
-    auto storage = convert_value(ptr);
-    return storage->value.type().to_physical_type() == components::types::physical_type::BOOL;
-}
+extern "C" bool value_is_bool(value_ptr ptr) { return convert_value(ptr)->kind == value_kind_t::boolean; }
 
-extern "C" bool value_is_int(value_ptr ptr) {
-    auto storage = convert_value(ptr);
-    auto pt = storage->value.type().to_physical_type();
-    return pt == components::types::physical_type::INT8 || pt == components::types::physical_type::INT16 ||
-           pt == components::types::physical_type::INT32 || pt == components::types::physical_type::INT64;
-}
+extern "C" bool value_is_int(value_ptr ptr) { return convert_value(ptr)->kind == value_kind_t::signed_int; }
 
-extern "C" bool value_is_uint(value_ptr ptr) {
-    auto storage = convert_value(ptr);
-    auto pt = storage->value.type().to_physical_type();
-    return pt == components::types::physical_type::UINT8 || pt == components::types::physical_type::UINT16 ||
-           pt == components::types::physical_type::UINT32 || pt == components::types::physical_type::UINT64;
-}
+extern "C" bool value_is_uint(value_ptr ptr) { return convert_value(ptr)->kind == value_kind_t::unsigned_int; }
 
-extern "C" bool value_is_double(value_ptr ptr) {
-    auto storage = convert_value(ptr);
-    auto pt = storage->value.type().to_physical_type();
-    return pt == components::types::physical_type::FLOAT || pt == components::types::physical_type::DOUBLE;
-}
+extern "C" bool value_is_double(value_ptr ptr) { return convert_value(ptr)->kind == value_kind_t::floating; }
 
-extern "C" bool value_is_string(value_ptr ptr) {
-    auto storage = convert_value(ptr);
-    return storage->value.type().to_physical_type() == components::types::physical_type::STRING;
-}
+extern "C" bool value_is_string(value_ptr ptr) { return convert_value(ptr)->kind == value_kind_t::string; }
 
 extern "C" bool value_get_bool(value_ptr ptr) {
     auto storage = convert_value(ptr);
-    return storage->value.value<bool>();
+    assert(storage->kind == value_kind_t::boolean && "value_get_bool: the value is not a bool");
+    return storage->boolean;
 }
 
 extern "C" int64_t value_get_int(value_ptr ptr) {
     auto storage = convert_value(ptr);
-    auto pt = storage->value.type().to_physical_type();
-    switch (pt) {
-        case components::types::physical_type::INT8:
-            return storage->value.value<int8_t>();
-        case components::types::physical_type::INT16:
-            return storage->value.value<int16_t>();
-        case components::types::physical_type::INT32:
-            return storage->value.value<int32_t>();
-        case components::types::physical_type::INT64:
-            return storage->value.value<int64_t>();
-        default:
-            return 0;
-    }
+    assert(storage->kind == value_kind_t::signed_int && "value_get_int: the value is not an int");
+    return storage->signed_int;
 }
 
 extern "C" uint64_t value_get_uint(value_ptr ptr) {
     auto storage = convert_value(ptr);
-    auto pt = storage->value.type().to_physical_type();
-    switch (pt) {
-        case components::types::physical_type::UINT8:
-            return storage->value.value<uint8_t>();
-        case components::types::physical_type::UINT16:
-            return storage->value.value<uint16_t>();
-        case components::types::physical_type::UINT32:
-            return storage->value.value<uint32_t>();
-        case components::types::physical_type::UINT64:
-            return storage->value.value<uint64_t>();
-        default:
-            return 0;
-    }
+    assert(storage->kind == value_kind_t::unsigned_int && "value_get_uint: the value is not a uint");
+    return storage->unsigned_int;
 }
 
 extern "C" double value_get_double(value_ptr ptr) {
     auto storage = convert_value(ptr);
-    auto pt = storage->value.type().to_physical_type();
-    if (pt == components::types::physical_type::FLOAT) {
-        return storage->value.value<float>();
-    }
-    return storage->value.value<double>();
+    assert(storage->kind == value_kind_t::floating && "value_get_double: the value is not a double");
+    return storage->floating;
 }
 
 extern "C" char* value_get_string(value_ptr ptr) {
     auto storage = convert_value(ptr);
-    return copy_to_c_string(storage->value.value<std::string_view>());
+    assert(storage->kind == value_kind_t::string && "value_get_string: the value is not a string");
+    return copy_to_c_string(std::string_view{storage->text.data(), storage->text.size()});
 }
 
 extern "C" void otterbrix_free_string(char* str) { delete[] str; }

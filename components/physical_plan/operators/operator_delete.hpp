@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
 
@@ -26,8 +27,8 @@ namespace components::operators {
                         components::catalog::oid_t table_oid,
                         std::pmr::vector<projected_column_t> returning,
                         expressions::expression_ptr expr = nullptr,
-                        // DELETE...LIMIT n bound for the USING path; -1 = unbounded (no-source is capped upstream).
-                        std::int64_t affected_bound = -1);
+                        // DELETE...LIMIT n bound for the USING path (no-source is capped upstream).
+                        logical_plan::row_cap_t affected_bound = {});
 
         // Catalog-table DDL scrub: deletes rows via the WAL-first delete_pg_catalog_rows path.
         operator_delete(std::pmr::memory_resource* resource,
@@ -94,7 +95,7 @@ namespace components::operators {
         // delete_marker_recorded_ guards ctx->dml_deletes so repeated mid-flushes push it only once.
         bool delete_marker_recorded_{false};
         // matched_total_ persists across mid-pump flushes, since modified_ clears on every flush.
-        std::int64_t affected_bound_{-1};
+        logical_plan::row_cap_t affected_bound_{};
         uint64_t matched_total_{0};
         // < 0 marks "not a catalog delete" — the predicate-scan path runs instead.
         std::int64_t oid_col_idx_{-1};

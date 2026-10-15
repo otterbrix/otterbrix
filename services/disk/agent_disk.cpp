@@ -9,9 +9,11 @@
 #include <components/physical_plan/operators/scan/transfer_scan.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/vector/cell_equal.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <core/file/local_file_system.hpp>
 #include <services/dispatcher/dispatcher.hpp>
+#include <cstring>
 
 namespace services::disk {
 
@@ -337,9 +339,9 @@ namespace services::disk {
                 return core::error_t{core::error_code_t::data_corruption, std::move(what)};
             }
             const auto& ctype = schema_chunk.data[col].type();
-            std::optional<components::types::logical_value_t> default_value;
+            std::optional<components::vector::vector_t> default_value;
             if (schema_chunk.size() > 0 && !schema_chunk.data[col].is_null(0)) {
-                default_value = schema_chunk.data[col].value(0);
+                default_value = components::vector::make_constant_copy(resource(), schema_chunk.data[col], 0);
             }
             components::table::column_definition_t def(ctype.has_alias() ? std::string(ctype.alias()) : std::string{},
                                                        ctype,
@@ -1746,12 +1748,12 @@ namespace services::disk {
         namespace expr = components::expressions;
         const std::size_t narity = key_col_indices.size();
 
-        if (nkeys * narity > std::numeric_limits<std::uint16_t>::max()) {
+        if (nkeys * narity > std::numeric_limits<std::uint32_t>::max()) {
             co_return core::error_t{core::error_code_t::invalid_parameter,
                                     std::pmr::string{"keyed read: key batch too large to bind", resource()}};
         }
 
-        auto make_eq_child = [&](std::size_t col, std::uint16_t param_id) {
+        auto make_eq_child = [&](std::size_t col, std::uint32_t param_id) {
             expr::key_t column{resource()};
             column.set_path(
                 std::pmr::vector<size_t>{{key_col_indices[col]}, std::pmr::polymorphic_allocator<size_t>{resource()}});
@@ -1763,22 +1765,25 @@ namespace services::disk {
 
         std::pmr::vector<std::unique_ptr<components::table::table_filter_t>> key_filters{resource()};
         key_filters.reserve(nkeys);
-        components::types::parameter_map_t all_parameters{resource()};
+        components::vector::storage_parameters all_parameters{resource()};
         auto all_predicate = expr::make_compare_union_expression(resource(),
                                                                  nkeys == 1 ? expr::compare_type::union_and
                                                                             : expr::compare_type::union_or);
 
         for (std::uint64_t i = 0; i < nkeys; ++i) {
-            components::types::parameter_map_t key_parameters{resource()};
+            components::vector::storage_parameters key_parameters{resource()};
             auto key_predicate = expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
             auto tuple_predicate =
                 nkeys == 1 ? nullptr : expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
             for (std::size_t ki = 0; ki < narity; ++ki) {
-                const auto cell = keys.value(ki, i);
-                key_parameters.emplace(core::parameter_id_t{static_cast<std::uint16_t>(ki)}, cell);
-                const auto global_id = static_cast<std::uint16_t>(i * narity + ki);
-                all_parameters.emplace(core::parameter_id_t{global_id}, cell);
-                key_predicate->append_child(make_eq_child(ki, static_cast<std::uint16_t>(ki)));
+                [[maybe_unused]] const auto key_id =
+                    key_parameters.add_cell(keys.data[ki], i, components::vector::parameter_kind::literal);
+                assert(key_id == core::parameter_id_t{static_cast<std::uint32_t>(ki)});
+                const auto global_id = static_cast<std::uint32_t>(i * narity + ki);
+                [[maybe_unused]] const auto all_id =
+                    all_parameters.add_cell(keys.data[ki], i, components::vector::parameter_kind::literal);
+                assert(all_id == core::parameter_id_t{global_id});
+                key_predicate->append_child(make_eq_child(ki, static_cast<std::uint32_t>(ki)));
                 if (tuple_predicate) {
                     tuple_predicate->append_child(make_eq_child(ki, global_id));
                 } else {
@@ -2570,13 +2575,86 @@ namespace services::disk {
             }
         }
 
+        // The cast runs before the journal write: a refused cast must leave no PHYSICAL_INSERT behind, and
+        // replay must apply the cast row, never the raw one.
+        if (auto it_cast = storages_.find(table_oid);
+            row.size() != 0 && it_cast != storages_.end() && it_cast->second != nullptr &&
+            it_cast->second->storage != nullptr && it_cast->second->storage->has_schema()) {
+            using components::types::is_numeric;
+            using components::types::logical_type;
+            const auto& table_columns = it_cast->second->storage->columns();
+            const bool by_position = row.column_count() >= table_columns.size();
+            for (size_t i = 0; i < row.column_count(); i++) {
+                const components::types::complex_logical_type* column_type = nullptr;
+                if (by_position) {
+                    if (i < table_columns.size()) {
+                        column_type = &table_columns[i].type();
+                    }
+                } else if (row.data[i].type().has_alias()) {
+                    for (const auto& col_def : table_columns) {
+                        if (col_def.name() == row.data[i].type().alias()) {
+                            column_type = &col_def.type();
+                            break;
+                        }
+                    }
+                }
+                if (column_type == nullptr) {
+                    continue;
+                }
+                auto src_type = row.data[i].type().type();
+                auto tgt_type = column_type->type();
+                if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
+                    (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
+                    auto& src_vec = row.data[i];
+                    auto target_type = *column_type;
+                    if (src_vec.type().has_alias()) {
+                        target_type.set_alias(src_vec.type().alias());
+                    }
+                    if (src_vec.get_vector_type() != components::vector::vector_type::FLAT) {
+                        src_vec.flatten(row.size());
+                    }
+                    auto casted =
+                        components::vector::vector_ops::cast_vector(resource(), src_vec, target_type, row.size());
+                    if (casted.has_error()) {
+                        co_return casted.convert_error<components::pg_catalog_append_range_t>();
+                    }
+                    row.data[i] = std::move(casted.value());
+                }
+            }
+        }
+
+        // PostgreSQL keeps catalog rows as full heap tuples: widen before the journal, so the record and the
+        // storage get the same table-ordered chunk and the attoid list matches it by construction.
+        if (auto it_widen = storages_.find(table_oid);
+            row.size() != 0 && it_widen != storages_.end() && it_widen->second != nullptr &&
+            it_widen->second->storage != nullptr && it_widen->second->storage->has_schema()) {
+            const auto& table_columns = it_widen->second->storage->columns();
+            if (row.column_count() < table_columns.size()) {
+                std::vector<components::vector::vector_t> expanded_data;
+                expanded_data.reserve(table_columns.size());
+                for (const auto& col_def : table_columns) {
+                    bool found = false;
+                    for (uint64_t col = 0; col < row.column_count(); col++) {
+                        if (row.data[col].type().has_alias() && row.data[col].type().alias() == col_def.name()) {
+                            expanded_data.push_back(std::move(row.data[col]));
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        expanded_data.emplace_back(resource(), col_def.type(), row.size());
+                        expanded_data.back().validity().set_all_invalid(row.size());
+                    }
+                }
+                row.data = std::move(expanded_data);
+            }
+        }
+
         if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
             components::vector::data_chunk_t wal_chunk(resource(), row.types(), row.size());
             wal_chunk.set_cardinality(row.size());
             for (uint64_t col = 0; col < row.column_count(); col++) {
-                for (uint64_t r = 0; r < row.size(); r++) {
-                    wal_chunk.data[col].set_value(r, row.data[col].value(r));
-                }
+                components::vector::vector_ops::copy(row.data[col], wal_chunk.data[col], row.size(), 0, 0);
             }
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
             wal_chunks.emplace_back(std::move(wal_chunk));
@@ -2626,63 +2704,6 @@ namespace services::disk {
 
             if (!s->has_schema() && local.column_count() > 0) {
                 s->adopt_schema(local.types());
-            }
-
-            const auto& table_columns = s->columns();
-            if (!table_columns.empty() && local.column_count() < table_columns.size()) {
-                std::pmr::vector<components::types::complex_logical_type> full_types(resource());
-                for (const auto& col_def : table_columns) {
-                    full_types.push_back(col_def.type());
-                }
-
-                std::vector<components::vector::vector_t> expanded_data;
-                expanded_data.reserve(table_columns.size());
-                for (size_t t = 0; t < table_columns.size(); t++) {
-                    bool found = false;
-                    for (uint64_t col = 0; col < local.column_count(); col++) {
-                        if (local.data[col].type().has_alias() &&
-                            local.data[col].type().alias() == table_columns[t].name()) {
-                            expanded_data.push_back(std::move(local.data[col]));
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) {
-                        expanded_data.emplace_back(resource(), full_types[t], local.size());
-                        expanded_data.back().validity().set_all_invalid(local.size());
-                    }
-                }
-                local.data = std::move(expanded_data);
-            }
-
-            if (s->has_schema() && !table_columns.empty()) {
-                using components::types::is_numeric;
-                using components::types::logical_type;
-                for (size_t i = 0; i < table_columns.size() && i < local.column_count(); i++) {
-                    auto src_type = local.data[i].type().type();
-                    auto tgt_type = table_columns[i].type().type();
-                    if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
-                        (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
-                        auto& src_vec = local.data[i];
-                        auto target_type = table_columns[i].type();
-                        if (src_vec.type().has_alias()) {
-                            target_type.set_alias(src_vec.type().alias());
-                        }
-                        components::vector::vector_t casted(resource(), target_type, local.size());
-                        for (uint64_t r = 0; r < local.size(); r++) {
-                            if (src_vec.validity().row_is_valid(r)) {
-                                auto casted_val = src_vec.value(r).cast_as(target_type, ctx.session_tz);
-                                if (casted_val.has_error()) {
-                                    co_return casted_val.convert_error<components::pg_catalog_append_range_t>();
-                                }
-                                casted.set_value(r, casted_val.value());
-                            } else {
-                                casted.validity().set_invalid(r);
-                            }
-                        }
-                        local.data[i] = std::move(casted);
-                    }
-                }
             }
 
             auto append_r = s->append(local, ctx.txn);
@@ -2810,61 +2831,19 @@ namespace services::disk {
             all_col_indices.push_back(static_cast<std::int64_t>(i));
         }
 
-        core::pmr::otterbrix_resource scan_resource;
-        std::pmr::vector<std::int64_t> row_ids(resource());
-        std::pmr::vector<components::types::logical_value_t> row_values(resource());
-        row_values.reserve(col_count);
-
-        detail::inline_scan(tbl,
-                            all_col_indices,
-                            &scan_resource,
-                            ctx.txn,
-                            [&](components::vector::data_chunk_t& chunk, uint64_t i) {
-                                if (chunk.is_null(0, i))
-                                    return true;
-                                if (static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)) !=
-                                    attoid)
-                                    return true;
-                                row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
-                                for (std::size_t c = 0; c < col_count; ++c) {
-                                    row_values.push_back(chunk.value(static_cast<uint64_t>(c), i));
-                                }
-                                return false;
-                            });
-        if (row_ids.empty()) {
-            std::pmr::string what{"update_pg_attribute_commit_id_field: no pg_attribute row visible to this "
-                                  "transaction carries attoid ",
-                                  resource()};
-            what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
-            what.append("; its commit_id stamp was not applied");
-            co_return core::error_t{core::error_code_t::do_not_exists, std::move(what)};
-        }
-        if (row_values.size() != col_count) {
-            std::pmr::string what{"update_pg_attribute_commit_id_field: the scan returned ", resource()};
-            what.append(std::to_string(row_values.size()).c_str());
-            what.append(" value(s) for a pg_attribute row of ");
-            what.append(std::to_string(col_count).c_str());
-            what.append(" column(s) (attoid ");
-            what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
-            what.append("); refusing to write a partially-initialised patch");
-            co_return core::error_t{core::error_code_t::schema_error, std::move(what)};
-        }
-
         // Patch the target column: 10 = added_at_commit_id, 11 = dropped_at_commit_id.
         const std::size_t patch_col_idx =
             (kind == components::pg_attribute_commit_id_backfill_t::kind_t::added_at) ? 10u : 11u;
-        if (patch_col_idx >= row_values.size()) {
+        if (patch_col_idx >= col_count) {
             std::pmr::string what{"update_pg_attribute_commit_id_field: pg_attribute row for attoid ", resource()};
             what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
             what.append(" has no commit_id column at index ");
             what.append(std::to_string(patch_col_idx).c_str());
             what.append(" (row width ");
-            what.append(std::to_string(row_values.size()).c_str());
+            what.append(std::to_string(col_count).c_str());
             what.append(")");
             co_return core::error_t{core::error_code_t::schema_error, std::move(what)};
         }
-        row_values[patch_col_idx] =
-            components::types::logical_value_t(resource(), static_cast<std::int64_t>(commit_id));
 
         const auto& table_columns = entry->table_storage.table().columns();
         std::pmr::vector<components::types::complex_logical_type> chunk_types(resource());
@@ -2876,23 +2855,50 @@ namespace services::disk {
         }
         components::vector::data_chunk_t patch(resource(), chunk_types, 1);
         patch.set_cardinality(1);
-        for (std::size_t c = 0; c < table_columns.size() && c < row_values.size(); ++c) {
-            if (row_values[c].is_null()) {
-                patch.data[c].validity().set_invalid(0);
-            } else {
-                patch.data[c].set_value(0, row_values[c]);
-            }
+
+        core::pmr::otterbrix_resource scan_resource;
+        std::pmr::vector<std::int64_t> row_ids(resource());
+
+        detail::inline_scan(
+            tbl,
+            all_col_indices,
+            &scan_resource,
+            ctx.txn,
+            [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+                if (chunk.is_null(0, i))
+                    return true;
+                if (static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)) != attoid)
+                    return true;
+                row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
+                for (std::size_t c = 0; c < col_count; ++c) {
+                    if (c == patch_col_idx) {
+                        continue;
+                    }
+                    components::vector::vector_ops::copy(chunk.data[c],
+                                                         patch.data[c],
+                                                         components::vector::indexing_vector_t(resource()),
+                                                         chunk.size(),
+                                                         i,
+                                                         0,
+                                                         1);
+                }
+                return false;
+            });
+        if (row_ids.empty()) {
+            std::pmr::string what{"update_pg_attribute_commit_id_field: no pg_attribute row visible to this "
+                                  "transaction carries attoid ",
+                                  resource()};
+            what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
+            what.append("; its commit_id stamp was not applied");
+            co_return core::error_t{core::error_code_t::do_not_exists, std::move(what)};
         }
+        patch.data[patch_col_idx].set_value(0, static_cast<std::int64_t>(commit_id));
 
         if (manager_wal_addr_ != actor_zeta::address_t::empty_address()) {
             components::vector::data_chunk_t wal_chunk(resource(), chunk_types, 1);
             wal_chunk.set_cardinality(1);
-            for (std::size_t c = 0; c < table_columns.size() && c < row_values.size(); ++c) {
-                if (row_values[c].is_null()) {
-                    wal_chunk.data[c].validity().set_invalid(0);
-                } else {
-                    wal_chunk.data[c].set_value(0, row_values[c]);
-                }
+            for (std::size_t c = 0; c < col_count; ++c) {
+                components::vector::vector_ops::copy(patch.data[c], wal_chunk.data[c], 1, 0, 0);
             }
             std::pmr::vector<components::vector::data_chunk_t> wal_chunks(resource());
             wal_chunks.emplace_back(std::move(wal_chunk));
@@ -3083,8 +3089,8 @@ namespace services::disk {
             type.set_alias(column.name());
             col_types.push_back(std::move(type));
             auto schema_chunk = std::make_unique<components::vector::data_chunk_t>(resource(), col_types, 1);
-            if (column.has_default_value() && !column.default_value().is_null()) {
-                schema_chunk->set_value(0, 0, column.default_value());
+            if (column.has_default_value() && !column.default_value().is_null(0)) {
+                components::vector::vector_ops::copy(column.default_value(), schema_chunk->data[0], 1, 0, 0);
             } else {
                 schema_chunk->data[0].validity().set_invalid(0);
             }

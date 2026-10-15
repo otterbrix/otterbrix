@@ -3,6 +3,7 @@
 
 #include <components/casts/default_casts.hpp>
 #include <components/expressions/execution_dag_builder.hpp>
+#include <components/vector/vector_builders.hpp>
 
 using namespace components::expressions;
 
@@ -12,9 +13,9 @@ using components::execution_dag::slot_id_t;
 using components::execution_dag::slot_list_t;
 using components::types::complex_logical_type;
 using components::types::logical_type;
-using components::types::logical_value_t;
-using components::types::parameter_map_t;
 using components::vector::data_chunk_t;
+using components::vector::parameter_kind;
+using components::vector::storage_parameters;
 
 using expr_key_t = components::expressions::key_t;
 
@@ -95,7 +96,7 @@ namespace {
 
 TEST_CASE("expressions::graph_builder::same-typed operands need no cast") {
     auto types = input_types({logical_type::BIGINT, logical_type::BIGINT});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     auto expr = binary(scalar_type::add,
@@ -128,7 +129,7 @@ TEST_CASE("expressions::graph_builder::same-typed operands need no cast") {
 
 TEST_CASE("expressions::graph_builder::a stamped operand type becomes a cast node") {
     auto types = input_types({logical_type::INTEGER, logical_type::DOUBLE});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     // validation unified INTEGER with DOUBLE, so the left operand carries a cast
@@ -163,7 +164,7 @@ TEST_CASE("expressions::graph_builder::a stamped operand type becomes a cast nod
 
 TEST_CASE("expressions::graph_builder::a column named twice binds one slot") {
     auto types = input_types({logical_type::BIGINT});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     auto expr = binary(scalar_type::add,
@@ -194,7 +195,7 @@ TEST_CASE("expressions::graph_builder::a column named twice binds one slot") {
 
 TEST_CASE("expressions::graph_builder::a nested expression becomes an interior slot") {
     auto types = input_types({logical_type::BIGINT, logical_type::BIGINT, logical_type::BIGINT});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     // c0 + (c1 * c2)
@@ -235,13 +236,14 @@ TEST_CASE("expressions::graph_builder::a nested expression becomes an interior s
 
 TEST_CASE("expressions::graph_builder::a parameter operand becomes a parameter node") {
     auto types = input_types({logical_type::BIGINT});
-    parameter_map_t parameters(resource());
-    parameters.emplace(core::parameter_id_t{1}, logical_value_t(resource(), int64_t{40}));
+    storage_parameters parameters(resource());
+    REQUIRE(parameters.add(components::vector::make_scalar(resource(), int64_t{40}), parameter_kind::literal) ==
+            core::parameter_id_t{0});
     execution_dag_t graph(resource());
 
     auto expr = binary(scalar_type::add,
                        column(0),
-                       param_storage{core::parameter_id_t{1}},
+                       param_storage{core::parameter_id_t{0}},
                        logical_type::BIGINT,
                        logical_type::BIGINT,
                        logical_type::BIGINT);
@@ -265,7 +267,7 @@ TEST_CASE("expressions::graph_builder::a parameter operand becomes a parameter n
 
 TEST_CASE("expressions::graph_builder::unary minus builds a one-operand node") {
     auto types = input_types({logical_type::BIGINT});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     auto expr = make_scalar_expression(resource(), scalar_type::unary_minus, expr_key_t{resource()});
@@ -292,7 +294,7 @@ TEST_CASE("expressions::graph_builder::unary minus builds a one-operand node") {
 
 TEST_CASE("expressions::graph_builder::a reference whose stamp differs is refused") {
     auto types = input_types({logical_type::INTEGER});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     // CAST(c0 AS BIGINT): validation stamps the target but resolves no body for it yet
@@ -305,7 +307,7 @@ TEST_CASE("expressions::graph_builder::a reference whose stamp differs is refuse
 
 TEST_CASE("expressions::graph_builder::a plain reference claims only its column slot") {
     auto types = input_types({logical_type::BIGINT, logical_type::BIGINT});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     auto expr = make_scalar_expression(resource(), scalar_type::get_field, expr_key_t{resource()});
@@ -321,7 +323,7 @@ TEST_CASE("expressions::graph_builder::a plain reference claims only its column 
 
 TEST_CASE("expressions::graph_builder::what it cannot express is refused, not half-built") {
     auto types = input_types({logical_type::BIGINT, logical_type::BIGINT});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
 
     SECTION("scaffolding that is neither an operator nor a blend") {
         // COALESCE and CASE build blend nodes now; what is left refused is scaffolding with no node
@@ -378,4 +380,125 @@ TEST_CASE("expressions::graph_builder::what it cannot express is refused, not ha
         expr->append_param(column(1));
         REQUIRE(build_expression(&graph, parameters, expr.get(), types).has_error());
     }
+}
+// x = ANY (set): the set is ONE bound parameter, so the graph that tests it must not grow with the number of
+// elements -- the builder emits a field node and a comparison node per element.
+TEST_CASE("expressions::graph_builder::ANY over a bound set builds a graph independent of the set size") {
+    auto types = input_types({logical_type::BIGINT});
+
+    auto nodes_for = [&](int64_t elements) {
+        std::vector<components::vector::vector_t> values;
+        values.reserve(static_cast<size_t>(elements));
+        for (int64_t i = 0; i < elements; i++) {
+            values.push_back(components::vector::make_scalar(resource(), i));
+        }
+        storage_parameters parameters(resource());
+        REQUIRE(parameters.add(
+                    components::vector::make_array(resource(), complex_logical_type(logical_type::BIGINT), values),
+                    parameter_kind::literal) == core::parameter_id_t{0});
+        execution_dag_t graph(resource());
+        auto expr = make_compare_expression(resource(),
+                                            compare_type::any,
+                                            param_storage{column(0)},
+                                            param_storage{core::parameter_id_t{0}});
+        expr->set_inner_op(compare_type::eq);
+        auto result = build_expression(&graph, parameters, expr.get(), types);
+        REQUIRE_FALSE(result.has_error());
+        return graph.node_count();
+    };
+
+    const auto small = nodes_for(10);
+    const auto large = nodes_for(1000);
+    INFO("nodes for 10 elements: " << small << ", for 1000 elements: " << large);
+    CHECK(large == small);
+}
+
+// Probe < ANY / >= ALL ... : every operator and both quantifiers are one membership node, whatever the set size
+TEST_CASE("expressions::graph_builder::every ANY and ALL operator builds one membership node") {
+    auto types = input_types({logical_type::BIGINT});
+    std::vector<components::vector::vector_t> values;
+    for (int64_t i = 0; i < 50; i++) {
+        values.push_back(components::vector::make_scalar(resource(), i));
+    }
+    for (auto quantifier : {compare_type::any, compare_type::all}) {
+        for (auto inner : {compare_type::eq,
+                           compare_type::ne,
+                           compare_type::lt,
+                           compare_type::lte,
+                           compare_type::gt,
+                           compare_type::gte}) {
+            storage_parameters parameters(resource());
+            REQUIRE(parameters.add(
+                        components::vector::make_array(resource(), complex_logical_type(logical_type::BIGINT), values),
+                        parameter_kind::literal) == core::parameter_id_t{0});
+            execution_dag_t graph(resource());
+            auto expr = make_compare_expression(resource(),
+                                                quantifier,
+                                                param_storage{column(0)},
+                                                param_storage{core::parameter_id_t{0}});
+            expr->set_inner_op(inner);
+            auto result = build_expression(&graph, parameters, expr.get(), types);
+            REQUIRE_FALSE(result.has_error());
+            INFO(to_string(quantifier) << " " << to_string(inner));
+            // the set parameter and the membership
+            CHECK(graph.node_count() == 2);
+            CHECK(graph.slot_type(result.value()).type() == logical_type::BOOLEAN);
+        }
+    }
+}
+
+// The set is cast by the node that tests it, once: the comparison only names the target
+TEST_CASE("expressions::graph_builder::a set cast recorded on the comparison reaches the membership node") {
+    auto types = input_types({logical_type::BIGINT});
+    const complex_logical_type integer{logical_type::INTEGER};
+    std::vector<components::vector::vector_t> values;
+    values.push_back(components::vector::make_scalar(resource(), int32_t{10}));
+    values.push_back(components::vector::make_scalar(resource(), int32_t{30}));
+    storage_parameters parameters(resource());
+    REQUIRE(parameters.add(components::vector::make_array(resource(), integer, values), parameter_kind::literal) ==
+            core::parameter_id_t{0});
+    execution_dag_t graph(resource());
+    auto expr = make_compare_expression(resource(),
+                                        compare_type::any,
+                                        param_storage{column(0)},
+                                        param_storage{core::parameter_id_t{0}});
+    expr->set_inner_op(compare_type::eq);
+    expr->set_set_element_cast(complex_logical_type(logical_type::BIGINT),
+                               cast_between(logical_type::INTEGER, logical_type::BIGINT));
+    auto result = build_expression(&graph, parameters, expr.get(), types);
+    REQUIRE_FALSE(result.has_error());
+    graph.set_output(only(result.value()));
+    REQUIRE_FALSE(graph.prepare().contains_error());
+    graph.set_parameters(&parameters);
+
+    auto input = chunk(types, 3);
+    const int64_t probes[] = {30, 31, 10};
+    for (uint64_t row = 0; row < 3; row++) {
+        input.data[0].set_null(row, false);
+        input.data[0].set_value(row, probes[row]);
+    }
+    REQUIRE_FALSE(graph.process(input, graph_execution_context{}).contains_error());
+    auto produced = graph.finalize(graph_execution_context{}, input.size());
+    REQUIRE_FALSE(produced.has_error());
+    CHECK(produced.value().data[0].get_value<bool>(0));
+    CHECK_FALSE(produced.value().data[0].get_value<bool>(1));
+    CHECK(produced.value().data[0].get_value<bool>(2));
+}
+
+TEST_CASE("expressions::graph_builder::the set cast is part of what makes two comparisons the same") {
+    auto make = [](logical_type target) {
+        auto expr = make_compare_expression(resource(),
+                                            compare_type::any,
+                                            param_storage{column(0)},
+                                            param_storage{core::parameter_id_t{0}});
+        expr->set_inner_op(compare_type::eq);
+        if (target != logical_type::INVALID) {
+            expr->set_set_element_cast(complex_logical_type(target),
+                                       cast_between(logical_type::INTEGER, logical_type::BIGINT));
+        }
+        return expr;
+    };
+    CHECK(*make(logical_type::BIGINT) == *make(logical_type::BIGINT));
+    CHECK_FALSE(*make(logical_type::BIGINT) == *make(logical_type::INVALID));
+    CHECK(make(logical_type::BIGINT)->hash() != make(logical_type::INVALID)->hash());
 }

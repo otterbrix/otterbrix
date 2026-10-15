@@ -264,21 +264,17 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
         std::pmr::vector<std::uint64_t> keys{resource_};
         keys.emplace_back(std::uint64_t{1});
         keys.emplace_back(std::uint64_t{2});
-        std::pmr::vector<components::types::logical_value_t> vals{resource_};
-        vals.emplace_back(resource_, source_oid);
-        vals.emplace_back(resource_, target_oid);
         auto adapter = probe_fx();
         auto batches = test_probe::probe_read(adapter,
                                               read_ctx(),
                                               catalog::well_known_oid::pg_cast_table,
                                               std::move(keys),
-                                              std::move(vals));
+                                              test_probe::test_key_chunk(resource_, source_oid, target_oid));
         std::vector<catalog::oid_t> out;
         for (const auto& chunk : batches) {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                const auto cell = chunk.value(0, i);
-                out.push_back(cell.is_null() ? catalog::INVALID_OID
-                                             : static_cast<catalog::oid_t>(cell.value<std::uint32_t>()));
+                out.push_back(chunk.data[0].is_null(i) ? catalog::INVALID_OID
+                                             : static_cast<catalog::oid_t>(chunk.data[0].get_value<std::uint32_t>(i)));
             }
         }
         return out;

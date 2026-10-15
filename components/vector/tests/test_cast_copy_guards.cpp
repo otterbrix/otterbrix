@@ -47,12 +47,12 @@ TEST_CASE("vector_ops: copy_strided_target copies the string leg") {
 
     vector::vector_ops::copy_strided_target(src, dst, 3, 3, 1);
 
-    CHECK(dst.value(1).value<std::string_view>() == "updated");
-    CHECK(dst.value(4).value<std::string_view>() == "second");
+    CHECK(dst.get_value<std::string_view>(1) == "updated");
+    CHECK(dst.get_value<std::string_view>(4) == "second");
     CHECK(dst.is_null(7));
-    CHECK(dst.value(0).value<std::string_view>() == "old0");
-    CHECK(dst.value(2).value<std::string_view>() == "old2");
-    CHECK(dst.value(3).value<std::string_view>() == "old3");
+    CHECK(dst.get_value<std::string_view>(0) == "old0");
+    CHECK(dst.get_value<std::string_view>(2) == "old2");
+    CHECK(dst.get_value<std::string_view>(3) == "old3");
 }
 
 // A truncated null_mask_size let reads run past the mask into the first column's type header,
@@ -93,33 +93,6 @@ TEST_CASE("deserialize_binary: a null mask shorter than the chunk is a refusal")
     auto broken = vector::deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
     CHECK_FALSE(ok);
     CHECK(broken.column_count() == 0);
-}
-
-// value_internal's LIST leg must pass vector->type_ through rather than rebuild via
-// create_list(child_type), which resets field_id/required to defaults and drops the
-// catalog-decoded extension; MAP and STRUCT pass through for the same reason.
-TEST_CASE("vector: value() keeps the declared LIST extension (field_id/required)") {
-    auto resource = core::pmr::otterbrix_resource();
-
-    complex_logical_type list_type(
-        logical_type::LIST,
-        std::make_unique<types::list_logical_type_extension>(uint64_t{7},
-                                                             complex_logical_type(logical_type::BIGINT),
-                                                             false),
-        "");
-
-    vector::vector_t v(&resource, list_type, 4);
-    std::vector<types::logical_value_t> elements;
-    elements.emplace_back(&resource, int64_t{10});
-    elements.emplace_back(&resource, int64_t{20});
-    v.set_value(0, types::logical_value_t::create_list_from_type(&resource, list_type, elements));
-
-    auto value = v.value(0);
-    REQUIRE(value.type().type() == logical_type::LIST);
-    const auto* ext = value.type().extension_as<types::list_logical_type_extension>();
-    REQUIRE(ext != nullptr);
-    CHECK(ext->field_id() == 7);
-    CHECK(ext->required() == false);
 }
 
 // A bare static_cast truncates silently, letting an out-of-range key hash equal to an
@@ -188,9 +161,9 @@ TEST_CASE("vector_ops: cast_vector string pairs answer through the channel") {
         auto out =
             vector::vector_ops::cast_vector(&resource, src, complex_logical_type(logical_type::STRING_LITERAL), 3);
         REQUIRE_FALSE(out.has_error());
-        CHECK(out.value().value(0).value<std::string_view>() == "alpha");
+        CHECK(out.value().get_value<std::string_view>(0) == "alpha");
         CHECK(out.value().is_null(1));
-        CHECK(out.value().value(2).value<std::string_view>() == "beta");
+        CHECK(out.value().get_value<std::string_view>(2) == "beta");
     }
 
     SECTION("numeric to string is a refusal, not an uninitialised vector") {

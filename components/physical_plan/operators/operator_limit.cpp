@@ -1,7 +1,7 @@
 #include "operator_limit.hpp"
 
 #include <algorithm>
-#include <limits>
+#include <cassert>
 
 namespace components::operators {
 
@@ -10,38 +10,38 @@ namespace components::operators {
         , limit_(limit)
         , shape_(resource) {}
 
+    actor_zeta::unique_future<core::error_t> operator_limit_t::open_impl(pipeline::context_t* /*ctx*/) {
+        auto invalid = limit_.validate(resource_);
+        if (invalid.contains_error()) {
+            co_return invalid;
+        }
+        begin_ = static_cast<uint64_t>(limit_.offset());
+        end_ = limit_.read_cap().rows();
+        opened_ = true;
+        co_return core::error_t::no_error();
+    }
+
     core::error_t
     operator_limit_t::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& input, chunks_vector_t& out) {
+        assert(opened_ && "the executor opens an operator_limit_t before pushing into it");
         if (shape_.empty()) {
             const auto& types = input.types();
             shape_.assign(types.begin(), types.end());
         }
-        const int64_t batch = static_cast<int64_t>(input.size());
+        const uint64_t batch = input.size();
         if (batch == 0) {
             return core::error_t::no_error();
         }
 
-        // Absolute window [win_start, win_end) over the whole merged stream, in stream
-        // positions. offset = rows to skip; limit = rows to keep (-1 = unlimited). The
-        // window is [offset, offset + limit), saturating on overflow, or [offset, inf)
-        // when unlimited.
-        const int64_t offset = limit_.offset();
-        const int64_t lim = limit_.limit();
-        const int64_t win_start = offset;
-        const int64_t win_end = (lim < 0) ? std::numeric_limits<int64_t>::max()
-                                : (offset > std::numeric_limits<int64_t>::max() - lim)
-                                    ? std::numeric_limits<int64_t>::max()
-                                    : offset + lim;
-
         // This batch occupies stream positions [chunk_start, chunk_end); intersect with
         // the window and emit that contiguous slice (every row passes a limit, so the
         // surviving rows of a batch are always a contiguous run — no per-row filtering).
-        const int64_t chunk_start = stream_pos_;
-        const int64_t chunk_end = stream_pos_ + batch;
+        const uint64_t chunk_start = stream_pos_;
+        const uint64_t chunk_end = stream_pos_ + batch;
         stream_pos_ = chunk_end;
 
-        const int64_t emit_start = std::max(win_start, chunk_start);
-        const int64_t emit_end = std::min(win_end, chunk_end);
+        const uint64_t emit_start = std::max(begin_, chunk_start);
+        const uint64_t emit_end = std::min(end_, chunk_end);
         if (emit_start < emit_end) {
             if (emit_start == chunk_start && emit_end == chunk_end) {
                 // The whole batch lies inside the window — move it through untouched, no
@@ -53,8 +53,8 @@ namespace components::operators {
             } else {
                 auto* res = resource_ ? resource_ : input.resource();
                 out.emplace_back(input.partial_copy(res,
-                                                    static_cast<uint64_t>(emit_start - chunk_start),
-                                                    static_cast<uint64_t>(emit_end - emit_start)));
+                                                    emit_start - chunk_start,
+                                                    emit_end - emit_start));
             }
             note_emitted();
         }

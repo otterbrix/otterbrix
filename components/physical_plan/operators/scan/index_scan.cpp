@@ -2,9 +2,12 @@
 
 #include <algorithm>
 
-#include <components/physical_plan/operators/compare_3vl.hpp>
+#include <components/expressions/forward.hpp>
+#include <components/vector/operations/apply_operator.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
+#include <cstring>
 
 namespace components::operators {
 
@@ -20,20 +23,20 @@ namespace components::operators {
                            log_t log,
                            components::catalog::oid_t table_oid,
                            const expressions::key_t& key,
-                           const types::logical_value_t& value,
+                           core::parameter_id_t key_parameter,
                            expressions::compare_type compare_type,
                            components::logical_plan::index_type preferred_index_type,
-                           logical_plan::limit_t limit,
+                           logical_plan::row_cap_t cap,
                            std::vector<size_t> projected_cols,
                            int64_t key_chunk_col)
         : read_only_operator_t(resource, log, operator_type::index_scan)
         , table_oid_(table_oid)
         // Copied onto the operator's arena — key_ is read after the logical node's is released.
         , key_(key, resource)
-        , value_(value)
+        , key_parameter_(key_parameter)
         , compare_type_(compare_type)
         , preferred_index_type_(preferred_index_type)
-        , limit_(limit)
+        , cap_(cap)
         , projected_cols_(std::move(projected_cols))
         , key_chunk_col_(key_chunk_col)
         , fetch_cols_(projected_cols_) {
@@ -47,11 +50,15 @@ namespace components::operators {
         }
     }
 
-    core::error_t index_scan::recheck_answered_rows_() const {
+    core::error_t index_scan::recheck_answered_rows_(const pipeline::context_t* ctx,
+                                                     const vector::vector_t& key) const {
         if (key_chunk_col_ < 0) {
             return core::error_t::no_error();
         }
         const auto key_col = static_cast<uint64_t>(key_chunk_col_);
+        const bool null_test = compare_type_ == expressions::compare_type::is_null ||
+                               compare_type_ == expressions::compare_type::is_not_null;
+        const auto code = expressions::to_operator_code(compare_type_);
         for (const auto& chunk : batch_) {
             if (key_col >= chunk.column_count()) {
                 // The fetched width disagrees with the width plan-gen resolved against: nothing here can
@@ -62,13 +69,30 @@ namespace components::operators {
                                                       "answer cannot be verified",
                                                       resource_}};
             }
+            if (chunk.size() == 0) {
+                continue;
+            }
+            vector::vector_t selected(resource_,
+                                      types::complex_logical_type{types::logical_type::BOOLEAN},
+                                      chunk.size());
+            if (null_test) {
+                RETURN_IF_ERROR(vector::operations::apply_unary(code,
+                                                                chunk.data[key_col],
+                                                                &selected,
+                                                                ctx->execution_context,
+                                                                chunk.size()));
+            } else {
+                RETURN_IF_ERROR(vector::operations::apply_binary(code,
+                                                                 chunk.data[key_col],
+                                                                 key,
+                                                                 &selected,
+                                                                 ctx->execution_context,
+                                                                 chunk.size()));
+            }
             for (uint64_t row = 0; row < chunk.size(); ++row) {
-                // Bound to a named local: chunk.value() is a temporary, and a string cell hands out a
-                // view into it.
-                const auto cell = chunk.value(key_col, row);
-                // selects(): the WHERE rule, so an UNKNOWN (a NULL cell) fails the recheck too --
-                // the index had no business naming a row the predicate does not select.
-                if (types::selects(eval_compare_3vl(compare_type_, cell, value_))) {
+                // The WHERE rule: an UNKNOWN (a NULL cell) fails the recheck too -- the index had no
+                // business naming a row the predicate does not select.
+                if (!selected.is_null(row) && selected.get_value<bool>(row)) {
                     continue;
                 }
                 return core::error_t{core::error_code_t::stale_index,
@@ -83,14 +107,20 @@ namespace components::operators {
         return core::error_t::no_error();
     }
 
+    bool index_scan::key_selects_nothing_(const pipeline::context_t* ctx) const {
+        return compare_type_ != expressions::compare_type::is_null &&
+               compare_type_ != expressions::compare_type::is_not_null && ctx->parameters.is_null(key_parameter_);
+    }
+
     actor_zeta::unique_future<core::error_t> index_scan::open_index_window(pipeline::context_t* ctx) {
+        const auto& key = ctx->parameters.at(key_parameter_);
         auto [_s, sf] = preferred_index_type_ == logical_plan::index_type::no_valid
                             ? actor_zeta::otterbrix::send(ctx->index_address,
                                                           &services::index::manager_index_t::search,
                                                           ctx->session,
                                                           table_oid_,
                                                           index::keys_base_storage_t{{key_}},
-                                                          types::logical_value_t{resource_, value_},
+                                                          vector::make_constant_copy(resource_, key),
                                                           compare_type_,
                                                           ctx->txn.start_time,
                                                           ctx->txn.transaction_id,
@@ -100,7 +130,7 @@ namespace components::operators {
                                                           ctx->session,
                                                           table_oid_,
                                                           index::keys_base_storage_t{{key_}},
-                                                          types::logical_value_t{resource_, value_},
+                                                          vector::make_constant_copy(resource_, key),
                                                           compare_type_,
                                                           preferred_index_type_,
                                                           ctx->txn.start_time,
@@ -141,7 +171,7 @@ namespace components::operators {
                                                     ctx->txn,
                                                     table::fetch_visibility_t::SNAPSHOT,
                                                     // -1 uncapped, else stops after this many rows.
-                                                    limit_.head_cap(),
+                                                    cap_.to_disk(),
                                                     // Epoch minted against; refuses (stale_index) if renumbered.
                                                     built_compact_epoch_);
         co_return co_await std::move(ff);
@@ -183,24 +213,33 @@ namespace components::operators {
                 mark_failed();
                 co_return std::move(unwired);
             }
-            // Compact-hold first, search second: defers compaction so minted row ids stay valid, not already stale.
-            if (hold_id_ == 0) {
-                auto [_h, hf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                            &services::disk::manager_disk_t::storage_open_scan_hold,
-                                                            ctx->session,
-                                                            table_oid_);
-                auto hold_r = co_await std::move(hf);
-                if (hold_r.has_error()) {
-                    set_error(hold_r.error());
-                    mark_failed();
-                    co_return hold_r.convert_error<std::optional<vector::data_chunk_t>>();
+            if (key_selects_nothing_(ctx)) {
+                // An empty window: no hold to take and no search to ask. The schema below is still needed for the
+                // 0-row guard chunk.
+                row_ids_vec_.clear();
+                pos_ = 0;
+                end_ = 0;
+            } else {
+                // Compact-hold first, search second: defers compaction so minted row ids stay valid, not
+                // already stale.
+                if (hold_id_ == 0) {
+                    auto [_h, hf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                                &services::disk::manager_disk_t::storage_open_scan_hold,
+                                                                ctx->session,
+                                                                table_oid_);
+                    auto hold_r = co_await std::move(hf);
+                    if (hold_r.has_error()) {
+                        set_error(hold_r.error());
+                        mark_failed();
+                        co_return hold_r.convert_error<std::optional<vector::data_chunk_t>>();
+                    }
+                    hold_id_ = hold_r.value();
                 }
-                hold_id_ = hold_r.value();
-            }
-            if (auto search_error = co_await open_index_window(ctx); search_error.contains_error()) {
-                set_error(search_error);
-                mark_failed();
-                co_return std::move(search_error);
+                if (auto search_error = co_await open_index_window(ctx); search_error.contains_error()) {
+                    set_error(search_error);
+                    mark_failed();
+                    co_return std::move(search_error);
+                }
             }
             auto [_t, tf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                         &services::disk::manager_disk_t::storage_types,
@@ -245,7 +284,7 @@ namespace components::operators {
             batch_pos_ = 0;
             // Before ANY row leaves: a refusal that let the first chunk through would already have
             // handed the caller a wrong row.
-            if (auto stale = recheck_answered_rows_(); stale.contains_error()) {
+            if (auto stale = recheck_answered_rows_(ctx, ctx->parameters.at(key_parameter_)); stale.contains_error()) {
                 batch_.clear();
                 set_error(stale);
                 mark_failed();

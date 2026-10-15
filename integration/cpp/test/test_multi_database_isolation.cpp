@@ -55,7 +55,9 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_select") {
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db1.t1;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        REQUIRE(c->value(0, 0).value<int64_t>() == 1);
+        auto cell0 = c->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == 1);
     }
 }
 
@@ -80,14 +82,18 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_dml_routing") {
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db1.t1;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        REQUIRE(c->value(0, 0).value<int64_t>() == 10);
+        auto cell1 = c->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == 10);
     }
     {
         auto session = otterbrix::session_id_t();
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db2.t1;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        REQUIRE(c->value(0, 0).value<int64_t>() == 20);
+        auto cell2 = c->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == 20);
     }
 
     {
@@ -99,14 +105,18 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_dml_routing") {
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db1.t1;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        REQUIRE(c->value(0, 0).value<int64_t>() == 10);
+        auto cell3 = c->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == 10);
     }
     {
         auto session = otterbrix::session_id_t();
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db2.t1;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        REQUIRE(c->value(0, 0).value<int64_t>() == 21);
+        auto cell4 = c->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == 21);
     }
 
     {
@@ -124,7 +134,9 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_dml_routing") {
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db2.t1;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        REQUIRE(c->value(0, 0).value<int64_t>() == 21);
+        auto cell5 = c->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == 21);
     }
 }
 
@@ -152,7 +164,9 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_drop") {
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db1.t1;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        REQUIRE(c->value(0, 0).value<int64_t>() == 1);
+        auto cell6 = c->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == 1);
     }
     // db2.t1 is gone: selecting it must not silently read db1.t1.
     {
@@ -195,7 +209,9 @@ TEST_CASE("integration::cpp::multi_database_isolation::missing_table_not_aliased
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db1.t1;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        REQUIRE(c->value(0, 0).value<int64_t>() == 1);
+        auto cell7 = c->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell7.has_error());
+        REQUIRE(cell7.value() == 1);
     }
 }
 
@@ -256,7 +272,9 @@ TEST_CASE("integration::cpp::multi_database_isolation::view_resolves_in_own_data
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db2.v;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        REQUIRE(c->value(0, 0).value<int64_t>() == 20);
+        auto cell8 = c->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell8.has_error());
+        REQUIRE(cell8.value() == 20);
     }
 }
 
@@ -327,7 +345,9 @@ TEST_CASE("integration::cpp::multi_database_isolation::index_isolation") {
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db1.t1 WHERE id = 10;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        REQUIRE(c->value(0, 0).value<int64_t>() == 10);
+        auto cell9 = c->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell9.has_error());
+        REQUIRE(cell9.value() == 10);
     }
     {
         auto session = otterbrix::session_id_t();
@@ -340,7 +360,9 @@ TEST_CASE("integration::cpp::multi_database_isolation::index_isolation") {
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db2.t1 WHERE id = 20;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        REQUIRE(c->value(0, 0).value<int64_t>() == 20);
+        auto cell10 = c->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell10.has_error());
+        REQUIRE(cell10.value() == 20);
     }
 
     {
@@ -424,14 +446,18 @@ TEST_CASE("integration::cpp::multi_database_isolation::alter_column_isolated") {
         auto c = dispatcher->execute_sql(session, "SELECT id FROM db1.t1;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        REQUIRE(c->value(0, 0).value<int64_t>() == 10);
+        auto cell11 = c->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell11.has_error());
+        REQUIRE(cell11.value() == 10);
     }
     {
         auto session = otterbrix::session_id_t();
         auto c = dispatcher->execute_sql(session, "SELECT * FROM db2.t1;");
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        REQUIRE(c->value(0, 0).value<int64_t>() == 20);
+        auto cell12 = c->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell12.has_error());
+        REQUIRE(cell12.value() == 20);
     }
 }
 
@@ -491,14 +517,18 @@ TEST_CASE("integration::cpp::multi_database_isolation::restart_persistence_isola
             auto c = dispatcher->execute_sql(session, "SELECT * FROM db1.t1;");
             REQUIRE(c->is_success());
             REQUIRE(c->size() == 1);
-            REQUIRE(c->value(0, 0).value<int64_t>() == 10);
+            auto cell13 = c->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell13.has_error());
+            REQUIRE(cell13.value() == 10);
         }
         {
             auto session = otterbrix::session_id_t();
             auto c = dispatcher->execute_sql(session, "SELECT * FROM db2.t1;");
             REQUIRE(c->is_success());
             REQUIRE(c->size() == 1);
-            REQUIRE(c->value(0, 0).value<int64_t>() == 20);
+            auto cell14 = c->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell14.has_error());
+            REQUIRE(cell14.value() == 20);
         }
     }
 }
@@ -580,7 +610,9 @@ TEST_CASE("integration::cpp::multi_database_isolation::create_index_on_a_bare_ta
         auto cursor = exec("SELECT relnamespace FROM pg_catalog.pg_class WHERE relname = '" + relname + "';");
         REQUIRE(cursor->is_success());
         REQUIRE(cursor->size() == 1);
-        return cursor->value(0, 0).value<uint32_t>();
+        auto cell15 = cursor->get<uint32_t>(0, 0);
+        REQUIRE_FALSE(cell15.has_error());
+        return cell15.value();
     };
 
     REQUIRE(exec("CREATE DATABASE dix;")->is_success());

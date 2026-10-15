@@ -159,9 +159,7 @@ namespace {
     uint64_t rows_where_value_is(open_fixture& fx, catalog::oid_t table_oid, std::int64_t value) {
         std::pmr::vector<std::uint64_t> key_cols(&fx.resource);
         key_cols.emplace_back(0);
-        std::pmr::vector<components::types::logical_value_t> key_vals(&fx.resource);
-        key_vals.emplace_back(&fx.resource, value);
-        auto batches = test_probe::probe_read(fx, fx.ctx(), table_oid, std::move(key_cols), std::move(key_vals));
+        auto batches = test_probe::probe_read(fx, fx.ctx(), table_oid, std::move(key_cols), services::disk::test_probe::test_key_chunk(&fx.resource, value));
         uint64_t total = 0;
         for (const auto& c : batches) {
             total += c.size();
@@ -172,18 +170,15 @@ namespace {
     std::int64_t added_at_commit_id_of(open_fixture& fx, catalog::oid_t attoid) {
         std::pmr::vector<std::uint64_t> key_cols(&fx.resource);
         key_cols.emplace_back(catalog::pg_attribute_col::attoid);
-        std::pmr::vector<components::types::logical_value_t> key_vals(&fx.resource);
-        key_vals.emplace_back(&fx.resource, attoid);
         auto batches = test_probe::probe_read(fx,
                                               fx.ctx(),
                                               catalog::well_known_oid::pg_attribute_table,
                                               std::move(key_cols),
-                                              std::move(key_vals));
+                                              services::disk::test_probe::test_key_chunk(&fx.resource, attoid));
         for (const auto& c : batches) {
             for (std::uint64_t i = 0; i < c.size(); ++i) {
-                auto v = c.value(catalog::pg_attribute_col::added_at_commit_id, i);
-                if (!v.is_null()) {
-                    return v.value<std::int64_t>();
+                if (!c.is_null(catalog::pg_attribute_col::added_at_commit_id, i)) {
+                    return c.get_value<std::int64_t>(catalog::pg_attribute_col::added_at_commit_id, i);
                 }
             }
         }

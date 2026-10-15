@@ -1,10 +1,13 @@
 #include "apply_operator.hpp"
 
 #include <components/types/operations_helper.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <core/date/date_types.hpp>
 
 #include <cassert>
 #include <cmath>
+#include <limits>
+#include <string>
 #include <type_traits>
 
 namespace components::vector::operations {
@@ -30,6 +33,32 @@ namespace components::vector::operations {
         core::error_t shift_out_of_range(std::pmr::memory_resource* resource) {
             return core::error_t(core::error_code_t::invalid_parameter,
                                  std::pmr::string{"shift count is out of range", resource});
+        }
+
+        // MIN / -1 does not fit T: the quotient is 2^(bits-1). x86-64 raises SIGFPE on it, other targets wrap.
+        template<typename T>
+        const char* signed_integer_name() {
+            switch (sizeof(T)) {
+                case 1:
+                    return "tinyint";
+                case 2:
+                    return "smallint";
+                case 4:
+                    return "integer";
+                case 8:
+                    return "bigint";
+                default:
+                    return "hugeint";
+            }
+        }
+
+        template<typename T>
+        bool is_min_over_minus_one(T lhs, T rhs) {
+            if constexpr (is_decimal_storage<T>) {
+                return rhs == static_cast<T>(-1) && lhs == std::numeric_limits<T>::min();
+            } else {
+                return false;
+            }
         }
 
         template<typename T>
@@ -94,6 +123,12 @@ namespace components::vector::operations {
                             return core::error_t(core::error_code_t::invalid_parameter,
                                                  std::pmr::string{"division by zero", output->resource()});
                         }
+                        if (is_min_over_minus_one(lhs, rhs)) {
+                            return core::error_t(
+                                core::error_code_t::invalid_parameter,
+                                std::pmr::string{std::string(signed_integer_name<T>()) + " out of range",
+                                                 output->resource()});
+                        }
                         write<T>(output, row, static_cast<T>(lhs / rhs));
                         break;
                     case operator_code::mod:
@@ -108,7 +143,7 @@ namespace components::vector::operations {
                                 return core::error_t(core::error_code_t::invalid_parameter,
                                                      std::pmr::string{"division by zero", output->resource()});
                             }
-                            write<T>(output, row, static_cast<T>(lhs % rhs));
+                            write<T>(output, row, is_min_over_minus_one(lhs, rhs) ? T{} : static_cast<T>(lhs % rhs));
                         }
                         break;
                     default:
@@ -609,27 +644,9 @@ namespace components::vector::operations {
             assert((interval || left.type().type() == types::logical_type::TIME_TZ) &&
                    "only INTERVAL and TIME_TZ compare as structs");
             return each_row(left, right, output, count, active, [&](uint64_t row) {
-                std::strong_ordering ordering = std::strong_ordering::equal;
-                if (interval) {
-                    const auto lhs = left.get_value<date::interval_t>(row);
-                    const auto rhs = right.get_value<date::interval_t>(row);
-                    ordering =
-                        lhs.month.count() != rhs.month.count()
-                            ? (lhs.month < rhs.month ? std::strong_ordering::less : std::strong_ordering::greater)
-                        : lhs.day.count() != rhs.day.count()
-                            ? (lhs.day < rhs.day ? std::strong_ordering::less : std::strong_ordering::greater)
-                        : lhs.time.count() != rhs.time.count()
-                            ? (lhs.time < rhs.time ? std::strong_ordering::less : std::strong_ordering::greater)
-                            : std::strong_ordering::equal;
-                } else {
-                    const auto lhs = left.get_value<date::timetz_t>(row);
-                    const auto rhs = right.get_value<date::timetz_t>(row);
-                    const auto lhs_utc = lhs.time - std::chrono::duration_cast<date::microseconds>(lhs.zone);
-                    const auto rhs_utc = rhs.time - std::chrono::duration_cast<date::microseconds>(rhs.zone);
-                    ordering = lhs_utc < rhs_utc   ? std::strong_ordering::less
-                               : rhs_utc < lhs_utc ? std::strong_ordering::greater
-                                                   : std::strong_ordering::equal;
-                }
+                const std::strong_ordering ordering =
+                    interval ? left.get_value<date::interval_t>(row) <=> right.get_value<date::interval_t>(row)
+                             : left.get_value<date::timetz_t>(row) <=> right.get_value<date::timetz_t>(row);
                 switch (code) {
                     case operator_code::equal:
                         write<bool>(output, row, ordering == std::strong_ordering::equal);
@@ -653,33 +670,6 @@ namespace components::vector::operations {
             });
         }
 
-        std::pair<const vector_t*, uint64_t> resolve_row(const vector_t& vector, uint64_t row) {
-            const vector_t* current = &vector;
-            uint64_t index = row;
-            while (true) {
-                switch (current->get_vector_type()) {
-                    case vector_type::CONSTANT:
-                        return {current, 0};
-                    case vector_type::DICTIONARY:
-                        index = current->indexing().get_index(index);
-                        current = &current->child();
-                        break;
-                    default:
-                        return {current, index};
-                }
-            }
-        }
-
-        std::pair<uint64_t, uint64_t> element_range(const vector_t& vector, uint64_t row) {
-            if (vector.type().type() == types::logical_type::LIST) {
-                const auto entry = vector.data<types::list_entry_t>()[row];
-                return {entry.offset, entry.offset + entry.length};
-            }
-            const auto stride =
-                static_cast<const types::array_logical_type_extension*>(vector.type().extension())->size();
-            return {row * stride, row * stride + stride};
-        }
-
         template<typename...>
         struct element_ordering {
             template<typename T>
@@ -699,18 +689,16 @@ namespace components::vector::operations {
                                                                        uint64_t left_row,
                                                                        const vector_t& right_vector,
                                                                        uint64_t right_row) {
-            const auto [left, left_index] = resolve_row(left_vector, left_row);
-            const auto [right, right_index] = resolve_row(right_vector, right_row);
-            const auto [left_begin, left_end] = element_range(*left, left_index);
-            const auto [right_begin, right_end] = element_range(*right, right_index);
-            const uint64_t left_length = left_end - left_begin;
-            const uint64_t right_length = right_end - right_begin;
+            const auto left_sequence = sequence_of(left_vector, left_row);
+            const auto right_sequence = sequence_of(right_vector, right_row);
+            const uint64_t left_length = left_sequence.length;
+            const uint64_t right_length = right_sequence.length;
             const uint64_t shared = std::min(left_length, right_length);
-            const vector_t& left_child = left->entry();
-            const vector_t& right_child = right->entry();
             for (uint64_t offset = 0; offset < shared; offset++) {
-                const std::partial_ordering ordering =
-                    compare_cells(left_child, left_begin + offset, right_child, right_begin + offset);
+                const std::partial_ordering ordering = compare_cells(*left_sequence.child,
+                                                                     left_sequence.offset + offset,
+                                                                     *right_sequence.child,
+                                                                     right_sequence.offset + offset);
                 if (ordering != std::partial_ordering::equivalent) {
                     return ordering;
                 }
@@ -721,32 +709,41 @@ namespace components::vector::operations {
             return left_length < right_length ? std::partial_ordering::less : std::partial_ordering::greater;
         }
 
-        // Lexicographic over the fields, in declaration order.
+        // Field by field, the first unequal field decides.
         [[nodiscard]] std::partial_ordering compare_struct_rows(const vector_t& left_vector,
                                                                 uint64_t left_row,
                                                                 const vector_t& right_vector,
                                                                 uint64_t right_row) {
-            auto [left, left_index] = resolve_row(left_vector, left_row);
-            auto [right, right_index] = resolve_row(right_vector, right_row);
+            const auto [left, left_index] = resolve_cell(left_vector, left_row);
+            const auto [right, right_index] = resolve_cell(right_vector, right_row);
             const auto& left_fields = left->entries();
             const auto& right_fields = right->entries();
-            assert(left_fields.size() == right_fields.size() && "compared structs must share a type");
-            for (size_t field = 0; field < left_fields.size(); field++) {
+            const uint64_t shared = std::min(left_fields.size(), right_fields.size());
+            for (uint64_t field = 0; field < shared; field++) {
                 const std::partial_ordering ordering =
                     compare_cells(*left_fields[field], left_index, *right_fields[field], right_index);
                 if (ordering != std::partial_ordering::equivalent) {
                     return ordering;
                 }
             }
-            return std::partial_ordering::equivalent;
+            if (left_fields.size() == right_fields.size()) {
+                return std::partial_ordering::equivalent;
+            }
+            return left_fields.size() < right_fields.size() ? std::partial_ordering::less
+                                                            : std::partial_ordering::greater;
         }
 
-        core::error_t nested_compare(operator_code code,
-                                     const vector_t& left,
-                                     const vector_t& right,
-                                     vector_t* output,
-                                     uint64_t count,
-                                     const bool* active) {
+        using row_ordering_fn = std::partial_ordering (*)(const vector_t&, uint64_t, const vector_t&, uint64_t);
+
+        // Whole-value comparison of a LIST, ARRAY or STRUCT: a NULL row is UNKNOWN, the rest is the total order
+        // of compare_cells.
+        core::error_t ordered_compare(operator_code code,
+                                      const vector_t& left,
+                                      const vector_t& right,
+                                      vector_t* output,
+                                      uint64_t count,
+                                      const bool* active,
+                                      row_ordering_fn order) {
             for (uint64_t row = 0; row < count; row++) {
                 if (skip_row(active, row)) {
                     continue;
@@ -755,7 +752,7 @@ namespace components::vector::operations {
                     output->set_null(row, true);
                     continue;
                 }
-                const std::partial_ordering ordering = compare_cells(left, row, right, row);
+                const std::partial_ordering ordering = order(left, row, right, row);
                 output->set_null(row, false);
                 switch (code) {
                     case operator_code::equal:
@@ -777,9 +774,10 @@ namespace components::vector::operations {
                         write<bool>(output, row, ordering != std::partial_ordering::less);
                         break;
                     default:
-                        return core::error_t(core::error_code_t::invalid_parameter,
-                                             std::pmr::string{"nested_compare encountered unsupported operator code",
-                                                              output->resource()});
+                        return core::error_t(
+                            core::error_code_t::invalid_parameter,
+                            std::pmr::string{"ordered_compare encountered unsupported operator code",
+                                             output->resource()});
                 }
             }
             return core::error_t::no_error();
@@ -887,6 +885,13 @@ namespace components::vector::operations {
         if (left.type().type() == types::logical_type::STRUCT) {
             return compare_struct_rows(left, left_row, right, right_row);
         }
+        if (left.type().type() == types::logical_type::INTERVAL) {
+            return left.get_value<core::date::interval_t>(left_row) <=>
+                   right.get_value<core::date::interval_t>(right_row);
+        }
+        if (left.type().type() == types::logical_type::TIME_TZ) {
+            return left.get_value<core::date::timetz_t>(left_row) <=> right.get_value<core::date::timetz_t>(right_row);
+        }
         return types::simple_physical_type_switch<element_ordering>(physical, left, left_row, right, right_row);
     }
 
@@ -929,25 +934,50 @@ namespace components::vector::operations {
             }
             return core::error_t::no_error();
         }
+        // Two untyped NULLs have no common type to be cast to, so nothing reads their (absent) values.
+        if (left.type().type() == types::logical_type::NA && right.type().type() == types::logical_type::NA) {
+            for (uint64_t row = 0; row < count; row++) {
+                if (!skip_row(active_rows, row)) {
+                    output->set_null(row, true);
+                }
+            }
+            return core::error_t::no_error();
+        }
         // Special cases
         if (is_comparison(code)) {
-            const auto physical = left.type().to_physical_type();
-            if (left.type().type() == types::logical_type::STRUCT || physical == types::physical_type::ARRAY ||
-                physical == types::physical_type::LIST) {
-                return nested_compare(code, left, right, output, count, active_rows);
+            if (left.type().to_physical_type() == types::physical_type::STRUCT) {
+                switch (left.type().type()) {
+                    case types::logical_type::INTERVAL:
+                    case types::logical_type::TIME_TZ:
+                        return struct_compare(code, left, right, output, count, active_rows);
+                    case types::logical_type::STRUCT:
+                        return ordered_compare(code, left, right, output, count, active_rows, compare_struct_rows);
+                    default:
+                        return core::error_t(
+                            core::error_code_t::invalid_parameter,
+                            std::pmr::string{"comparison is not defined for this row-shaped type", output->resource()});
+                }
             }
-            if (physical == types::physical_type::STRUCT) {
-                return struct_compare(code, left, right, output, count, active_rows);
+            const auto physical = left.type().to_physical_type();
+            if (physical == types::physical_type::ARRAY || physical == types::physical_type::LIST) {
+                return ordered_compare(code, left, right, output, count, active_rows, compare_list_or_array_rows);
             }
         } else if (is_temporal_arithmetic(left, right)) {
             return temporal_arithmetic(code, left, right, output, count, active_rows);
         }
         // If casts were applied correctly, left and right should be the same
-        assert(left.type().to_physical_type() == right.type().to_physical_type() &&
-               "operator operands must be pre-cast to a common type");
+        if (left.type().to_physical_type() != right.type().to_physical_type()) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"operator operands must be pre-cast to a common type",
+                                                  output->resource()});
+        }
         if (is_decimal(left) && (code == operator_code::multiply || code == operator_code::divide)) {
-            assert(decimal_scale(left) == decimal_scale(right) && decimal_scale(left) == decimal_scale(*output) &&
-                   "decimal operands and result must share a scale");
+            if (!is_decimal(right) || !is_decimal(*output) || decimal_scale(left) != decimal_scale(right) ||
+                decimal_scale(left) != decimal_scale(*output)) {
+                return core::error_t(core::error_code_t::invalid_parameter,
+                                     std::pmr::string{"decimal operands and result must share a scale",
+                                                      output->resource()});
+            }
             return types::simple_physical_type_switch<decimal_dispatch>(left.type().to_physical_type(),
                                                                         code,
                                                                         left,

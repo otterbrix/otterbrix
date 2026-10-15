@@ -57,7 +57,7 @@ namespace components::operators {
             projected.push_back(column.value);
         }
 
-        auto built = expressions::build_graph(resource, parameters.parameters, projected, input.types(), right_offset);
+        auto built = expressions::build_graph(resource, parameters, projected, input.types(), right_offset);
         if (built.has_error()) {
             return built.error();
         }
@@ -120,7 +120,7 @@ namespace components::operators {
                     return error;
                 }
             }
-            auto produced = expressions::run_graph(graph->get(), parameters.parameters, source, context);
+            auto produced = expressions::run_graph(graph->get(), parameters, source, context);
             if (produced.has_error()) {
                 return produced.error();
             }

@@ -164,7 +164,7 @@ namespace components::casts {
         // Likewise a placeholder ENUM: one key stands for every enum CREATE TYPE will make, since the cast reads
         // the labels off the TARGET vector's own type at run time.
         [[nodiscard]] complex_logical_type enum_key() {
-            return complex_logical_type::create_enum("", std::vector<types::logical_value_t>{});
+            return complex_logical_type::create_enum("", std::vector<types::enum_entry_t>{});
         }
 
         template<typename Floating>

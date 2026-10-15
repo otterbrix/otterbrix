@@ -2,62 +2,12 @@
 
 #include "btree_record_codec.hpp"
 
-#include <components/index/logical_value_binary_codec.hpp>
-
 #include <cassert>
 #include <cstdlib>
 
 namespace services::index {
 
     using namespace core::b_plus_tree;
-    using components::types::logical_type;
-
-    components::types::physical_value convert(const components::types::logical_value_t& value) {
-        switch (value.type().type()) {
-            case logical_type::BOOLEAN:
-                return components::types::physical_value(value.value<bool>());
-            case logical_type::UTINYINT:
-                return components::types::physical_value(value.value<uint8_t>());
-            case logical_type::TINYINT:
-                return components::types::physical_value(value.value<int8_t>());
-            case logical_type::USMALLINT:
-                return components::types::physical_value(value.value<uint16_t>());
-            case logical_type::SMALLINT:
-                return components::types::physical_value(value.value<int16_t>());
-            case logical_type::UINTEGER:
-                return components::types::physical_value(value.value<uint32_t>());
-            case logical_type::INTEGER:
-                return components::types::physical_value(value.value<int32_t>());
-            case logical_type::UBIGINT:
-                return components::types::physical_value(value.value<uint64_t>());
-            case logical_type::BIGINT:
-                return components::types::physical_value(value.value<int64_t>());
-            case logical_type::UHUGEINT:
-                return components::types::physical_value(value.value<components::types::uint128_t>());
-            case logical_type::HUGEINT:
-                return components::types::physical_value(value.value<components::types::int128_t>());
-            case logical_type::FLOAT:
-                return components::types::physical_value(value.value<float>());
-            case logical_type::DOUBLE:
-                return components::types::physical_value(value.value<double>());
-            case logical_type::STRING_LITERAL:
-                return components::types::physical_value(*value.value<std::string*>());
-            // Temporal types are raw counters physically (DATE = INT32 days, others INT64 microseconds).
-            // TODO: add interval
-            case logical_type::DATE:
-                return components::types::physical_value(value.value<int32_t>());
-            case logical_type::TIME:
-            case logical_type::TIMESTAMP:
-            case logical_type::TIMESTAMP_TZ:
-                return components::types::physical_value(value.value<int64_t>());
-            case logical_type::NA:
-                return components::types::physical_value();
-            default:
-                // Unreachable from user data; untested since the suite runs Debug+DEV_MODE.
-                assert(false && "services::index::convert: key type not representable in physical_value");
-                std::abort();
-        }
-    }
 
     btree_index_disk_t::btree_index_disk_t(const path_t& path,
                                            std::pmr::memory_resource* resource,
@@ -95,48 +45,6 @@ namespace services::index {
             return tree_load_refusal(failure, resource);
         }
     } // namespace
-
-    core::error_t btree_index_disk_t::insert(const value_t& key, int64_t row_id) {
-        result values(resource());
-        if (auto probe_error = find(key, values); probe_error.contains_error()) {
-            return probe_error;
-        }
-        if (std::find(values.begin(), values.end(), row_id) == values.end()) {
-            std::pmr::string out(resource());
-            components::index::codec::append_logical_value(out, key);
-            components::index::codec::append_le<int64_t>(out, row_id);
-            db_->append(out.data(), static_cast<uint32_t>(out.size()));
-            mark_operation_dirty();
-            RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
-            return flush_if_needed();
-        }
-        return core::error_t::no_error();
-    }
-
-    core::error_t btree_index_disk_t::remove(value_t key) {
-        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
-        db_->remove_index(convert(key));
-        mark_operation_dirty();
-        RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
-        return flush_if_needed();
-    }
-
-    core::error_t btree_index_disk_t::remove(const value_t& key, int64_t row_id) {
-        result values(resource());
-        if (auto probe_error = find(key, values); probe_error.contains_error()) {
-            return probe_error;
-        }
-        if (!values.empty()) {
-            std::pmr::string out(resource());
-            components::index::codec::append_logical_value(out, key);
-            components::index::codec::append_le<int64_t>(out, row_id);
-            db_->remove(out.data(), static_cast<uint32_t>(out.size()));
-            mark_operation_dirty();
-            RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
-            return flush_if_needed();
-        }
-        return core::error_t::no_error();
-    }
 
     core::error_t btree_index_disk_t::flush_if_needed() {
         if (should_flush()) {
@@ -190,9 +98,9 @@ namespace services::index {
         }
     } // namespace
 
-    core::error_t btree_index_disk_t::find(const value_t& value, result& res) const {
+    core::error_t btree_index_disk_t::find(const key_t& value, result& res) const {
         RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
-        auto index = convert(value);
+        const auto& index = value;
         size_t count = db_->item_count(index);
         res.reserve(res.size() + count);
         for (size_t i = 0; i < count; i++) {
@@ -208,14 +116,14 @@ namespace services::index {
     }
 
     core::error_t btree_index_disk_t::scan_range(components::expressions::compare_type compare,
-                                                 const value_t& value,
+                                                 const key_t& value,
                                                  result& res) const {
         using components::expressions::compare_type;
 
         RETURN_IF_ERROR(consult_failure_channel(*db_, resource()));
 
         // Both scan_ascending bounds are inclusive: lt/gt exclude the probe's own key via their predicate.
-        const auto probe = convert(value);
+        const auto& probe = value;
         record_row_reader_t reader;
         const auto read_row = [&reader](void* data, size_t size) { return reader(data, size); };
         const auto readable = [&reader](auto keep) {

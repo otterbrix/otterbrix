@@ -5,6 +5,7 @@
 #include <components/catalog/catalog_oids.hpp>
 
 #include <algorithm>
+#include <span>
 #include <cstdio>
 #include <cstdlib>
 #include <tuple>
@@ -132,7 +133,16 @@ namespace concurrency {
     }
 
     namespace {
-        using components::types::logical_value_t;
+        cell_t child_of(const cell_t& cell, std::size_t position) {
+            cell_t child = cell;
+            child.path.push_back(position);
+            return child;
+        }
+
+        bool is_null_cell(const cell_t& cell) {
+            const auto null = cell.cursor->is_null(cell.column, cell.row, std::span<const std::size_t>{cell.path});
+            return null.has_error() || null.value();
+        }
 
         // Short strings are stored inline, long ones out of line; numbers alternate between the two.
         std::string text_of(int64_t number) {
@@ -141,11 +151,13 @@ namespace concurrency {
 
         std::string text_literal(int64_t number) { return "'" + text_of(number) + "'"; }
 
-        int64_t decode_text(const logical_value_t& cell) {
-            if (cell.is_null()) {
+        int64_t decode_text(const cell_t& cell) {
+            const auto read =
+                cell.cursor->get<std::string_view>(cell.column, cell.row, std::span<const std::size_t>{cell.path});
+            if (read.has_error()) {
                 return MALFORMED;
             }
-            const std::string text(cell.value<std::string_view>());
+            const std::string text(read.value());
             const auto digits = text.find_last_not_of("0123456789");
             if (digits == std::string::npos || digits + 1 == text.size()) {
                 return MALFORMED;
@@ -154,21 +166,21 @@ namespace concurrency {
             return text == text_of(number) ? number : MALFORMED;
         }
 
-        int64_t decode_bigint(const logical_value_t& cell) {
-            return cell.is_null() ? MALFORMED : cell.value<int64_t>();
+        int64_t decode_bigint(const cell_t& cell) {
+            const auto read = cell.cursor->get<int64_t>(cell.column, cell.row, std::span<const std::size_t>{cell.path});
+            return read.has_error() ? MALFORMED : read.value();
         }
 
         // Elements number, number + 1, ...: `count` of them, each read by `decode`.
-        int64_t decode_run(const logical_value_t& cell,
-                           std::size_t count,
-                           const std::function<int64_t(const logical_value_t&)>& decode) {
-            if (cell.is_null() || cell.children().size() != count) {
+        int64_t decode_run(const cell_t& cell, std::size_t count, const std::function<int64_t(const cell_t&)>& decode) {
+            const auto size = cell.cursor->list_size(cell.column, cell.row);
+            if (size.has_error() || size.value() != count) {
                 return MALFORMED;
             }
-            const int64_t number = decode(cell.children()[0]);
+            const int64_t number = decode(child_of(cell, 0));
             for (std::size_t position = 1; position < count; ++position) {
                 if (number == MALFORMED ||
-                    decode(cell.children()[position]) != number + static_cast<int64_t>(position)) {
+                    decode(child_of(cell, position)) != number + static_cast<int64_t>(position)) {
                     return MALFORMED;
                 }
             }
@@ -185,13 +197,12 @@ namespace concurrency {
         }
 
         // The length a list of `lengths` lengths has for the number in its first element.
-        int64_t decode_list(const logical_value_t& cell,
-                            int64_t lengths,
-                            const std::function<int64_t(const logical_value_t&)>& decode) {
-            if (cell.is_null() || cell.children().empty()) {
+        int64_t decode_list(const cell_t& cell, int64_t lengths, const std::function<int64_t(const cell_t&)>& decode) {
+            const auto size = cell.cursor->list_size(cell.column, cell.row);
+            if (size.has_error() || size.value() == 0) {
                 return MALFORMED;
             }
-            const int64_t number = decode(cell.children()[0]);
+            const int64_t number = decode(child_of(cell, 0));
             if (number < 0) {
                 return MALFORMED;
             }
@@ -209,29 +220,29 @@ namespace concurrency {
                  return "ARRAY[" + std::to_string(number) + ", " + std::to_string(number + 1) + ", " +
                         std::to_string(number + 2) + "]";
              },
-             [](const logical_value_t& cell) { return decode_run(cell, 3, decode_bigint); }},
+             [](const cell_t& cell) { return decode_run(cell, 3, decode_bigint); }},
             {"list bigint[]",
              "bigint[]",
              "",
              [](int64_t number) {
                  return run_literal(number, 3, [](int64_t element) { return std::to_string(element); });
              },
-             [](const logical_value_t& cell) { return decode_list(cell, 3, decode_bigint); }},
+             [](const cell_t& cell) { return decode_list(cell, 3, decode_bigint); }},
             {"list text[]",
              "text[]",
              "",
              [](int64_t number) { return run_literal(number, 2, text_literal); },
-             [](const logical_value_t& cell) { return decode_list(cell, 2, decode_text); }},
+             [](const cell_t& cell) { return decode_list(cell, 2, decode_text); }},
             {"struct (bigint, text)",
              "payload_pair",
              "CREATE TYPE payload_pair AS (number bigint, label text);",
              [](int64_t number) { return "ROW(" + std::to_string(number) + ", " + text_literal(number) + ")"; },
-             [](const logical_value_t& cell) {
-                 if (cell.is_null() || cell.children().size() != 2) {
+             [](const cell_t& cell) {
+                 if (is_null_cell(cell)) {
                      return MALFORMED;
                  }
-                 const int64_t number = decode_bigint(cell.children()[0]);
-                 return decode_text(cell.children()[1]) == number ? number : MALFORMED;
+                 const int64_t number = decode_bigint(child_of(cell, 0));
+                 return decode_text(child_of(cell, 1)) == number ? number : MALFORMED;
              }},
         };
         return types;
@@ -242,7 +253,7 @@ namespace concurrency {
         std::vector<int64_t> numbers;
         numbers.reserve(cursor->size());
         for (std::size_t row = 0; row < cursor->size(); ++row) {
-            numbers.push_back(type.decode(cursor->value(index, row)));
+            numbers.push_back(type.decode(cell_t{cursor.get(), index, row, {}}));
         }
         return numbers;
     }

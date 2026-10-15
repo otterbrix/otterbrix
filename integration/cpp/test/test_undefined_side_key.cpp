@@ -6,6 +6,7 @@
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <string>
 
 // A host-built single-table plan whose key_t leaves the side undefined (the constructor's default).
@@ -42,7 +43,8 @@ TEST_CASE("integration::cpp::undefined_side_key::select") {
     auto* r = d->resource();
 
     auto params = logical_plan::make_parameter_node(r);
-    const auto id = params->add_parameter(types::logical_value_t(r, int64_t{2}));
+    const auto id = params->add_parameter(components::vector::make_scalar(r, int64_t{2}),
+                                          components::vector::parameter_kind::literal);
     auto agg = logical_plan::make_node_aggregate(r, qualified_name_t{core::dbname_t{"m"}, core::relname_t{"t"}});
     agg->append_child(match_id_eq(d, id));
     auto cur = d->execute_plan(otterbrix::session_id_t(), logical_plan::execution_plan_t{r, agg, params});
@@ -53,7 +55,9 @@ TEST_CASE("integration::cpp::undefined_side_key::select") {
     REQUIRE(cur->column_count() == 2);
     CHECK(std::string{cur->type_data()[0].alias()} == "id");
     CHECK(std::string{cur->type_data()[1].alias()} == "v");
-    CHECK(cur->value(1, 0).value<int64_t>() == 20);
+    auto cell0 = cur->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    CHECK(cell0.value() == 20);
 }
 
 TEST_CASE("integration::cpp::undefined_side_key::delete") {
@@ -64,11 +68,12 @@ TEST_CASE("integration::cpp::undefined_side_key::delete") {
     auto* r = d->resource();
 
     auto params = logical_plan::make_parameter_node(r);
-    const auto id = params->add_parameter(types::logical_value_t(r, int64_t{2}));
+    const auto id = params->add_parameter(components::vector::make_scalar(r, int64_t{2}),
+                                          components::vector::parameter_kind::literal);
     auto del = test_dml_target(
         logical_plan::make_node_delete(r,
                                        match_id_eq(d, id),
-                                       logical_plan::make_node_limit(r, logical_plan::limit_t::unlimit())),
+                                       logical_plan::make_node_limit(r, logical_plan::limit_t::all())),
         core::dbname_t{"m"},
         core::relname_t{"t"});
     auto cur = d->execute_plan(otterbrix::session_id_t(), logical_plan::execution_plan_t{r, del, params});
@@ -79,8 +84,12 @@ TEST_CASE("integration::cpp::undefined_side_key::delete") {
     auto left = exec(d, "SELECT id FROM m.t ORDER BY id;");
     REQUIRE(left->is_success());
     REQUIRE(left->size() == 2);
-    CHECK(left->value(0, 0).value<int64_t>() == 1);
-    CHECK(left->value(0, 1).value<int64_t>() == 3);
+    auto cell1 = left->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell1.has_error());
+    CHECK(cell1.value() == 1);
+    auto cell2 = left->get<int64_t>(0, 1);
+    REQUIRE_FALSE(cell2.has_error());
+    CHECK(cell2.value() == 3);
 }
 
 TEST_CASE("integration::cpp::undefined_side_key::catalog_select") {
@@ -91,7 +100,8 @@ TEST_CASE("integration::cpp::undefined_side_key::catalog_select") {
     auto* r = d->resource();
 
     auto params = logical_plan::make_parameter_node(r);
-    const auto name = params->add_parameter(types::logical_value_t(r, std::string{"t"}));
+    const auto name = params->add_parameter(components::vector::make_scalar(r, std::string{"t"}),
+                                            components::vector::parameter_kind::literal);
     auto agg =
         logical_plan::make_node_aggregate(r,
                                           qualified_name_t{core::dbname_t{"pg_catalog"}, core::relname_t{"pg_class"}});
@@ -107,5 +117,7 @@ TEST_CASE("integration::cpp::undefined_side_key::catalog_select") {
     REQUIRE(cur->size() == 1);
     auto relname = cur->column_index("relname");
     REQUIRE_FALSE(relname.has_error());
-    CHECK(cur->value(relname.value(), 0).value<std::string_view>() == "t");
+    auto cell3 = cur->get<std::string_view>(relname.value(), 0);
+    REQUIRE_FALSE(cell3.has_error());
+    CHECK(cell3.value() == "t");
 }

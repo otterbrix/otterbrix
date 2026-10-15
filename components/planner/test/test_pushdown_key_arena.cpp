@@ -1,5 +1,6 @@
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/vector/vector_builders.hpp>
 
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -7,7 +8,6 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/planner/optimizer/rules/pushdown_filter.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <core/counting_resource.hpp>
 #include <core/date/date_types.hpp>
@@ -46,7 +46,8 @@ namespace {
     // t2.k2=5) vs WHERE t1.a=5 (pushes only, derives nothing).
     size_t default_allocations_of_run(join_type jt, std::pmr::memory_resource* plan_arena, bool where_on_key) {
         auto params = make_parameter_node(plan_arena);
-        auto p5 = params->add_parameter(int64_t(5));
+        auto p5 = params->add_parameter(components::vector::make_scalar(plan_arena, int64_t(5)),
+                                        components::vector::parameter_kind::literal);
 
         auto left = ascan(plan_arena, {"a", "k"});
         auto right = ascan(plan_arena, {"b", "k2"});
@@ -101,7 +102,8 @@ TEST_CASE("components::planner::pushdown_filter::derivation_allocates_on_the_nam
     size_t one_compare_expression = 0;
     {
         auto params = make_parameter_node(&resource);
-        auto p5 = params->add_parameter(int64_t(5));
+        auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                        components::vector::parameter_kind::literal);
         auto k = akey(&resource, "k2", 3, side_t::right);
         default_resource_counter_t counter;
         auto expr = make_compare_expression(&resource, compare_type::eq, k, p5);
@@ -113,24 +115,4 @@ TEST_CASE("components::planner::pushdown_filter::derivation_allocates_on_the_nam
     const size_t deriving = default_allocations_of_run(join_type::inner, &resource, true);
     CHECK(deriving == 5);
     REQUIRE(deriving <= one_compare_expression + 1);
-}
-
-// executor.cpp's prepare_column_ (CREATE TABLE and ALTER TABLE ... ADD COLUMN) checks a DEFAULT's cast
-// via cast_registry_t, which the planner lacks; planner-side logical_value_t::cast_as() has no range check
-// (unlike numeric_cast.hpp) and silently truncates instead of refusing.
-TEST_CASE("components::planner::alter_default_coercion::value_cast_narrows_without_saying_so") {
-    auto resource = core::pmr::otterbrix_resource();
-    constexpr auto no_session_tz = core::date::timezone_offset_t{};
-
-    // 5'000'000'000 overflows INT32; PostgreSQL would refuse this cast.
-    const components::types::logical_value_t written{&resource, static_cast<int64_t>(5000000000)};
-    CHECK(written.type().type() == components::types::logical_type::BIGINT);
-
-    auto narrowed = written.cast_as(components::types::complex_logical_type{components::types::logical_type::INTEGER},
-                                    no_session_tz);
-
-    REQUIRE_FALSE(narrowed.has_error());
-    CHECK(narrowed.value().type().type() == components::types::logical_type::INTEGER);
-    // 705032704 is 5'000'000'000's low 32 bits, not what was written.
-    CHECK(narrowed.value().value<int32_t>() == 705032704);
 }

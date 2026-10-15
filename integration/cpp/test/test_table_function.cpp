@@ -1,7 +1,6 @@
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
-#include <components/types/logical_value.hpp>
 
 #include <array>
 #include <optional>
@@ -33,11 +32,14 @@ namespace {
         std::multiset<lat_row_t> rows;
         for (uint64_t r = 0; r < cur.size(); ++r) {
             auto read = [&](int col) -> std::optional<int64_t> {
-                auto cell = cur.value(static_cast<uint64_t>(col), r);
-                if (cell.is_null()) {
+                auto cell0 = cur.is_null(static_cast<uint64_t>(col), r);
+                REQUIRE_FALSE(cell0.has_error());
+                if (cell0.value()) {
                     return std::nullopt;
                 }
-                return std::optional<int64_t>{cell.value<int64_t>()};
+                auto cell1 = cur.get<int64_t>(static_cast<uint64_t>(col), r);
+                REQUIRE_FALSE(cell1.has_error());
+                return std::optional<int64_t>{cell1.value()};
             };
             rows.insert(lat_row_t{read(c_id), read(c_n), read(c_series)});
         }
@@ -67,7 +69,9 @@ TEST_CASE("integration::cpp::table_function::generate_series") {
         REQUIRE(find_column(*cur, "generate_series") == 0);
         // Single table-function source emits in order — assert exact values.
         for (uint64_t i = 0; i < 5; ++i) {
-            REQUIRE(cur->value(0, i).value<int64_t>() == static_cast<int64_t>(i + 1));
+            auto cell2 = cur->get<int64_t>(0, i);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == static_cast<int64_t>(i + 1));
         }
     }
 
@@ -79,7 +83,9 @@ TEST_CASE("integration::cpp::table_function::generate_series") {
         REQUIRE(cur->size() == 5); // 1,3,5,7,9
         const int64_t expected[] = {1, 3, 5, 7, 9};
         for (uint64_t i = 0; i < 5; ++i) {
-            REQUIRE(cur->value(0, i).value<int64_t>() == expected[i]);
+            auto cell3 = cur->get<int64_t>(0, i);
+            REQUIRE_FALSE(cell3.has_error());
+            REQUIRE(cell3.value() == expected[i]);
         }
     }
 

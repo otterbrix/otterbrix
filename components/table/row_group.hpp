@@ -65,7 +65,7 @@ namespace components::table {
         [[nodiscard]] core::result_wrapper_t<std::unique_ptr<row_group_t>>
         add_column(collection_t* collection,
                    column_definition_t& new_column,
-                   const std::optional<types::logical_value_t>& default_value,
+                   const std::optional<vector::vector_t>& default_value,
                    vector::vector_t& intermediate);
         std::unique_ptr<row_group_t> remove_column(collection_t* collection, uint64_t removed_column);
 

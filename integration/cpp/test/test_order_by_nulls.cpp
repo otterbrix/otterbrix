@@ -2,7 +2,6 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-#include <components/types/logical_value.hpp>
 #include <optional>
 #include <services/collection/executor.hpp>
 #include <vector>
@@ -39,12 +38,17 @@ namespace {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == expected.size());
         for (size_t row = 0; row < expected.size(); ++row) {
-            auto value = cur->value(1, row); // column 1 is v
             if (expected[row].has_value()) {
-                REQUIRE_FALSE(value.is_null());
-                REQUIRE(value.value<int32_t>() == *expected[row]);
+                auto cell0 = cur->is_null(1, row); // column 1 is v
+                REQUIRE_FALSE(cell0.has_error());
+                REQUIRE_FALSE(cell0.value());
+                auto cell1 = cur->get<int32_t>(1, row);
+                REQUIRE_FALSE(cell1.has_error());
+                REQUIRE(cell1.value() == *expected[row]);
             } else {
-                REQUIRE(value.is_null());
+                auto cell2 = cur->is_null(1, row);
+                REQUIRE_FALSE(cell2.has_error());
+                REQUIRE(cell2.value());
             }
         }
     }

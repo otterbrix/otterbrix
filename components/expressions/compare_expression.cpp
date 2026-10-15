@@ -57,6 +57,15 @@ namespace components::expressions {
     compare_type compare_expression_t::inner_op() const noexcept { return inner_op_; }
     void compare_expression_t::set_inner_op(compare_type op) noexcept { inner_op_ = op; }
 
+    const types::complex_logical_type& compare_expression_t::set_element_type() const noexcept {
+        return set_element_type_;
+    }
+    const casts::cast_t& compare_expression_t::set_element_cast() const noexcept { return set_element_cast_; }
+    void compare_expression_t::set_set_element_cast(types::complex_logical_type type, casts::cast_t cast) {
+        set_element_type_ = std::move(type);
+        set_element_cast_ = std::move(cast);
+    }
+
     bool compare_expression_t::do_not_fold() const noexcept { return do_not_fold_; }
     void compare_expression_t::make_unfoldable() noexcept { do_not_fold_ = true; }
 
@@ -68,14 +77,19 @@ namespace components::expressions {
     }
     const compute::function* compare_expression_t::function() const noexcept { return function_.get(); }
 
-    core::parameter_id_t compare_expression_t::regex_flags_param() const noexcept { return regex_flags_param_; }
+    std::optional<core::parameter_id_t> compare_expression_t::regex_flags_param() const noexcept {
+        return regex_flags_param_;
+    }
     void compare_expression_t::set_regex_flags(core::parameter_id_t flags) noexcept { regex_flags_param_ = flags; }
 
     hash_t compare_expression_t::hash_impl() const {
         hash_t hash_{0};
         boost::hash_combine(hash_, type_);
         boost::hash_combine(hash_, inner_op_);
-        boost::hash_combine(hash_, regex_flags_param_.t);
+        boost::hash_combine(hash_, static_cast<uint8_t>(set_element_type_.type()));
+        if (regex_flags_param_.has_value()) {
+            boost::hash_combine(hash_, regex_flags_param_->t);
+        }
         boost::hash_combine(hash_, std::hash<param_storage>()(left_));
         boost::hash_combine(hash_, std::hash<param_storage>()(right_));
         for (const auto& child : children_) {
@@ -107,7 +121,8 @@ namespace components::expressions {
     bool compare_expression_t::equal_impl(const expression_i* rhs) const {
         auto* other = static_cast<const compare_expression_t*>(rhs);
         return type_ == other->type_ && inner_op_ == other->inner_op_ &&
-               regex_flags_param_ == other->regex_flags_param_ && left_ == other->left_ && right_ == other->right_ &&
+               set_element_type_ == other->set_element_type_ && regex_flags_param_ == other->regex_flags_param_ &&
+               left_ == other->left_ && right_ == other->right_ &&
                children_.size() == other->children_.size() &&
                std::equal(children_.begin(), children_.end(), other->children_.begin());
     }

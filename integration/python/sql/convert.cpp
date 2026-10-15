@@ -15,6 +15,7 @@
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_sort.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <vector>
 
 // The bug related to the use of RTTI by the pybind11 library has been fixed: a
@@ -22,22 +23,23 @@
 PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
 
 using namespace components::types;
-using components::types::logical_value_t;
 
-logical_value_t to_value(std::pmr::memory_resource* resource, const py::handle& obj) {
+components::vector::vector_t to_value(std::pmr::memory_resource* resource, const py::handle& obj) {
     if (py::isinstance<py::bool_>(obj)) {
-        return logical_value_t{resource, obj.cast<bool>()};
+        return components::vector::make_scalar(resource, obj.cast<bool>());
     } else if (py::isinstance<py::int_>(obj)) {
-        return logical_value_t{resource, obj.cast<int64_t>()};
+        return components::vector::make_scalar(resource, obj.cast<int64_t>());
     } else if (py::isinstance<py::float_>(obj)) {
-        return logical_value_t{resource, obj.cast<double>()};
+        return components::vector::make_scalar(resource, obj.cast<double>());
     } else if (py::isinstance<py::bytes>(obj)) {
         py::module base64 = py::module::import("base64");
-        return logical_value_t{resource, base64.attr("b64encode")(obj).attr("decode")("utf-8").cast<std::string>()};
+        return components::vector::make_scalar(
+            resource,
+            base64.attr("b64encode")(obj).attr("decode")("utf-8").cast<std::string>());
     } else if (py::isinstance<py::str>(obj)) {
-        return logical_value_t{resource, obj.cast<std::string>()};
+        return components::vector::make_scalar(resource, obj.cast<std::string>());
     }
-    return logical_value_t{resource, complex_logical_type{logical_type::NA}};
+    return components::vector::make_null(resource, complex_logical_type{logical_type::NA});
 }
 
 auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list {
@@ -50,6 +52,8 @@ auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list {
 
 using components::logical_plan::node_aggregate_t;
 using components::logical_plan::parameter_node_t;
+using components::vector::parameter_kind;
+using components::vector::vector_t;
 using components::logical_plan::aggregate::operator_type;
 
 using ex_key_t = components::expressions::key_t;
@@ -118,7 +122,7 @@ void parse_find_condition_(std::pmr::memory_resource* resource,
     } else if (py::isinstance<py::list>(condition) || py::isinstance<py::tuple>(condition)) {
         parse_find_condition_array_(resource, parent_condition, condition, real_key, aggregate, params);
     } else {
-        auto value = params->add_parameter(to_value(resource, condition));
+        auto value = params->add_parameter(to_value(resource, condition), parameter_kind::literal);
         auto sub_condition = make_compare_expression(resource, type, ex_key_t(resource, real_key, side_t::left), value);
         if (sub_condition->is_union()) {
             parse_find_condition_(resource, sub_condition.get(), condition, real_key, std::string(), aggregate, params);
@@ -192,10 +196,10 @@ components::expressions::param_storage
 parse_param(std::pmr::memory_resource* resource, const py::handle& condition, parameter_node_t* params) {
     auto value = to_value(resource, condition);
     if (value.type().to_physical_type() == components::types::physical_type::STRING &&
-        !value.value<std::string_view>().empty() && value.value<std::string_view>().at(0) == '$') {
-        return ex_key_t(resource, value.value<std::string_view>().substr(1));
+        !value.get_value<std::string_view>(0).empty() && value.get_value<std::string_view>(0).at(0) == '$') {
+        return ex_key_t(resource, value.get_value<std::string_view>(0).substr(1));
     } else {
-        return params->add_parameter(value);
+        return params->add_parameter(std::move(value), parameter_kind::literal);
     }
 }
 

@@ -1,6 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
 
-#include <components/types/logical_value.hpp>
 #include <components/types/type_spec_codec.hpp>
 #include <components/types/types.hpp>
 #include <core/pmr.hpp>
@@ -239,16 +238,7 @@ TEST_CASE("types::type_spec_codec::union_roundtrips_members_and_hidden_tag") {
 TEST_CASE("types::type_spec_codec::enum_roundtrips_labels_and_values") {
     auto resource = core::pmr::otterbrix_resource();
 
-    std::vector<logical_value_t> entries;
-    {
-        logical_value_t happy(&resource, int32_t{0});
-        happy.set_alias("happy");
-        entries.push_back(std::move(happy));
-        logical_value_t sad(&resource, int32_t{7});
-        sad.set_alias("sad");
-        entries.push_back(std::move(sad));
-    }
-    auto enm = complex_logical_type::create_enum("mood", std::move(entries));
+    auto enm = complex_logical_type::create_enum("mood", {{"happy", 0}, {"sad", 7}});
 
     auto back = roundtrip(&resource, enm);
     REQUIRE(back.type() == logical_type::ENUM);
@@ -256,10 +246,54 @@ TEST_CASE("types::type_spec_codec::enum_roundtrips_labels_and_values") {
     REQUIRE(ext != nullptr);
     REQUIRE(ext->type_name() == "mood");
     REQUIRE(ext->entries().size() == 2);
-    REQUIRE(ext->entries()[0].type().alias() == "happy");
-    REQUIRE(ext->entries()[0].value<int32_t>() == 0);
-    REQUIRE(ext->entries()[1].type().alias() == "sad");
-    REQUIRE(ext->entries()[1].value<int32_t>() == 7);
+    REQUIRE(ext->entries()[0].label == "happy");
+    REQUIRE(ext->entries()[0].value == 0);
+    REQUIRE(ext->entries()[1].label == "sad");
+    REQUIRE(ext->entries()[1].value == 7);
+}
+
+// The binary ENUM spec goes to disk (data_table / data_chunk_binary). Layout: [type 0x68][flags 0] [u32 name len][name]
+// [u32 entry count] then per entry [u32 label len][label][i32 value]; all little-endian.
+TEST_CASE("types::type_spec_codec::enum_golden_bytes") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    const auto enm = complex_logical_type::create_enum("mood", {{"happy", 0}, {"", -1}, {"sad", 7}});
+
+    // clang-format off
+    const std::vector<uint8_t> expected{
+        0x68, 0x00,
+        0x04, 0x00, 0x00, 0x00, 0x6D, 0x6F, 0x6F, 0x64,
+        0x03, 0x00, 0x00, 0x00,
+        0x05, 0x00, 0x00, 0x00, 0x68, 0x61, 0x70, 0x70, 0x79, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
+        0x03, 0x00, 0x00, 0x00, 0x73, 0x61, 0x64, 0x07, 0x00, 0x00, 0x00};
+    // clang-format on
+
+    std::pmr::vector<std::byte> spec(&resource);
+    REQUIRE_FALSE(encode_type_spec(enm, spec).has_error());
+    REQUIRE(spec.size() == expected.size());
+    for (size_t i = 0; i < expected.size(); ++i) {
+        INFO("byte " << i);
+        REQUIRE(static_cast<uint8_t>(spec[i]) == expected[i]);
+    }
+
+    std::pmr::vector<std::byte> golden(&resource);
+    for (const auto byte : expected) {
+        golden.push_back(std::byte{byte});
+    }
+    auto decoded = decode_type_spec(&resource, golden.data(), golden.size());
+    REQUIRE_FALSE(decoded.has_error());
+    REQUIRE(decoded.value().type() == logical_type::ENUM);
+    const auto* ext = decoded.value().extension_as<enum_logical_type_extension>();
+    REQUIRE(ext != nullptr);
+    REQUIRE(ext->type_name() == "mood");
+    REQUIRE(ext->entries().size() == 3);
+    REQUIRE(ext->entries()[0].label == "happy");
+    REQUIRE(ext->entries()[0].value == 0);
+    REQUIRE(ext->entries()[1].label.empty());
+    REQUIRE(ext->entries()[1].value == -1);
+    REQUIRE(ext->entries()[2].label == "sad");
+    REQUIRE(ext->entries()[2].value == 7);
 }
 
 TEST_CASE("types::type_spec_codec::variant_and_unknown_roundtrip") {

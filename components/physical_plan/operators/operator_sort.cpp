@@ -46,7 +46,7 @@ namespace components::operators {
         }
 
         auto built = expressions::build_graph(resource_,
-                                              pipeline_context->parameters.parameters,
+                                              pipeline_context->parameters,
                                               key_expressions,
                                               probe.types());
         if (built.has_error()) {
@@ -102,7 +102,7 @@ namespace components::operators {
                     return error;
                 }
                 auto produced = expressions::run_graph(computed_graph_.get(),
-                                                       pipeline_context->parameters.parameters,
+                                                       pipeline_context->parameters,
                                                        chunk,
                                                        pipeline_context->execution_context);
                 if (produced.has_error()) {
@@ -179,8 +179,7 @@ namespace components::operators {
         // The full blocking sort truncates its OUTPUT to `take` rows. OFFSET is applied by
         // operator_limit above (a full sort has no top-N heap to skip into), so only the LIMIT
         // count caps the emitted output here.
-        int64_t limit_val = limit_.limit();
-        uint64_t take = (limit_val >= 0) ? static_cast<uint64_t>(limit_val) : std::numeric_limits<uint64_t>::max();
+        const uint64_t take = cap_.rows();
 
         vector::data_chunk_t cur(resource_, out_types, vector::DEFAULT_VECTOR_CAPACITY);
         uint64_t cur_filled = 0;

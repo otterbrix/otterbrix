@@ -156,6 +156,11 @@ namespace components::operators {
         // The executor opens every source of a plan before pumping any, so backend fetches overlap.
         [[nodiscard]] actor_zeta::unique_future<core::error_t> open(pipeline::context_t* ctx) { return open_impl(ctx); }
 
+        // Is this operator opened, and its open awaited, before any piece of the plan is driven, although it is not
+        // a source? For an operator whose open_impl refuses the plan: the refusal then comes before any piece below
+        // it, or beside it, computes a row.
+        [[nodiscard]] bool opens_at_start() const noexcept { return opens_at_start_impl(); }
+
         virtual actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx);
 
         // Default is `sink`; only a SOURCE or a STREAMING operator needs to override this.
@@ -262,6 +267,7 @@ namespace components::operators {
 
     private:
         virtual actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx);
+        virtual bool opens_at_start_impl() const noexcept { return false; }
 
         // Empty: the engine's name for type(), e.g. "Seq Scan", "Hash Join", "Extension Scan".
         virtual std::pmr::string explain_label_impl() const { return std::pmr::string{resource_}; }

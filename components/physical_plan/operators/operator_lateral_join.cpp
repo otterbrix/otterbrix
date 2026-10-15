@@ -7,6 +7,7 @@
 #include <components/context/context.hpp>
 #include <components/context/subplan_runner.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_builders.hpp>
 
 #include <optional>
 
@@ -96,33 +97,24 @@ namespace components::operators {
             bindings.emplace_back(param_id, found);
         }
 
-        // Snapshot the correlation slots we are about to overwrite so the caller's
-        // parameter map is restored on EVERY exit path. A LATERAL join is only a
-        // transient per-outer-row rebind of shared parameters; leaking the last
-        // outer row's values into ctx would surprise a sibling operator or a nested
+        // Declare the correlation slots with their outer column's type before anything reads them. A LATERAL join
+        // is only a transient per-outer-row rebind of shared parameters, so on EVERY exit path the slots go back
+        // to a NULL of that type: the last outer row's values must not leak into a sibling operator or a nested
         // LATERAL that reads the same context.
-        std::pmr::vector<std::pair<core::parameter_id_t, std::optional<types::logical_value_t>>> saved_slots(res);
-        saved_slots.reserve(bindings.size());
         for (const auto& [param_id, col] : bindings) {
-            auto it = ctx->parameters.parameters.find(param_id);
-            saved_slots.emplace_back(param_id,
-                                     it == ctx->parameters.parameters.end()
-                                         ? std::nullopt
-                                         : std::optional<types::logical_value_t>{it->second});
+            ctx->parameters.set(param_id, vector::make_null(res, outer_schema_[col]));
         }
         struct slot_restorer {
             logical_plan::storage_parameters* parameters;
-            const std::pmr::vector<std::pair<core::parameter_id_t, std::optional<types::logical_value_t>>>& saved;
+            const std::pmr::vector<std::pair<core::parameter_id_t, size_t>>& bindings;
+            const std::pmr::vector<types::complex_logical_type>& outer_schema;
+            std::pmr::memory_resource* resource;
             ~slot_restorer() {
-                for (const auto& [param_id, value] : saved) {
-                    if (value.has_value()) {
-                        parameters->parameters.insert_or_assign(param_id, *value);
-                    } else {
-                        parameters->parameters.erase(param_id);
-                    }
+                for (const auto& [param_id, col] : bindings) {
+                    parameters->set(param_id, vector::make_null(resource, outer_schema[col]));
                 }
             }
-        } restorer{&ctx->parameters, saved_slots};
+        } restorer{&ctx->parameters, bindings, outer_schema_, res};
 
         // Output layout: (outer columns ++ inner columns), fixed from the plan-time
         // schemas. Built once, up front — so a LEFT join can NULL-pad an outer row
@@ -167,7 +159,7 @@ namespace components::operators {
             merged_types.insert(merged_types.end(), outer_schema_.begin(), outer_schema_.end());
             merged_types.insert(merged_types.end(), inner_schema_.begin(), inner_schema_.end());
             auto built = expressions::build_condition_graph(res,
-                                                            ctx->parameters.parameters,
+                                                            ctx->parameters,
                                                             on_expression_.get(),
                                                             merged_types,
                                                             outer_count);
@@ -190,7 +182,14 @@ namespace components::operators {
             for (uint64_t row = 0; row < outer_chunk.size(); ++row) {
                 // Bind the outer row's values into the correlated parameter slots.
                 for (const auto& [param_id, col] : bindings) {
-                    ctx->parameters.parameters.insert_or_assign(param_id, outer_chunk.value(col, row));
+                    if (outer_chunk.data[col].type() != ctx->parameters.type(param_id)) {
+                        co_return core::error_t{
+                            core::error_code_t::invalid_parameter,
+                            std::pmr::string{"lateral join: the outer column's type differs from its correlation "
+                                             "parameter's",
+                                             res}};
+                    }
+                    ctx->parameters.set_cell(param_id, outer_chunk.data[col], row);
                 }
 
                 reset_subtree(inner_);
@@ -210,7 +209,7 @@ namespace components::operators {
                         merged = join_detail::merged_chunk(res, outer_schema_, inner_chunk);
                         join_detail::point_at_probe_row(res, *merged, outer_chunk, row);
                         auto decided = expressions::run_graph(graph.get(),
-                                                              ctx->parameters.parameters,
+                                                              ctx->parameters,
                                                               *merged,
                                                               ctx->execution_context);
                         if (decided.has_error()) {

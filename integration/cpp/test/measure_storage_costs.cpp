@@ -352,10 +352,12 @@ namespace {
             std::printf("[run %u] plan        ", run);
             if (cur->size() > 0) {
                 for (std::size_t r = 0; r < cur->size(); ++r) {
-                    // Bind the cell before reading the view: cursor_t::value returns a
-                    // temporary, and a string_view into it would dangle at the semicolon.
-                    auto cell = cur->value(0, r);
-                    const auto line = cell.value<std::string_view>();
+                    auto cell0 = cur->get<std::string_view>(0, r);
+                    if (cell0.has_error()) {
+                        std::fprintf(stderr, "FATAL: EXPLAIN row %zu is unreadable\n", r);
+                        std::exit(1);
+                    }
+                    const auto line = cell0.value();
                     std::printf("%s%.*s", r ? " | " : "", static_cast<int>(line.size()), line.data());
                 }
                 std::printf("\n");

@@ -160,8 +160,8 @@ TEST_CASE("services::disk::fk_hash_semijoin::multi_key_single_pass") {
         data_chunk_t chunk(&resource, types, 5);
         chunk.set_cardinality(5);
         for (uint64_t i = 0; i < 5; ++i) {
-            chunk.set_value(0, i, logical_value_t{&resource, ids[i]});
-            chunk.set_value(1, i, logical_value_t{&resource, static_cast<int64_t>(i * 100)});
+            chunk.set_value(0, i, ids[i]);
+            chunk.set_value(1, i, static_cast<int64_t>(i * 100));
         }
         append_chunk(ts.table(), chunk);
     }
@@ -175,7 +175,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::multi_key_single_pass") {
     keys.set_cardinality(4);
     const int64_t kv[] = {20, 30, 999, 10};
     for (uint64_t i = 0; i < 4; ++i) {
-        keys.set_value(0, i, logical_value_t{&resource, kv[i]});
+        keys.set_value(0, i, kv[i]);
     }
 
     auto kidx = key_indices(&resource, {0});
@@ -207,7 +207,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::heterogeneous_type_int32_vs_int64")
         data_chunk_t chunk(&resource, types, 5);
         chunk.set_cardinality(5);
         for (uint64_t i = 0; i < 5; ++i) {
-            chunk.set_value(0, i, logical_value_t{&resource, ids[i]});
+            chunk.set_value(0, i, ids[i]);
         }
         append_chunk(ts.table(), chunk);
     }
@@ -222,8 +222,8 @@ TEST_CASE("services::disk::fk_hash_semijoin::heterogeneous_type_int32_vs_int64")
     ktypes.emplace_back(logical_type::INTEGER);
     data_chunk_t keys(&resource, ktypes, 2);
     keys.set_cardinality(2);
-    keys.set_value(0, 0, logical_value_t{&resource, static_cast<int32_t>(20)});
-    keys.set_value(0, 1, logical_value_t{&resource, static_cast<int32_t>(40)});
+    keys.set_value(0, 0, static_cast<int32_t>(20));
+    keys.set_value(0, 1, static_cast<int32_t>(40));
 
     auto kidx = key_indices(&resource, {0});
     auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data::committed());
@@ -251,7 +251,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::null_key_matches_nothing") {
         data_chunk_t chunk(&resource, types, 4);
         chunk.set_cardinality(4);
         for (uint64_t i = 0; i < 4; ++i) {
-            chunk.set_value(0, i, logical_value_t{&resource, ids[i]});
+            chunk.set_value(0, i, ids[i]);
         }
         append_chunk(ts.table(), chunk);
     }
@@ -263,9 +263,9 @@ TEST_CASE("services::disk::fk_hash_semijoin::null_key_matches_nothing") {
     ktypes.emplace_back(logical_type::BIGINT);
     data_chunk_t keys(&resource, ktypes, 2);
     keys.set_cardinality(2);
-    keys.set_value(0, 0, logical_value_t{&resource, static_cast<int64_t>(30)}); // placeholder
+    keys.set_value(0, 0, static_cast<int64_t>(30)); // placeholder
     keys.data[0].validity().set_invalid(0);                                     // then NULL it
-    keys.set_value(0, 1, logical_value_t{&resource, static_cast<int64_t>(30)});
+    keys.set_value(0, 1, static_cast<int64_t>(30));
 
     auto kidx = key_indices(&resource, {0});
     auto res_r = services::disk::fk_hash_semijoin(&resource, counter, kidx, keys, transaction_data::committed());
@@ -295,8 +295,8 @@ TEST_CASE("services::disk::fk_hash_semijoin::composite_key") {
         data_chunk_t chunk(&resource, types, 4);
         chunk.set_cardinality(4);
         for (uint64_t i = 0; i < 4; ++i) {
-            chunk.set_value(0, i, logical_value_t{&resource, a_vals[i]});
-            chunk.set_value(1, i, logical_value_t{&resource, b_vals[i]});
+            chunk.set_value(0, i, a_vals[i]);
+            chunk.set_value(1, i, b_vals[i]);
         }
         append_chunk(ts.table(), chunk);
     }
@@ -312,8 +312,8 @@ TEST_CASE("services::disk::fk_hash_semijoin::composite_key") {
     const int64_t ka[] = {2, 1, 1};
     const int64_t kb[] = {200, 100, 999};
     for (uint64_t i = 0; i < 3; ++i) {
-        keys.set_value(0, i, logical_value_t{&resource, ka[i]});
-        keys.set_value(1, i, logical_value_t{&resource, kb[i]});
+        keys.set_value(0, i, ka[i]);
+        keys.set_value(1, i, kb[i]);
     }
 
     auto kidx = key_indices(&resource, {0, 1});

@@ -121,12 +121,24 @@ TEST_CASE("integration::cpp::streaming_join::left_join_null_padding_content") {
     REQUIRE(cur->size() == 3); // k=1 left-only, k=2, k=3 matched
     // Ordered by lv: row0 lv=10 (k=1, left-only -> right NULL); row1 lv=20 (k=2 -> rv=200);
     // row2 lv=30 (k=3 -> rv=300). Right columns are positions 2 (r.k) and 3 (r.rv).
-    REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-    REQUIRE(cur->value(3, 0).is_null());
-    REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
-    REQUIRE(cur->value(3, 1).value<int64_t>() == 200);
-    REQUIRE(cur->value(0, 2).value<int64_t>() == 3);
-    REQUIRE(cur->value(3, 2).value<int64_t>() == 300);
+    auto cell0 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    REQUIRE(cell0.value() == 1);
+    auto cell1 = cur->is_null(3, 0);
+    REQUIRE_FALSE(cell1.has_error());
+    REQUIRE(cell1.value());
+    auto cell2 = cur->get<int64_t>(0, 1);
+    REQUIRE_FALSE(cell2.has_error());
+    REQUIRE(cell2.value() == 2);
+    auto cell3 = cur->get<int64_t>(3, 1);
+    REQUIRE_FALSE(cell3.has_error());
+    REQUIRE(cell3.value() == 200);
+    auto cell4 = cur->get<int64_t>(0, 2);
+    REQUIRE_FALSE(cell4.has_error());
+    REQUIRE(cell4.value() == 3);
+    auto cell5 = cur->get<int64_t>(3, 2);
+    REQUIRE_FALSE(cell5.has_error());
+    REQUIRE(cell5.value() == 300);
 }
 
 TEST_CASE("integration::cpp::streaming_join::cross_join_materialized") {
@@ -194,8 +206,12 @@ TEST_CASE("integration::cpp::streaming_join::no_from_constants_stream") {
         auto cur = exec(dispatcher, "SELECT 2 + 3 AS five, 10 * 5 AS fifty;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 5);
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 50);
+        auto cell6 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == 5);
+        auto cell7 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell7.has_error());
+        REQUIRE(cell7.value() == 50);
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
     REQUIRE(runs_after > runs_before); // streamed (no longer the legacy materialize path)
@@ -205,7 +221,9 @@ TEST_CASE("integration::cpp::streaming_join::no_from_constants_stream") {
         auto cur = exec(dispatcher, "SELECT 1 AS one;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        auto cell8 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell8.has_error());
+        REQUIRE(cell8.value() == 1);
     }
 }
 
@@ -234,7 +252,9 @@ TEST_CASE("integration::cpp::streaming_join::union_distinct_sinks") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
         for (size_t row = 0; row < 4; ++row) {
-            REQUIRE(cur->value(0, row).value<int64_t>() == static_cast<int64_t>(row));
+            auto cell9 = cur->get<int64_t>(0, row);
+            REQUIRE_FALSE(cell9.has_error());
+            REQUIRE(cell9.value() == static_cast<int64_t>(row));
         }
     }
 

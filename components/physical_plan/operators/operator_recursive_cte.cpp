@@ -5,7 +5,9 @@
 #include <components/context/subplan_runner.hpp>
 #include <components/vector/cell_equal.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_operations.hpp>
 
+#include <cassert>
 #include <unordered_map>
 #include <vector>
 
@@ -18,17 +20,6 @@ namespace components::operators {
             std::size_t chunk_idx;
             uint64_t row;
         };
-
-        // Whole-row equality via the engine's canonical NULL-aware typed cell equality
-        // (the same semantics as GROUP BY / HASH JOIN / DISTINCT).
-        bool rows_equal(const vector::data_chunk_t& a, uint64_t ra, const vector::data_chunk_t& b, uint64_t rb) {
-            for (size_t c = 0; c < a.column_count(); ++c) {
-                if (!vector::cells_equal(a.data[c], ra, b.data[c], rb)) {
-                    return false;
-                }
-            }
-            return true;
-        }
     } // namespace
 
     // Upper bound on fixpoint iterations: a clean error instead of an unbounded hang if
@@ -38,6 +29,8 @@ namespace components::operators {
 
     operator_recursive_cte_t::operator_recursive_cte_t(std::pmr::memory_resource* resource, log_t log, bool union_all)
         : read_only_operator_t(resource, std::move(log), operator_type::recursive_cte)
+        , step_casts_(resource)
+        , step_types_(resource)
         , union_all_(union_all) {}
 
     void operator_recursive_cte_t::reset_recursive_subtree(const operator_ptr& op) {
@@ -106,7 +99,7 @@ namespace components::operators {
                 auto it = seen.find(h);
                 if (it != seen.end()) {
                     for (const auto& ref : it->second) {
-                        if (rows_equal(result[ref.chunk_idx], ref.row, chunk, r)) {
+                        if (vector::rows_equal(result[ref.chunk_idx], ref.row, chunk, r)) {
                             dup = true;
                             break;
                         }
@@ -116,7 +109,7 @@ namespace components::operators {
                 // first copy is not in `result` yet, so check the already-kept rows).
                 if (!dup) {
                     for (size_t k : keep) {
-                        if (hashes[k] == h && rows_equal(chunk, k, chunk, r)) {
+                        if (hashes[k] == h && vector::rows_equal(chunk, k, chunk, r)) {
                             dup = true;
                             break;
                         }
@@ -131,10 +124,12 @@ namespace components::operators {
             }
             vector::data_chunk_t filtered(res, chunk.types(), keep.size());
             filtered.set_cardinality(keep.size());
+            vector::indexing_vector_t selection(res, keep.size());
             for (size_t out_r = 0; out_r < keep.size(); ++out_r) {
-                for (size_t col = 0; col < chunk.column_count(); ++col) {
-                    filtered.set_value(col, out_r, chunk.value(col, keep[out_r]));
-                }
+                selection.set_index(out_r, keep[out_r]);
+            }
+            for (size_t col = 0; col < chunk.column_count(); ++col) {
+                vector::vector_ops::copy(chunk.data[col], filtered.data[col], selection, keep.size(), 0, 0);
             }
             // Register the kept rows against their position in the just-appended result
             // chunk (index-based, so a later result reallocation does not dangle them).
@@ -182,6 +177,25 @@ namespace components::operators {
 
                 chunks_vector_t next(res);
                 for (auto& chunk : step.value()) {
+                    if (chunk.size() > 0 && !step_casts_.empty()) {
+                        assert(step_casts_.size() == chunk.column_count());
+                        for (std::size_t col = 0; col < step_casts_.size(); ++col) {
+                            if (!step_casts_[col]) {
+                                continue;
+                            }
+                            chunk.data[col].flatten(chunk.size());
+                            vector::vector_t casted(res, step_types_[col], chunk.size());
+                            auto error = step_casts_[col](casts::cast_kind::cast,
+                                                          chunk.data[col],
+                                                          &casted,
+                                                          ctx->execution_context,
+                                                          chunk.size());
+                            if (error.contains_error()) {
+                                co_return error;
+                            }
+                            chunk.data[col] = std::move(casted);
+                        }
+                    }
                     emit_rows(chunk, next);
                 }
                 if (next.empty()) {

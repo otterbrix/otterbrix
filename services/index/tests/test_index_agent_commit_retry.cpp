@@ -13,7 +13,7 @@
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
@@ -37,7 +37,7 @@
 using components::expressions::compare_type;
 using components::session::session_id_t;
 using components::table::TRANSACTION_ID_START;
-using components::types::logical_value_t;
+using components::vector::make_scalar;
 using services::index::bitcask_index_agent_t;
 using services::index::index_agent_contract;
 
@@ -160,13 +160,13 @@ TEST_CASE("services::index::bitcask_index_agent_t keeps the staged bucket across
     const auto session = session_id_t::generate_uid();
     const uint64_t txn1 = TRANSACTION_ID_START + 1;
     const uint64_t txn2 = TRANSACTION_ID_START + 2;
-    const logical_value_t val42(&resource, int64_t{42});
+    const auto val42 = make_scalar(&resource, int64_t{42});
 
     auto read = [&](uint64_t txn_id) {
         auto answer = ask<&index_agent_contract::read_rows>(agent,
                                                             session,
                                                             compare_type::eq,
-                                                            logical_value_t(&resource, val42),
+                                                            val42,
                                                             txn_id);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
@@ -235,13 +235,13 @@ TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucke
     auto agent = std::move(agent_result.value());
 
     const auto session = session_id_t::generate_uid();
-    const logical_value_t val42(&resource, int64_t{42});
+    const auto val42 = make_scalar(&resource, int64_t{42});
 
     auto read = [&](uint64_t txn_id) {
         auto answer = ask<&index_agent_contract::read_rows>(agent,
                                                             session,
                                                             compare_type::eq,
-                                                            logical_value_t(&resource, val42),
+                                                            val42,
                                                             txn_id);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
@@ -323,7 +323,7 @@ TEST_CASE("services::index::bitcask_index_agent_t a foreign commit does not jour
         auto answer = ask<&index_agent_contract::read_rows>(agent,
                                                             session,
                                                             compare_type::eq,
-                                                            logical_value_t(&resource, key),
+                                                            make_scalar(&resource, key),
                                                             txn_id);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));

@@ -30,7 +30,11 @@ namespace {
         REQUIRE(cur->is_success());
         std::vector<std::pair<int64_t, int64_t>> out;
         for (std::size_t row = 0; row < cur->size(); ++row) {
-            out.emplace_back(cur->value(0, row).value<int64_t>(), cur->value(1, row).value<int64_t>());
+            auto cell0 = cur->get<int64_t>(0, row);
+            REQUIRE_FALSE(cell0.has_error());
+            auto cell1 = cur->get<int64_t>(1, row);
+            REQUIRE_FALSE(cell1.has_error());
+            out.emplace_back(cell0.value(), cell1.value());
         }
         return out;
     }
@@ -40,7 +44,9 @@ namespace {
         REQUIRE(cur->is_success());
         std::vector<int64_t> out;
         for (std::size_t row = 0; row < cur->size(); ++row) {
-            out.push_back(cur->value(0, row).value<int64_t>());
+            auto cell2 = cur->get<int64_t>(0, row);
+            REQUIRE_FALSE(cell2.has_error());
+            out.push_back(cell2.value());
         }
         return out;
     }
@@ -50,7 +56,9 @@ namespace {
         REQUIRE(cur->is_success());
         std::string text;
         for (std::size_t row = 0; row < cur->size(); ++row) {
-            text += std::string(cur->value(0, row).value<std::string_view>());
+            auto cell3 = cur->get<std::string_view>(0, row);
+            REQUIRE_FALSE(cell3.has_error());
+            text += std::string(cell3.value());
             text += '\n';
         }
         return text;

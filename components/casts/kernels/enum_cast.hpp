@@ -1,7 +1,7 @@
 #pragma once
 
 #include <components/casts/cast_function.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
 
 namespace components::casts::kernels {
 
@@ -15,8 +15,8 @@ namespace components::casts::kernels {
                 return false;
             }
             for (const auto& entry : extension->entries()) {
-                if (entry.type().alias() == label) {
-                    *value = entry.value<int32_t>();
+                if (entry.label == label) {
+                    *value = entry.value;
                     return true;
                 }
             }

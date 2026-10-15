@@ -10,6 +10,7 @@
 #include <components/table/storage/metadata_writer.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/file/local_file_system.hpp>
 #include <cstdio>
 #include <string>
@@ -57,7 +58,7 @@ namespace {
             const uint64_t batch = std::min<uint64_t>(count - offset, DEFAULT_VECTOR_CAPACITY);
             auto chunk = data_chunk_t(&env.resource, types, batch);
             for (uint64_t i = 0; i < batch; i++) {
-                chunk.data[0].set_value(i, logical_value_t(&env.resource, start + static_cast<int64_t>(offset + i)));
+                chunk.data[0].set_value(i, start + static_cast<int64_t>(offset + i));
             }
             chunk.set_cardinality(batch);
             REQUIRE_FALSE(table.append(chunk, state).has_error());
@@ -140,8 +141,8 @@ TEST_CASE("components::table::hugeint_and_decimal_columns_get_minmax_statistics"
         }
         stats.update(vec, 10);
         REQUIRE(stats.has_stats());
-        CHECK(stats.min_value().value<int128_t>() == int128_t(-4));
-        CHECK(stats.max_value().value<int128_t>() == int128_t(5));
+        CHECK(stats.min_as<int128_t>() == int128_t(-4));
+        CHECK(stats.max_as<int128_t>() == int128_t(5));
     }
 
     SECTION("UHUGEINT min/max") {
@@ -153,8 +154,8 @@ TEST_CASE("components::table::hugeint_and_decimal_columns_get_minmax_statistics"
         }
         stats.update(vec, 6);
         REQUIRE(stats.has_stats());
-        CHECK(stats.min_value().value<uint128_t>() == uint128_t(100));
-        CHECK(stats.max_value().value<uint128_t>() == uint128_t(105));
+        CHECK(stats.min_as<uint128_t>() == uint128_t(100));
+        CHECK(stats.max_as<uint128_t>() == uint128_t(105));
     }
 
     SECTION("wide DECIMAL(38,2) min/max survive a serialize round-trip") {
@@ -169,8 +170,8 @@ TEST_CASE("components::table::hugeint_and_decimal_columns_get_minmax_statistics"
         }
         stats.update(vec, 8);
         REQUIRE(stats.has_stats());
-        CHECK(stats.min_value().value<int128_t>() == int128_t(-2500));
-        CHECK(stats.max_value().value<int128_t>() == int128_t(4500));
+        CHECK(stats.min_as<int128_t>() == int128_t(-2500));
+        CHECK(stats.max_as<int128_t>() == int128_t(4500));
 
         storage::metadata_manager_t meta(env.block_manager);
         storage::meta_block_pointer_t pointer;
@@ -185,8 +186,8 @@ TEST_CASE("components::table::hugeint_and_decimal_columns_get_minmax_statistics"
             auto loaded = base_statistics_t::deserialize(&env.resource, reader);
             REQUIRE_FALSE(reader.has_error());
             REQUIRE(loaded.has_stats());
-            CHECK(loaded.min_value().value<int128_t>() == int128_t(-2500));
-            CHECK(loaded.max_value().value<int128_t>() == int128_t(4500));
+            CHECK(loaded.min_as<int128_t>() == int128_t(-2500));
+            CHECK(loaded.max_as<int128_t>() == int128_t(4500));
         }
     }
 }
@@ -199,7 +200,7 @@ TEST_CASE("components::table::a_failed_add_column_backfill_refuses_loudly") {
     append_bigint_rows(*table, env, 0, 3000);
 
     column_definition_t new_column("added", complex_logical_type(logical_type::STRING_LITERAL));
-    new_column.set_default_value(logical_value_t(&env.resource, std::string(300 * 1024, 'x')));
+    new_column.set_default_value(components::vector::make_scalar(&env.resource, std::string(300 * 1024, 'x')));
     auto extended = std::make_unique<data_table_t>(*table, new_column);
 
     REQUIRE(extended->has_construction_error());
@@ -210,7 +211,7 @@ TEST_CASE("components::table::a_failed_add_column_backfill_refuses_loudly") {
         auto types = extended->copy_types();
         REQUIRE(types.size() == 1);
         data_chunk_t chunk(&env.resource, types, 1);
-        chunk.data[0].set_value(0, logical_value_t(&env.resource, int64_t(1)));
+        chunk.data[0].set_value(0, int64_t(1));
         chunk.set_cardinality(1);
         table_append_state state(&env.resource);
         auto locked = extended->append_lock(state);

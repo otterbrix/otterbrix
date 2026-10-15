@@ -1,8 +1,11 @@
 #include <catch2/catch_test_macros.hpp>
 #include <core/pmr.hpp>
 
+#include <components/vector/cell_equal.hpp>
 #include <components/vector/vector.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/resource_tracer.hpp>
+#include <cstring>
 #include <random>
 
 TEST_CASE("components::vector::vector") {
@@ -190,46 +193,29 @@ TEST_CASE("components::vector::vector") {
         components::vector::vector_t v(&resource, struct_type, test_size);
 
         for (size_t i = 0; i < test_size; i++) {
-            std::vector<components::types::logical_value_t> arr;
-            arr.reserve(i);
-            for (size_t j = 0; j < i; j++) {
-                arr.emplace_back(v.resource(), test_data[i].array[j]);
-            }
-            std::vector<components::types::logical_value_t> value_fiels;
-            value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].flag});
-            value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].number});
-            value_fiels.emplace_back(components::types::logical_value_t{v.resource(), test_data[i].name});
-            value_fiels.emplace_back(
-                components::types::logical_value_t::create_list(v.resource(),
-                                                                components::types::logical_type::USMALLINT,
-                                                                arr));
-            components::types::logical_value_t value =
-                components::types::logical_value_t::create_struct(v.resource(), struct_type, value_fiels);
-            v.set_value(i, value);
+            v.entries()[0]->set_value(i, test_data[i].flag);
+            v.entries()[1]->set_value(i, test_data[i].number);
+            v.entries()[2]->set_value(i, std::string_view{test_data[i].name});
+            v.entries()[3]->set_value(i, test_data[i].array);
         }
 
-        for (size_t i = 0; i < test_size; i++) {
-            components::types::logical_value_t value = v.value(i);
-            REQUIRE(value.type().type() == components::types::logical_type::STRUCT);
-            REQUIRE(value.type().alias() == "test_struct");
-            REQUIRE(value.type().child_types()[0].type() == components::types::logical_type::BOOLEAN);
-            REQUIRE(value.type().child_types()[0].alias() == "flag");
-            REQUIRE(value.type().child_types()[1].type() == components::types::logical_type::INTEGER);
-            REQUIRE(value.type().child_types()[1].alias() == "number");
-            REQUIRE(value.type().child_types()[2].type() == components::types::logical_type::STRING_LITERAL);
-            REQUIRE(value.type().child_types()[2].alias() == "name");
-            REQUIRE(value.type().child_types()[3].type() == components::types::logical_type::LIST);
-            REQUIRE(value.type().child_types()[3].child_type().type() == components::types::logical_type::USMALLINT);
-            REQUIRE(value.type().child_types()[3].alias() == "array");
+        REQUIRE(v.type().type() == components::types::logical_type::STRUCT);
+        REQUIRE(v.type().alias() == "test_struct");
+        REQUIRE(v.type().child_types()[0].type() == components::types::logical_type::BOOLEAN);
+        REQUIRE(v.type().child_types()[0].alias() == "flag");
+        REQUIRE(v.type().child_types()[1].type() == components::types::logical_type::INTEGER);
+        REQUIRE(v.type().child_types()[1].alias() == "number");
+        REQUIRE(v.type().child_types()[2].type() == components::types::logical_type::STRING_LITERAL);
+        REQUIRE(v.type().child_types()[2].alias() == "name");
+        REQUIRE(v.type().child_types()[3].type() == components::types::logical_type::LIST);
+        REQUIRE(v.type().child_types()[3].child_type().type() == components::types::logical_type::USMALLINT);
+        REQUIRE(v.type().child_types()[3].alias() == "array");
 
-            REQUIRE(value.children()[0].value<bool>() == test_data[i].flag);
-            REQUIRE(value.children()[1].value<int32_t>() == test_data[i].number);
-            REQUIRE(*value.children()[2].value<std::string*>() == test_data[i].name);
-            std::vector arr(value.children()[3].children());
-            REQUIRE(arr.size() == test_data[i].array.size());
-            for (size_t j = 0; j < arr.size(); j++) {
-                REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
-            }
+        for (size_t i = 0; i < test_size; i++) {
+            REQUIRE(v.entries()[0]->get_value<bool>(i) == test_data[i].flag);
+            REQUIRE(v.entries()[1]->get_value<int32_t>(i) == test_data[i].number);
+            REQUIRE(v.entries()[2]->get_value<std::string_view>(i) == test_data[i].name);
+            REQUIRE(v.entries()[3]->get_value<std::vector<uint16_t>>(i) == test_data[i].array);
         }
     }
     INFO("dictionary");
@@ -278,59 +264,40 @@ TEST_CASE("components::vector::vector") {
         components::vector::vector_t union_vector(&resource, union_type, test_size);
 
         for (size_t i = 0; i < test_size; i++) {
-            switch (i % 3) {
+            const auto tag = static_cast<uint8_t>(i % 3);
+            union_vector.entries()[0]->set_value(i, tag);
+            switch (tag) {
                 case 0:
-                    union_vector.set_value(
-                        i,
-                        components::types::logical_value_t::create_union(
-                            union_vector.resource(),
-                            union_fields,
-                            0,
-                            components::types::logical_value_t{union_vector.resource(), i % 2 == 0}));
+                    union_vector.entries()[1]->set_value(i, i % 2 == 0);
                     break;
                 case 1:
-                    union_vector.set_value(
-                        i,
-                        components::types::logical_value_t::create_union(
-                            union_vector.resource(),
-                            union_fields,
-                            1,
-                            components::types::logical_value_t{union_vector.resource(), static_cast<int32_t>(i)}));
+                    union_vector.entries()[2]->set_value(i, static_cast<int32_t>(i));
                     break;
-                case 2:
-                    union_vector.set_value(i,
-                                           components::types::logical_value_t::create_union(
-                                               union_vector.resource(),
-                                               union_fields,
-                                               2,
-                                               components::types::logical_value_t{
-                                                   union_vector.resource(),
-                                                   std::string{"long_string_with_index_" + std::to_string(i)}}));
+                default: {
+                    const std::string text{"long_string_with_index_" + std::to_string(i)};
+                    union_vector.entries()[3]->set_value(i, std::string_view{text});
                     break;
-                default:
-                    continue;
+                }
             }
         }
 
         for (size_t i = 0; i < test_size; i++) {
-            components::types::logical_value_t value = union_vector.value(i);
-            auto tag = value.children()[0].value<uint8_t>();
+            const auto tag = union_vector.entries()[0]->get_value<uint8_t>(i);
             switch (tag) {
                 case 0:
-                    REQUIRE(value.children()[1].type().type() == components::types::logical_type::BOOLEAN);
-                    REQUIRE(value.children()[1].value<bool>() == (i % 2 == 0));
+                    REQUIRE(union_vector.entries()[1]->type().type() == components::types::logical_type::BOOLEAN);
+                    REQUIRE(union_vector.entries()[1]->get_value<bool>(i) == (i % 2 == 0));
                     break;
                 case 1:
-                    REQUIRE(value.children()[2].type().type() == components::types::logical_type::INTEGER);
-                    REQUIRE(value.children()[2].value<int32_t>() == static_cast<int32_t>(i));
-                    break;
-                case 2:
-                    REQUIRE(value.children()[3].type().type() == components::types::logical_type::STRING_LITERAL);
-                    REQUIRE(value.children()[3].value<std::string_view>() ==
-                            std::string{"long_string_with_index_" + std::to_string(i)});
+                    REQUIRE(union_vector.entries()[2]->type().type() == components::types::logical_type::INTEGER);
+                    REQUIRE(union_vector.entries()[2]->get_value<int32_t>(i) == static_cast<int32_t>(i));
                     break;
                 default:
-                    continue;
+                    REQUIRE(union_vector.entries()[3]->type().type() ==
+                            components::types::logical_type::STRING_LITERAL);
+                    REQUIRE(union_vector.entries()[3]->get_value<std::string_view>(i) ==
+                            std::string{"long_string_with_index_" + std::to_string(i)});
+                    break;
             }
         }
     }
@@ -427,8 +394,7 @@ TEST_CASE("components::vector::vector: an NA vector allocates nothing and reads 
         REQUIRE(nulls.is_null(0));
         REQUIRE(nulls.is_null(1));
         REQUIRE(nulls.is_null(1023));
-        REQUIRE(nulls.value(7).is_null());
-        REQUIRE(nulls.value(7).type().type() == types::logical_type::NA);
+        REQUIRE(nulls.is_null(7));
     }
 
     SECTION("writing a null into it stays allocation-free") {
@@ -449,10 +415,9 @@ TEST_CASE("components::vector::vector: an NA vector allocates nothing and reads 
         REQUIRE(nulls.is_null(1023));
     }
 
-    SECTION("placing a NULL value into it allocates nothing either") {
+    SECTION("making a NULL one allocates nothing either") {
         const size_t before = tracer.total_allocated();
-        types::logical_value_t null_value{&tracer, types::complex_logical_type{types::logical_type::NA}};
-        vector::vector_t placed{&tracer, null_value};
+        auto placed = vector::make_null(&tracer, types::complex_logical_type{types::logical_type::NA});
         REQUIRE(tracer.total_allocated() == before);
         REQUIRE(placed.get_vector_type() == vector::vector_type::CONSTANT);
         REQUIRE(placed.is_null(0));
@@ -531,11 +496,11 @@ TEST_CASE("components::vector::apply vector ops refuse string operands loudly") 
 
     constexpr uint64_t count = 2;
     vector_t strings(&resource, complex_logical_type{logical_type::STRING_LITERAL}, count);
-    strings.set_value(0, components::types::logical_value_t{&resource, std::string{"a"}});
-    strings.set_value(1, components::types::logical_value_t{&resource, std::string{"b"}});
+    strings.set_value(0, std::string_view{"a"});
+    strings.set_value(1, std::string_view{"b"});
     vector_t ints(&resource, complex_logical_type{logical_type::INTEGER}, count);
-    ints.set_value(0, components::types::logical_value_t{&resource, int32_t{1}});
-    ints.set_value(1, components::types::logical_value_t{&resource, int32_t{2}});
+    ints.set_value(0, int32_t{1});
+    ints.set_value(1, int32_t{2});
 
     SECTION("unary op over strings refuses (used to answer uninitialized memory under NDEBUG)") {
         auto r = apply_unary_vector_op(&resource, unary_vector_op::abs, strings, count);
@@ -551,8 +516,8 @@ TEST_CASE("components::vector::apply vector ops refuse string operands loudly") 
     }
     SECTION("bitwise op over floats refuses (the other assert leg)") {
         vector_t doubles(&resource, complex_logical_type{logical_type::DOUBLE}, count);
-        doubles.set_value(0, components::types::logical_value_t{&resource, 1.5});
-        doubles.set_value(1, components::types::logical_value_t{&resource, 2.5});
+        doubles.set_value(0, 1.5);
+        doubles.set_value(1, 2.5);
         auto r = apply_binary_vector_op(&resource, binary_vector_op::bit_or, doubles, doubles, count);
         REQUIRE(r.has_error());
     }
@@ -561,5 +526,160 @@ TEST_CASE("components::vector::apply vector ops refuse string operands loudly") 
         REQUIRE_FALSE(u.has_error());
         auto b = apply_binary_vector_op(&resource, binary_vector_op::bit_and, ints, ints, count);
         REQUIRE_FALSE(b.has_error());
+    }
+}
+
+// PostgreSQL's hashfloat8 canonicalises NaN: one value, one hash, whatever sign and payload the bits carry.
+TEST_CASE("components::vector::hash gives every NaN of a float type the same hash, and keeps +0 and -0 together") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto hashes_of = [&](components::types::logical_type type, auto... values) {
+        using T = std::common_type_t<decltype(values)...>;
+        components::vector::vector_t input(&resource, components::types::complex_logical_type{type}, sizeof...(values));
+        uint64_t row = 0;
+        ((input.set_value(row++, static_cast<T>(values))), ...);
+        components::vector::vector_t hashes(
+            &resource,
+            components::types::complex_logical_type{components::types::logical_type::UBIGINT},
+            sizeof...(values));
+        components::vector::vector_ops::hash(input, hashes, sizeof...(values));
+        std::vector<uint64_t> result;
+        for (uint64_t i = 0; i < sizeof...(values); i++) {
+            result.push_back(hashes.data<uint64_t>()[i]);
+        }
+        return result;
+    };
+    auto from_bits = [](uint64_t bits) {
+        double value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+    const auto doubles = hashes_of(components::types::logical_type::DOUBLE,
+                                   from_bits(0x7ff8000000000000ULL),
+                                   from_bits(0xfff8000000000000ULL),
+                                   from_bits(0x7ff8000000000001ULL),
+                                   from_bits(0x7ff0000000000001ULL),
+                                   1.5);
+    CHECK(doubles[0] == doubles[1]);
+    CHECK(doubles[0] == doubles[2]);
+    CHECK(doubles[0] == doubles[3]);
+    CHECK(doubles[0] != doubles[4]);
+    const auto zeros = hashes_of(components::types::logical_type::DOUBLE, 0.0, -0.0);
+    CHECK(zeros[0] == zeros[1]);
+
+    auto float_from_bits = [](uint32_t bits) {
+        float value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+    const auto floats = hashes_of(components::types::logical_type::FLOAT,
+                                  float_from_bits(0x7fc00000U),
+                                  float_from_bits(0xffc00000U),
+                                  float_from_bits(0x7fc00001U),
+                                  1.5f);
+    CHECK(floats[0] == floats[1]);
+    CHECK(floats[0] == floats[2]);
+    CHECK(floats[0] != floats[3]);
+}
+
+TEST_CASE("components::vector::cells_equal: UNION compares the tag and the active member only") {
+    using namespace components;
+
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::vector<types::complex_logical_type> members(&resource);
+    members.emplace_back(types::logical_type::INTEGER, "i");
+    members.emplace_back(types::logical_type::STRING_LITERAL, "s");
+    vector::vector_t u(&resource, types::complex_logical_type::create_union(members), 5);
+
+    auto put = [&](uint64_t row, uint8_t tag, int32_t i, std::string_view s) {
+        u.entries()[0]->set_value(row, tag);
+        u.entries()[1]->set_value(row, i);
+        u.entries()[2]->set_value(row, s);
+    };
+    put(0, 0, 5, "x");
+    put(1, 0, 5, "y");
+    put(2, 1, 5, "x");
+    put(3, 0, 6, "x");
+    put(4, 1, 0, "x");
+
+    REQUIRE(vector::cells_equal(u, 0, u, 1));
+    REQUIRE_FALSE(vector::cells_equal(u, 0, u, 2));
+    REQUIRE_FALSE(vector::cells_equal(u, 0, u, 3));
+    REQUIRE(vector::cells_equal(u, 2, u, 4));
+
+    u.entries()[0]->set_null(1, true);
+    REQUIRE_FALSE(vector::cells_equal(u, 0, u, 1));
+    u.entries()[0]->set_null(0, true);
+    REQUIRE(vector::cells_equal(u, 0, u, 1));
+}
+
+TEST_CASE("components::vector::data_chunk_t::at: a path past the chunk width answers nullptr") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    std::pmr::vector<components::types::complex_logical_type> no_types(&resource);
+    components::vector::data_chunk_t chunk(&resource, no_types, /*capacity=*/1);
+    chunk.set_cardinality(0);
+    REQUIRE(chunk.size() == 0);
+    REQUIRE(chunk.column_count() == 0);
+
+    std::pmr::vector<size_t> left_path(&resource);
+    left_path.push_back(9);
+    std::pmr::vector<size_t> right_path(&resource);
+    right_path.push_back(11);
+
+    REQUIRE(chunk.at(left_path) == nullptr);
+    REQUIRE(chunk.at(right_path) == nullptr);
+}
+
+TEST_CASE("components::vector::vector: a UNION vector is well formed, nested UNION members included") {
+    using namespace components;
+    auto resource = core::pmr::otterbrix_resource();
+
+    SECTION("UNION whose member type is itself a UNION") {
+        std::pmr::vector<types::complex_logical_type> inner_types(&resource);
+        inner_types.emplace_back(types::logical_type::BIGINT);
+        auto inner = types::complex_logical_type::create_union(inner_types);
+
+        std::pmr::vector<types::complex_logical_type> member_types(&resource);
+        member_types.emplace_back(types::logical_type::BIGINT);
+        member_types.emplace_back(inner);
+
+        vector::vector_t u(&resource, types::complex_logical_type::create_union(member_types), 2);
+        REQUIRE(u.type().type() == types::logical_type::UNION);
+        REQUIRE(u.entries().size() == 3); // the tag slot plus one per member type
+        u.entries()[0]->set_value(0, uint8_t{0});
+        u.entries()[1]->set_value(0, int64_t{7});
+        REQUIRE_FALSE(u.is_null(0));
+        REQUIRE(u.entries()[1]->get_value<int64_t>(0) == 7);
+        REQUIRE(u.entries()[2]->type().type() == types::logical_type::UNION);
+        REQUIRE(u.entries()[2]->entries().size() == 2);
+    }
+}
+
+TEST_CASE("components::vector::make_null: an ARRAY NULL row, whatever its element type or size") {
+    using namespace components;
+    auto resource = core::pmr::otterbrix_resource();
+
+    SECTION("ARRAY(NA, 0)") {
+        const auto type =
+            types::complex_logical_type::create_array(types::complex_logical_type{types::logical_type::NA}, 0);
+        auto null_array = vector::make_null(&resource, type);
+        REQUIRE(null_array.is_null(0));
+        auto copy = vector::make_constant_copy(&resource, null_array, 0);
+        REQUIRE(copy.type() == type);
+        REQUIRE(copy.is_null(0));
+        copy.flatten(2);
+        REQUIRE(copy.is_null(1));
+    }
+
+    SECTION("ARRAY(INTEGER, 3)") {
+        const auto type =
+            types::complex_logical_type::create_array(types::complex_logical_type{types::logical_type::INTEGER}, 3);
+        auto null_array = vector::make_null(&resource, type);
+        REQUIRE(null_array.is_null(0));
+        auto copy = vector::make_constant_copy(&resource, null_array, 0);
+        REQUIRE(copy.type() == type);
+        REQUIRE(copy.is_null(0));
+        copy.flatten(2);
+        REQUIRE(copy.is_null(1));
     }
 }

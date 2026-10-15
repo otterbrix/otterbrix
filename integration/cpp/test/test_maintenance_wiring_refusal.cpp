@@ -4,6 +4,7 @@
 // test_variant_e3_differential.cpp pins its empty-index sync as success.
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/vector/vector_builders.hpp>
 
 #include <components/context/context.hpp>
 #include <components/expressions/key.hpp>
@@ -11,7 +12,6 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_drop_index.hpp>
 #include <components/physical_plan/operators/scan/index_scan.hpp>
-#include <components/types/logical_value.hpp>
 
 #include <cstdint>
 #include <memory_resource>
@@ -57,20 +57,22 @@ TEST_CASE("integration::cpp::maintenance_wiring::index_scan_without_index_servic
     auto* res = std::pmr::new_delete_resource();
 
     components::expressions::key_t key{res, "count"};
-    components::types::logical_value_t value{res, std::int64_t{42}};
+    lp::storage_parameters params{res};
+    const auto key_parameter =
+        params.add(components::vector::make_scalar(res, std::int64_t{42}), components::vector::parameter_kind::literal);
     ops::index_scan op{res,
                        log_t{},
                        some_table_oid,
                        key,
-                       value,
+                       key_parameter,
                        components::expressions::compare_type::eq,
                        lp::index_type::no_valid,
-                       lp::limit_t::unlimit(),
+                       lp::row_cap_t::uncapped(),
                        {},
                        // No chunk position: this scan never reaches a fetch to recheck.
                        -1};
 
-    components::pipeline::context_t ctx{lp::storage_parameters{res},
+    components::pipeline::context_t ctx{std::move(params),
                                         components::pipeline::no_mailbox(),
                                         components::pipeline::no_mailbox(),
                                         components::pipeline::no_mailbox()};

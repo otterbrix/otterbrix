@@ -63,7 +63,7 @@ TEST_CASE("create_plan: aggregate with pushdown group child lowers to merge over
 
     auto node = build_agg(&resource, /*pushdown=*/true);
     auto plan_planned =
-        services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
+        services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::all(), nullptr);
     REQUIRE_FALSE(plan_planned.has_error());
     auto plan = plan_planned.value();
 
@@ -86,7 +86,7 @@ TEST_CASE("create_plan: aggregate WITHOUT pushdown lowers to the normal aggregat
 
     auto node = build_agg(&resource, /*pushdown=*/false);
     auto plan_planned =
-        services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
+        services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::all(), nullptr);
     REQUIRE_FALSE(plan_planned.has_error());
     auto plan = plan_planned.value();
 
@@ -131,7 +131,7 @@ TEST_CASE("create_plan: pushdown stamp over an extension source child does not l
                                       std::pmr::vector<components::types::complex_logical_type>{&resource},
                                       &host_source_operator)});
     auto plan_planned =
-        services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::unlimit(), nullptr);
+        services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::all(), nullptr);
     REQUIRE_FALSE(plan_planned.has_error());
     auto plan = plan_planned.value();
 

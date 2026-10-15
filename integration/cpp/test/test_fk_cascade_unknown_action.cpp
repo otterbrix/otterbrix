@@ -27,7 +27,9 @@ namespace {
         std::vector<int64_t> out;
         out.reserve(cur->size());
         for (std::size_t row = 0; row < cur->size(); ++row) {
-            out.push_back(cur->value(col, row).value<int64_t>());
+            auto cell0 = cur->get<int64_t>(col, row);
+            REQUIRE_FALSE(cell0.has_error());
+            out.push_back(cell0.value());
         }
         return out;
     }

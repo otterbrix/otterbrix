@@ -3,11 +3,12 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <integration/cpp/otterbrix.hpp>
 
 #include <util/util.hpp>
 
-#include <stdexcept>
+#include <cassert>
 #include <string>
 
 using namespace components;
@@ -23,7 +24,7 @@ namespace otterbrix {
 
     void expression_factory_t::set_null_space() { space = nullptr; }
 
-    expression_wrapper_t expression_factory_t::make_constant(components::types::logical_value_t&& value) {
+    expression_wrapper_t expression_factory_t::make_constant(components::vector::vector_t&& value) {
         return expression_wrapper_t(add_value(std::move(value)));
     }
 
@@ -85,7 +86,7 @@ namespace otterbrix {
         // But the avg aggregate kernel truncates back to the column type when the input is
         // integral (sum/count are the same integral type), so multiply by 1.0 to promote to DOUBLE.
         if (function_name == "avg") {
-            expression_wrapper_t one = make_constant(types::logical_value_t(resource, 1.0));
+            expression_wrapper_t one = make_constant(components::vector::make_scalar(resource, 1.0));
             auto scaled = scalar_binary_expression(scalar_type::multiply, expr, std::move(one));
             if (scaled.has_error()) {
                 return scaled.error();
@@ -238,63 +239,27 @@ namespace otterbrix {
             return expr.expression()->to_string();
         }
         // parameter
-        const auto& value = this->values.at(expr.parameter());
-        return util::logical_value_to_string(value);
+        return util::vector_to_string(this->values.at(expr.parameter()));
     }
 
-    core::parameter_id_t expression_factory_t::add_value(components::types::logical_value_t&& value) {
-        auto param = core::parameter_id_t{static_cast<uint16_t>(counter)};
+    core::parameter_id_t expression_factory_t::add_value(components::vector::vector_t&& value) {
+        auto param = core::parameter_id_t{static_cast<uint32_t>(counter)};
         counter++;
-        values.emplace(param, value);
+        values.emplace(param, std::move(value));
         return param;
     }
 
     components::logical_plan::parameter_node_ptr expression_factory_t::get_params() {
-        auto params = logical_plan::make_parameter_node(space->dispatcher()->resource());
-        for (const auto& param : values) {
-            switch (param.second.type().to_physical_type()) {
-                case components::types::physical_type::BOOL:
-                    params->add_parameter(param.first, param.second.value<bool>());
-                    break;
-                case components::types::physical_type::UINT8:
-                    params->add_parameter(param.first, param.second.value<uint8_t>());
-                    break;
-                case components::types::physical_type::INT8:
-                    params->add_parameter(param.first, param.second.value<int8_t>());
-                    break;
-                case components::types::physical_type::UINT16:
-                    params->add_parameter(param.first, param.second.value<uint16_t>());
-                    break;
-                case components::types::physical_type::INT16:
-                    params->add_parameter(param.first, param.second.value<int16_t>());
-                    break;
-                case components::types::physical_type::UINT32:
-                    params->add_parameter(param.first, param.second.value<uint32_t>());
-                    break;
-                case components::types::physical_type::INT32:
-                    params->add_parameter(param.first, param.second.value<int32_t>());
-                    break;
-                case components::types::physical_type::UINT64:
-                    params->add_parameter(param.first, param.second.value<uint64_t>());
-                    break;
-                case components::types::physical_type::INT64:
-                    params->add_parameter(param.first, param.second.value<int64_t>());
-                    break;
-                case components::types::physical_type::UINT128:
-                    params->add_parameter(param.first, param.second.value<int64_t>());
-                    break;
-                case components::types::physical_type::FLOAT:
-                    params->add_parameter(param.first, param.second.value<float>());
-                    break;
-                case components::types::physical_type::DOUBLE:
-                    params->add_parameter(param.first, param.second.value<double>());
-                    break;
-                case components::types::physical_type::STRING:
-                    params->add_parameter(param.first, std::string(param.second.value<std::string_view>()));
-                    break;
-                default:
-                    throw std::runtime_error("Couldn\'t convert logical value to document value");
-            }
+        auto* resource = space->dispatcher()->resource();
+        auto params = logical_plan::make_parameter_node(resource);
+        // add_value hands out ids 0..counter-1, and the storage hands out the next id too: ascending order
+        // is what keeps the two numberings the same.
+        for (size_t index = 0; index < counter; ++index) {
+            const auto expected = core::parameter_id_t{static_cast<uint32_t>(index)};
+            [[maybe_unused]] const auto id = params->add_parameter(
+                components::vector::make_constant_copy(resource, values.at(expected)),
+                components::vector::parameter_kind::literal);
+            assert(id == expected);
         }
         return params;
     }

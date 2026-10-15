@@ -2,30 +2,78 @@
 
 #include "node.hpp"
 
+#include <core/result_wrapper.hpp>
+
+#include <cstdint>
+#include <limits>
+#include <optional>
+
 namespace components::logical_plan {
 
-    class limit_t {
-        static constexpr int64_t unlimit_ = -1;
-
+    // How many rows a source or a window may take. The physical form of a limit: it is only ever built from a
+    // limit_t::read_cap(), which has refused nothing yet, so it holds no invalid state. The one place that speaks
+    // the disk protocol's "-1 = no cap" is to_disk().
+    class row_cap_t {
     public:
-        limit_t() = default;
-        explicit limit_t(int64_t limit, int64_t offset = 0);
+        row_cap_t() = default;
+        explicit row_cap_t(uint64_t rows)
+            : rows_(rows) {}
 
-        static limit_t unlimit();
-        static limit_t limit_one();
+        static row_cap_t uncapped() { return {}; }
 
-        int64_t limit() const;
-        int64_t offset() const;
-        bool check(int64_t count) const;
-        bool is_skipping(int64_t count) const;
-        // Row count a cardinality-preserving source must produce so an operator_limit
-        // above it can still window [offset, offset+limit): unlimit when unlimited,
-        // else limit_+offset_ SATURATING to INT64_MAX on overflow (not a plain add).
-        // Single home for the limit+offset formula.
-        int64_t head_cap() const;
+        bool is_capped() const { return rows_ != std::numeric_limits<uint64_t>::max(); }
+        // May the row that comes after `seen` rows be taken?
+        bool admits(uint64_t seen) const { return seen < rows_; }
+        uint64_t rows() const { return rows_; }
+
+        int64_t to_disk() const {
+            if (!is_capped()) {
+                return -1;
+            }
+            return rows_ > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())
+                       ? std::numeric_limits<int64_t>::max()
+                       : static_cast<int64_t>(rows_);
+        }
 
     private:
-        int64_t limit_ = unlimit_;
+        uint64_t rows_ = std::numeric_limits<uint64_t>::max();
+    };
+
+    // LIMIT/OFFSET as written, NOT validated: PostgreSQL checks the values when the Limit node starts to run
+    // (nodeLimit.c recompute_limits), so a negative count or offset lives in the plan until operator_limit refuses it.
+    // No count is LIMIT ALL / LIMIT NULL.
+    class limit_t {
+    public:
+        limit_t() = default;
+        explicit limit_t(int64_t count, int64_t offset = 0)
+            : count_(count)
+            , offset_(offset) {}
+
+        static limit_t all() { return {}; }
+        static limit_t all_from(int64_t offset) {
+            limit_t limit;
+            limit.offset_ = offset;
+            return limit;
+        }
+        static limit_t limit_one() { return limit_t(1); }
+
+        bool has_count() const { return count_.has_value(); }
+        int64_t count() const;
+        int64_t offset() const { return offset_; }
+
+        // A window that changes nothing needs no Limit node (PostgreSQL limit_needed). A negative one is a window:
+        // the node has to run to refuse it.
+        bool is_effective() const { return has_count() || offset_ != 0; }
+
+        // OFFSET is checked first, as nodeLimit.c does. The texts are PostgreSQL's.
+        core::error_t validate(std::pmr::memory_resource* resource) const;
+
+        // What a source has to produce for the window [offset, offset + count) to be filled. A window that
+        // validate() would refuse caps nothing.
+        row_cap_t read_cap() const;
+
+    private:
+        std::optional<int64_t> count_;
         int64_t offset_ = 0;
     };
 

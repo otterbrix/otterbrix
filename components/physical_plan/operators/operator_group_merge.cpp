@@ -1,7 +1,5 @@
 #include "operator_group_merge.hpp"
 
-#include <components/types/logical_value.hpp>
-
 namespace components::operators {
 
     operator_group_merge_t::operator_group_merge_t(std::pmr::memory_resource* resource,
@@ -38,8 +36,12 @@ namespace components::operators {
             // Scalar aggregate: no key columns, so column j pairs with aggs_[j].
             const bool is_count = j < aggs_.size() && aggs_[j].second == "count";
             if (is_count) {
-                // COUNT over zero rows is 0 (a zero-initialized value of the column type).
-                row.data[j].set_value(0, types::logical_value_t(resource_, output_types_[j]));
+                if (output_types_[j].type() != types::logical_type::UBIGINT) {
+                    return core::error_t(
+                        core::error_code_t::physical_plan_error,
+                        std::pmr::string{"group_merge: COUNT over no rows needs a UBIGINT column", resource_});
+                }
+                row.data[j].set_value(0, uint64_t{0});
             } else {
                 row.data[j].set_null(0, true);
             }

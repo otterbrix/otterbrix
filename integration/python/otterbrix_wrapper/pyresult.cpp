@@ -66,11 +66,11 @@ namespace otterbrix {
         if (!has_data) {
             return py::none();
         }
+        const auto location = util::locate_row(*result, static_cast<uint64_t>(result->current_index()));
+        const auto& chunk_columns = result->chunks()[location.chunk].data;
         py::tuple res(columns.size());
         for (idx_t col_idx = 0; col_idx < columns.size(); col_idx++) {
-            auto val = result->value(col_idx);
-            const auto& type = columns[col_idx].type();
-            res[col_idx] = util::logical_value_to_python(val, type);
+            res[col_idx] = util::cell_to_python(chunk_columns[col_idx], location.row, columns[col_idx].type());
         }
         return res;
     }

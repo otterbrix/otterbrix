@@ -38,9 +38,15 @@ TEST_CASE("integration::cpp::test_returning::insert") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->column_count() == 3);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->value(1, 0).value<std::string_view>() == "Alice");
-        REQUIRE(cur->value(2, 0).value<int64_t>() == 7);
+        auto cell0 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == 1);
+        auto cell1 = cur->get<std::string_view>(1, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == "Alice");
+        auto cell2 = cur->get<int64_t>(2, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == 7);
     }
 
     INFO("INSERT ... RETURNING column list, multiple rows");
@@ -52,10 +58,18 @@ TEST_CASE("integration::cpp::test_returning::insert") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         REQUIRE(cur->column_count() == 2);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 20);
-        REQUIRE(cur->value(0, 1).value<int64_t>() == 3);
-        REQUIRE(cur->value(1, 1).value<int64_t>() == 30);
+        auto cell3 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == 2);
+        auto cell4 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == 20);
+        auto cell5 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == 3);
+        auto cell6 = cur->get<int64_t>(1, 1);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == 30);
     }
 
     INFO("INSERT ... RETURNING arithmetic with alias");
@@ -67,7 +81,9 @@ TEST_CASE("integration::cpp::test_returning::insert") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->column_count() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 20);
+        auto cell7 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell7.has_error());
+        REQUIRE(cell7.value() == 20);
     }
 
     INFO("INSERT without RETURNING still reports affected-row count");
@@ -103,8 +119,12 @@ TEST_CASE("integration::cpp::test_returning::update") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->column_count() == 2);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 15);
+        auto cell8 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell8.has_error());
+        REQUIRE(cell8.value() == 1);
+        auto cell9 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell9.has_error());
+        REQUIRE(cell9.value() == 15);
     }
 
     INFO("UPDATE ... RETURNING * over multiple rows");
@@ -116,8 +136,12 @@ TEST_CASE("integration::cpp::test_returning::update") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         REQUIRE(cur->column_count() == 3);
-        REQUIRE(cur->value(2, 0).value<int64_t>() == 100);
-        REQUIRE(cur->value(2, 1).value<int64_t>() == 100);
+        auto cell10 = cur->get<int64_t>(2, 0);
+        REQUIRE_FALSE(cell10.has_error());
+        REQUIRE(cell10.value() == 100);
+        auto cell11 = cur->get<int64_t>(2, 1);
+        REQUIRE_FALSE(cell11.has_error());
+        REQUIRE(cell11.value() == 100);
     }
 
     INFO("UPDATE ... RETURNING with no matching rows yields no rows");
@@ -152,8 +176,12 @@ TEST_CASE("integration::cpp::test_returning::delete") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->column_count() == 2);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
-        REQUIRE(cur->value(1, 0).value<std::string_view>() == "Bob");
+        auto cell12 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell12.has_error());
+        REQUIRE(cell12.value() == 2);
+        auto cell13 = cur->get<std::string_view>(1, 0);
+        REQUIRE_FALSE(cell13.has_error());
+        REQUIRE(cell13.value() == "Bob");
     }
 
     INFO("DELETE ... RETURNING * over multiple rows");
@@ -218,19 +246,33 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
             REQUIRE(cur->column_count() == 3);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 10);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 100);
-            REQUIRE(cur->value(2, 0).value<std::string_view>() == "Alice");
-            REQUIRE(cur->value(0, 1).value<int64_t>() == 11);
-            REQUIRE(cur->value(1, 1).value<int64_t>() == 200);
-            REQUIRE(cur->value(2, 1).value<std::string_view>() == "Bob");
+            auto cell14 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell14.has_error());
+            REQUIRE(cell14.value() == 10);
+            auto cell15 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell15.has_error());
+            REQUIRE(cell15.value() == 100);
+            auto cell16 = cur->get<std::string_view>(2, 0);
+            REQUIRE_FALSE(cell16.has_error());
+            REQUIRE(cell16.value() == "Alice");
+            auto cell17 = cur->get<int64_t>(0, 1);
+            REQUIRE_FALSE(cell17.has_error());
+            REQUIRE(cell17.value() == 11);
+            auto cell18 = cur->get<int64_t>(1, 1);
+            REQUIRE_FALSE(cell18.has_error());
+            REQUIRE(cell18.value() == 200);
+            auto cell19 = cur->get<std::string_view>(2, 1);
+            REQUIRE_FALSE(cell19.has_error());
+            REQUIRE(cell19.value() == "Bob");
         }
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.Orders;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 12);
+            auto cell20 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell20.has_error());
+            REQUIRE(cell20.value() == 12);
         }
     }
 
@@ -254,7 +296,9 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
                                                "RETURNING Orders.id;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 70);
+            auto cell21 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell21.has_error());
+            REQUIRE(cell21.value() == 70);
         }
     }
 
@@ -274,9 +318,15 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->column_count() == 3);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 13);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 1);
-            REQUIRE(cur->value(2, 0).value<std::string_view>() == "Alice");
+            auto cell22 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell22.has_error());
+            REQUIRE(cell22.value() == 13);
+            auto cell23 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell23.has_error());
+            REQUIRE(cell23.value() == 1);
+            auto cell24 = cur->get<std::string_view>(2, 0);
+            REQUIRE_FALSE(cell24.has_error());
+            REQUIRE(cell24.value() == "Alice");
         }
     }
 }
@@ -347,8 +397,12 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
             auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.Orders ORDER BY id;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 11);
-            REQUIRE(cur->value(0, 1).value<int64_t>() == 12);
+            auto cell25 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell25.has_error());
+            REQUIRE(cell25.value() == 11);
+            auto cell26 = cur->get<int64_t>(0, 1);
+            REQUIRE_FALSE(cell26.has_error());
+            REQUIRE(cell26.value() == 12);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -406,12 +460,24 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         REQUIRE(cur->column_count() == 3);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 10);
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 101);
-        REQUIRE(cur->value(2, 0).value<std::string_view>() == "Alice");
-        REQUIRE(cur->value(0, 1).value<int64_t>() == 11);
-        REQUIRE(cur->value(1, 1).value<int64_t>() == 201);
-        REQUIRE(cur->value(2, 1).value<std::string_view>() == "Bob");
+        auto cell27 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell27.has_error());
+        REQUIRE(cell27.value() == 10);
+        auto cell28 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell28.has_error());
+        REQUIRE(cell28.value() == 101);
+        auto cell29 = cur->get<std::string_view>(2, 0);
+        REQUIRE_FALSE(cell29.has_error());
+        REQUIRE(cell29.value() == "Alice");
+        auto cell30 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell30.has_error());
+        REQUIRE(cell30.value() == 11);
+        auto cell31 = cur->get<int64_t>(1, 1);
+        REQUIRE_FALSE(cell31.has_error());
+        REQUIRE(cell31.value() == 201);
+        auto cell32 = cur->get<std::string_view>(2, 1);
+        REQUIRE_FALSE(cell32.has_error());
+        REQUIRE(cell32.value() == "Bob");
     }
 
     INFO("a target row matching multiple FROM rows is updated and returned once");
@@ -435,8 +501,12 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
                                                "RETURNING Orders.id, Orders.total;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 50);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 501);
+            auto cell33 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell33.has_error());
+            REQUIRE(cell33.value() == 50);
+            auto cell34 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell34.has_error());
+            REQUIRE(cell34.value() == 501);
         }
     }
 
@@ -451,9 +521,15 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(cur->column_count() == 3);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 11);
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 2);
-        REQUIRE(cur->value(2, 0).value<std::string_view>() == "Bob");
+        auto cell35 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell35.has_error());
+        REQUIRE(cell35.value() == 11);
+        auto cell36 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell36.has_error());
+        REQUIRE(cell36.value() == 2);
+        auto cell37 = cur->get<std::string_view>(2, 0);
+        REQUIRE_FALSE(cell37.has_error());
+        REQUIRE(cell37.value() == "Bob");
     }
 }
 
@@ -492,9 +568,15 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
             for (std::size_t row = 0; row < cur->size(); ++row) {
-                auto id = cur->value(0, row).value<int64_t>();
-                auto name = std::string(cur->value(1, row).value<std::string_view>());
-                auto qty = cur->value(2, row).value<int64_t>();
+                auto cell38 = cur->get<int64_t>(0, row);
+                REQUIRE_FALSE(cell38.has_error());
+                auto id = cell38.value();
+                auto cell39 = cur->get<std::string_view>(1, row);
+                REQUIRE_FALSE(cell39.has_error());
+                auto name = std::string(cell39.value());
+                auto cell40 = cur->get<int64_t>(2, row);
+                REQUIRE_FALSE(cell40.has_error());
+                auto qty = cell40.value();
                 ins += "(" + std::to_string(id) + ", '" + std::string(name) + "', " + std::to_string(qty) + ")";
                 ins += (row + 1 < cur->size()) ? "," : ";";
             }
@@ -516,7 +598,9 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
             auto cur = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.Source;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
+            auto cell41 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell41.has_error());
+            REQUIRE(cell41.value() == 3);
         }
     }
 
@@ -530,8 +614,12 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
                                                "WHERE id = 3 RETURNING id, qty;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
-            returned_qty = cur->value(1, 0).value<int64_t>();
+            auto cell42 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell42.has_error());
+            REQUIRE(cell42.value() == 3);
+            auto cell43 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell43.has_error());
+            returned_qty = cell43.value();
             REQUIRE(returned_qty == 130);
         }
         {
@@ -540,7 +628,9 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
             auto cur = dispatcher->execute_sql(session, "SELECT qty FROM TestDatabase.Source WHERE id = 3;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == returned_qty);
+            auto cell44 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell44.has_error());
+            REQUIRE(cell44.value() == returned_qty);
         }
     }
 
@@ -554,7 +644,9 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
                                                "(42, 'Zoe', 5) RETURNING id;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            new_id = cur->value(0, 0).value<int64_t>();
+            auto cell45 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell45.has_error());
+            new_id = cell45.value();
             REQUIRE(new_id == 42);
         }
         {
@@ -564,7 +656,9 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
                                                    std::to_string(new_id) + ") SELECT name FROM recent;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<std::string_view>() == "Zoe");
+            auto cell46 = cur->get<std::string_view>(0, 0);
+            REQUIRE_FALSE(cell46.has_error());
+            REQUIRE(cell46.value() == "Zoe");
         }
     }
 }
@@ -666,27 +760,45 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
                                                "RETURNING Orders.id, Orders.total;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 13);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 1130);
+            auto cell47 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell47.has_error());
+            REQUIRE(cell47.value() == 13);
+            auto cell48 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell48.has_error());
+            REQUIRE(cell48.value() == 1130);
         }
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT id, total FROM TestDatabase.Orders ORDER BY id;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 3);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 11);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 110);
-            REQUIRE(cur->value(0, 1).value<int64_t>() == 12);
-            REQUIRE(cur->value(1, 1).value<int64_t>() == 120);
-            REQUIRE(cur->value(0, 2).value<int64_t>() == 13);
-            REQUIRE(cur->value(1, 2).value<int64_t>() == 1130);
+            auto cell49 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell49.has_error());
+            REQUIRE(cell49.value() == 11);
+            auto cell50 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell50.has_error());
+            REQUIRE(cell50.value() == 110);
+            auto cell51 = cur->get<int64_t>(0, 1);
+            REQUIRE_FALSE(cell51.has_error());
+            REQUIRE(cell51.value() == 12);
+            auto cell52 = cur->get<int64_t>(1, 1);
+            REQUIRE_FALSE(cell52.has_error());
+            REQUIRE(cell52.value() == 120);
+            auto cell53 = cur->get<int64_t>(0, 2);
+            REQUIRE_FALSE(cell53.has_error());
+            REQUIRE(cell53.value() == 13);
+            auto cell54 = cur->get<int64_t>(1, 2);
+            REQUIRE_FALSE(cell54.has_error());
+            REQUIRE(cell54.value() == 1130);
         }
         {
             auto session = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(session, "SELECT total FROM TestDatabase.Orders WHERE customer_id = 7;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 1130);
+            auto cell55 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell55.has_error());
+            REQUIRE(cell55.value() == 1130);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -750,7 +862,9 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
         auto cur = dispatcher->execute_sql(session, "SELECT total FROM TestDatabase.Orders WHERE id = 1000;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1001);
+        auto cell56 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell56.has_error());
+        REQUIRE(cell56.value() == 1001);
     }
 
     INFO("DELETE ... USING streams the target scan across batches; all rows deleted once");
@@ -799,7 +913,9 @@ TEST_CASE("integration::cpp::test_returning::insert_returning_error_reverts_appe
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS c FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
+        auto cell57 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell57.has_error());
+        REQUIRE(cell57.value() == 0);
     }
 
     INFO("the table stays fully usable after the failed statement");
@@ -844,7 +960,9 @@ TEST_CASE("integration::cpp::test_returning::update_returning_error_leaves_no_wr
         auto cur = dispatcher->execute_sql(session, "SELECT qty FROM TestDatabase.TestCollection WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 7);
+        auto cell58 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell58.has_error());
+        REQUIRE(cell58.value() == 7);
     }
 
     INFO("a subsequent valid UPDATE ... RETURNING still works");
@@ -855,6 +973,8 @@ TEST_CASE("integration::cpp::test_returning::update_returning_error_leaves_no_wr
                                            "RETURNING qty;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 9);
+        auto cell59 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell59.has_error());
+        REQUIRE(cell59.value() == 9);
     }
 }

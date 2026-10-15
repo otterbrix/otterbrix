@@ -280,7 +280,9 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_registration_lef
     INFO("call after re-registration: " << (called->is_error() ? called->get_error().what.c_str() : "<ok>"));
     REQUIRE(called->is_success());
     REQUIRE(called->size() == 3);
-    CHECK(called->value(0, 0).value<int64_t>() == 2);
+    auto cell0 = called->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    CHECK(cell0.value() == 2);
 }
 
 TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_seeded_builtin_row_is_not_taken_for_a_leftover") {

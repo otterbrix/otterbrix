@@ -9,9 +9,8 @@
 //
 // Any arithmetic operation with a NULL operand yields NULL: `NULL + 1` is NULL, not 1;
 // `5 / NULL` is NULL, not a division-by-zero trap. Two independent engines evaluate
-// arithmetic and both must agree:
-//   - the scalar logical_value_t path (post-aggregates, CASE, constant folding),
-//   - the vectorized components/vector/arithmetic.cpp path (SELECT list, UPDATE SET).
+// arithmetic and both must agree: the scalar path (post-aggregates, CASE, constant folding)
+// and the vectorized path (SELECT list, UPDATE SET).
 //
 // Before the fix, the scalar op<> template substituted a zero for the NULL operand — so
 // `NULL + 1` was 1 and `5 / NULL` divided by zero (a SIGFPE on integer types) — and the
@@ -47,8 +46,15 @@ namespace {
         REQUIRE(c);
         REQUIRE(c->is_success());
         for (uint64_t r = 0; r < c->size(); ++r) {
-            auto v = c->value(col, r);
-            out.push_back(v.is_null() ? opt{} : opt{v.template value<int64_t>()});
+            auto cell0 = c->is_null(col, r);
+            REQUIRE_FALSE(cell0.has_error());
+            if (cell0.value()) {
+                out.push_back(opt{});
+            } else {
+                auto cell0v = c->template get<int64_t>(col, r);
+                REQUIRE_FALSE(cell0v.has_error());
+                out.push_back(opt{cell0v.value()});
+            }
         }
         return out;
     }

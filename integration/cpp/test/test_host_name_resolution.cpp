@@ -21,6 +21,7 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <services/collection/context_storage.hpp>
 
 #include <algorithm>
@@ -186,13 +187,13 @@ namespace {
                     if (columns[col].type() == types::logical_type::STRING_LITERAL) {
                         chunk.set_value(col,
                                         row,
-                                        types::logical_value_t(resource(), "s" + std::to_string(rows[row][col])));
+                                        std::string_view{"s" + std::to_string(rows[row][col])});
                     } else if (columns[col].type() == types::logical_type::INTEGER) {
                         chunk.set_value(col,
                                         row,
-                                        types::logical_value_t(resource(), static_cast<int32_t>(rows[row][col])));
+                                        static_cast<int32_t>(rows[row][col]));
                     } else {
-                        chunk.set_value(col, row, types::logical_value_t(resource(), rows[row][col]));
+                        chunk.set_value(col, row, rows[row][col]);
                     }
                 }
             }
@@ -224,8 +225,7 @@ namespace {
     std::vector<int64_t> int_row(const vector::data_chunk_t& chunk, std::uint64_t row) {
         std::vector<int64_t> values;
         for (std::uint64_t col = 0; col < chunk.column_count(); ++col) {
-            const auto cell = chunk.value(col, row);
-            values.push_back(cell.value<int64_t>());
+            values.push_back(chunk.get_value<int64_t>(col, row));
         }
         return values;
     }
@@ -264,8 +264,7 @@ namespace {
                 std::vector<int64_t> values;
                 for (std::uint64_t col = 0; col < input.column_count(); ++col) {
                     // NULL in an omitted column reaches the backend as -1.
-                    const auto cell = input.value(col, row);
-                    values.push_back(cell.is_null() ? -1 : cell.value<int64_t>());
+                    values.push_back(input.data[col].is_null(row) ? -1 : input.data[col].get_value<int64_t>(row));
                 }
                 rows_.push_back(std::move(values));
             }
@@ -435,13 +434,14 @@ namespace {
                 expressions::make_compare_expression(resource,
                                                      expressions::compare_type::eq,
                                                      expressions::key_t{resource, "tbl", expressions::side_t::left},
-                                                     core::parameter_id_t{1});
+                                                     core::parameter_id_t{0});
             agg->append_child(logical_plan::make_node_match(
                 resource,
                 qualified_name_t{core::dbname_t{"otterstax"}, core::relname_t{"remote_columns"}},
                 std::move(expr)));
             auto params = logical_plan::make_parameter_node(resource);
-            params->add_parameter(core::parameter_id_t{1}, types::logical_value_t(resource, qualified(name)));
+            REQUIRE(params->add_parameter(vector::make_scalar(resource, qualified(name)),
+                                          vector::parameter_kind::literal) == core::parameter_id_t{0});
             reads.emplace_back(resource, std::move(agg), std::move(params));
         }
         counters().reads.fetch_add(static_cast<int>(reads.size()));
@@ -465,17 +465,14 @@ namespace {
             for (const auto& chunk : read_results[i]) {
                 // otterstax.remote_columns (tbl TEXT, col TEXT, type TEXT, ord BIGINT)
                 for (std::uint64_t row = 0; row < chunk.size(); ++row) {
-                    const auto col_cell = chunk.value(1, row);
-                    const auto type_cell = chunk.value(2, row);
-                    const auto ord_cell = chunk.value(3, row);
-                    const std::string col{col_cell.value<std::string_view>()};
-                    const std::string type{type_cell.value<std::string_view>()};
+                    const std::string col{chunk.data[1].get_value<std::string_view>(row)};
+                    const std::string type{chunk.data[2].get_value<std::string_view>(row)};
                     named = true;
                     // A row of type NONE names the relation without giving it a column.
                     if (type == "NONE") {
                         continue;
                     }
-                    ordered.emplace_back(ord_cell.value<int64_t>(),
+                    ordered.emplace_back(chunk.data[3].get_value<int64_t>(row),
                                          types::complex_logical_type{type == "TEXT"
                                                                          ? types::logical_type::STRING_LITERAL
                                                                      : type == "INT" ? types::logical_type::INTEGER
@@ -565,7 +562,7 @@ namespace {
             write_log().push_back(std::string{spec_.is_update ? "update " : "delete "} + spec_.name +
                                   (spec_.has_where ? " where column " + std::to_string(spec_.where_column) : "") +
                                   (spec_.is_update ? " set column " + std::to_string(spec_.set_column) : ""));
-            const auto key = spec_.has_where ? ctx->parameters.parameters.at(spec_.where_value).value<int64_t>() : 0;
+            const auto key = spec_.has_where ? ctx->parameters.at(spec_.where_value).get_value<int64_t>(0) : 0;
             auto& remote = backend()[spec_.name];
             for (auto row = remote.begin(); row != remote.end();) {
                 if (spec_.has_where && (*row)[spec_.where_column] != key) {
@@ -574,7 +571,7 @@ namespace {
                 }
                 ++written_;
                 if (spec_.is_update) {
-                    (*row)[spec_.set_column] = ctx->parameters.parameters.at(spec_.set_value).value<int64_t>();
+                    (*row)[spec_.set_column] = ctx->parameters.at(spec_.set_value).get_value<int64_t>(0);
                     ++row;
                 } else {
                     row = remote.erase(row);
@@ -616,8 +613,7 @@ namespace {
         }
         for (const auto& child : write.children()) {
             if (child->type() == node_type::limit_t) {
-                if (static_cast<const logical_plan::node_limit_t&>(*child).limit().limit() !=
-                    logical_plan::limit_t::unlimit().limit()) {
+                if (static_cast<const logical_plan::node_limit_t&>(*child).limit().is_effective()) {
                     return false;
                 }
                 continue;
@@ -805,11 +801,15 @@ TEST_CASE("integration::cpp::host_names::declared_columns_drive_validation_and_t
     REQUIRE(labels->is_success());
     REQUIRE(labels->size() == 1);
     REQUIRE(labels->chunks().front().data[0].type().type() == types::logical_type::STRING_LITERAL);
-    REQUIRE(labels->value(0, 0).value<std::string_view>() == "s200");
+    auto cell0 = labels->get<std::string_view>(0, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    REQUIRE(cell0.value() == "s200");
 
     auto sums = run(dispatcher, "SELECT id + 1 AS n FROM m2.shop.orders WHERE id = 3;");
     REQUIRE(sums->is_success());
-    REQUIRE(sums->value(0, 0).value<int64_t>() == 4);
+    auto cell1 = sums->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell1.has_error());
+    REQUIRE(cell1.value() == 4);
 }
 
 TEST_CASE("integration::cpp::host_names::count_star_counts_the_storage_rows") {
@@ -818,7 +818,9 @@ TEST_CASE("integration::cpp::host_names::count_star_counts_the_storage_rows") {
     auto counted = run(dispatcher, "SELECT count(*) AS c FROM m2.shop.orders;");
     REQUIRE(counted->is_success());
     REQUIRE(counted->size() == 1);
-    REQUIRE(counted->value(0, 0).value<int64_t>() == 3);
+    auto cell2 = counted->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell2.has_error());
+    REQUIRE(cell2.value() == 3);
 }
 
 TEST_CASE("integration::cpp::host_names::local_statements_never_reach_the_host") {
@@ -1009,14 +1011,18 @@ TEST_CASE("integration::cpp::host_names::rows_without_columns_are_counted") {
         auto counted = run(dispatcher, "SELECT count(*) AS c FROM m2.shop.marks;");
         REQUIRE(counted->is_success());
         REQUIRE(counted->size() == 1);
-        CHECK(counted->value(0, 0).value<int64_t>() == 3);
+        auto cell3 = counted->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        CHECK(cell3.value() == 3);
     }
     SECTION("an empty batch between two others") {
         batches()["m2.shop.marks"] = {{{}, {}}, {}, {{}}};
         auto counted = run(dispatcher, "SELECT count(*) AS c FROM m2.shop.marks;");
         REQUIRE(counted->is_success());
         REQUIRE(counted->size() == 1);
-        CHECK(counted->value(0, 0).value<int64_t>() == 3);
+        auto cell4 = counted->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        CHECK(cell4.value() == 3);
     }
 }
 
@@ -1032,7 +1038,9 @@ TEST_CASE("integration::cpp::host_names::an_empty_batch_is_not_the_end") {
 
     auto counted = run(dispatcher, "SELECT count(*) AS c FROM m2.shop.orders;");
     REQUIRE(counted->is_success());
-    CHECK(counted->value(0, 0).value<int64_t>() == 3);
+    auto cell5 = counted->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell5.has_error());
+    CHECK(cell5.value() == 3);
 }
 
 // The host is asked about the whole written name, the schema part included, once per statement.
@@ -1156,8 +1164,9 @@ namespace {
         REQUIRE(cursor->is_success());
         std::vector<std::string> lines;
         for (std::size_t row = 0; row < cursor->size(); ++row) {
-            const auto cell = cursor->value(0, row);
-            lines.emplace_back(cell.value<std::string_view>());
+            auto cell6 = cursor->get<std::string_view>(0, row);
+            REQUIRE_FALSE(cell6.has_error());
+            lines.emplace_back(cell6.value());
         }
         return lines;
     }

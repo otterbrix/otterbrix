@@ -1026,7 +1026,7 @@ namespace services::disk {
             uint64_t added_at{0};
             uint64_t dropped_at{components::table::NOT_DELETED_ID};
             // Decoded on resource_, not the scan's local arena, since the value outlives this function.
-            std::optional<components::types::logical_value_t> default_value;
+            std::optional<components::vector::vector_t> default_value;
         };
         std::unordered_map<catalog::oid_t, std::vector<catalog_col_t>> raw_by_relid;
         std::unordered_map<catalog::oid_t, std::vector<components::table::column_definition_t>> result;

@@ -15,7 +15,7 @@ namespace components::expressions {
         class builder_t {
         public:
             builder_t(execution_dag_t* graph,
-                      const types::parameter_map_t& parameters,
+                      const vector::storage_parameters& parameters,
                       const std::pmr::vector<complex_logical_type>& input_types,
                       size_t right_offset)
                 : graph_(graph)
@@ -42,7 +42,7 @@ namespace components::expressions {
             std::pmr::memory_resource* resource() const noexcept { return graph_->resource(); }
 
             execution_dag_t* graph_;
-            const types::parameter_map_t& parameters_;
+            const vector::storage_parameters& parameters_;
             const std::pmr::vector<complex_logical_type>& input_types_;
             size_t right_offset_;
         };
@@ -143,14 +143,8 @@ namespace components::expressions {
             }
             if (std::holds_alternative<core::parameter_id_t>(param)) {
                 auto id = std::get<core::parameter_id_t>(param);
-                auto value = parameters_.find(id);
-                if (value == parameters_.end()) {
-                    return core::error_t(
-                        core::error_code_t::invalid_parameter,
-                        std::pmr::string{"execution graph builder: parameter is not bound", resource()});
-                }
                 auto node = graph_->add_parameter(id);
-                graph_->set_slot_type(graph_->output_slot(node), value->second.type());
+                graph_->set_slot_type(graph_->output_slot(node), parameters_.type(id));
                 return graph_->output_slot(node);
             }
             const auto& nested = std::get<expression_ptr>(param);
@@ -256,15 +250,14 @@ namespace components::expressions {
                     std::pmr::string{"execution graph builder: match was not resolved by validation", resource()});
             }
             const auto flags_id = expression->regex_flags_param();
-            auto flags = parameters_.find(flags_id);
-            if (flags == parameters_.end()) {
+            if (!flags_id.has_value()) {
                 return core::error_t(
                     core::error_code_t::invalid_parameter,
-                    std::pmr::string{"execution graph builder: match flags are not bound", resource()});
+                    std::pmr::string{"execution graph builder: match carries no flags parameter", resource()});
             }
-            auto flags_node = graph_->add_parameter(flags_id);
+            auto flags_node = graph_->add_parameter(*flags_id);
             const auto flags_slot = graph_->output_slot(flags_node);
-            graph_->set_slot_type(flags_slot, flags->second.type());
+            graph_->set_slot_type(flags_slot, parameters_.type(*flags_id));
 
             execution_dag::slot_list_t inputs({subject, pattern, flags_slot}, resource());
             auto node = graph_->add_function(function->get_copy(resource()), inputs, 1);
@@ -291,21 +284,16 @@ namespace components::expressions {
                                                       resource()});
             }
             const auto id = std::get<core::parameter_id_t>(expression->right());
-            const auto bound = parameters_.find(id);
-            if (bound == parameters_.end()) {
-                return core::error_t(
-                    core::error_code_t::invalid_parameter,
-                    std::pmr::string{"execution graph builder: set parameter is not bound", resource()});
-            }
+            const auto& set_type = parameters_.type(id);
             auto left = slot_of(expression->left());
             if (left.has_error()) {
                 return left;
             }
             auto set_node = graph_->add_parameter(id);
             const auto set_slot = graph_->output_slot(set_node);
-            graph_->set_slot_type(set_slot, bound->second.type());
+            graph_->set_slot_type(set_slot, set_type);
 
-            if (bound->second.type().type() == logical_type::NA) {
+            if (set_type.type() == logical_type::NA) {
                 auto node = graph_->add_operator(is_any ? operators::operator_code::is_not_null
                                                         : operators::operator_code::is_null,
                                                  set_slot);
@@ -313,38 +301,48 @@ namespace components::expressions {
                 return graph_->output_slot(node);
             }
 
-            const auto& elements = bound->second.children();
-            if (elements.empty()) {
+            const auto element_count =
+                static_cast<const types::array_logical_type_extension*>(set_type.extension())->size();
+            if (element_count == 0) {
                 return core::error_t(core::error_code_t::invalid_parameter,
                                      std::pmr::string{"execution graph builder: set parameter holds no elements and "
                                                       "is not the empty-set sentinel",
                                                       resource()});
             }
-            const auto element_type = bound->second.type().child_type();
+            const auto element_type = set_type.child_type();
+            // The probe has the type the set is cast to, when it is cast.
+            const bool set_is_cast = expression->set_element_type().type() != logical_type::INVALID;
             if (graph_->slot_type(left.value()).type() == logical_type::NA) {
-                graph_->set_slot_type(left.value(), element_type);
+                graph_->set_slot_type(left.value(), set_is_cast ? expression->set_element_type() : element_type);
             }
 
-            // ANY is an OR over the per-element results, ALL an AND: one fold node over the N of them.
+            if (!is_match) {
+                auto membership = graph_->add_membership(inner,
+                                                         is_any ? execution_dag::membership_node_t::quantifier::any
+                                                                : execution_dag::membership_node_t::quantifier::all,
+                                                         left.value(),
+                                                         set_slot);
+                if (set_is_cast) {
+                    graph_->set_membership_cast(membership,
+                                                expression->set_element_type(),
+                                                expression->set_element_cast());
+                }
+                return graph_->output_slot(membership);
+            }
+
+            // A regex ANY is an OR over the per-element matches, ALL an AND: one fold node over the N of them.
             execution_dag::slot_list_t results(resource());
-            results.reserve(elements.size());
-            for (size_t index = 0; index < elements.size(); index++) {
+            results.reserve(element_count);
+            for (size_t index = 0; index < element_count; index++) {
                 std::pmr::vector<size_t> step({index}, resource());
                 auto element_node = graph_->add_field(set_slot, step);
                 const auto element_slot = graph_->output_slot(element_node);
                 graph_->set_slot_type(element_slot, element_type);
-                if (is_match) {
-                    auto matched = match_slot(expression, left.value(), element_slot);
-                    if (matched.has_error()) {
-                        return matched;
-                    }
-                    results.push_back(matched.value());
-                    continue;
+                auto matched = match_slot(expression, left.value(), element_slot);
+                if (matched.has_error()) {
+                    return matched;
                 }
-                auto compared = graph_->add_operator(inner, left.value(), element_slot);
-                const auto compared_slot = graph_->output_slot(compared);
-                graph_->set_slot_type(compared_slot, complex_logical_type{logical_type::BOOLEAN});
-                results.push_back(compared_slot);
+                results.push_back(matched.value());
             }
             auto fold = graph_->add_blend(is_any ? execution_dag::blend_node_t::blend_kind::logical_or
                                                  : execution_dag::blend_node_t::blend_kind::logical_and,
@@ -582,7 +580,7 @@ namespace components::expressions {
 
     core::result_wrapper_t<execution_dag::slot_id_t>
     build_expression(execution_dag::execution_dag_t* graph,
-                     const types::parameter_map_t& parameters,
+                     const vector::storage_parameters& parameters,
                      const expression_i* expression,
                      const std::pmr::vector<types::complex_logical_type>& input_types,
                      size_t right_offset) {
@@ -598,7 +596,7 @@ namespace components::expressions {
 
     core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
     build_graph(std::pmr::memory_resource* resource,
-                const types::parameter_map_t& parameters,
+                const vector::storage_parameters& parameters,
                 core::span<const expression_i* const> expressions,
                 const std::pmr::vector<types::complex_logical_type>& input_types,
                 size_t right_offset) {
@@ -621,7 +619,7 @@ namespace components::expressions {
 
     core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
     build_graph(std::pmr::memory_resource* resource,
-                const types::parameter_map_t& parameters,
+                const vector::storage_parameters& parameters,
                 core::span<const param_storage> values,
                 const std::pmr::vector<types::complex_logical_type>& input_types,
                 size_t right_offset) {
@@ -647,7 +645,7 @@ namespace components::expressions {
     // values back is the caller's job — the graph only reads.
     core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
     build_update_graph(std::pmr::memory_resource* resource,
-                       const types::parameter_map_t& parameters,
+                       const vector::storage_parameters& parameters,
                        core::span<const expression_i* const> values,
                        const std::pmr::vector<types::complex_logical_type>& input_types,
                        size_t right_offset) {
@@ -718,7 +716,7 @@ namespace components::expressions {
 
     core::result_wrapper_t<std::unique_ptr<execution_dag::execution_dag_t>>
     build_condition_graph(std::pmr::memory_resource* resource,
-                          const types::parameter_map_t& parameters,
+                          const vector::storage_parameters& parameters,
                           const expression_i* expression,
                           const std::pmr::vector<types::complex_logical_type>& input_types,
                           size_t right_offset) {
@@ -726,7 +724,7 @@ namespace components::expressions {
     }
 
     core::result_wrapper_t<vector::data_chunk_t> run_graph(execution_dag::execution_dag_t* graph,
-                                                           const types::parameter_map_t& parameters,
+                                                           const vector::storage_parameters& parameters,
                                                            const vector::data_chunk_t& input,
                                                            const components::graph_execution_context& context) {
         // TODO: parameters could be set only once

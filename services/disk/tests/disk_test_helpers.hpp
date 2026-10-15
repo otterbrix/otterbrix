@@ -480,20 +480,15 @@ namespace disk_test_helpers {
     catalog::oid_t
     test_computed_register(Fx& fx, catalog::oid_t table_oid, const std::string& field_name, catalog::oid_t type_oid) {
         constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
-        components::types::logical_value_t toid_lv(&fx.resource, table_oid);
-        components::types::logical_value_t name_lv(&fx.resource, field_name);
         std::pmr::vector<std::uint64_t> reg_keys{&fx.resource};
         reg_keys.emplace_back(components::catalog::pg_computed_column_col::relid);
         reg_keys.emplace_back(components::catalog::pg_computed_column_col::attname);
-        std::pmr::vector<components::types::logical_value_t> reg_vals{&fx.resource};
-        reg_vals.emplace_back(toid_lv);
-        reg_vals.emplace_back(name_lv);
         auto batches = disk_test_helpers::read_ok(
             fx.invoke(&manager_disk_t::read_chunks_by_key,
                       auto_ctx(),
                       pg_cc,
                       std::move(reg_keys),
-                      services::disk::test_probe::build_key_chunk(&fx.resource, std::move(reg_vals)),
+                      services::disk::test_probe::test_key_chunk(&fx.resource, table_oid, std::string_view{field_name}),
                       std::pmr::vector<std::uint64_t>{&fx.resource}));
 
         std::int64_t max_version = -1;
@@ -502,15 +497,15 @@ namespace disk_test_helpers {
             if (chunk.column_count() < 7)
                 continue;
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.value(5, i).is_null())
+                if (chunk.is_null(5, i))
                     continue;
-                const auto v = chunk.value(5, i).template value<std::int64_t>();
+                const auto v = chunk.data[5].template get_value<std::int64_t>(i);
                 if (v > max_version) {
                     max_version = v;
                     latest_atttypid =
-                        chunk.value(3, i).is_null()
+                        chunk.is_null(3, i)
                             ? catalog::INVALID_OID
-                            : static_cast<catalog::oid_t>(chunk.value(3, i).template value<std::uint32_t>());
+                            : static_cast<catalog::oid_t>(chunk.data[3].template get_value<std::uint32_t>(i));
                 }
             }
         }
@@ -551,20 +546,15 @@ namespace disk_test_helpers {
     template<typename Fx>
     bool test_computed_unregister(Fx& fx, catalog::oid_t table_oid, const std::string& field_name) {
         constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
-        components::types::logical_value_t toid_lv(&fx.resource, table_oid);
-        components::types::logical_value_t name_lv(&fx.resource, field_name);
         std::pmr::vector<std::uint64_t> unreg_keys{&fx.resource};
         unreg_keys.emplace_back(components::catalog::pg_computed_column_col::relid);
         unreg_keys.emplace_back(components::catalog::pg_computed_column_col::attname);
-        std::pmr::vector<components::types::logical_value_t> unreg_vals{&fx.resource};
-        unreg_vals.emplace_back(toid_lv);
-        unreg_vals.emplace_back(name_lv);
         auto batches = disk_test_helpers::read_ok(
             fx.invoke(&manager_disk_t::read_chunks_by_key,
                       auto_ctx(),
                       pg_cc,
                       std::move(unreg_keys),
-                      services::disk::test_probe::build_key_chunk(&fx.resource, std::move(unreg_vals)),
+                      services::disk::test_probe::test_key_chunk(&fx.resource, table_oid, std::string_view{field_name}),
                       std::pmr::vector<std::uint64_t>{&fx.resource}));
 
         std::int64_t max_version = -1;
@@ -575,21 +565,21 @@ namespace disk_test_helpers {
             if (chunk.column_count() < 7)
                 continue;
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.value(5, i).is_null() || chunk.value(6, i).is_null())
+                if (chunk.is_null(5, i) || chunk.is_null(6, i))
                     continue;
-                const auto v = chunk.value(5, i).template value<std::int64_t>();
-                const auto rc = chunk.value(6, i).template value<std::int64_t>();
+                const auto v = chunk.data[5].template get_value<std::int64_t>(i);
+                const auto rc = chunk.data[6].template get_value<std::int64_t>(i);
                 if (rc <= 0)
                     continue;
                 if (v > max_version) {
                     max_version = v;
-                    live_attoid = chunk.value(1, i).is_null()
+                    live_attoid = chunk.is_null(1, i)
                                       ? catalog::INVALID_OID
-                                      : static_cast<catalog::oid_t>(chunk.value(1, i).template value<std::uint32_t>());
+                                      : static_cast<catalog::oid_t>(chunk.data[1].template get_value<std::uint32_t>(i));
                     live_atttypid =
-                        chunk.value(3, i).is_null()
+                        chunk.is_null(3, i)
                             ? catalog::INVALID_OID
-                            : static_cast<catalog::oid_t>(chunk.value(3, i).template value<std::uint32_t>());
+                            : static_cast<catalog::oid_t>(chunk.data[3].template get_value<std::uint32_t>(i));
                     found_live = true;
                 }
             }

@@ -193,19 +193,14 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     REQUIRE(attoid2 == catalog::INVALID_OID);
 
     constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
-    components::types::logical_value_t toid_lv(&fx.resource, table_oid);
-    components::types::logical_value_t name_lv(&fx.resource, std::string("count"));
     std::pmr::vector<std::uint64_t> k1{&fx.resource};
     k1.emplace_back(components::catalog::pg_computed_column_col::relid);
     k1.emplace_back(components::catalog::pg_computed_column_col::attname);
-    std::pmr::vector<components::types::logical_value_t> v1{&fx.resource};
-    v1.emplace_back(toid_lv);
-    v1.emplace_back(name_lv);
     auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
                                                         fx.ctx(),
                                                         pg_cc,
                                                         std::move(k1),
-                                                        test_probe::build_key_chunk(&fx.resource, std::move(v1)),
+                                                        test_probe::test_key_chunk(&fx.resource, table_oid, std::string_view{"count"}),
                                                         std::pmr::vector<std::uint64_t>{&fx.resource}));
     std::uint64_t total = 0;
     for (const auto& c : batches) total += c.size();
@@ -257,19 +252,14 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     REQUIRE(test_computed_unregister(fx, table_oid, "count"));
 
     constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
-    components::types::logical_value_t toid_lv(&fx.resource, table_oid);
-    components::types::logical_value_t name_lv(&fx.resource, std::string("count"));
     std::pmr::vector<std::uint64_t> k2{&fx.resource};
     k2.emplace_back(components::catalog::pg_computed_column_col::relid);
     k2.emplace_back(components::catalog::pg_computed_column_col::attname);
-    std::pmr::vector<components::types::logical_value_t> v2{&fx.resource};
-    v2.emplace_back(toid_lv);
-    v2.emplace_back(name_lv);
     auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
                                                         fx.ctx(),
                                                         pg_cc,
                                                         std::move(k2),
-                                                        test_probe::build_key_chunk(&fx.resource, std::move(v2)),
+                                                        test_probe::test_key_chunk(&fx.resource, table_oid, std::string_view{"count"}),
                                                         std::pmr::vector<std::uint64_t>{&fx.resource}));
     std::uint64_t total = 0;
     for (const auto& c : batches) total += c.size();
@@ -321,16 +311,13 @@ TEST_CASE("services::disk::ddl::computed_field_drop_then_readd") {
     auto attoid_b2 = test_computed_register(fx, table_oid, "b", components::catalog::well_known_oid::string_type);
 
     constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
-    components::types::logical_value_t toid_lv(&fx.resource, table_oid);
     std::pmr::vector<std::uint64_t> k3{&fx.resource};
     k3.emplace_back(components::catalog::pg_computed_column_col::relid);
-    std::pmr::vector<components::types::logical_value_t> v3{&fx.resource};
-    v3.emplace_back(toid_lv);
     auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
                                                         fx.ctx(),
                                                         pg_cc,
                                                         std::move(k3),
-                                                        test_probe::build_key_chunk(&fx.resource, std::move(v3)),
+                                                        test_probe::test_key_chunk(&fx.resource, table_oid),
                                                         std::pmr::vector<std::uint64_t>{&fx.resource}));
     std::uint64_t total_rows = 0;
     for (const auto& c : batches) total_rows += c.size();
@@ -425,16 +412,13 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
     constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
 
     {
-        components::types::logical_value_t toid_lv(&fx.resource, table_oid);
         std::pmr::vector<std::uint64_t> kk{&fx.resource};
         kk.emplace_back(components::catalog::pg_computed_column_col::relid);
-        std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
-        vv.emplace_back(toid_lv);
         auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
                                                             fx.ctx(),
                                                             pg_cc,
                                                             std::move(kk),
-                                                            test_probe::build_key_chunk(&fx.resource, std::move(vv)),
+                                                            test_probe::test_key_chunk(&fx.resource, table_oid),
                                                             std::pmr::vector<std::uint64_t>{&fx.resource}));
         std::uint64_t total = 0;
         for (const auto& c : batches) total += c.size();
@@ -442,16 +426,13 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
     }
 
     {
-        components::types::logical_value_t toid_lv(&fx.resource, table_oid);
         std::pmr::vector<std::uint64_t> kk{&fx.resource};
         kk.emplace_back(components::catalog::pg_computed_column_col::relid);
-        std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
-        vv.emplace_back(toid_lv);
         auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
                                                             fx.ctx(),
                                                             pg_cc,
                                                             std::move(kk),
-                                                            test_probe::build_key_chunk(&fx.resource, std::move(vv)),
+                                                            test_probe::test_key_chunk(&fx.resource, table_oid),
                                                             std::pmr::vector<std::uint64_t>{&fx.resource}));
         std::vector<catalog::oid_t> dead_attoids;
         for (const auto& chunk : batches) {
@@ -474,16 +455,13 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
     }
 
     {
-        components::types::logical_value_t toid_lv(&fx.resource, table_oid);
         std::pmr::vector<std::uint64_t> kk{&fx.resource};
         kk.emplace_back(components::catalog::pg_computed_column_col::relid);
-        std::pmr::vector<components::types::logical_value_t> vv{&fx.resource};
-        vv.emplace_back(toid_lv);
         auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
                                                             fx.ctx(),
                                                             pg_cc,
                                                             std::move(kk),
-                                                            test_probe::build_key_chunk(&fx.resource, std::move(vv)),
+                                                            test_probe::test_key_chunk(&fx.resource, table_oid),
                                                             std::pmr::vector<std::uint64_t>{&fx.resource}));
         std::uint64_t total = 0;
         for (const auto& c : batches) total += c.size();
@@ -509,7 +487,6 @@ TEST_CASE("services::disk::ddl::vacuum_gc_clears_dead_computed_columns") {
 TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_columns") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
-    using components::types::logical_value_t;
     using components::vector::data_chunk_t;
 
     fixture fx;
@@ -564,16 +541,13 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     REQUIRE(test_computed_unregister(fx, table_oid, "b"));
     {
         constexpr catalog::oid_t pg_cc = catalog::well_known_oid::pg_computed_column_table;
-        logical_value_t toid_lv(&fx.resource, table_oid);
         std::pmr::vector<std::uint64_t> kk{&fx.resource};
         kk.emplace_back(components::catalog::pg_computed_column_col::relid);
-        std::pmr::vector<logical_value_t> vv{&fx.resource};
-        vv.emplace_back(toid_lv);
         auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
                                                             fx.ctx(),
                                                             pg_cc,
                                                             std::move(kk),
-                                                            test_probe::build_key_chunk(&fx.resource, std::move(vv)),
+                                                            test_probe::test_key_chunk(&fx.resource, table_oid),
                                                             std::pmr::vector<std::uint64_t>{&fx.resource}));
         std::vector<catalog::oid_t> dead_attoids;
         for (const auto& chunk : batches) {
@@ -642,7 +616,6 @@ TEST_CASE("services::disk::ddl::dynamic_schema_wal_recovery_skip") {
 TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
-    using components::types::logical_value_t;
     using components::vector::data_chunk_t;
 
     fixture fx;
@@ -760,7 +733,6 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
 TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     using components::types::complex_logical_type;
     using components::types::logical_type;
-    using components::types::logical_value_t;
     using components::vector::data_chunk_t;
 
     fixture fx;
@@ -834,14 +806,12 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         }
         std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
         key_cols.emplace_back(0);
-        std::pmr::vector<logical_value_t> vals{&fx.resource};
-        vals.emplace_back(&fx.resource, static_cast<std::int64_t>(i + 1));
         // A dropped storage cannot be read at all: the keyed read reports missing_table instead of an empty result.
         auto dropped_read = fx.invoke(&manager_disk_t::read_chunks_by_key,
                                       fx.ctx(),
                                       targets[i],
                                       std::move(key_cols),
-                                      test_probe::build_key_chunk(&fx.resource, std::move(vals)),
+                                      test_probe::test_key_chunk(&fx.resource, static_cast<std::int64_t>(i + 1)),
                                       std::pmr::vector<std::uint64_t>{&fx.resource});
         REQUIRE(dropped_read.has_error());
         REQUIRE(dropped_read.error().type == core::error_code_t::missing_table);
@@ -852,13 +822,11 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     {
         std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
         key_cols.emplace_back(0);
-        std::pmr::vector<logical_value_t> vals{&fx.resource};
-        vals.emplace_back(&fx.resource, std::int64_t{777});
         auto chunks = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
                                                            fx.ctx(),
                                                            survivor,
                                                            std::move(key_cols),
-                                                           test_probe::build_key_chunk(&fx.resource, std::move(vals)),
+                                                           test_probe::test_key_chunk(&fx.resource, std::int64_t{777}),
                                                            std::pmr::vector<std::uint64_t>{&fx.resource}));
         std::uint64_t total = 0;
         for (const auto& c : chunks) total += c.size();
@@ -982,8 +950,8 @@ TEST_CASE("services::disk::ddl::catalog_append_refuses_when_the_owner_has_no_sto
     CHECK(no_op.value().count == 0);
 }
 
-// The catalog append path's cast runs and its result is the row; no input reaches a failing cast
-// today (atoll answers 0 rather than refusing string->integer), so its output is what gets stored.
+// The catalog append path's cast runs and its result is the row: a DOUBLE cell for the UINTEGER oid
+// column is stored as the UINTEGER it casts to (a dropped cast would store the double's bytes).
 TEST_CASE("services::disk::ddl::catalog_append_stores_the_cast_result_not_the_raw_cell") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nscast");
@@ -995,10 +963,10 @@ TEST_CASE("services::disk::ddl::catalog_append_stores_the_cast_result_not_the_ra
         types.push_back(c.type());
     }
     constexpr catalog::oid_t probe_oid = FIRST_USER_OID + 777;
-    types[0] = components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL};
+    types[0] = components::types::complex_logical_type{components::types::logical_type::DOUBLE};
     components::vector::data_chunk_t row(&fx.resource, types, 1);
     row.set_cardinality(1);
-    row.set_value(0, 0, std::string_view(std::to_string(static_cast<unsigned>(probe_oid))));
+    row.set_value(0, 0, static_cast<double>(probe_oid));
     row.set_value(1, 0, std::string_view("cast_probe"));
     row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
     row.set_value(3, 0, std::string_view("r"));
@@ -1014,6 +982,69 @@ TEST_CASE("services::disk::ddl::catalog_append_stores_the_cast_result_not_the_ra
     auto probe = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("cast_probe"));
     REQUIRE(probe.found);
     CHECK(probe.oid == probe_oid);
+}
+
+// A STRING cell for a numeric catalog column has no cast: the append refuses, no row is stored.
+TEST_CASE("services::disk::ddl::catalog_append_refuses_a_string_cell_for_a_numeric_column") {
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "nsstrcast");
+
+    const auto* def = catalog::find_system_table(catalog::well_known_oid::pg_class_table);
+    REQUIRE(def != nullptr);
+    std::pmr::vector<components::types::complex_logical_type> types(&fx.resource);
+    for (const auto& c : def->columns) {
+        types.push_back(c.type());
+    }
+    constexpr catalog::oid_t probe_oid = FIRST_USER_OID + 778;
+    types[0] = components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL};
+    components::vector::data_chunk_t row(&fx.resource, types, 1);
+    row.set_cardinality(1);
+    row.set_value(0, 0, std::string_view(std::to_string(static_cast<unsigned>(probe_oid))));
+    row.set_value(1, 0, std::string_view("str_cast_probe"));
+    row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
+    row.set_value(3, 0, std::string_view("r"));
+    row.set_value(4, 0, std::string_view("d"));
+
+    auto appended = fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                              fx.ctx(),
+                              catalog::well_known_oid::pg_class_table,
+                              std::move(row));
+    REQUIRE(appended.has_error());
+    CHECK(appended.error().type == core::error_code_t::conversion_failure);
+
+    auto probe = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("str_cast_probe"));
+    CHECK_FALSE(probe.found);
+}
+
+// A numeric cell that does not fit the catalog column is refused, not truncated into another oid.
+TEST_CASE("services::disk::ddl::catalog_append_refuses_a_numeric_cell_that_does_not_fit") {
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "nsrange");
+
+    const auto* def = catalog::find_system_table(catalog::well_known_oid::pg_class_table);
+    REQUIRE(def != nullptr);
+    std::pmr::vector<components::types::complex_logical_type> types(&fx.resource);
+    for (const auto& c : def->columns) {
+        types.push_back(c.type());
+    }
+    types[0] = components::types::complex_logical_type{components::types::logical_type::UBIGINT};
+    components::vector::data_chunk_t row(&fx.resource, types, 1);
+    row.set_cardinality(1);
+    row.set_value(0, 0, (std::uint64_t{1} << 32) + std::uint64_t{FIRST_USER_OID + 779});
+    row.set_value(1, 0, std::string_view("range_probe"));
+    row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
+    row.set_value(3, 0, std::string_view("r"));
+    row.set_value(4, 0, std::string_view("d"));
+
+    auto appended = fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                              fx.ctx(),
+                              catalog::well_known_oid::pg_class_table,
+                              std::move(row));
+    REQUIRE(appended.has_error());
+    CHECK(appended.error().type == core::error_code_t::conversion_failure);
+
+    auto probe = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("range_probe"));
+    CHECK_FALSE(probe.found);
 }
 
 // A replay mutation for a table with no storage must be refused: a miss here isn't "not owned by

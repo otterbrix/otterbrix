@@ -7,6 +7,7 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/vector/vector_builders.hpp>
 
 namespace {
     // A pattern match is a regexp_like() CALL, not a comparison operator — the same shape the SQL
@@ -120,13 +121,14 @@ TEST_CASE("integration::cpp::test_collection") {
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::gt,
                                                                  key{dispatcher->resource(), "count", side_t::left},
-                                                                 id_par{1});
+                                                                 id_par{0});
             plan->append_child(
                 components::logical_plan::make_node_match(dispatcher->resource(),
                                                           qualified_name_t{database_name, collection_name},
                                                           std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), 90));
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), 90),
+                                          components::vector::parameter_kind::literal) == id_par{0});
             auto cur = dispatcher->execute_plan(
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});
@@ -138,13 +140,14 @@ TEST_CASE("integration::cpp::test_collection") {
             auto session = otterbrix::session_id_t();
             auto plan = components::logical_plan::make_node_aggregate(dispatcher->resource(),
                                                                       qualified_name_t{database_name, collection_name});
-            auto expr = regexp_like_call(dispatcher->resource(), "count_str", id_par{1});
+            auto expr = regexp_like_call(dispatcher->resource(), "count_str", id_par{0});
             plan->append_child(
                 components::logical_plan::make_node_match(dispatcher->resource(),
                                                           qualified_name_t{database_name, collection_name},
                                                           std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), "9$"));
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), "9$"),
+                                          components::vector::parameter_kind::literal) == id_par{0});
             auto cur = dispatcher->execute_plan(
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});
@@ -162,15 +165,17 @@ TEST_CASE("integration::cpp::test_collection") {
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::gt,
                                                                  key{dispatcher->resource(), "count", side_t::left},
-                                                                 id_par{1}));
-            expr->append_child(regexp_like_call(dispatcher->resource(), "count_str", id_par{2}));
+                                                                 id_par{0}));
+            expr->append_child(regexp_like_call(dispatcher->resource(), "count_str", id_par{1}));
             plan->append_child(
                 components::logical_plan::make_node_match(dispatcher->resource(),
                                                           qualified_name_t{database_name, collection_name},
                                                           std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), 90));
-            params->add_parameter(id_par{2}, components::types::logical_value_t(dispatcher->resource(), "9$"));
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), 90),
+                                          components::vector::parameter_kind::literal) == id_par{0});
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), "9$"),
+                                          components::vector::parameter_kind::literal) == id_par{1});
             auto cur = dispatcher->execute_plan(
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});
@@ -190,23 +195,26 @@ TEST_CASE("integration::cpp::test_collection") {
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::gt,
                                                                  key{dispatcher->resource(), "count", side_t::left},
-                                                                 id_par{1}));
-            expr_or->append_child(regexp_like_call(dispatcher->resource(), "count_str", id_par{2}));
+                                                                 id_par{0}));
+            expr_or->append_child(regexp_like_call(dispatcher->resource(), "count_str", id_par{1}));
             expr_and->append_child(expr_or);
             expr_and->append_child(
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::lte,
                                                                  key{dispatcher->resource(), "count", side_t::left},
-                                                                 id_par{3}));
+                                                                 id_par{2}));
 
             plan->append_child(
                 components::logical_plan::make_node_match(dispatcher->resource(),
                                                           qualified_name_t{database_name, collection_name},
                                                           std::move(expr_and)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), 90));
-            params->add_parameter(id_par{2}, components::types::logical_value_t(dispatcher->resource(), "9$"));
-            params->add_parameter(id_par{3}, components::types::logical_value_t(dispatcher->resource(), 30));
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), 90),
+                                          components::vector::parameter_kind::literal) == id_par{0});
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), "9$"),
+                                          components::vector::parameter_kind::literal) == id_par{1});
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), 30),
+                                          components::vector::parameter_kind::literal) == id_par{2});
             auto cur = dispatcher->execute_plan(
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});
@@ -237,19 +245,22 @@ TEST_CASE("integration::cpp::test_collection") {
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
                                                                  key{dispatcher->resource(), "count_str", side_t::left},
-                                                                 id_par{1});
+                                                                 id_par{0});
             plan->append_child(
                 components::logical_plan::make_node_match(dispatcher->resource(),
                                                           qualified_name_t{database_name, collection_name},
                                                           std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), "1"));
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), "1"),
+                                          components::vector::parameter_kind::literal) == id_par{0});
             auto cur = dispatcher->execute_plan(
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+            auto cell0 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == 1);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -259,19 +270,22 @@ TEST_CASE("integration::cpp::test_collection") {
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
                                                                  key{dispatcher->resource(), "count", side_t::left},
-                                                                 id_par{1});
+                                                                 id_par{0});
             plan->append_child(
                 components::logical_plan::make_node_match(dispatcher->resource(),
                                                           qualified_name_t{database_name, collection_name},
                                                           std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), 10));
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), 10),
+                                          components::vector::parameter_kind::literal) == id_par{0});
             auto cur = dispatcher->execute_plan(
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 10);
+            auto cell1 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == 10);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -283,21 +297,25 @@ TEST_CASE("integration::cpp::test_collection") {
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::gt,
                                                                  key{dispatcher->resource(), "count", side_t::left},
-                                                                 id_par{1}));
-            expr->append_child(regexp_like_call(dispatcher->resource(), "count_str", id_par{2}));
+                                                                 id_par{0}));
+            expr->append_child(regexp_like_call(dispatcher->resource(), "count_str", id_par{1}));
             plan->append_child(
                 components::logical_plan::make_node_match(dispatcher->resource(),
                                                           qualified_name_t{database_name, collection_name},
                                                           std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, components::types::logical_value_t(dispatcher->resource(), 90));
-            params->add_parameter(id_par{2}, components::types::logical_value_t(dispatcher->resource(), "9$"));
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), 90),
+                                          components::vector::parameter_kind::literal) == id_par{0});
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), "9$"),
+                                          components::vector::parameter_kind::literal) == id_par{1});
             auto cur = dispatcher->execute_plan(
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 99);
+            auto cell2 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == 99);
         }
     }
     INFO("drop_collection");

@@ -16,6 +16,7 @@
 #include "row_version_manager.hpp"
 #include "struct_column_data.hpp"
 #include <components/expressions/execution_dag_builder.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <components/vector/vector_operations.hpp>
 
 namespace components::table {
@@ -155,7 +156,7 @@ namespace components::table {
     core::result_wrapper_t<std::unique_ptr<row_group_t>>
     row_group_t::add_column(collection_t* new_collection,
                             column_definition_t& new_column,
-                            const std::optional<types::logical_value_t>& default_value,
+                            const std::optional<vector::vector_t>& default_value,
                             vector::vector_t& result) {
         auto added_column = column_data_t::create_column(collection_->resource(),
                                                          block_manager(),
@@ -174,8 +175,9 @@ namespace components::table {
             }
             for (uint64_t i = 0; i < rows_to_write; i += vector::DEFAULT_VECTOR_CAPACITY) {
                 uint64_t rows_in_this_vector = std::min<uint64_t>(rows_to_write - i, vector::DEFAULT_VECTOR_CAPACITY);
-                if (default_value.has_value() && !default_value->is_null()) {
-                    result.reference(*default_value);
+                if (default_value.has_value() && !default_value->is_null(0)) {
+                    // A fresh copy per batch: the append may flatten it, and the column's default must stay untouched.
+                    result = vector::make_constant_copy(collection_->resource(), *default_value);
                 } else {
                     result.set_vector_type(vector::vector_type::CONSTANT);
                     result.set_null(true);

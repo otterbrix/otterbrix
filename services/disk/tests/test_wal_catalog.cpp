@@ -469,6 +469,175 @@ TEST_CASE("services::disk::wal_catalog::agent0_catalog_wal_ordering") {
     cleanup_dir(dir);
 }
 
+namespace {
+    // A pg_class row whose oid cell (column 0, UINTEGER in the table) arrives as `oid_cell_type`.
+    components::vector::data_chunk_t pg_class_probe_row(std::pmr::memory_resource* resource,
+                                                        components::types::complex_logical_type oid_cell_type,
+                                                        catalog::oid_t ns_oid) {
+        const auto* def = catalog::find_system_table(catalog::well_known_oid::pg_class_table);
+        REQUIRE(def != nullptr);
+        std::pmr::vector<components::types::complex_logical_type> types(resource);
+        for (const auto& c : def->columns) {
+            types.push_back(c.type());
+        }
+        types[0] = std::move(oid_cell_type);
+        components::vector::data_chunk_t row(resource, types, 1);
+        row.set_cardinality(1);
+        row.set_value(1, 0, std::string_view("wal_cast_probe"));
+        row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
+        row.set_value(3, 0, std::string_view("r"));
+        row.set_value(4, 0, std::string_view("d"));
+        return row;
+    }
+
+    // The records live on `reader_resource`, which the caller keeps alive for as long as it reads them.
+    std::vector<services::wal::record_t> physical_inserts_for(std::pmr::memory_resource* reader_resource,
+                                                              const std::string& dir,
+                                                              catalog::oid_t target_oid) {
+        auto log = make_test_log();
+        configuration::config_wal c;
+        c.path = dir;
+        services::wal::wal_reader_t reader(reader_resource, c, log);
+        auto records_result = reader.read_committed_records();
+        REQUIRE_FALSE(records_result.has_error());
+        std::vector<services::wal::record_t> found;
+        for (auto& r : records_result.value()) {
+            if (r.record_type == services::wal::wal_record_type::PHYSICAL_INSERT && r.table_oid == target_oid) {
+                found.push_back(std::move(r));
+            }
+        }
+        return found;
+    }
+} // namespace
+
+TEST_CASE("services::disk::wal_catalog::a_refused_catalog_cast_leaves_no_journal_record") {
+    auto dir = wal_cat_dir() + "/refused_cast";
+    cleanup_dir(dir);
+    constexpr catalog::oid_t pg_class = catalog::well_known_oid::pg_class_table;
+    {
+        fixture fx(dir);
+
+        SECTION("a DOUBLE out of range for the UINTEGER oid column") {
+            auto row =
+                pg_class_probe_row(&fx.resource,
+                                   components::types::complex_logical_type{components::types::logical_type::DOUBLE},
+                                   FIRST_USER_OID);
+            row.set_value(0, 0, 1.0e12);
+            auto appended = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_class, std::move(row));
+            REQUIRE(appended.has_error());
+            CHECK(appended.error().type == core::error_code_t::conversion_failure);
+        }
+        SECTION("a STRING for the UINTEGER oid column") {
+            auto row = pg_class_probe_row(
+                &fx.resource,
+                components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL},
+                FIRST_USER_OID);
+            row.set_value(0, 0, std::string_view("12345"));
+            auto appended = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_class, std::move(row));
+            REQUIRE(appended.has_error());
+            CHECK(appended.error().type == core::error_code_t::conversion_failure);
+        }
+    }
+    core::pmr::otterbrix_resource reader_resource;
+    CHECK(physical_inserts_for(&reader_resource, dir, pg_class).empty());
+    cleanup_dir(dir);
+}
+
+TEST_CASE("services::disk::wal_catalog::a_casted_catalog_append_journals_the_cast_value") {
+    auto dir = wal_cat_dir() + "/casted_append";
+    cleanup_dir(dir);
+    constexpr catalog::oid_t pg_class = catalog::well_known_oid::pg_class_table;
+    constexpr catalog::oid_t probe_oid = FIRST_USER_OID + 4321;
+    {
+        fixture fx(dir);
+        auto row = pg_class_probe_row(&fx.resource,
+                                      components::types::complex_logical_type{components::types::logical_type::DOUBLE},
+                                      FIRST_USER_OID);
+        row.set_value(0, 0, static_cast<double>(probe_oid));
+        disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_class, std::move(row)));
+    }
+    core::pmr::otterbrix_resource reader_resource;
+    auto records = physical_inserts_for(&reader_resource, dir, pg_class);
+    REQUIRE(records.size() == 1);
+    REQUIRE(records.front().physical_data.size() == 1);
+    const auto& journaled = records.front().physical_data.front();
+    CHECK(journaled.data[0].type().type() == components::types::logical_type::UINTEGER);
+    CHECK(journaled.get_value<std::uint32_t>(0, 0) == probe_oid);
+    cleanup_dir(dir);
+}
+
+TEST_CASE("services::disk::wal_catalog::a_partial_aliased_row_is_casted_by_column_name") {
+    auto dir = wal_cat_dir() + "/partial_aliased";
+    cleanup_dir(dir);
+    constexpr catalog::oid_t pg_class = catalog::well_known_oid::pg_class_table;
+    constexpr catalog::oid_t probe_oid = FIRST_USER_OID + 4322;
+    constexpr catalog::oid_t ns_oid = FIRST_USER_OID + 9;
+    {
+        fixture fx(dir);
+        namespace ct = components::types;
+        auto alias = [](ct::logical_type t, const char* name) {
+            ct::complex_logical_type type{t};
+            type.set_alias(name);
+            return type;
+        };
+        // Table order is oid, relname, relnamespace, ...; the row is shorter and in another order.
+        std::pmr::vector<ct::complex_logical_type> types(&fx.resource);
+        types.push_back(alias(ct::logical_type::STRING_LITERAL, "relname"));
+        types.push_back(alias(ct::logical_type::DOUBLE, "oid"));
+        types.push_back(alias(ct::logical_type::UINTEGER, "relnamespace"));
+        components::vector::data_chunk_t row(&fx.resource, types, 1);
+        row.set_cardinality(1);
+        row.set_value(0, 0, std::string_view("partial_probe"));
+        row.set_value(1, 0, static_cast<double>(probe_oid));
+        row.set_value(2, 0, static_cast<std::uint32_t>(ns_oid));
+        disk_test_helpers::append_ok(
+            fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_class, std::move(row)));
+
+        auto probe = test_probe::probe_table(fx, auto_ctx(), ns_oid, std::string("partial_probe"));
+        REQUIRE(probe.found);
+        CHECK(probe.oid == probe_oid);
+    }
+    core::pmr::otterbrix_resource reader_resource;
+    auto records = physical_inserts_for(&reader_resource, dir, pg_class);
+    REQUIRE(records.size() == 1);
+    REQUIRE(records.front().physical_data.size() == 1);
+    const auto& journaled = records.front().physical_data.front();
+    core::pmr::otterbrix_resource attoids_resource;
+    const auto table_attoids = catalog::system_column_attoids(&attoids_resource, pg_class);
+    REQUIRE(journaled.column_count() == table_attoids.size());
+    REQUIRE(records.front().physical_attoids.size() == table_attoids.size());
+    using catalog::pg_class_col::oid;
+    using catalog::pg_class_col::relname;
+    using catalog::pg_class_col::relnamespace;
+    CHECK(journaled.data[oid].type().type() == components::types::logical_type::UINTEGER);
+    CHECK(journaled.get_value<std::uint32_t>(oid, 0) == probe_oid);
+    CHECK(journaled.get_value<std::uint32_t>(relnamespace, 0) == ns_oid);
+    CHECK(journaled.get_value<std::string_view>(relname, 0) == "partial_probe");
+    for (std::uint64_t column = 0; column < journaled.column_count(); column++) {
+        if (column != oid && column != relname && column != relnamespace) {
+            CHECK(journaled.data[column].is_null(0));
+        }
+    }
+
+    {
+        fixture replayed(dir, /*wire_wal=*/false);
+        auto before = test_probe::probe_table(replayed, auto_ctx(), ns_oid, std::string("partial_probe"));
+        REQUIRE_FALSE(before.found);
+        for (auto& chunk : records.front().physical_data) {
+            auto append_r = replayed.disk->append_sync(pg_class,
+                                                       records.front().physical_attoids,
+                                                       chunk,
+                                                       components::table::transaction_data::committed());
+            REQUIRE_FALSE(append_r.has_error());
+        }
+        auto after = test_probe::probe_table(replayed, auto_ctx(), ns_oid, std::string("partial_probe"));
+        REQUIRE(after.found);
+        CHECK(after.oid == probe_oid);
+    }
+    cleanup_dir(dir);
+}
+
 TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
     auto dir = wal_cat_dir() + "/wal_disabled";
     cleanup_dir(dir);
@@ -496,15 +665,12 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
 
         std::pmr::vector<std::uint64_t> keys{&fx.resource};
         keys.emplace_back(components::catalog::pg_index_col::indexrelid);
-        std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
-        vals.emplace_back(&fx.resource, idx_oid);
         auto batches =
-            services::disk::test_probe::probe_read(fx, auto_ctx(), pg_index, std::move(keys), std::move(vals));
+            services::disk::test_probe::probe_read(fx, auto_ctx(), pg_index, std::move(keys), services::disk::test_probe::test_key_chunk(&fx.resource, idx_oid));
         std::size_t found = 0;
         for (const auto& chunk : batches) {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                auto oid_v = chunk.value(0, i);
-                if (!oid_v.is_null() && static_cast<catalog::oid_t>(oid_v.value<std::uint32_t>()) == idx_oid)
+                if (!chunk.is_null(0, i) && static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)) == idx_oid)
                     ++found;
             }
         }
@@ -663,9 +829,7 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
     auto read_added_at = [&](fixture& fx, catalog::oid_t attoid) -> std::int64_t {
         std::pmr::vector<std::uint64_t> keys{&fx.resource};
         keys.emplace_back(catalog::pg_attribute_col::attoid);
-        std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
-        vals.emplace_back(&fx.resource, attoid);
-        auto batches = test_probe::probe_read(fx, auto_ctx(), pg_attr, std::move(keys), std::move(vals));
+        auto batches = test_probe::probe_read(fx, auto_ctx(), pg_attr, std::move(keys), services::disk::test_probe::test_key_chunk(&fx.resource, attoid));
         for (auto& chunk : batches) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(catalog::pg_attribute_col::added_at_commit_id, i))
@@ -686,9 +850,7 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
         {
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_attribute_col::attrelid);
-            std::pmr::vector<components::types::logical_value_t> vals{&fx.resource};
-            vals.emplace_back(&fx.resource, table_oid);
-            auto batches = test_probe::probe_read(fx, auto_ctx(), pg_attr, std::move(keys), std::move(vals));
+            auto batches = test_probe::probe_read(fx, auto_ctx(), pg_attr, std::move(keys), services::disk::test_probe::test_key_chunk(&fx.resource, table_oid));
             for (auto& chunk : batches) {
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
                     if (chunk.is_null(catalog::pg_attribute_col::attoid, i))

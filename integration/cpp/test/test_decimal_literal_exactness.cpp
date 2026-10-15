@@ -4,7 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
-#include <components/types/logical_value.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <components/types/types.hpp>
 
 #include <cstdint>
@@ -56,9 +56,15 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_bare_fractional_l
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 3);
     // NUMERIC(38,20) is INT128-backed; the cursor exposes the scaled payload (value * 10^20).
-    CHECK(cur->value(0, 0).value<components::types::int128_t>() == pow10(19));
-    CHECK(cur->value(0, 1).value<components::types::int128_t>() == twenty_digit_fraction());
-    CHECK(cur->value(0, 2).value<components::types::int128_t>() == components::types::int128_t{875} * pow10(18));
+    auto cell0 = cur->get<components::types::int128_t>(0, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    CHECK(cell0.value() == pow10(19));
+    auto cell1 = cur->get<components::types::int128_t>(0, 1);
+    REQUIRE_FALSE(cell1.has_error());
+    CHECK(cell1.value() == twenty_digit_fraction());
+    auto cell2 = cur->get<components::types::int128_t>(0, 2);
+    REQUIRE_FALSE(cell2.has_error());
+    CHECK(cell2.value() == components::types::int128_t{875} * pow10(18));
 }
 
 TEST_CASE("integration::cpp::test_decimal_literal_exactness::an_int64_backed_column_keeps_its_cents") {
@@ -79,9 +85,15 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::an_int64_backed_col
     auto cur = exec(d, "SELECT d FROM w.t ORDER BY id;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 3);
-    CHECK(cur->value(0, 0).value<int64_t>() == 1);
-    CHECK(cur->value(0, 1).value<int64_t>() == 123456789012345678LL);
-    CHECK(cur->value(0, 2).value<int64_t>() == -100000LL);
+    auto cell3 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell3.has_error());
+    CHECK(cell3.value() == 1);
+    auto cell4 = cur->get<int64_t>(0, 1);
+    REQUIRE_FALSE(cell4.has_error());
+    CHECK(cell4.value() == 123456789012345678LL);
+    auto cell5 = cur->get<int64_t>(0, 2);
+    REQUIRE_FALSE(cell5.has_error());
+    CHECK(cell5.value() == -100000LL);
 }
 
 TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_literal_too_wide_for_the_column_is_refused") {
@@ -101,8 +113,12 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_literal_too_wide_
     auto cur = exec(d, "SELECT d FROM w.t ORDER BY id;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    CHECK(cur->value(0, 0).value<int64_t>() == 101);
-    CHECK(cur->value(0, 1).value<int64_t>() == 99999);
+    auto cell6 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell6.has_error());
+    CHECK(cell6.value() == 101);
+    auto cell7 = cur->get<int64_t>(0, 1);
+    REQUIRE_FALSE(cell7.has_error());
+    CHECK(cell7.value() == 99999);
 }
 
 TEST_CASE("integration::cpp::test_decimal_literal_exactness::nulls_and_other_targets_are_left_alone") {
@@ -123,12 +139,20 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::nulls_and_other_tar
     auto cur = exec(d, "SELECT d, f FROM w.t ORDER BY id;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    CHECK(cur->value(0, 0).value<components::types::int128_t>() == twenty_digit_fraction());
-    CHECK(cur->value(0, 1).is_null());
+    auto cell8 = cur->get<components::types::int128_t>(0, 0);
+    REQUIRE_FALSE(cell8.has_error());
+    CHECK(cell8.value() == twenty_digit_fraction());
+    auto cell9 = cur->is_null(0, 1);
+    REQUIRE_FALSE(cell9.has_error());
+    CHECK(cell9.value());
     // WithinULP(x, 0) is exact equality without a float `==`, which -Wfloat-equal refuses:
     // this case is about the DOUBLE column staying exact, so Approx would defeat it.
-    CHECK_THAT(cur->value(1, 0).value<double>(), Catch::Matchers::WithinULP(0.5, 0));
-    CHECK_THAT(cur->value(1, 1).value<double>(), Catch::Matchers::WithinULP(0.25, 0));
+    auto cell10 = cur->get<double>(1, 0);
+    REQUIRE_FALSE(cell10.has_error());
+    CHECK_THAT(cell10.value(), Catch::Matchers::WithinULP(0.5, 0));
+    auto cell11 = cur->get<double>(1, 1);
+    REQUIRE_FALSE(cell11.has_error());
+    CHECK_THAT(cell11.value(), Catch::Matchers::WithinULP(0.25, 0));
 }
 
 TEST_CASE("integration::cpp::test_decimal_literal_exactness::an_integer_literal_in_the_same_column_still_stores") {
@@ -145,8 +169,12 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::an_integer_literal_
     auto cur = exec(d, "SELECT d FROM w.t ORDER BY id;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    CHECK(cur->value(0, 0).value<int64_t>() == 500000);
-    CHECK(cur->value(0, 1).value<int64_t>() == 7000000);
+    auto cell12 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell12.has_error());
+    CHECK(cell12.value() == 500000);
+    auto cell13 = cur->get<int64_t>(0, 1);
+    REQUIRE_FALSE(cell13.has_error());
+    CHECK(cell13.value() == 7000000);
 }
 
 TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_literal_beside_a_bound_parameter_stays_exact") {
@@ -161,8 +189,8 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_literal_beside_a_
 
     // A parameterised INSERT rebuilds its chunks at bind time; the parameter leads on purpose so
     // the literal is not the chunk's first column.
-    std::vector<std::pair<size_t, components::types::logical_value_t>> params{
-        {1, components::types::logical_value_t{resource, static_cast<int64_t>(1)}}};
+    std::vector<std::pair<size_t, components::vector::vector_t>> params{
+        {1, components::vector::make_scalar(resource, static_cast<int64_t>(1))}};
     auto insert = d->execute_sql_with_params(otterbrix::session_id_t(),
                                              "INSERT INTO w.t (id, d) VALUES ($1, 0.12345678901234567890);",
                                              params);
@@ -171,6 +199,10 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_literal_beside_a_
     auto cur = exec(d, "SELECT id, d FROM w.t;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1);
-    CHECK(cur->value(0, 0).value<int64_t>() == 1);
-    CHECK(cur->value(1, 0).value<components::types::int128_t>() == twenty_digit_fraction());
+    auto cell14 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell14.has_error());
+    CHECK(cell14.value() == 1);
+    auto cell15 = cur->get<components::types::int128_t>(1, 0);
+    REQUIRE_FALSE(cell15.has_error());
+    CHECK(cell15.value() == twenty_digit_fraction());
 }

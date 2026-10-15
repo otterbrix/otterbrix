@@ -22,8 +22,12 @@ namespace {
     // GROUP BY row order is not guaranteed, so this scans every row for the matching key.
     int64_t group_value_for_key(const cursor_t_ptr& cur, int64_t key) {
         for (uint64_t r = 0; r < cur->size(); ++r) {
-            if (cur->value(0, r).value<int64_t>() == key) {
-                return cur->value(1, r).value<int64_t>();
+            auto cell0 = cur->get<int64_t>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            if (cell0.value() == key) {
+                auto cell1 = cur->get<int64_t>(1, r);
+                REQUIRE_FALSE(cell1.has_error());
+                return cell1.value();
             }
         }
         return -1;
@@ -95,8 +99,12 @@ TEST_CASE("integration::cpp::large_aggregate_dml::count_distinct_over_hot_group_
     INFO("COUNT(DISTINCT) error: " << (cur->is_error() ? cur->get_error().what : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1); // one hot group
-    REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-    REQUIRE(cur->value(1, 0).value<uint64_t>() == static_cast<uint64_t>(kRows));
+    auto cell2 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell2.has_error());
+    REQUIRE(cell2.value() == 1);
+    auto cell3 = cur->get<uint64_t>(1, 0);
+    REQUIRE_FALSE(cell3.has_error());
+    REQUIRE(cell3.value() == static_cast<uint64_t>(kRows));
 }
 
 // The USING side (2000 rows) makes the join-driven DELETE's match / row_id buffer span the 1024 boundary.
@@ -131,7 +139,9 @@ TEST_CASE("integration::cpp::large_aggregate_dml::delete_using_secondary_table_o
     {
         auto rem = exec(dispatcher, "SELECT COUNT(*) AS c FROM AggDb.target;");
         REQUIRE(rem->is_success());
-        REQUIRE(rem->value(0, 0).value<int64_t>() == 2);
+        auto cell4 = rem->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == 2);
     }
     // 1500 is above the 1024 boundary.
     {
@@ -179,11 +189,15 @@ TEST_CASE("integration::cpp::large_aggregate_dml::cascade_delete_over_1024_child
     {
         auto gone = exec(dispatcher, "SELECT COUNT(*) AS c FROM AggDb.child WHERE parent_id = 1;");
         REQUIRE(gone->is_success());
-        REQUIRE(gone->value(0, 0).value<int64_t>() == 0);
+        auto cell5 = gone->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == 0);
     }
     {
         auto kept = exec(dispatcher, "SELECT COUNT(*) AS c FROM AggDb.child WHERE parent_id = 2;");
         REQUIRE(kept->is_success());
-        REQUIRE(kept->value(0, 0).value<int64_t>() == 3);
+        auto cell6 = kept->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == 3);
     }
 }

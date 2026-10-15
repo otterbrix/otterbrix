@@ -6,6 +6,7 @@
 
 #include <core/date/date_parse.hpp>
 #include <core/date/date_to_string.hpp>
+#include <core/counting_resource.hpp>
 #include <core/pmr.hpp>
 
 #include <cmath>
@@ -2523,5 +2524,311 @@ TEST_CASE("default casts: NULL is transparent to common-type resolution") {
 
     SECTION("n-ary: a null does not rescue an otherwise unreachable list") {
         REQUIRE_FALSE(common_of({null_type, integer_type, string_type}).has_value());
+    }
+}
+
+namespace {
+    // Bytes the cast asked of the arena. ARRAY(ARRAY(INTEGER, 2), 3) -> ARRAY(ARRAY(BIGINT, 2), 2) stages the
+    // inner arrays and then copies them row by row into the narrower outer array.
+    std::size_t bytes_for_narrowing_array_of_arrays(uint64_t rows) {
+        core::pmr::otterbrix_resource upstream;
+        core::pmr::counting_resource_t arena{&upstream};
+        cast_registry_t registry{&arena};
+        register_default_casts(registry);
+        graph_execution_context context{};
+
+        const complex_logical_type inner_i32 = complex_logical_type::create_array(complex_logical_type{logical_type::INTEGER}, 2);
+        const complex_logical_type inner_i64 = complex_logical_type::create_array(complex_logical_type{logical_type::BIGINT}, 2);
+        const complex_logical_type wide = complex_logical_type::create_array(inner_i32, 3);
+        const complex_logical_type narrow = complex_logical_type::create_array(inner_i64, 2);
+        auto composite = registry.resolve(wide, narrow, cast_type::explicit_only);
+        REQUIRE(composite.has_value());
+
+        vector::vector_t source{&arena, wide};
+        auto* leaves = source.entry().entry().data<int32_t>();
+        for (uint64_t i = 0; i < rows * 6; ++i) {
+            leaves[i] = static_cast<int32_t>(i);
+        }
+        vector::vector_t result{&arena, narrow};
+        arena.reset();
+        REQUIRE_FALSE((*composite)(cast_kind::cast, source, &result, context, rows).contains_error());
+        return arena.allocated_bytes();
+    }
+} // namespace
+
+TEST_CASE("composite_cast: copying staged arrays into a narrower array costs a linear number of bytes") {
+    const std::size_t narrow_rows = bytes_for_narrowing_array_of_arrays(64);
+    const std::size_t wide_rows = bytes_for_narrowing_array_of_arrays(512);
+    INFO("64 rows: " << narrow_rows << " bytes, 512 rows: " << wide_rows << " bytes");
+    // 8x the rows: linear is about 8x the bytes, quadratic about 64x.
+    CHECK(wide_rows < narrow_rows * 16);
+}
+
+TEST_CASE("composite_cast: an ENUM is not cast to a different ENUM by copying its codes") {
+    core::pmr::otterbrix_resource arena;
+    auto* resource = &arena;
+    cast_registry_t registry{resource};
+    register_default_casts(registry);
+    graph_execution_context context{};
+
+    const complex_logical_type colors = complex_logical_type::create_enum("colors", {{"red", 0}, {"green", 1}});
+    const complex_logical_type moods = complex_logical_type::create_enum("moods", {{"happy", 0}, {"sad", 1}});
+
+    auto composite = registry.resolve(colors, moods, cast_type::explicit_only);
+    if (!composite.has_value()) {
+        SUCCEED("no cast is registered between the two enums");
+        return;
+    }
+    vector::vector_t source{resource, colors};
+    source.data<int32_t>()[0] = 1;
+    vector::vector_t result{resource, moods};
+    // Copying code 1 would turn "green" into "sad".
+    const core::error_t error = (*composite)(cast_kind::cast, source, &result, context, 1);
+    REQUIRE(error.contains_error());
+    CHECK(std::string_view{error.what} == "cannot cast type colors to moods");
+}
+
+namespace {
+    // One-row explicit cast through the registry; a pair the registry does not resolve fails the test.
+    core::error_t cast_cell(const cast_registry_t& registry,
+                            const vector::vector_t& source,
+                            vector::vector_t& result,
+                            cast_type allowed = cast_type::explicit_only) {
+        auto composite = registry.resolve(source.type(), result.type(), allowed);
+        REQUIRE(composite.has_value());
+        graph_execution_context context{};
+        return (*composite)(cast_kind::cast, source, &result, context, 1);
+    }
+
+    complex_logical_type plain(logical_type type) { return complex_logical_type{type}; }
+} // namespace
+
+TEST_CASE("default casts: a NULL cell casts to NULL, a non-NULL one converts") {
+    core::pmr::otterbrix_resource arena;
+    cast_registry_t registry{&arena};
+    register_default_casts(registry);
+
+    vector::vector_t null_cell{&arena, plain(logical_type::INTEGER), 1};
+    null_cell.set_null(0, true);
+    vector::vector_t null_result{&arena, plain(logical_type::BIGINT), 1};
+    REQUIRE_FALSE(cast_cell(registry, null_cell, null_result).contains_error());
+    CHECK(null_result.is_null(0));
+
+    vector::vector_t int_cell{&arena, plain(logical_type::INTEGER), 1};
+    int_cell.set_value(0, int32_t{7});
+    vector::vector_t result{&arena, plain(logical_type::BIGINT), 1};
+    REQUIRE_FALSE(cast_cell(registry, int_cell, result).contains_error());
+    CHECK(result.get_value<int64_t>(0) == 7);
+}
+
+TEST_CASE("default casts: casting to DECIMAL answers every numeric width") {
+    core::pmr::otterbrix_resource arena;
+    cast_registry_t registry{&arena};
+    register_default_casts(registry);
+    const auto decimal_type = make_decimal(10, 2);
+
+    SECTION("the 8-bit widths") {
+        vector::vector_t tiny{&arena, plain(logical_type::TINYINT), 1};
+        tiny.set_value(0, int8_t{7});
+        vector::vector_t result{&arena, decimal_type, 1};
+        REQUIRE_FALSE(cast_cell(registry, tiny, result).contains_error());
+        CHECK(result.get_value<int64_t>(0) == 700);
+
+        vector::vector_t utiny{&arena, plain(logical_type::UTINYINT), 1};
+        utiny.set_value(0, uint8_t{7});
+        vector::vector_t uresult{&arena, decimal_type, 1};
+        REQUIRE_FALSE(cast_cell(registry, utiny, uresult).contains_error());
+        CHECK(uresult.get_value<int64_t>(0) == 700);
+
+        // 255 read as int8_t is -1, and -128 has no unsigned reading -- one arm can't cover both.
+        for (const auto& [source, scaled] :
+             std::initializer_list<std::pair<int8_t, int64_t>>{{-128, -12800}, {127, 12700}}) {
+            vector::vector_t edge_source{&arena, plain(logical_type::TINYINT), 1};
+            edge_source.set_value(0, source);
+            vector::vector_t edge{&arena, decimal_type, 1};
+            REQUIRE_FALSE(cast_cell(registry, edge_source, edge).contains_error());
+            CHECK(edge.get_value<int64_t>(0) == scaled);
+        }
+        vector::vector_t full_source{&arena, plain(logical_type::UTINYINT), 1};
+        full_source.set_value(0, uint8_t{255});
+        vector::vector_t full{&arena, decimal_type, 1};
+        REQUIRE_FALSE(cast_cell(registry, full_source, full).contains_error());
+        CHECK(full.get_value<int64_t>(0) == 25500);
+    }
+
+    SECTION("BOOLEAN reads as 0 / 1") {
+        vector::vector_t flag{&arena, plain(logical_type::BOOLEAN), 1};
+        flag.set_value(0, true);
+        vector::vector_t result{&arena, decimal_type, 1};
+        REQUIRE_FALSE(cast_cell(registry, flag, result).contains_error());
+        CHECK(result.get_value<int64_t>(0) == 100);
+    }
+}
+
+TEST_CASE("default casts: numeric overflow into DECIMAL is a refusal") {
+    core::pmr::otterbrix_resource arena;
+    cast_registry_t registry{&arena};
+    register_default_casts(registry);
+    const auto decimal_3_1 = make_decimal(3, 1);
+
+    auto bigint_cast = [&](int64_t value) {
+        vector::vector_t source{&arena, plain(logical_type::BIGINT), 1};
+        source.set_value(0, value);
+        vector::vector_t result{&arena, decimal_3_1, 1};
+        return cast_cell(registry, source, result);
+    };
+    auto double_cast = [&](double value) {
+        vector::vector_t source{&arena, plain(logical_type::DOUBLE), 1};
+        source.set_value(0, value);
+        vector::vector_t result{&arena, decimal_3_1, 1};
+        return cast_cell(registry, source, result);
+    };
+
+    SECTION("positive overflow") {
+        const auto error = bigint_cast(10000);
+        REQUIRE(error.contains_error());
+        CHECK(error.type == core::error_code_t::conversion_failure);
+    }
+    SECTION("negative overflow") {
+        const auto error = bigint_cast(-10000);
+        REQUIRE(error.contains_error());
+        CHECK(error.type == core::error_code_t::conversion_failure);
+    }
+    SECTION("floating overflow refuses; NaN is the DECIMAL NaN special") {
+        CHECK(double_cast(1e30).contains_error());
+        vector::vector_t source{&arena, plain(logical_type::DOUBLE), 1};
+        source.set_value(0, std::numeric_limits<double>::quiet_NaN());
+        vector::vector_t result{&arena, decimal_3_1, 1};
+        REQUIRE_FALSE(cast_cell(registry, source, result).contains_error());
+        CHECK(result.get_value<int16_t>(0) ==
+              static_cast<int16_t>(types::decimal_special::not_a_number(types::physical_type::INT16)));
+    }
+    SECTION("a fitting value still casts") {
+        CHECK_FALSE(bigint_cast(99).contains_error());
+    }
+}
+
+TEST_CASE("default casts: DECIMAL to an integer refuses what does not fit instead of answering NULL") {
+    core::pmr::otterbrix_resource arena;
+    cast_registry_t registry{&arena};
+    register_default_casts(registry);
+
+    auto descale = [&](const complex_logical_type& decimal, int64_t stored, vector::vector_t& result) {
+        vector::vector_t source{&arena, decimal, 1};
+        source.set_value(0, stored);
+        return cast_cell(registry, source, result);
+    };
+
+    SECTION("DECIMAL(10,0)") {
+        const auto dec = make_decimal(10, 0);
+        {
+            vector::vector_t result{&arena, plain(logical_type::TINYINT), 1};
+            const auto error = descale(dec, 1000, result);
+            REQUIRE(error.contains_error());
+            CHECK(error.type == core::error_code_t::conversion_failure);
+        }
+        {
+            vector::vector_t result{&arena, plain(logical_type::UTINYINT), 1};
+            const auto error = descale(dec, -5, result);
+            REQUIRE(error.contains_error());
+            CHECK(error.type == core::error_code_t::conversion_failure);
+        }
+        {
+            vector::vector_t result{&arena, plain(logical_type::TINYINT), 1};
+            REQUIRE_FALSE(descale(dec, 42, result).contains_error());
+            CHECK(result.get_value<int8_t>(0) == 42);
+        }
+    }
+
+    SECTION("DECIMAL(18,2)") {
+        const auto dec = make_decimal(18, 2);
+        {
+            vector::vector_t result{&arena, plain(logical_type::TINYINT), 1};
+            REQUIRE_FALSE(descale(dec, 4200, result).contains_error());
+            REQUIRE_FALSE(result.is_null(0));
+            CHECK(result.get_value<int8_t>(0) == 42);
+        }
+        {
+            vector::vector_t result{&arena, plain(logical_type::TINYINT), 1};
+            const auto error = descale(dec, 1234567, result);
+            REQUIRE(error.contains_error());
+            CHECK(error.type == core::error_code_t::conversion_failure);
+        }
+        {
+            vector::vector_t result{&arena, plain(logical_type::INTEGER), 1};
+            REQUIRE_FALSE(descale(dec, 1234567, result).contains_error());
+            // Rounded, not truncated: PostgreSQL's numeric::integer answer for 12345.67 is 12346.
+            CHECK(result.get_value<int32_t>(0) == 12346);
+        }
+        {
+            vector::vector_t result{&arena, plain(logical_type::TINYINT), 1};
+            const auto error = descale(dec, -1234567, result);
+            REQUIRE(error.contains_error());
+            CHECK(error.type == core::error_code_t::conversion_failure);
+        }
+    }
+}
+
+TEST_CASE("default casts: casting to an ENUM refuses a label the enum does not have") {
+    core::pmr::otterbrix_resource arena;
+    cast_registry_t registry{&arena};
+    register_default_casts(registry);
+    const auto mood = complex_logical_type::create_enum("mood", {{"happy", 0}, {"sad", 7}});
+
+    auto from_text = [&](std::string_view text) {
+        vector::vector_t source{&arena, plain(logical_type::STRING_LITERAL), 1};
+        source.set_value(0, text);
+        vector::vector_t result{&arena, mood, 1};
+        const auto error = cast_cell(registry, source, result, cast_type::assignment);
+        return std::pair{error, error.contains_error() ? int32_t{-1} : result.get_value<int32_t>(0)};
+    };
+
+    const auto absent = from_text("angry");
+    REQUIRE(absent.first.contains_error());
+    CHECK(absent.first.type == core::error_code_t::conversion_failure);
+
+    const auto present = from_text("sad");
+    REQUIRE_FALSE(present.first.contains_error());
+    CHECK(present.second == 7);
+
+    // An ordinal is no label: no integer -> ENUM cast exists to carry a bad one in.
+    CHECK_FALSE(registry.resolve(plain(logical_type::INTEGER), mood, cast_type::explicit_only).has_value());
+}
+
+TEST_CASE("default casts: a STRUCT cast keeps NULL fields and refuses a shape change") {
+    core::pmr::otterbrix_resource arena;
+    cast_registry_t registry{&arena};
+    register_default_casts(registry);
+
+    SECTION("a NULL field stays a NULL slot") {
+        std::pmr::vector<complex_logical_type> source_fields(&arena);
+        source_fields.emplace_back(logical_type::INTEGER);
+        source_fields.emplace_back(logical_type::INTEGER);
+        const auto source_type = complex_logical_type::create_struct("", source_fields);
+        std::pmr::vector<complex_logical_type> target_fields(&arena);
+        target_fields.emplace_back(logical_type::BIGINT);
+        target_fields.emplace_back(logical_type::BIGINT);
+        const auto target_type = complex_logical_type::create_struct("", target_fields);
+
+        vector::vector_t source{&arena, source_type, 1};
+        source.entries()[0]->set_value(0, int32_t{1});
+        source.entries()[1]->set_null(0, true);
+        vector::vector_t result{&arena, target_type, 1};
+        REQUIRE_FALSE(cast_cell(registry, source, result).contains_error());
+        REQUIRE_FALSE(result.is_null(0));
+        CHECK(result.entries()[0]->get_value<int64_t>(0) == 1);
+        CHECK(result.entries()[1]->is_null(0));
+    }
+
+    SECTION("a different field count is not castable") {
+        std::pmr::vector<complex_logical_type> source_fields(&arena);
+        source_fields.emplace_back(logical_type::INTEGER);
+        source_fields.emplace_back(logical_type::INTEGER);
+        std::pmr::vector<complex_logical_type> target_fields(&arena);
+        target_fields.emplace_back(logical_type::BIGINT);
+        const auto source_type = complex_logical_type::create_struct("", source_fields);
+        const auto target_type = complex_logical_type::create_struct("", target_fields);
+
+        CHECK_FALSE(registry.resolve(source_type, target_type, cast_type::explicit_only).has_value());
     }
 }

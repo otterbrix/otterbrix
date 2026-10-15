@@ -238,9 +238,8 @@ TEST_CASE("nested null read: a sliced vector answers the NULL of the row it sele
     REQUIRE(third.vec->get_value<int64_t>(third.index) == 10);
 }
 
-// fails until GitHub issue #764 is fixed: get_value on a DICTIONARY vector checks the outer row's validity
-// (hidden: the failing assert aborts the process in debug builds)
-TEST_CASE("nested null read: get_value on a sliced vector reads the row it selected", "[.][!shouldfail]") {
+// GitHub issue #764: get_value on a DICTIONARY vector must read the row it selected, not the outer row
+TEST_CASE("nested null read: get_value on a sliced vector reads the row it selected") {
     auto resource = core::pmr::otterbrix_resource();
     vector_t source(&resource, bigint(), 4);
     source.set_value(0, int64_t{10});

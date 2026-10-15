@@ -158,8 +158,6 @@ namespace components::vector {
 
         void find_resize_infos(std::vector<resize_info_t>& resize_infos, uint64_t multiplier);
 
-        uint64_t allocation_size(uint64_t cardinality) const;
-
         void set_vector_type(vector_type vector_type);
 
         void set_list_size(uint64_t size);
@@ -244,7 +242,7 @@ namespace components::vector {
             // still instantiated, so guard sequence_entry<T> (which needs numeric_limits<T>).
             if constexpr (std::is_arithmetic_v<T>) {
                 int64_t start, increment;
-                get_sequence(start, increment);
+                vector->get_sequence(start, increment);
                 return sequence_entry<T>(start + increment * static_cast<int64_t>(index));
             } else {
                 assert(false && "sequence vector requires an arithmetic value type");

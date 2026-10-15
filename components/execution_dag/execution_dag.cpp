@@ -78,7 +78,15 @@ namespace components::execution_dag {
         , kind_(kind) {}
 
     core::error_t cast_node_t::process(const graph_execution_context& context, uint64_t count) {
-        return cast_(kind_, input(0), &output(0), context, count);
+        // Composite casts walk the raw offsets and children, which only a flat vector lays out by row.
+        const vector::vector_t& source = input(0);
+        if (source.type().is_nested() && source.get_vector_type() != vector::vector_type::FLAT) {
+            vector::vector_t flat(resource(), source.type(), false, false, 0);
+            flat.reference(source);
+            flat.flatten(count);
+            return cast_(kind_, flat, &output(0), context, count);
+        }
+        return cast_(kind_, source, &output(0), context, count);
     }
 
     core::error_t cast_node_t::validate() const {

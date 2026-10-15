@@ -77,9 +77,8 @@ namespace components::vector {
     class vector_buffer_t {
     public:
         explicit vector_buffer_t(std::pmr::memory_resource* resource, size_t data_size);
-        explicit vector_buffer_t(std::pmr::memory_resource* resource,
-                                 vector_buffer_type type,
-                                 size_t capacity = DEFAULT_VECTOR_CAPACITY);
+        // A buffer of a kind that keeps its payload elsewhere (children, indexing, string heap) owns no data().
+        explicit vector_buffer_t(std::pmr::memory_resource* resource, vector_buffer_type type);
         explicit vector_buffer_t(std::pmr::memory_resource* resource,
                                  const types::complex_logical_type& type,
                                  size_t capacity = DEFAULT_VECTOR_CAPACITY);

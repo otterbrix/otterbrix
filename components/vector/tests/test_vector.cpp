@@ -4,6 +4,7 @@
 #include <components/vector/cell_equal.hpp>
 #include <components/vector/vector.hpp>
 #include <components/vector/vector_builders.hpp>
+#include <core/counting_resource.hpp>
 #include <core/resource_tracer.hpp>
 #include <cstring>
 #include <random>
@@ -682,4 +683,80 @@ TEST_CASE("components::vector::make_null: an ARRAY NULL row, whatever its elemen
         copy.flatten(2);
         REQUIRE(copy.is_null(1));
     }
+}
+
+TEST_CASE("components::vector::data_chunk_t::slice keeps an unprojected column a placeholder") {
+    using namespace components;
+    auto resource = core::pmr::otterbrix_resource();
+
+    std::pmr::vector<types::complex_logical_type> types(&resource);
+    types.emplace_back(types::logical_type::BIGINT);
+    types.emplace_back(types::logical_type::STRING_LITERAL);
+    vector::data_chunk_t source(&resource, types, std::vector<size_t>{0}, 4);
+    for (uint64_t i = 0; i < 4; i++) {
+        source.data[0].set_value(i, static_cast<int64_t>(i * 10));
+    }
+    source.set_cardinality(4);
+
+    vector::indexing_vector_t selection(&resource, 2);
+    selection.set_index(0, 3);
+    selection.set_index(1, 1);
+
+    auto is_placeholder = [](const vector::vector_t& v) { return v.data() == nullptr && v.auxiliary() == nullptr; };
+
+    SECTION("slice from another chunk") {
+        vector::data_chunk_t sliced(&resource, types, std::vector<size_t>{}, 2);
+        sliced.slice(source, selection, 2);
+        REQUIRE(is_placeholder(sliced.data[1]));
+
+        vector::data_chunk_t copied(&resource, types, std::vector<size_t>{0}, 2);
+        sliced.copy(copied, 0);
+        REQUIRE(copied.data[0].get_value<int64_t>(0) == 30);
+        REQUIRE(copied.data[0].get_value<int64_t>(1) == 10);
+        REQUIRE(is_placeholder(copied.data[1]));
+    }
+    SECTION("slice in place") {
+        source.slice(selection, 2);
+        REQUIRE(is_placeholder(source.data[1]));
+
+        vector::data_chunk_t copied(&resource, types, std::vector<size_t>{0}, 2);
+        source.copy(copied, 0);
+        REQUIRE(copied.data[0].get_value<int64_t>(0) == 30);
+        REQUIRE(is_placeholder(copied.data[1]));
+    }
+}
+
+TEST_CASE("components::vector::vector: get_value on a dictionary over a sequence reads the sequence") {
+    using namespace components;
+    auto resource = core::pmr::otterbrix_resource();
+
+    vector::vector_t source(&resource, types::complex_logical_type(types::logical_type::BIGINT), 4);
+    source.sequence(100, 10, 4);
+
+    vector::indexing_vector_t selection(&resource, 2);
+    selection.set_index(0, 2);
+    selection.set_index(1, 0);
+    vector::vector_t sliced(&resource, types::complex_logical_type(types::logical_type::BIGINT), 4);
+    sliced.slice(source, selection, 2);
+
+    REQUIRE(sliced.get_value<int64_t>(0) == 120);
+    REQUIRE(sliced.get_value<int64_t>(1) == 100);
+}
+
+TEST_CASE("components::vector::vector: slicing a small vector allocates no payload for the dictionary") {
+    using namespace components;
+    core::pmr::otterbrix_resource upstream;
+    core::pmr::counting_resource_t arena{&upstream};
+
+    vector::vector_t source(&arena, types::complex_logical_type(types::logical_type::BIGINT), 3);
+    vector::indexing_vector_t selection(&arena, 3);
+    for (uint64_t i = 0; i < 3; ++i) {
+        selection.set_index(i, 2 - i);
+    }
+    vector::vector_t sliced(&arena, types::complex_logical_type(types::logical_type::BIGINT), false, false, 0);
+
+    arena.reset();
+    sliced.slice(source, selection, 3);
+    INFO("slice allocated " << arena.allocated_bytes() << " bytes in " << arena.allocations() << " blocks");
+    CHECK(arena.allocated_bytes() < 512);
 }

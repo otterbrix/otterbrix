@@ -500,39 +500,6 @@ namespace components::vector {
         }
     }
 
-    uint64_t vector_t::allocation_size(uint64_t cardinality) const {
-        if (!type_.is_nested()) {
-            auto physical_size = type_.size();
-            return cardinality * physical_size;
-        }
-        switch (type_.to_physical_type()) {
-            case types::physical_type::LIST: {
-                auto physical_size = type_.child_type().size();
-                auto total_size = physical_size * cardinality;
-
-                auto child_cardinality = static_cast<list_vector_buffer_t&>(*buffer_).capacity();
-                total_size += entry().allocation_size(child_cardinality);
-                return total_size;
-            }
-            case types::physical_type::ARRAY: {
-                auto child_cardinality = static_cast<array_vector_buffer_t&>(*buffer_).size();
-
-                auto total_size = entry().allocation_size(child_cardinality);
-                return total_size;
-            }
-            case types::physical_type::STRUCT: {
-                uint64_t total_size = 0;
-                auto& children = entries();
-                for (auto& child : children) {
-                    total_size += child->allocation_size(cardinality);
-                }
-                return total_size;
-            }
-            default:
-                throw std::logic_error("vector::vector_t::allocation_size not implemented for this type");
-        }
-    }
-
     void vector_t::resize(uint64_t current_size, uint64_t new_size) {
         if (current_size == new_size) {
             return;
@@ -576,10 +543,6 @@ namespace components::vector {
     }
 
     const vector_t* vector_t::resolve_value_location(uint64_t row_index, uint64_t* index) const {
-        if (!validity_.row_is_valid(row_index)) {
-            return nullptr;
-        }
-
         const vector_t* vector = this;
         *index = row_index;
         bool finished = false;

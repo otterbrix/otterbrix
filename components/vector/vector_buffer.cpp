@@ -12,10 +12,9 @@ namespace components::vector {
         , data_(new (resource->allocate(data_size, alignof(std::byte))) std::byte[data_size],
                 core::pmr::array_deleter_t(resource, data_size, alignof(std::byte))) {}
 
-    vector_buffer_t::vector_buffer_t(std::pmr::memory_resource* resource, vector_buffer_type type, size_t capacity)
+    vector_buffer_t::vector_buffer_t(std::pmr::memory_resource* resource, vector_buffer_type type)
         : type_(type)
-        , data_(new (resource->allocate(capacity, alignof(std::byte))) std::byte[capacity],
-                core::pmr::array_deleter_t(resource, capacity, alignof(std::byte))) {}
+        , data_(nullptr, core::pmr::array_deleter_t(resource, 0, alignof(std::byte))) {}
 
     vector_buffer_t::vector_buffer_t(std::pmr::memory_resource* resource,
                                      const types::complex_logical_type& type,
@@ -120,7 +119,7 @@ namespace components::vector {
     }
 
     array_vector_buffer_t::array_vector_buffer_t(std::unique_ptr<vector_t> vector, uint64_t size, uint64_t capacity)
-        : vector_buffer_t(vector->resource(), vector_buffer_type::ARRAY, capacity * size)
+        : vector_buffer_t(vector->resource(), vector_buffer_type::ARRAY)
         , nested_data_(std::move(vector))
         , underlying_size_(size)
         , size_(capacity) {}
@@ -128,10 +127,7 @@ namespace components::vector {
     array_vector_buffer_t::array_vector_buffer_t(std::pmr::memory_resource* resource,
                                                  const types::complex_logical_type& array_type,
                                                  uint64_t capacity)
-        : vector_buffer_t(resource,
-                          vector_buffer_type::ARRAY,
-                          capacity *
-                              static_cast<const types::array_logical_type_extension*>(array_type.extension())->size())
+        : vector_buffer_t(resource, vector_buffer_type::ARRAY)
         , nested_data_(std::make_unique<vector_t>(
               resource,
               array_type.child_type(),

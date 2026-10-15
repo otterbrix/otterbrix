@@ -3,6 +3,7 @@
 #include "dml_util.hpp"
 #include "join_utils.hpp"
 #include <atomic>
+#include <optional>
 #include <components/vector/vector_operations.hpp>
 
 #include <components/context/context.hpp>
@@ -114,32 +115,22 @@ namespace components::operators {
         }
 
         // Staged chunk row k pairs with index_old_row_ids_[k]; manager_index_t::delete_rows relies on that alignment.
-        {
-            data_chunk_t old_matched(resource_, types, index);
-            chunk.copy(old_matched, matched_indexing, index);
-            old_matched.set_cardinality(index);
-            index_old_chunks_.emplace_back(std::move(old_matched));
-            for (size_t i = 0; i < index; i++) {
-                index_old_row_ids_.push_back(batch_ids.data<int64_t>()[i]);
-            }
+        index_old_chunks_.emplace_back(dml_detail::stage_matched(resource_, chunk, matched_indexing, index));
+        for (size_t i = 0; i < index; i++) {
+            index_old_row_ids_.push_back(batch_ids.data<int64_t>()[i]);
         }
 
         if (collect_returning) {
-            data_chunk_t affected(resource_, types, index);
-            chunk.copy(affected, matched_indexing, index);
-            affected.set_cardinality(index);
-            if (affected.size() != 0) {
-                auto proj = evaluate_projection(resource_,
-                                                returning_,
-                                                &affected,
-                                                pipeline_context->parameters,
-                                                pipeline_context->execution_context,
-                                                &returning_graph_);
-                if (proj.has_error()) {
-                    return proj.error();
-                }
-                returning_staged_.emplace_back(std::move(proj.value()));
+            auto proj = evaluate_projection(resource_,
+                                            returning_,
+                                            &index_old_chunks_.back(),
+                                            pipeline_context->parameters,
+                                            pipeline_context->execution_context,
+                                            &returning_graph_);
+            if (proj.has_error()) {
+                return proj.error();
             }
+            returning_staged_.emplace_back(std::move(proj.value()));
         }
         return core::error_t::no_error();
     }
@@ -192,9 +183,6 @@ namespace components::operators {
         vector::vector_t batch_ids(resource_, types::logical_type::BIGINT, chunk_left.size());
         vector::indexing_vector_t matched_indexing(resource_);
         matched_indexing.reset(chunk_left.size());
-        // Filled after the loop from the partners recorded below.
-        data_chunk_t affected_right(resource_, types_right, chunk_left.size());
-
         // Where output row k's right-side partner lives: (right chunk, row).
         std::pmr::vector<std::pair<uint32_t, uint32_t>> partners(resource_);
         if (collect_returning) {
@@ -236,7 +224,6 @@ namespace components::operators {
                         partners.emplace_back(static_cast<uint32_t>(ci), static_cast<uint32_t>(j));
                     }
                     index++;
-                    vector::validate_chunk_capacity(affected_right, index);
                     row_matched = true;
                     break;
                 }
@@ -249,61 +236,62 @@ namespace components::operators {
         if (index == 0) {
             return core::error_t::no_error();
         }
-        affected_right.set_cardinality(index);
-
-        // One gather per column for each run of output rows whose partners come from the same right chunk.
-        for (size_t run_begin = 0; run_begin < partners.size();) {
-            size_t run_end = run_begin + 1;
-            while (run_end < partners.size() && partners[run_end].first == partners[run_begin].first) {
-                ++run_end;
-            }
-            const auto& source = right_chunks[partners[run_begin].first];
-            vector::indexing_vector_t selection(resource_, run_end - run_begin);
-            for (size_t k = run_begin; k < run_end; ++k) {
-                selection.set_index(k - run_begin, partners[k].second);
-            }
-            for (size_t column = 0; column < source.column_count(); ++column) {
-                vector::vector_ops::copy(source.data[column],
-                                         affected_right.data[column],
-                                         selection,
-                                         run_end - run_begin,
-                                         0,
-                                         run_begin);
-            }
-            run_begin = run_end;
-        }
-
         for (size_t i = 0; i < index; i++) {
             modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));
         }
 
-        {
-            data_chunk_t old_matched(resource_, types_left, index);
-            chunk_left.copy(old_matched, matched_indexing, index);
-            old_matched.set_cardinality(index);
-            index_old_chunks_.emplace_back(std::move(old_matched));
-            for (size_t i = 0; i < index; i++) {
-                index_old_row_ids_.push_back(batch_ids.data<int64_t>()[i]);
-            }
+        index_old_chunks_.emplace_back(dml_detail::stage_matched(resource_, chunk_left, matched_indexing, index));
+        for (size_t i = 0; i < index; i++) {
+            index_old_row_ids_.push_back(batch_ids.data<int64_t>()[i]);
         }
 
         if (collect_returning) {
-            data_chunk_t affected_left(resource_, types_left, index);
-            chunk_left.copy(affected_left, matched_indexing, index);
-            affected_left.set_cardinality(index);
-
-            if (affected_left.size() != 0) {
+            // One slice pair per right chunk the partners come from, in order of first appearance.
+            std::pmr::vector<uint32_t> chunk_order(resource_);
+            std::pmr::vector<std::pmr::vector<uint32_t>> rows_of(right_chunks.size(),
+                                                                 std::pmr::vector<uint32_t>(resource_),
+                                                                 resource_);
+            for (size_t k = 0; k < partners.size(); ++k) {
+                auto& rows = rows_of[partners[k].first];
+                if (rows.empty()) {
+                    chunk_order.push_back(partners[k].first);
+                }
+                rows.push_back(static_cast<uint32_t>(k));
+            }
+            data_chunk_t& staged = index_old_chunks_.back();
+            for (uint32_t ci : chunk_order) {
+                const auto& rows = rows_of[ci];
+                const auto& source_right = right_chunks[ci];
+                vector::indexing_vector_t left_selection(resource_, rows.size());
+                vector::indexing_vector_t right_selection(resource_, rows.size());
+                for (size_t n = 0; n < rows.size(); ++n) {
+                    left_selection.set_index(n, rows[n]);
+                    right_selection.set_index(n, partners[rows[n]].second);
+                }
+                std::optional<data_chunk_t> left_part;
+                if (rows.size() != index) {
+                    left_part.emplace(resource_, staged.types(), std::vector<size_t>{}, rows.size());
+                    left_part->slice(staged, left_selection, rows.size());
+                }
+                data_chunk_t right_part(resource_, source_right.types(), std::vector<size_t>{}, rows.size());
+                right_part.slice(source_right, right_selection, rows.size());
                 auto proj = evaluate_projection(resource_,
                                                 returning_,
-                                                &affected_left,
+                                                left_part.has_value() ? &*left_part : &staged,
                                                 pipeline_context->parameters,
                                                 pipeline_context->execution_context,
                                                 &returning_graph_,
-                                                &affected_right);
+                                                &right_part);
                 if (proj.has_error()) {
                     return proj.error();
                 }
-                returning_staged_.emplace_back(std::move(proj.value()));
+                // A kept slice would hold the whole right chunk alive inside the cursor.
+                if (dml_detail::references_columns_of(proj.value(), right_part) &&
+                    !dml_detail::returning_keeps_slice(rows.size(), source_right.capacity())) {
+                    returning_staged_.emplace_back(dml_detail::gather_rows(resource_, proj.value()));
+                } else {
+                    returning_staged_.emplace_back(std::move(proj.value()));
+                }
             }
         }
         return core::error_t::no_error();

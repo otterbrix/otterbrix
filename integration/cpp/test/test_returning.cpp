@@ -978,3 +978,209 @@ TEST_CASE("integration::cpp::test_returning::update_returning_error_leaves_no_wr
         REQUIRE(cell59.value() == 9);
     }
 }
+
+// RETURNING over DELETE ... USING reads the matched rows through slices of the scan batch and of the USING chunk.
+// A slice shares its source's validity, so a boolean condition must read the row it selected, not the row at the output
+// position (#764).
+TEST_CASE("integration::cpp::test_returning::delete_using_returning_boolean_reads_the_selected_rows") {
+    auto config = test_create_config(integration_fixture_path("test_returning/delete_using_boolean"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.T (k bigint, flag boolean);")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.S (k bigint, flag boolean);")->is_success());
+    // T row 0 is unmatched with a NULL flag, so the matched row 1 is output row 0 over a NULL outer position.
+    REQUIRE(exec("INSERT INTO TestDatabase.T (k, flag) VALUES (0, NULL), (1, true), (2, false), (3, true);")
+                ->is_success());
+    REQUIRE(exec("INSERT INTO TestDatabase.S (k, flag) VALUES (99, NULL), (1, true), (2, true), (3, NULL);")
+                ->is_success());
+
+    // 1 when the flag is TRUE, 0 for FALSE or NULL.
+    auto cur = exec("DELETE FROM TestDatabase.T USING TestDatabase.S WHERE T.k = S.k "
+                    "RETURNING T.k, CASE WHEN T.flag = true THEN 1 ELSE 0 END, "
+                    "CASE WHEN S.flag = true THEN 1 ELSE 0 END;");
+    INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 3);
+    for (uint64_t row = 0; row < 3; ++row) {
+        auto k = cur->get<int64_t>(0, row);
+        auto left_flag = cur->get<int64_t>(1, row);
+        auto right_flag = cur->get<int64_t>(2, row);
+        REQUIRE_FALSE(k.has_error());
+        REQUIRE_FALSE(left_flag.has_error());
+        REQUIRE_FALSE(right_flag.has_error());
+        // T flags: k1 true, k2 false, k3 true. S flags: k1 true, k2 true, k3 NULL.
+        REQUIRE(left_flag.value() == (k.value() == 2 ? 0 : 1));
+        REQUIRE(right_flag.value() == (k.value() == 3 ? 0 : 1));
+    }
+}
+
+// The RETURNING chunks outlive the statement while they reference the scan batches and the USING chunks, across
+// mid-pump flushes, several right chunks, and the sparse branch that gathers instead of slicing.
+TEST_CASE("integration::cpp::test_returning::delete_using_returning_slices_outlive_the_statement") {
+    constexpr int kOrders = 2500;
+    constexpr int kCustomers = 1500;
+    auto config = test_create_config(integration_fixture_path("test_returning/delete_using_slices"));
+    config.execution.dml_flush_row_threshold = 300;
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.Orders (id bigint, customer_id bigint, note string);")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.Customers (id bigint, name string);")->is_success());
+    {
+        std::string sql = "INSERT INTO TestDatabase.Customers (id, name) VALUES ";
+        for (int i = 0; i < kCustomers; ++i) {
+            sql += "(" + std::to_string(i) + ", 'customer-" + std::to_string(i) + "-" + std::string(40, 'c') + "')";
+            sql += (i + 1 < kCustomers) ? "," : ";";
+        }
+        REQUIRE(exec(sql)->is_success());
+    }
+    {
+        std::string sql = "INSERT INTO TestDatabase.Orders (id, customer_id, note) VALUES ";
+        for (int i = 0; i < kOrders; ++i) {
+            sql += "(" + std::to_string(i) + ", " + std::to_string(i % kCustomers) + ", 'order-" + std::to_string(i) +
+                   "-" + std::string(40, 'o') + "')";
+            sql += (i + 1 < kOrders) ? "," : ";";
+        }
+        REQUIRE(exec(sql)->is_success());
+    }
+
+    auto check = [](const components::cursor::cursor_t_ptr& cur, uint64_t expected_rows) {
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == expected_rows);
+        for (uint64_t row = 0; row < expected_rows; ++row) {
+            auto id = cur->get<int64_t>(0, row);
+            auto customer = cur->get<int64_t>(1, row);
+            auto note = cur->get<std::string_view>(2, row);
+            auto name = cur->get<std::string_view>(3, row);
+            REQUIRE_FALSE(id.has_error());
+            REQUIRE_FALSE(customer.has_error());
+            REQUIRE_FALSE(note.has_error());
+            REQUIRE_FALSE(name.has_error());
+            REQUIRE(customer.value() == id.value() % kCustomers);
+            REQUIRE(note.value() == "order-" + std::to_string(id.value()) + "-" + std::string(40, 'o'));
+            REQUIRE(name.value() == "customer-" + std::to_string(customer.value()) + "-" + std::string(40, 'c'));
+        }
+    };
+
+    INFO("sparse: 7 of 2500 rows are gathered");
+    check(exec("DELETE FROM TestDatabase.Orders USING TestDatabase.Customers "
+               "WHERE Orders.customer_id = Customers.id AND Orders.id < 7 "
+               "RETURNING Orders.id, Orders.customer_id, Orders.note, Customers.name;"),
+          7);
+    INFO("dense: the rest are sliced, partners come from two right chunks");
+    check(exec("DELETE FROM TestDatabase.Orders USING TestDatabase.Customers "
+               "WHERE Orders.customer_id = Customers.id "
+               "RETURNING Orders.id, Orders.customer_id, Orders.note, Customers.name;"),
+          kOrders - 7);
+    REQUIRE(exec("SELECT id FROM TestDatabase.Orders;")->size() == 0);
+}
+
+TEST_CASE("integration::cpp::test_returning::delete_returning_over_filtered_scan_batches") {
+    constexpr int kRows = 2500;
+    auto config = test_create_config(integration_fixture_path("test_returning/delete_sparse_dense"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.T (id bigint, note string);")->is_success());
+    std::string sql = "INSERT INTO TestDatabase.T (id, note) VALUES ";
+    for (int i = 0; i < kRows; ++i) {
+        sql += "(" + std::to_string(i) + ", 'note-" + std::to_string(i) + "-" + std::string(40, 'n') + "')";
+        sql += (i + 1 < kRows) ? "," : ";";
+    }
+    REQUIRE(exec(sql)->is_success());
+
+    auto check = [](const components::cursor::cursor_t_ptr& cur, uint64_t expected_rows) {
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == expected_rows);
+        for (uint64_t row = 0; row < expected_rows; ++row) {
+            auto id = cur->get<int64_t>(0, row);
+            auto note = cur->get<std::string_view>(1, row);
+            REQUIRE_FALSE(id.has_error());
+            REQUIRE_FALSE(note.has_error());
+            REQUIRE(note.value() == "note-" + std::to_string(id.value()) + "-" + std::string(40, 'n'));
+        }
+    };
+    check(exec("DELETE FROM TestDatabase.T WHERE id < 5 RETURNING id, note;"), 5);
+    check(exec("DELETE FROM TestDatabase.T WHERE id >= 5 RETURNING id, note;"), kRows - 5);
+}
+
+// A cast of a list or array column reads the rows the slice selected, not the rows at the output positions.
+TEST_CASE("integration::cpp::test_returning::delete_using_returning_casts_composites_of_the_selected_rows") {
+    auto config = test_create_config(integration_fixture_path("test_returning/delete_using_composite_cast"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.L (id bigint, v bigint[]);")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.S (id bigint);")->is_success());
+    // L row 0 is unmatched, so every matched row sits at an output position other than its own.
+    REQUIRE(exec("INSERT INTO TestDatabase.L (id, v) VALUES (0, ARRAY[1, 2, 3]), (1, ARRAY[4, 5]), (2, ARRAY[6]);")
+                ->is_success());
+    REQUIRE(exec("INSERT INTO TestDatabase.S (id) VALUES (1), (2);")->is_success());
+
+    auto cur = exec("DELETE FROM TestDatabase.L USING TestDatabase.S WHERE L.id = S.id "
+                    "RETURNING L.id, L.v::int[], L.v::text;");
+    INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 2);
+    for (uint64_t row = 0; row < 2; ++row) {
+        auto id = cur->get<int64_t>(0, row);
+        REQUIRE_FALSE(id.has_error());
+        const int32_t first = id.value() == 1 ? 4 : 6;
+        auto head = cur->get<int32_t>(1, row, {0});
+        REQUIRE_FALSE(head.has_error());
+        REQUIRE(head.value() == first);
+        auto text = cur->get<std::string_view>(2, row);
+        REQUIRE_FALSE(text.has_error());
+        REQUIRE(text.value() == (id.value() == 1 ? "{4,5}" : "{6}"));
+    }
+}
+
+TEST_CASE("integration::cpp::test_returning::delete_using_returning_expression_over_both_sides") {
+    auto config = test_create_config(integration_fixture_path("test_returning/delete_using_both_sides"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    auto exec = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.A (id bigint);")->is_success());
+    REQUIRE(exec("CREATE TABLE TestDatabase.B (id bigint, w bigint);")->is_success());
+    REQUIRE(exec("INSERT INTO TestDatabase.A (id) VALUES (0), (1), (2), (3);")->is_success());
+    REQUIRE(exec("INSERT INTO TestDatabase.B (id, w) VALUES (9, 900), (3, 30), (1, 10);")->is_success());
+
+    auto cur = exec("DELETE FROM TestDatabase.A USING TestDatabase.B WHERE A.id = B.id "
+                    "RETURNING A.id, A.id + B.w;");
+    INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 2);
+    for (uint64_t row = 0; row < 2; ++row) {
+        auto id = cur->get<int64_t>(0, row);
+        auto sum = cur->get<int64_t>(1, row);
+        REQUIRE_FALSE(id.has_error());
+        REQUIRE_FALSE(sum.has_error());
+        REQUIRE(sum.value() == (id.value() == 1 ? 11 : 33));
+    }
+}

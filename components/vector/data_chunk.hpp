@@ -6,6 +6,9 @@
 #include <optional>
 
 namespace components::vector {
+    // A column an unprojected scan left without any buffer (NA columns legitimately have none and are not one).
+    bool is_unprojected_placeholder(const vector_t& v) noexcept;
+
     class data_chunk_t {
     public:
         data_chunk_t(std::pmr::memory_resource* resource,
@@ -75,8 +78,6 @@ namespace components::vector {
 
         // at(), row-aligned index i is row i
         at_aligned_t at_aligned(const std::pmr::vector<size_t>& col_path, std::pmr::memory_resource* resource) const;
-
-        uint64_t allocation_size() const;
 
         bool all_constant() const;
 

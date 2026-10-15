@@ -143,22 +143,13 @@ namespace components::vector {
 
     // A real ARRAY/STRUCT/LIST keeps auxiliary() set with null data(); NA legitimately allocates
     // neither, so only an unprojected column has both null.
-    static bool is_unprojected_placeholder(const vector_t& v) noexcept {
+    bool is_unprojected_placeholder(const vector_t& v) noexcept {
         return v.type().type() != types::logical_type::NA && v.data() == nullptr && v.auxiliary() == nullptr;
     }
 
     // NA-typed vectors are CONSTANT, not FLAT, so skipping them here keeps the FLAT-destination
     // assert in copy() from aborting on `INSERT ... VALUES (..., NULL)`.
     static bool is_null_typed(const vector_t& v) noexcept { return v.type().type() == types::logical_type::NA; }
-
-    uint64_t data_chunk_t::allocation_size() const {
-        uint64_t total_size = 0;
-        auto cardinality = size();
-        for (auto& vec : data) {
-            total_size += vec.allocation_size(cardinality);
-        }
-        return total_size;
-    }
 
     void data_chunk_t::reset() {
         if (data.empty()) {
@@ -397,6 +388,9 @@ namespace components::vector {
         // process default resource, which this project forbids.
         indexing_cache_t merge_cache{resource_};
         for (uint64_t c = 0; c < column_count(); c++) {
+            if (is_unprojected_placeholder(data[c])) {
+                continue;
+            }
             data[c].slice(indexing_vector, count, merge_cache);
         }
     }
@@ -409,7 +403,9 @@ namespace components::vector {
         count_ = count;
         indexing_cache_t merge_cache{resource_};
         for (uint64_t c = 0; c < other.column_count(); c++) {
-            if (other.data[c].get_vector_type() == vector_type::DICTIONARY) {
+            if (is_unprojected_placeholder(other.data[c])) {
+                data[col_offset + c] = vector_t(resource_, other.data[c].type(), false, false, 0);
+            } else if (other.data[c].get_vector_type() == vector_type::DICTIONARY) {
                 data[col_offset + c].reference(other.data[c]);
                 data[col_offset + c].slice(indexing, count, merge_cache);
             } else {

@@ -79,7 +79,7 @@ namespace {
         for (uint64_t i = 0; i < rows.size(); i++) {
             v.set_value(i, rows[i]);
         }
-        REQUIRE_FALSE(out.column->append(out.append_state, v, rows.size()).has_error());
+        REQUIRE_FALSE(out.column->append(out.append_state, v, 0, rows.size()).has_error());
         return out;
     }
 
@@ -229,7 +229,7 @@ TEST_CASE("column scan: a flat-vector scan over a non-flat result refuses on the
         auto append_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(bm);
         column_append_state append_state{&append_pbm};
         REQUIRE_FALSE(column->initialize_append(append_state).has_error());
-        REQUIRE_FALSE(column->append(append_state, v, 8).has_error());
+        REQUIRE_FALSE(column->append(append_state, v, 0, 8).has_error());
     }
 
     vector_t non_flat(&env.resource, logical_type::UBIGINT, DEFAULT_VECTOR_CAPACITY);

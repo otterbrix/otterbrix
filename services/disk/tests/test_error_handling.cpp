@@ -205,21 +205,12 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
         first_row = appended.value().start_row;
     }
 
-    auto ids_of = [&](int64_t base, uint64_t n) {
-        vector_t v(&fx.resource, logical_type::BIGINT, n);
-        for (uint64_t i = 0; i < n; ++i) {
-            v.data<int64_t>()[i] = base + static_cast<int64_t>(i);
-        }
-        return v;
-    };
-
     INFO("the delete happened: three marks set");
     {
         auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
                            txn_ctx(),
                            table_oid,
-                           ids_of(first_row, 3),
-                           std::uint64_t{3});
+                           components::table::make_row_id_range(&fx.resource, first_row, 3));
         REQUIRE_FALSE(r.has_error());
         REQUIRE(r.value() == 3);
     }
@@ -229,8 +220,7 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
         auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
                            txn_ctx(),
                            table_oid,
-                           ids_of(first_row, 3),
-                           std::uint64_t{3});
+                           components::table::make_row_id_range(&fx.resource, first_row, 3));
         REQUIRE_FALSE(r.has_error());
         REQUIRE(r.value() == 0);
     }
@@ -238,14 +228,20 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
     INFO("an oid with no storage anywhere: the delete DID NOT HAPPEN, and says so");
     {
         const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
-        auto r = fx.invoke(&manager_disk_t::storage_delete_rows, txn_ctx(), nowhere, ids_of(0, 1), std::uint64_t{1});
+        auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
+                           txn_ctx(),
+                           nowhere,
+                           components::table::make_row_id_range(&fx.resource, 0, 1));
         REQUIRE(r.has_error());
     }
 
     INFO("asking for nothing is not a refusal, whatever the oid");
     {
         const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
-        auto r = fx.invoke(&manager_disk_t::storage_delete_rows, txn_ctx(), nowhere, ids_of(0, 1), std::uint64_t{0});
+        auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
+                           txn_ctx(),
+                           nowhere,
+                           components::table::make_row_id_range(&fx.resource, 0, 0));
         REQUIRE_FALSE(r.has_error());
         REQUIRE(r.value() == 0);
     }
@@ -345,8 +341,7 @@ TEST_CASE("services::disk::error::fetch_refusal_is_not_an_empty_result") {
         auto r = fx.invoke(&manager_disk_t::storage_fetch,
                            session_id_t{},
                            table_oid,
-                           ids_from(&fx.resource, first_row, 3),
-                           std::uint64_t{3},
+                           components::table::make_row_id_range(&fx.resource, first_row, 3),
                            std::vector<size_t>{},
                            with_open_snapshot(0, 0),
                            components::table::fetch_visibility_t::SNAPSHOT,
@@ -365,8 +360,7 @@ TEST_CASE("services::disk::error::fetch_refusal_is_not_an_empty_result") {
         auto r = fx.invoke(&manager_disk_t::storage_fetch,
                            session_id_t{},
                            nowhere,
-                           ids_from(&fx.resource, 0, 0),
-                           std::uint64_t{0},
+                           components::table::make_row_id_range(&fx.resource, 0, 0),
                            std::vector<size_t>{},
                            with_open_snapshot(0, 0),
                            components::table::fetch_visibility_t::SNAPSHOT,
@@ -381,8 +375,7 @@ TEST_CASE("services::disk::error::fetch_refusal_is_not_an_empty_result") {
         auto r = fx.invoke(&manager_disk_t::storage_fetch,
                            session_id_t{},
                            nowhere,
-                           ids_from(&fx.resource, 0, 1),
-                           std::uint64_t{1},
+                           components::table::make_row_id_range(&fx.resource, 0, 1),
                            std::vector<size_t>{},
                            with_open_snapshot(0, 0),
                            components::table::fetch_visibility_t::SNAPSHOT,
@@ -557,8 +550,7 @@ TEST_CASE("services::disk::error::fetch_limit_counts_visible_rows_not_requested_
         auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
                            txn_ctx(),
                            table_oid,
-                           ids_from(&fx.resource, first_row, kHidden),
-                           kHidden);
+                           components::table::make_row_id_range(&fx.resource, first_row, kHidden));
         REQUIRE_FALSE(r.has_error());
         REQUIRE(r.value() == kHidden);
     }
@@ -567,8 +559,7 @@ TEST_CASE("services::disk::error::fetch_limit_counts_visible_rows_not_requested_
         auto r = fx.invoke(&manager_disk_t::storage_fetch,
                            session_id_t{},
                            table_oid,
-                           ids_from(&fx.resource, first_row, kRows),
-                           kRows,
+                           components::table::make_row_id_range(&fx.resource, first_row, kRows),
                            std::vector<size_t>{},
                            with_open_snapshot(88, 0),
                            components::table::fetch_visibility_t::SNAPSHOT,
@@ -636,8 +627,7 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
         REQUIRE(call(&manager_disk_t::storage_fetch,
                      session_id_t{},
                      oid,
-                     ids_from(&resource, 0, 1),
-                     std::uint64_t{1},
+                     components::table::make_row_id_range(&resource, 0, 1),
                      std::vector<size_t>{},
                      with_open_snapshot(0, 0),
                      components::table::fetch_visibility_t::SNAPSHOT,
@@ -667,7 +657,10 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
                 call(&manager_disk_t::storage_update, txn_ctx(), oid, std::move(ids), one_column_batch(&resource, 2))
                     .has_error());
         }
-        REQUIRE(call(&manager_disk_t::storage_delete_rows, txn_ctx(), oid, ids_from(&resource, 0, 1), std::uint64_t{1})
+        REQUIRE(call(&manager_disk_t::storage_delete_rows,
+                     txn_ctx(),
+                     oid,
+                     components::table::make_row_id_range(&resource, 0, 1))
                     .has_error());
     }
     scheduler->stop();

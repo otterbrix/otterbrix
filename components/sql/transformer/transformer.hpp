@@ -148,7 +148,7 @@ namespace components::sql::transform {
                                                                          logical_plan::execution_plan_t* plan);
 
     private:
-        using insert_location_t = std::pair<size_t, std::string>; // position in vector + string key
+        using insert_location_t = transform_result::insert_location_t;
 
         core::result_wrapper_t<expressions::expression_ptr>
         transform_a_expr(A_Expr* node, const name_collection_t& names, logical_plan::execution_plan_t* plan);

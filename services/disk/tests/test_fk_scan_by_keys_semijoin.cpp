@@ -48,7 +48,6 @@ namespace {
         // of update are overridden below instead, since a defaulted fallback on the base would leak
         // into the production interface just for this test double's sake.
         using storage_t::delete_rows;
-        using storage_t::scan;
         // Overriding the physical types() would otherwise hide the per-transaction overload beside it.
         using storage_t::types;
 
@@ -59,7 +58,6 @@ namespace {
         void adopt_schema(const std::pmr::vector<complex_logical_type>& t) override { inner_.adopt_schema(t); }
         uint64_t total_rows() const override { return inner_.total_rows(); }
         uint64_t calculate_size() override { return inner_.calculate_size(); }
-        void scan(data_chunk_t& o, const table_filter_t* f, int64_t l) override { inner_.scan(o, f, l); }
         [[nodiscard]] core::result_wrapper_t<bool> fetch(data_chunk_t& o,
                                                          const vector_t& ids,
                                                          uint64_t c,
@@ -75,8 +73,9 @@ namespace {
         update(vector_t& ids, data_chunk_t& d, transaction_data txn) override {
             return inner_.update(ids, d, txn);
         }
-        core::result_wrapper_t<uint64_t> delete_rows(vector_t& ids, uint64_t c, const transaction_data& txn) override {
-            return inner_.delete_rows(ids, c, txn);
+        core::result_wrapper_t<uint64_t> delete_rows(std::span<components::table::row_ids_t> row_ids,
+                                                     const transaction_data& txn) override {
+            return inner_.delete_rows(row_ids, txn);
         }
         std::pmr::memory_resource* resource() const override { return inner_.resource(); }
 

@@ -138,7 +138,7 @@ TEST_CASE("components::table::hugeint_and_decimal_columns_get_minmax_statistics"
         for (uint64_t i = 0; i < 10; i++) {
             data[i] = int128_t(static_cast<int64_t>(i)) - int128_t(4);
         }
-        stats.update(vec, 10);
+        stats.update(vec, 0,10);
         REQUIRE(stats.has_stats());
         CHECK(stats.min_value().value<int128_t>() == int128_t(-4));
         CHECK(stats.max_value().value<int128_t>() == int128_t(5));
@@ -151,7 +151,7 @@ TEST_CASE("components::table::hugeint_and_decimal_columns_get_minmax_statistics"
         for (uint64_t i = 0; i < 6; i++) {
             data[i] = uint128_t(100 + i);
         }
-        stats.update(vec, 6);
+        stats.update(vec, 0,6);
         REQUIRE(stats.has_stats());
         CHECK(stats.min_value().value<uint128_t>() == uint128_t(100));
         CHECK(stats.max_value().value<uint128_t>() == uint128_t(105));
@@ -167,7 +167,7 @@ TEST_CASE("components::table::hugeint_and_decimal_columns_get_minmax_statistics"
         for (uint64_t i = 0; i < 8; i++) {
             data[i] = int128_t(static_cast<int64_t>(i * 1000)) - int128_t(2500);
         }
-        stats.update(vec, 8);
+        stats.update(vec, 0,8);
         REQUIRE(stats.has_stats());
         CHECK(stats.min_value().value<int128_t>() == int128_t(-2500));
         CHECK(stats.max_value().value<int128_t>() == int128_t(4500));

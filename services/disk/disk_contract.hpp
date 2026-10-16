@@ -124,7 +124,7 @@ namespace services::disk {
         read_chunks_by_keys(execution_context_t ctx,
                             components::catalog::oid_t table_oid,
                             std::pmr::vector<std::uint64_t> key_col_indices,
-                            components::vector::data_chunk_t keys,
+                            std::pmr::vector<components::vector::data_chunk_t> keys,
                             std::pmr::vector<std::uint64_t> projected_cols);
 
         // A not-owned oid REFUSES rather than answering an empty fold indistinguishable from a real COUNT=0.
@@ -208,8 +208,7 @@ namespace services::disk {
         // projected_cols: EMPTY means every column; columns outside the set come back as buffer-less stubs.
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
-                      components::vector::vector_t row_ids,
-                      uint64_t count,
+                      components::table::row_id_batch_t row_ids,
                       std::vector<size_t> projected_cols,
                       components::table::transaction_data txn,
                       components::table::fetch_visibility_t visibility,
@@ -232,8 +231,7 @@ namespace services::disk {
         actor_zeta::unique_future<core::result_wrapper_t<uint64_t>>
         storage_delete_rows(execution_context_t ctx,
                             components::catalog::oid_t table_oid,
-                            components::vector::vector_t row_ids,
-                            uint64_t count);
+                            components::table::row_id_batch_t row_ids);
 
         // Batched MVCC swap. Each range carries its own table_oid.
         actor_zeta::unique_future<void>

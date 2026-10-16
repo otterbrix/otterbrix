@@ -175,24 +175,12 @@ namespace otterbrix {
             chunks.push_back(std::move(chunk));
         }
 
-        uint64_t total_rows = 0;
-        for (const auto& c : chunks) {
-            total_rows += c.size();
+        // Add at least one chunk to preserve type data
+        if (chunks.empty()) {
+            chunks.emplace_back(resource, pmr_types, 1);
         }
 
-        components::vector::data_chunk_t result_chunk(resource, pmr_types, total_rows > 0 ? total_rows : 1);
-        result_chunk.set_cardinality(total_rows);
-        uint64_t row_offset = 0;
-        for (auto& c : chunks) {
-            for (uint64_t r = 0; r < c.size(); r++) {
-                for (uint64_t col = 0; col < pmr_types.size(); col++) {
-                    result_chunk.set_value(col, row_offset + r, c.value(col, r));
-                }
-            }
-            row_offset += c.size();
-        }
-
-        return {logical_plan::make_node_raw_data(resource, std::move(result_chunk)),
+        return {logical_plan::make_node_raw_data(resource, std::move(chunks)),
                 std::make_unique<std::vector<components::table::column_definition_t>>(std::move(col_defs))};
     }
 

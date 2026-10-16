@@ -405,7 +405,7 @@ namespace components::operators {
             }
             out_chunk.row_ids.data<int64_t>()[index] = dml_detail::row_id_of(chunk, i);
             matched_indexing.set_index(index, i);
-            vector::validate_chunk_capacity(out_chunk, ++index);
+            ++index;
         }
         if (index != 0) {
             for (size_t k = 0; k < chunk.column_count(); ++k) {
@@ -520,8 +520,6 @@ namespace components::operators {
                         vector::vector_ops::copy(chunk_right.data[k], right_chunk.data[k], j + 1, j, index);
                     }
                     ++index;
-                    vector::validate_chunk_capacity(out_chunk, index);
-                    vector::validate_chunk_capacity(right_chunk, index);
                     // Semi-join: a target row updates once, so stop after the first matching FROM row.
                     row_matched = true;
                     break;

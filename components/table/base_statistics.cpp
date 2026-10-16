@@ -13,9 +13,10 @@ namespace components::table {
         void update_numeric_stats(base_statistics_t& stats,
                                   std::pmr::memory_resource* resource,
                                   vector::vector_t& vec,
+                                  uint64_t offset,
                                   uint64_t count) {
-            vector::unified_vector_format uvf(vec.resource(), count);
-            vec.to_unified_format(count, uvf);
+            vector::unified_vector_format uvf(vec.resource(), offset + count);
+            vec.to_unified_format(offset + count, uvf);
             const auto* data = uvf.get_data<T>();
             const auto& validity = uvf.validity;
             const auto* indexing = uvf.referenced_indexing;
@@ -24,7 +25,7 @@ namespace components::table {
             T local_max{};
             uint64_t null_count = 0;
 
-            for (uint64_t i = 0; i < count; i++) {
+            for (uint64_t i = offset; i < offset + count; i++) {
                 uint64_t idx = indexing->get_index(i);
                 if (!validity.row_is_valid(idx)) {
                     null_count++;
@@ -64,9 +65,10 @@ namespace components::table {
         void update_string_stats(base_statistics_t& stats,
                                  std::pmr::memory_resource* resource,
                                  vector::vector_t& vec,
+                                 uint64_t offset,
                                  uint64_t count) {
-            vector::unified_vector_format uvf(vec.resource(), count);
-            vec.to_unified_format(count, uvf);
+            vector::unified_vector_format uvf(vec.resource(), offset + count);
+            vec.to_unified_format(offset + count, uvf);
             const auto* data = uvf.get_data<std::string_view>();
             const auto& validity = uvf.validity;
             const auto* indexing = uvf.referenced_indexing;
@@ -75,7 +77,7 @@ namespace components::table {
             std::string local_max;
             uint64_t null_count = 0;
 
-            for (uint64_t i = 0; i < count; i++) {
+            for (uint64_t i = offset; i < offset + count; i++) {
                 uint64_t idx = indexing->get_index(i);
                 if (!validity.row_is_valid(idx)) {
                     null_count++;
@@ -119,9 +121,10 @@ namespace components::table {
         void update_decimal_stats_typed(base_statistics_t& stats,
                                         std::pmr::memory_resource* resource,
                                         vector::vector_t& vec,
+                                        uint64_t offset,
                                         uint64_t count) {
-            vector::unified_vector_format uvf(vec.resource(), count);
-            vec.to_unified_format(count, uvf);
+            vector::unified_vector_format uvf(vec.resource(), offset + count);
+            vec.to_unified_format(offset + count, uvf);
             const auto* data = uvf.get_data<T>();
             const auto& validity = uvf.validity;
             const auto* indexing = uvf.referenced_indexing;
@@ -130,7 +133,7 @@ namespace components::table {
             T local_max{};
             uint64_t null_count = 0;
 
-            for (uint64_t i = 0; i < count; i++) {
+            for (uint64_t i = offset; i < offset + count; i++) {
                 uint64_t idx = indexing->get_index(i);
                 if (!validity.row_is_valid(idx)) {
                     null_count++;
@@ -172,19 +175,20 @@ namespace components::table {
         void update_decimal_stats(base_statistics_t& stats,
                                   std::pmr::memory_resource* resource,
                                   vector::vector_t& vec,
+                                  uint64_t offset,
                                   uint64_t count) {
             switch (vec.type().to_physical_type()) {
                 case types::physical_type::INT16:
-                    update_decimal_stats_typed<int16_t>(stats, resource, vec, count);
+                    update_decimal_stats_typed<int16_t>(stats, resource, vec, offset, count);
                     break;
                 case types::physical_type::INT32:
-                    update_decimal_stats_typed<int32_t>(stats, resource, vec, count);
+                    update_decimal_stats_typed<int32_t>(stats, resource, vec, offset, count);
                     break;
                 case types::physical_type::INT64:
-                    update_decimal_stats_typed<int64_t>(stats, resource, vec, count);
+                    update_decimal_stats_typed<int64_t>(stats, resource, vec, offset, count);
                     break;
                 case types::physical_type::INT128:
-                    update_decimal_stats_typed<types::int128_t>(stats, resource, vec, count);
+                    update_decimal_stats_typed<types::int128_t>(stats, resource, vec, offset, count);
                     break;
                 default: {
                     // Impossible storage width for a DECIMAL: count nulls only, no fabricated bounds.
@@ -193,7 +197,7 @@ namespace components::table {
                     if (vec.get_vector_type() == vector::vector_type::CONSTANT) {
                         null_count = validity.row_is_valid(0) ? 0 : count;
                     } else {
-                        for (uint64_t i = 0; i < count; i++) {
+                        for (uint64_t i = offset; i < offset + count; i++) {
                             if (!validity.row_is_valid(i)) {
                                 null_count++;
                             }
@@ -405,55 +409,55 @@ namespace components::table {
         has_stats_ = true;
     }
 
-    void base_statistics_t::update(vector::vector_t& vec, uint64_t count) {
+    void base_statistics_t::update(vector::vector_t& vec, uint64_t offset, uint64_t count) {
         if (count == 0) {
             return;
         }
         switch (type_) {
             case types::logical_type::BOOLEAN:
-                update_numeric_stats<bool>(*this, resource_, vec, count);
+                update_numeric_stats<bool>(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::TINYINT:
-                update_numeric_stats<int8_t>(*this, resource_, vec, count);
+                update_numeric_stats<int8_t>(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::SMALLINT:
-                update_numeric_stats<int16_t>(*this, resource_, vec, count);
+                update_numeric_stats<int16_t>(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::INTEGER:
-                update_numeric_stats<int32_t>(*this, resource_, vec, count);
+                update_numeric_stats<int32_t>(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::BIGINT:
-                update_numeric_stats<int64_t>(*this, resource_, vec, count);
+                update_numeric_stats<int64_t>(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::UTINYINT:
-                update_numeric_stats<uint8_t>(*this, resource_, vec, count);
+                update_numeric_stats<uint8_t>(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::USMALLINT:
-                update_numeric_stats<uint16_t>(*this, resource_, vec, count);
+                update_numeric_stats<uint16_t>(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::UINTEGER:
-                update_numeric_stats<uint32_t>(*this, resource_, vec, count);
+                update_numeric_stats<uint32_t>(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::UBIGINT:
-                update_numeric_stats<uint64_t>(*this, resource_, vec, count);
+                update_numeric_stats<uint64_t>(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::FLOAT:
-                update_numeric_stats<float>(*this, resource_, vec, count);
+                update_numeric_stats<float>(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::DOUBLE:
-                update_numeric_stats<double>(*this, resource_, vec, count);
+                update_numeric_stats<double>(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::HUGEINT:
-                update_numeric_stats<types::int128_t>(*this, resource_, vec, count);
+                update_numeric_stats<types::int128_t>(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::UHUGEINT:
-                update_numeric_stats<types::uint128_t>(*this, resource_, vec, count);
+                update_numeric_stats<types::uint128_t>(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::DECIMAL:
-                update_decimal_stats(*this, resource_, vec, count);
+                update_decimal_stats(*this, resource_, vec, offset, count);
                 break;
             case types::logical_type::STRING_LITERAL:
-                update_string_stats(*this, resource_, vec, count);
+                update_string_stats(*this, resource_, vec, offset, count);
                 break;
             default:
                 // unsupported types: just count nulls
@@ -463,7 +467,7 @@ namespace components::table {
                     if (vec.get_vector_type() == vector::vector_type::CONSTANT) {
                         null_count = validity.row_is_valid(0) ? 0 : count;
                     } else {
-                        for (uint64_t i = 0; i < count; i++) {
+                        for (uint64_t i = offset; i < offset + count; i++) {
                             if (!validity.row_is_valid(i)) {
                                 null_count++;
                             }

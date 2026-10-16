@@ -479,6 +479,7 @@ namespace components::sql::transform {
             logical_plan::insert_literal_digits_list_t literal_digits(resource_);
 
             auto fill_row = [&](vector::data_chunk_t& chunk,
+                                size_t chunk_index,
                                 size_t chunk_row,
                                 size_t global_row,
                                 List* values_list) -> core::error_t {
@@ -496,7 +497,7 @@ namespace components::sql::transform {
                     const std::string& field_name = field_names[field_pos];
                     if (nodeTag(it_value->data) == T_ParamRef) {
                         auto ref = pg_ptr_cast<ParamRef>(it_value->data);
-                        auto loc = std::make_pair(global_row, field_name);
+                        insert_location_t loc{chunk_index, chunk_row, field_name};
 
                         if (auto it = parameter_insert_map_.find(static_cast<size_t>(ref->number));
                             it != parameter_insert_map_.end()) {
@@ -632,7 +633,11 @@ namespace components::sql::transform {
                     vector::data_chunk_t chunk(resource_, schema, batch);
                     chunk.set_cardinality(batch);
                     for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
-                        RETURN_IF_ERROR(fill_row(chunk, chunk_row, global_row, pg_ptr_cast<List>(row_it->data)));
+                        RETURN_IF_ERROR(fill_row(chunk,
+                                                 parameter_insert_rows_.size(),
+                                                 chunk_row,
+                                                 global_row,
+                                                 pg_ptr_cast<List>(row_it->data)));
                     }
                     schema = chunk.types(); // carry the (possibly grown/widened) layout to the next chunk
                     parameter_insert_rows_.emplace_back(std::move(chunk));
@@ -652,7 +657,8 @@ namespace components::sql::transform {
                     vector::data_chunk_t chunk(resource_, {}, batch);
                     chunk.set_cardinality(batch);
                     for (uint64_t chunk_row = 0; chunk_row < batch; ++chunk_row, ++row_it, ++global_row) {
-                        RETURN_IF_ERROR(fill_row(chunk, chunk_row, global_row, pg_ptr_cast<List>(row_it->data)));
+                        RETURN_IF_ERROR(
+                            fill_row(chunk, chunks.size(), chunk_row, global_row, pg_ptr_cast<List>(row_it->data)));
                     }
                     chunks.emplace_back(std::move(chunk));
                 }

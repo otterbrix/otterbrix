@@ -39,7 +39,7 @@ TEST_CASE("statistics: update from vector") {
             data[i] = static_cast<int64_t>(i + 1);
         }
 
-        stats.update(vec, 100);
+        stats.update(vec, 0,100);
 
         REQUIRE(stats.has_stats());
         CHECK(stats.min_value().value<int64_t>() == 1);
@@ -60,7 +60,7 @@ TEST_CASE("statistics: update from vector") {
             }
         }
 
-        stats.update(vec, 50);
+        stats.update(vec, 0,50);
 
         REQUIRE(stats.has_stats());
         CHECK(stats.null_count() == 10);
@@ -77,7 +77,7 @@ TEST_CASE("statistics: update from vector") {
             data[i] = static_cast<double>(i) * 0.5;
         }
 
-        stats.update(vec, 100);
+        stats.update(vec, 0,100);
 
         REQUIRE(stats.has_stats());
         CHECK(stats.min_value().value<double>() == Catch::Approx(0.0));
@@ -94,7 +94,7 @@ TEST_CASE("statistics: update from vector") {
             for (uint64_t i = 0; i < 50; i++) {
                 data[i] = static_cast<int32_t>(i + 1);
             }
-            stats.update(vec, 50);
+            stats.update(vec, 0,50);
         }
 
         {
@@ -103,7 +103,7 @@ TEST_CASE("statistics: update from vector") {
             for (uint64_t i = 0; i < 50; i++) {
                 data[i] = static_cast<int32_t>(i + 51);
             }
-            stats.update(vec, 50);
+            stats.update(vec, 0,50);
         }
 
         REQUIRE(stats.has_stats());
@@ -120,7 +120,7 @@ TEST_CASE("statistics: update from vector") {
             vec.validity().set_invalid(i);
         }
 
-        stats.update(vec, 10);
+        stats.update(vec, 0,10);
 
         CHECK_FALSE(stats.has_stats());
         CHECK(stats.null_count() == 10);
@@ -130,7 +130,7 @@ TEST_CASE("statistics: update from vector") {
         base_statistics_t stats(&resource, logical_type::BIGINT);
         vector_t vec(&resource, logical_type::BIGINT, 10);
 
-        stats.update(vec, 0);
+        stats.update(vec, 0,0);
 
         CHECK_FALSE(stats.has_stats());
         CHECK(stats.null_count() == 0);
@@ -313,7 +313,7 @@ TEST_CASE("per-segment statistics: populated during append") {
     for (uint64_t i = 0; i < 100; i++) {
         data[i] = static_cast<int64_t>(i + 1);
     }
-    REQUIRE_FALSE(col->append(append_state, vec, 100).has_error());
+    REQUIRE_FALSE(col->append(append_state, vec, 0, 100).has_error());
 
     // The current segment should have per-segment statistics
     REQUIRE(append_state.current != nullptr);

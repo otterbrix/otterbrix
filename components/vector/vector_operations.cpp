@@ -221,15 +221,16 @@ namespace components::vector::vector_ops {
             }
         }
 
-        // INTERVAL equality is by the total (a month is 30 days), so the hash is of the total too and
+        // INTERVAL equality is by the total (a month is 30 days), so the hash is of the whole 128-bit total too and
         // not of the three stored components.
         template<bool HAS_RINDEXING, bool FIRST_HASH>
         static void
         interval_loop_hash(vector_t& input, vector_t& hashes, const indexing_vector_t* rindexing, uint64_t count) {
             const auto row_hash = [&input](uint64_t row) {
-                return input.is_null(row) ? hasher_t::NULL_HASH
-                                          : std::hash<uint64_t>{}(absl::Int128Low64(
-                                                core::date::interval_total(input.get_value<core::date::interval_t>(row))));
+                return input.is_null(row)
+                           ? hasher_t::NULL_HASH
+                           : hash_128_value(core::date::interval_total(input.get_value<core::date::interval_t>(row)),
+                                            false);
             };
             if (input.get_vector_type() == vector_type::CONSTANT &&
                 (FIRST_HASH || hashes.get_vector_type() == vector_type::CONSTANT)) {

@@ -311,6 +311,7 @@ namespace {
             for (size_t i = 0; i < input.size(); ++i) {
                 received_->emplace_back(input.data[0].get_value<int64_t>(i), input.data[1].get_value<int64_t>(i));
             }
+            written_ += input.size();
             return core::error_t::no_error();
         }
 

@@ -238,10 +238,12 @@ struct optimizer_rule_t { optimizer_stage stage; optimizer_rule_fn apply; };
 
 ## Written-row count
 
-`operator_t::written()` is one counter in the base class. otterbrix's INSERT / UPDATE / DELETE count the rows they
-hand to a storage sink; a host operator that replaces the write (the fast path) adds what the backend reported to
-`written_`. The executor knows from the statement before optimization that it is a write and takes `written()` of
-the plan root. The cursor answers `affected_rows()` and `is_write()`; a write without RETURNING has no result rows.
+`operator_t::written()` is one counter in the base class, cumulative for the whole statement. For INSERT / UPDATE /
+DELETE into a storage sink the sink adds what the backend applied to `written_` on every round, and the DML reads the
+total with `written_ = sink->written()` after `await_async_and_resume`. A host operator that replaces the write (the
+fast path) adds what the backend reported to `written_` the same way. The executor knows from the statement before
+optimization that it is a write and takes `written()` of the plan root. The cursor answers `affected_rows()` and
+`is_write()`; a write without RETURNING has no result rows.
 Bindings: C `cursor_affected_rows`, Python `rowcount`, Rust `Cursor::affected_rows()`.
 
 ## EXPLAIN

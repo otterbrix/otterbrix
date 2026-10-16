@@ -61,6 +61,12 @@ namespace {
         return names;
     }
 
+    // Names whose backend applies all but the last row of each batch and reports only what it applied.
+    std::set<std::string>& short_writing() {
+        static std::set<std::string> names;
+        return names;
+    }
+
     std::vector<std::string>& asked_names() {
         static std::vector<std::string> names;
         return names;
@@ -249,6 +255,10 @@ namespace {
         remote_storage_t* storage_;
     };
 
+    std::size_t rows_applied(const std::string& name, std::size_t received) {
+        return short_writing().count(name) != 0 && received > 0 ? received - 1 : received;
+    }
+
     class remote_insert_t final : public remote_sink_t {
     public:
         using remote_sink_t::remote_sink_t;
@@ -274,7 +284,9 @@ namespace {
             }
             write_log().push_back("insert " + storage_->name() + " " + types_);
             auto& remote = backend()[storage_->name()];
+            rows_.resize(rows_applied(storage_->name(), rows_.size()));
             remote.insert(remote.end(), rows_.begin(), rows_.end());
+            written_ += rows_.size();
             rows_.clear();
             mark_executed();
             co_return;
@@ -315,9 +327,11 @@ namespace {
             }
             write_log().push_back("update " + storage_->name() + " rows " + std::to_string(changed_.size()));
             auto& remote = backend()[storage_->name()];
+            changed_.resize(rows_applied(storage_->name(), changed_.size()));
             for (auto& [position, values] : changed_) {
                 remote.at(position) = std::move(values);
             }
+            written_ += changed_.size();
             changed_.clear();
             mark_executed();
             co_return;
@@ -356,11 +370,13 @@ namespace {
                 co_return;
             }
             write_log().push_back("delete " + storage_->name() + " rows " + std::to_string(positions_.size()));
+            positions_.resize(rows_applied(storage_->name(), positions_.size()));
             std::sort(positions_.rbegin(), positions_.rend());
             auto& remote = backend()[storage_->name()];
             for (const auto position : positions_) {
                 remote.erase(remote.begin() + static_cast<std::ptrdiff_t>(position));
             }
+            written_ += positions_.size();
             positions_.clear();
             mark_executed();
             co_return;
@@ -716,13 +732,16 @@ namespace {
 
 } // namespace
 
-#define HOST_TEST_BOILERPLATE(DIR)                                                                                     \
+#define HOST_TEST_BOILERPLATE(DIR) HOST_TEST_BOILERPLATE_WITH(DIR, )
+#define HOST_TEST_BOILERPLATE_WITH(DIR, CONFIGURE)                                                                     \
     auto config = test_create_config(integration_fixture_path(DIR));                                                   \
+    CONFIGURE;                                                                                                         \
     test_clear_directory(config);                                                                                      \
     backend().clear();                                                                                                 \
     batches().clear();                                                                                                 \
     unreachable().clear();                                                                                             \
     no_row_numbers().clear();                                                                                          \
+    short_writing().clear();                                                                                           \
     asked_names().clear();                                                                                             \
     write_log().clear();                                                                                               \
     explicit_transactions().clear();                                                                                   \
@@ -1092,6 +1111,53 @@ TEST_CASE("integration::cpp::host_names::insert_into_a_storage_table") {
         REQUIRE(refused->is_error());
         CHECK(write_log().empty());
     }
+}
+
+// The count is what the sink reports after its own work, not the rows handed to it.
+TEST_CASE("integration::cpp::host_names::the_count_is_what_the_sink_reports_written") {
+    HOST_TEST_BOILERPLATE("test_host_names/sink_count")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    short_writing().insert("m2.shop.orders");
+
+    auto inserted = run(dispatcher, "INSERT INTO m2.shop.orders (id, amount) VALUES (4, 400), (5, 500), (6, 600);");
+    INFO(error_of(inserted));
+    REQUIRE(inserted->is_success());
+    CHECK(inserted->affected_rows() == 2);
+    CHECK(backend()["m2.shop.orders"].size() == 5);
+
+    auto updated = run(dispatcher, "UPDATE m2.shop.orders SET amount = amount + 1 WHERE id <= 3;");
+    INFO(error_of(updated));
+    REQUIRE(updated->is_success());
+    CHECK(updated->affected_rows() == 2);
+
+    auto deleted = run(dispatcher, "DELETE FROM m2.shop.orders WHERE id <= 3;");
+    INFO(error_of(deleted));
+    REQUIRE(deleted->is_success());
+    CHECK(deleted->affected_rows() == 2);
+    CHECK(backend()["m2.shop.orders"].size() == 3);
+}
+
+// A flush round reports the sink's running total, not a part: the count is the total once, not a sum of totals.
+TEST_CASE("integration::cpp::host_names::the_count_survives_flush_rounds") {
+    HOST_TEST_BOILERPLATE_WITH("test_host_names/sink_count_rounds", config.execution.dml_flush_row_threshold = 1)
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    batches()["m2.shop.orders"] = {{{1, 100}}, {{2, 200}, {3, 300}}};
+
+    auto updated = run(dispatcher, "UPDATE m2.shop.orders SET amount = amount + 1;");
+    INFO(error_of(updated));
+    REQUIRE(updated->is_success());
+    CHECK(updated->affected_rows() == 3);
+
+    auto inserted =
+        run(dispatcher, "INSERT INTO m2.shop.orders (id, amount) SELECT id + 10, amount FROM m2.shop.orders;");
+    INFO(error_of(inserted));
+    REQUIRE(inserted->is_success());
+    CHECK(inserted->affected_rows() == 3);
+
+    auto deleted = run(dispatcher, "DELETE FROM m2.shop.orders WHERE id <= 3;");
+    INFO(error_of(deleted));
+    REQUIRE(deleted->is_success());
+    CHECK(deleted->affected_rows() == 3);
 }
 
 // A storage table declares no defaults: a column the INSERT leaves out is NULL, as for a local table without one.

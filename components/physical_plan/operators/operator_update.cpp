@@ -603,13 +603,11 @@ namespace components::operators {
                         }
                         returning_accum_.emplace_back(std::move(proj.value()));
                     }
-                    const uint64_t rows = out_chunk.size();
                     if (auto error = storage_sink_->push(ctx, std::move(out_chunk), ignored); error.contains_error()) {
                         set_error(error);
                         mark_failed();
                         co_return;
                     }
-                    written_ += rows;
                 }
                 chunks.clear();
                 index_old_chunks_.clear();
@@ -620,6 +618,7 @@ namespace components::operators {
                     mark_failed();
                     co_return;
                 }
+                written_ = storage_sink_->written();
             }
         } else if (output_ && output_->size() > 0) {
             components::execution_context_t exec_ctx{ctx->session,

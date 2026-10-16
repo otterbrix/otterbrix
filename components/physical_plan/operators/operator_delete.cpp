@@ -352,7 +352,6 @@ namespace components::operators {
                         mark_failed();
                         co_return;
                     }
-                    written_ += rows;
                 }
                 modified_ = operators::make_operator_write_data(resource_);
                 index_old_chunks_.clear();
@@ -363,6 +362,7 @@ namespace components::operators {
                     mark_failed();
                     co_return;
                 }
+                written_ = storage_sink_->written();
             }
         } else if (modified_ && modified_->size() > 0) {
             // DELETE writes its own WAL, unlike INSERT where the disk agent owns it.

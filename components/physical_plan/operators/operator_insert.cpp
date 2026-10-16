@@ -175,13 +175,11 @@ namespace components::operators {
                         }
                         returning_accum_.emplace_back(std::move(proj.value()));
                     }
-                    const uint64_t rows = out_chunk.size();
                     if (auto error = storage_sink_->push(ctx, std::move(out_chunk), ignored); error.contains_error()) {
                         set_error(error);
                         mark_failed();
                         co_return;
                     }
-                    written_ += rows;
                 }
                 output_->chunks().clear();
                 co_await storage_sink_->await_async_and_resume(ctx);
@@ -190,6 +188,7 @@ namespace components::operators {
                     mark_failed();
                     co_return;
                 }
+                written_ = storage_sink_->written();
             }
         } else if (output_ && output_->size() > 0) {
             auto op = [&]([[maybe_unused]] std::pmr::memory_resource* res)

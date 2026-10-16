@@ -11,6 +11,7 @@
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
+#include <components/vector/operations/apply_quantified.hpp>
 
 #include <algorithm>
 #include <source_location>
@@ -283,20 +284,48 @@ namespace services::dispatcher::validation {
                         return ">";
                     case compare_type::gte:
                         return ">=";
+                    case compare_type::regex:
+                        return "~~";
                     default:
                         return "?";
                 }
             }
 
-            // `probe <op> ANY|ALL (set)` tests the probe against the elements in one type. The probe takes a cast
-            // here; the set is cast once, by the node that tests it, and the target is kept on the comparison.
-            void unify_quantified_set(compare_expression_t* comparison, const complex_logical_type& probe) {
-                const auto& set_type = context_.parameters.type(as_parameter(comparison->right()));
-                // the empty-set sentinel is not an array; an untyped NULL probe takes the set's type
-                if (set_type.type() != logical_type::ARRAY || probe.type() == logical_type::NA) {
+            // `probe <op> ANY|ALL (set)`: the set is a LIST or an ARRAY
+            void resolve_quantified(compare_expression_t* comparison, bool inside_aggregate) {
+                const auto probe = slot(comparison->left(), inside_aggregate);
+                if (error_.contains_error()) {
                     return;
                 }
-                const auto& element = set_type.child_type();
+                auto combined = last_cardinality_;
+                const auto set = slot(comparison->right(), inside_aggregate);
+                if (error_.contains_error()) {
+                    return;
+                }
+                combined = combine(combined, last_cardinality_);
+                const bool match = comparison->inner_op() == compare_type::regex;
+                if (!match &&
+                    !components::vector::operations::is_quantifiable(to_operator_code(comparison->inner_op()))) {
+                    fail(core::error_code_t::invalid_parameter,
+                         message(context_.resource,
+                                 to_string(comparison->inner_op()),
+                                 " cannot be quantified with ",
+                                 to_string(comparison->type())));
+                    return;
+                }
+                comparison->set_result_type(boolean_type);
+                last_cardinality_ = combined;
+                if (set.type() == logical_type::NA) {
+                    return;
+                }
+                if (set.type() != logical_type::LIST && set.type() != logical_type::ARRAY) {
+                    fail(core::error_code_t::invalid_parameter,
+                         message(context_.resource,
+                                 "op ANY/ALL (array) requires array on right side, not ",
+                                 components::catalog::format_type_be(set, false)));
+                    return;
+                }
+                const auto& element = set.child_type();
                 auto no_operator = [&](const complex_logical_type& left, const complex_logical_type& right) {
                     fail(core::error_code_t::invalid_parameter,
                          message(context_.resource,
@@ -314,6 +343,13 @@ namespace services::dispatcher::validation {
                     }
                     return;
                 }
+                if (match) {
+                    if ((probe.type() != logical_type::STRING_LITERAL && probe.type() != logical_type::NA) ||
+                        element.type() != logical_type::STRING_LITERAL) {
+                        no_operator(probe, element);
+                    }
+                    return;
+                }
                 if (element == probe) {
                     return;
                 }
@@ -323,9 +359,22 @@ namespace services::dispatcher::validation {
                     return;
                 }
                 splice_cast(context_.resource, comparison->left(), common->type, common->left_cast);
-                if (common->type != element) {
-                    comparison->set_set_element_cast(common->type, std::move(common->right_cast));
+                if (common->type == element) {
+                    return;
                 }
+                const auto target =
+                    set.type() == logical_type::LIST
+                        ? complex_logical_type::create_list(common->type)
+                        : complex_logical_type::create_array(
+                              common->type,
+                              static_cast<const components::types::array_logical_type_extension*>(set.extension())
+                                  ->size());
+                auto cast = context_.cast_registry.resolve(set, target, components::casts::cast_type::implicit);
+                if (!cast.has_value()) {
+                    no_operator(probe, element);
+                    return;
+                }
+                splice_cast(context_.resource, comparison->right(), target, *cast);
             }
 
             void resolve_compare(compare_expression_t* comparison, bool inside_aggregate) {
@@ -367,27 +416,14 @@ namespace services::dispatcher::validation {
                     }
                     case compare_type::any:
                     case compare_type::all:
+                        resolve_quantified(comparison, inside_aggregate);
+                        return;
                     case compare_type::is_null:
                     case compare_type::is_not_null: {
-                        // Unary in shape: the right slot is a sentinel. ANY/ALL carry the element
-                        // match in inner_op(); a LIKE ANY matches each element with the same call
-                        // the scalar form uses, over strings whatever set they came from.
-                        const auto subject = slot(comparison->left(), inside_aggregate);
+                        // Unary in shape: the right slot is a sentinel.
+                        slot(comparison->left(), inside_aggregate);
                         if (error_.contains_error()) {
                             return;
-                        }
-                        if (comparison->inner_op() == compare_type::regex) {
-                            resolve_regex_uid(comparison, subject, complex_logical_type{logical_type::STRING_LITERAL});
-                            if (error_.contains_error()) {
-                                return;
-                            }
-                        } else if ((comparison->type() == compare_type::any ||
-                                    comparison->type() == compare_type::all) &&
-                                   is_parameter(comparison->right())) {
-                            unify_quantified_set(comparison, subject);
-                            if (error_.contains_error()) {
-                                return;
-                            }
                         }
                         comparison->set_result_type(boolean_type);
                         return;

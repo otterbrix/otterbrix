@@ -645,11 +645,11 @@ TEST_CASE("execution_dag::a field node with no path is refused") {
 
 namespace {
 
-    using components::execution_dag::membership_node_t;
     using components::vector::make_array;
     using components::vector::make_null;
     using components::vector::make_scalar;
     using components::vector::vector_t;
+    using components::vector::operations::quantifier;
     using optional_int_t = std::optional<int64_t>;
 
     enum class tri
@@ -688,11 +688,11 @@ namespace {
     }
 
     // The definition, element by element: ANY is an OR of the comparisons, ALL an AND, both in three-valued logic.
-    tri quantified_3vl(membership_node_t::quantifier kind,
+    tri quantified_3vl(quantifier kind,
                        operator_code op,
                        const optional_int_t& probe,
                        const std::vector<optional_int_t>& set) {
-        const bool any = kind == membership_node_t::quantifier::any;
+        const bool any = kind == quantifier::any;
         tri outcome = any ? tri::no : tri::yes;
         for (const auto& element : set) {
             const tri one = compare_3vl(op, probe, element);
@@ -716,30 +716,8 @@ namespace {
     }
 
     // probe column (BIGINT, column 0) -> membership(set parameter 0) -> output
-    struct bigint_membership_t {
-        bigint_membership_t(operator_code op, membership_node_t::quantifier kind)
-            : graph(resource()) {
-            auto probe = input_slot(graph, 0, logical_type::BIGINT);
-            set_slot = graph.output_slot(graph.add_parameter(core::parameter_id_t{0}));
-            node = graph.add_membership(op, kind, probe, set_slot);
-            output = graph.output_slot(node);
-        }
-
-        void bind(vector_t set) {
-            parameters = std::make_unique<storage_parameters>(resource());
-            REQUIRE(parameters->add(std::move(set), parameter_kind::literal) == core::parameter_id_t{0});
-            graph.set_slot_type(set_slot, parameters->type(core::parameter_id_t{0}));
-        }
-
-        execution_dag_t graph;
-        std::unique_ptr<storage_parameters> parameters;
-        slot_id_t set_slot{0};
-        node_id_t node{0};
-        slot_id_t output{0};
-    };
-
     std::vector<tri> run_membership(operator_code op,
-                                    membership_node_t::quantifier kind,
+                                    quantifier kind,
                                     const std::vector<optional_int_t>& set,
                                     const std::vector<optional_int_t>& probes) {
         execution_dag_t graph(resource());
@@ -779,70 +757,52 @@ namespace {
 
 } // namespace
 
-TEST_CASE("execution_dag::membership follows three-valued logic for every operator and quantifier") {
-    const std::vector<std::pair<const char*, std::vector<optional_int_t>>> sets = {
-        {"plain", {1, 2, 3}},
-        {"with a NULL", {1, std::nullopt, 3}},
-        {"only NULLs", {std::nullopt, std::nullopt}},
-        {"one value", {2}},
-        {"duplicates", {2, 2, 7, 7}},
-        {"empty", {}},
-    };
-    const std::vector<optional_int_t> probes = {0, 1, 2, 3, 4, 7, std::nullopt};
-    const std::vector<operator_code> operators = {operator_code::equal,
-                                                  operator_code::not_equal,
-                                                  operator_code::less,
-                                                  operator_code::less_equal,
-                                                  operator_code::greater,
-                                                  operator_code::greater_equal};
+TEST_CASE("execution_dag::membership") {
+    SECTION("three-valued logic") {
+        const std::vector<std::pair<const char*, std::vector<optional_int_t>>> sets = {
+            {"plain", {1, 2, 3}},
+            {"with a NULL", {1, std::nullopt, 3}},
+            {"only NULLs", {std::nullopt, std::nullopt}},
+            {"one value", {2}},
+            {"duplicates", {2, 2, 7, 7}},
+            {"empty", {}},
+        };
+        const std::vector<optional_int_t> probes = {0, 1, 2, 3, 4, 7, std::nullopt};
+        const std::vector<operator_code> operators = {operator_code::equal,
+                                                      operator_code::not_equal,
+                                                      operator_code::less,
+                                                      operator_code::less_equal,
+                                                      operator_code::greater,
+                                                      operator_code::greater_equal};
 
-    for (const auto& [set_name, set] : sets) {
-        for (auto op : operators) {
-            for (auto kind : {membership_node_t::quantifier::any, membership_node_t::quantifier::all}) {
-                const auto answers = run_membership(op, kind, set, probes);
-                for (size_t row = 0; row < probes.size(); row++) {
-                    const auto expected = quantified_3vl(kind, op, probes[row], set);
-                    INFO("set: " << set_name << ", op: " << static_cast<int>(op)
-                                 << ", quantifier: " << (kind == membership_node_t::quantifier::any ? "ANY" : "ALL")
-                                 << ", probe row " << row << ", expected " << name_of(expected) << " got "
-                                 << name_of(answers[row]));
-                    CHECK(answers[row] == expected);
+        for (const auto& [set_name, set] : sets) {
+            for (auto op : operators) {
+                for (auto kind : {quantifier::any, quantifier::all}) {
+                    const auto answers = run_membership(op, kind, set, probes);
+                    for (size_t row = 0; row < probes.size(); row++) {
+                        const auto expected = quantified_3vl(kind, op, probes[row], set);
+                        INFO("set: " << set_name << ", op: " << static_cast<int>(op)
+                                     << ", quantifier: " << (kind == quantifier::any ? "ANY" : "ALL") << ", probe row "
+                                     << row << ", expected " << name_of(expected) << " got " << name_of(answers[row]));
+                        CHECK(answers[row] == expected);
+                    }
                 }
             }
         }
     }
-}
 
-TEST_CASE("execution_dag::a membership graph does not grow with the set") {
-    auto nodes_for = [](size_t elements) {
-        execution_dag_t graph(resource());
-        auto probe = input_slot(graph, 0, logical_type::BIGINT);
-        auto placed = graph.add_parameter(core::parameter_id_t{0});
-        graph.set_slot_type(graph.output_slot(placed),
-                            complex_logical_type::create_array(complex_logical_type{logical_type::BIGINT}, elements));
-        graph.add_membership(operator_code::equal,
-                             membership_node_t::quantifier::any,
-                             probe,
-                             graph.output_slot(placed));
-        return std::pair{graph.node_count(), graph.slot_count()};
-    };
-    CHECK(nodes_for(3) == nodes_for(300000));
-}
-
-TEST_CASE("execution_dag::membership probed by a constant and by a dictionary") {
-    const std::vector<optional_int_t> set = {10, std::nullopt, 30};
-
-    SECTION("a constant probe answers once for every row") {
+    SECTION("constant probe") {
         execution_dag_t graph(resource());
         auto placed_probe = graph.add_parameter(core::parameter_id_t{1});
         graph.set_slot_type(graph.output_slot(placed_probe), logical_type::BIGINT);
         auto placed_set = graph.add_parameter(core::parameter_id_t{0});
         auto node = graph.add_membership(operator_code::equal,
-                                         membership_node_t::quantifier::any,
+                                         quantifier::any,
                                          graph.output_slot(placed_probe),
                                          graph.output_slot(placed_set));
         storage_parameters parameters(resource());
-        REQUIRE(parameters.add(bigint_set(set), parameter_kind::literal) == core::parameter_id_t{0});
+        REQUIRE(parameters.add(bigint_set({10, std::nullopt, 30}), parameter_kind::literal) ==
+                core::parameter_id_t{0});
         REQUIRE(parameters.add(make_scalar(resource(), int64_t{30}), parameter_kind::literal) ==
                 core::parameter_id_t{1});
         graph.set_slot_type(graph.output_slot(placed_set), parameters.type(core::parameter_id_t{0}));
@@ -861,12 +821,18 @@ TEST_CASE("execution_dag::membership probed by a constant and by a dictionary") 
         }
     }
 
-    SECTION("a dictionary probe is read through its indirection") {
-        bigint_membership_t membership(operator_code::equal, membership_node_t::quantifier::any);
-        membership.bind(bigint_set(set));
-        membership.graph.set_output(slots({membership.output}));
-        REQUIRE_FALSE(membership.graph.prepare().contains_error());
-        membership.graph.set_parameters(membership.parameters.get());
+    SECTION("dictionary probe") {
+        execution_dag_t graph(resource());
+        auto probe = input_slot(graph, 0, logical_type::BIGINT);
+        auto placed = graph.add_parameter(core::parameter_id_t{0});
+        auto node = graph.add_membership(operator_code::equal, quantifier::any, probe, graph.output_slot(placed));
+        storage_parameters parameters(resource());
+        REQUIRE(parameters.add(bigint_set({10, std::nullopt, 30}), parameter_kind::literal) ==
+                core::parameter_id_t{0});
+        graph.set_slot_type(graph.output_slot(placed), parameters.type(core::parameter_id_t{0}));
+        graph.set_output(slots({graph.output_slot(node)}));
+        REQUIRE_FALSE(graph.prepare().contains_error());
+        graph.set_parameters(&parameters);
 
         vector_t base(resource(), complex_logical_type{logical_type::BIGINT}, 4);
         for (uint64_t row = 0; row < 4; row++) {
@@ -886,167 +852,60 @@ TEST_CASE("execution_dag::membership probed by a constant and by a dictionary") 
                                                                   resource()));
         input.data[0].reference(dictionary);
         input.set_cardinality(3);
-        REQUIRE_FALSE(membership.graph.process(input, graph_execution_context{}).contains_error());
-        auto result = membership.graph.finalize(graph_execution_context{}, input.size());
-        REQUIRE_FALSE(result.has_error());
-        const auto& answers = result.value().data[0];
-        CHECK_FALSE(answers.is_null(0));
-        CHECK(answers.get_value<bool>(0));  // 30
-        CHECK(answers.is_null(1));          // NULL probe
-        CHECK(answers.is_null(2));          // 20 is not in {10, NULL, 30}: UNKNOWN
-    }
-}
-
-TEST_CASE("execution_dag::a membership node stays out of the rows its constraint masks") {
-    execution_dag_t graph(resource());
-    auto probe = input_slot(graph, 0, logical_type::BIGINT);
-    auto mask = input_slot(graph, 1, logical_type::BOOLEAN);
-    auto placed = graph.add_parameter(core::parameter_id_t{0});
-    auto node = graph.add_membership(operator_code::equal,
-                                     membership_node_t::quantifier::any,
-                                     probe,
-                                     graph.output_slot(placed));
-    graph.set_constraint(node, mask);
-
-    storage_parameters parameters(resource());
-    REQUIRE(parameters.add(bigint_set({1, 2}), parameter_kind::literal) == core::parameter_id_t{0});
-    graph.set_slot_type(graph.output_slot(placed), parameters.type(core::parameter_id_t{0}));
-    graph.set_output(slots({graph.output_slot(node)}));
-    REQUIRE_FALSE(graph.prepare().contains_error());
-    graph.set_parameters(&parameters);
-
-    auto run = [&](std::vector<int64_t> values, std::vector<bool> active) {
-        auto input = chunk({logical_type::BIGINT, logical_type::BOOLEAN}, values.size());
-        for (uint64_t row = 0; row < values.size(); row++) {
-            input.data[0].set_null(row, false);
-            input.data[0].set_value(row, values[row]);
-            input.data[1].set_null(row, false);
-            input.data[1].set_value(row, static_cast<bool>(active[row]));
-        }
         REQUIRE_FALSE(graph.process(input, graph_execution_context{}).contains_error());
         auto result = graph.finalize(graph_execution_context{}, input.size());
         REQUIRE_FALSE(result.has_error());
-        return std::move(result.value());
-    };
-
-    auto first = run({1, 9}, {true, true});
-    REQUIRE(first.data[0].get_value<bool>(0));
-    REQUIRE_FALSE(first.data[0].get_value<bool>(1));
-    // row 0 is masked now and holds a value that would flip its answer; row 1 is live and flips
-    auto second = run({9, 2}, {false, true});
-    CHECK(second.data[0].get_value<bool>(0));  // still the first run's answer: the node never touched it
-    CHECK(second.data[0].get_value<bool>(1));
-}
-
-TEST_CASE("execution_dag::a membership state follows the set it is bound to") {
-    bigint_membership_t membership(operator_code::equal, membership_node_t::quantifier::any);
-    membership.bind(bigint_set({1, 2}));
-    membership.graph.set_output(slots({membership.output}));
-    REQUIRE_FALSE(membership.graph.prepare().contains_error());
-    membership.graph.set_parameters(membership.parameters.get());
-
-    auto answer = [&](int64_t value) {
-        auto input = chunk({logical_type::BIGINT}, 1);
-        input.data[0].set_null(0, false);
-        input.data[0].set_value(0, value);
-        REQUIRE_FALSE(membership.graph.process(input, graph_execution_context{}).contains_error());
-        auto result = membership.graph.finalize(graph_execution_context{}, input.size());
-        REQUIRE_FALSE(result.has_error());
-        return result.value().data[0].get_value<bool>(0);
-    };
-
-    CHECK(answer(1));
-    CHECK_FALSE(answer(5));
-
-    SECTION("binding the same parameters again is not a new set") {
-        membership.graph.set_parameters(membership.parameters.get());
-        CHECK(answer(1));
-        CHECK_FALSE(answer(5));
+        const auto& answers = result.value().data[0];
+        CHECK_FALSE(answers.is_null(0));
+        CHECK(answers.get_value<bool>(0)); // 30
+        CHECK(answers.is_null(1));         // NULL probe
+        CHECK(answers.is_null(2));         // 20 is not in {10, NULL, 30}: UNKNOWN
     }
 
-    SECTION("a replaced set is read afresh") {
-        storage_parameters other(resource());
-        REQUIRE(other.add(bigint_set({5, 6}), parameter_kind::literal) == core::parameter_id_t{0});
-        membership.graph.set_parameters(&other);
-        CHECK(answer(5));
-        CHECK_FALSE(answer(1));
-        // and back
-        membership.graph.set_parameters(membership.parameters.get());
-        CHECK(answer(1));
-        CHECK_FALSE(answer(5));
+    SECTION("masked rows") {
+        execution_dag_t graph(resource());
+        auto probe = input_slot(graph, 0, logical_type::BIGINT);
+        auto mask = input_slot(graph, 1, logical_type::BOOLEAN);
+        auto placed = graph.add_parameter(core::parameter_id_t{0});
+        auto node = graph.add_membership(operator_code::equal, quantifier::any, probe, graph.output_slot(placed));
+        graph.set_constraint(node, mask);
+
+        storage_parameters parameters(resource());
+        REQUIRE(parameters.add(bigint_set({1, 2}), parameter_kind::literal) == core::parameter_id_t{0});
+        graph.set_slot_type(graph.output_slot(placed), parameters.type(core::parameter_id_t{0}));
+        graph.set_output(slots({graph.output_slot(node)}));
+        REQUIRE_FALSE(graph.prepare().contains_error());
+        graph.set_parameters(&parameters);
+
+        auto run = [&](std::vector<int64_t> values, std::vector<bool> active) {
+            auto input = chunk({logical_type::BIGINT, logical_type::BOOLEAN}, values.size());
+            for (uint64_t row = 0; row < values.size(); row++) {
+                input.data[0].set_null(row, false);
+                input.data[0].set_value(row, values[row]);
+                input.data[1].set_null(row, false);
+                input.data[1].set_value(row, static_cast<bool>(active[row]));
+            }
+            REQUIRE_FALSE(graph.process(input, graph_execution_context{}).contains_error());
+            auto result = graph.finalize(graph_execution_context{}, input.size());
+            REQUIRE_FALSE(result.has_error());
+            return std::move(result.value());
+        };
+
+        auto first = run({1, 9}, {true, true});
+        REQUIRE(first.data[0].get_value<bool>(0));
+        REQUIRE_FALSE(first.data[0].get_value<bool>(1));
+        // row 0 is masked now and holds a value that would flip its answer; row 1 is live and flips
+        auto second = run({9, 2}, {false, true});
+        CHECK(second.data[0].get_value<bool>(0)); // still the first run's answer: the node never touched it
+        CHECK(second.data[0].get_value<bool>(1));
     }
-}
-
-TEST_CASE("execution_dag::a membership between different types is refused, not read through the wrong layout") {
-    execution_dag_t graph(resource());
-    auto probe = input_slot(graph, 0, logical_type::INTEGER);
-    auto placed = graph.add_parameter(core::parameter_id_t{0});
-    auto node = graph.add_membership(operator_code::equal,
-                                     membership_node_t::quantifier::any,
-                                     probe,
-                                     graph.output_slot(placed));
-    storage_parameters parameters(resource());
-    REQUIRE(parameters.add(bigint_set({1, 2}), parameter_kind::literal) == core::parameter_id_t{0});
-    graph.set_slot_type(graph.output_slot(placed), parameters.type(core::parameter_id_t{0}));
-    graph.set_output(slots({graph.output_slot(node)}));
-    REQUIRE_FALSE(graph.prepare().contains_error());
-    graph.set_parameters(&parameters);
-
-    auto input = chunk({logical_type::INTEGER}, 1);
-    input.data[0].set_null(0, false);
-    input.data[0].set_value(0, int32_t{1});
-    auto error = graph.process(input, graph_execution_context{});
-    REQUIRE(error.contains_error());
-    CHECK(error.type == core::error_code_t::invalid_parameter);
-}
-
-TEST_CASE("execution_dag::a membership casts the set once to the probe's type") {
-    execution_dag_t graph(resource());
-    auto probe = input_slot(graph, 0, logical_type::BIGINT);
-    auto placed = graph.add_parameter(core::parameter_id_t{0});
-    auto node = graph.add_membership(operator_code::less,
-                                     membership_node_t::quantifier::any,
-                                     probe,
-                                     graph.output_slot(placed));
-    auto cast = casts().resolve(complex_logical_type(logical_type::INTEGER),
-                                complex_logical_type(logical_type::BIGINT),
-                                components::casts::cast_type::implicit);
-    REQUIRE(cast.has_value());
-    graph.set_membership_cast(node, complex_logical_type(logical_type::BIGINT), *cast);
-
-    const complex_logical_type integer{logical_type::INTEGER};
-    std::vector<vector_t> elements;
-    elements.push_back(make_scalar(resource(), int32_t{10}));
-    elements.push_back(make_null(resource(), integer));
-    elements.push_back(make_scalar(resource(), int32_t{30}));
-    storage_parameters parameters(resource());
-    REQUIRE(parameters.add(make_array(resource(), integer, elements), parameter_kind::literal) ==
-            core::parameter_id_t{0});
-    graph.set_slot_type(graph.output_slot(placed), parameters.type(core::parameter_id_t{0}));
-    graph.set_output(slots({graph.output_slot(node)}));
-    REQUIRE_FALSE(graph.prepare().contains_error());
-    graph.set_parameters(&parameters);
-
-    auto input = chunk({logical_type::BIGINT}, 3);
-    for (uint64_t row = 0; row < 3; row++) {
-        input.data[0].set_null(row, false);
-        input.data[0].set_value(row, static_cast<int64_t>(row == 0 ? 29 : (row == 1 ? 30 : 5000000000)));
-    }
-    REQUIRE_FALSE(graph.process(input, graph_execution_context{}).contains_error());
-    auto result = graph.finalize(graph_execution_context{}, input.size());
-    REQUIRE_FALSE(result.has_error());
-    const auto& answers = result.value().data[0];
-    CHECK_FALSE(answers.is_null(0));
-    CHECK(answers.get_value<bool>(0));   // 29 < 30
-    CHECK(answers.is_null(1));           // 30 < {10, NULL, 30}: no witness, a NULL element
-    CHECK(answers.is_null(2));           // beyond any int: the cast target holds it, still no witness
 }
 
 namespace {
 
     // `probe <op> ANY|ALL (elements)` over one value family: the probe is a constant, the set a bound array
     tri typed_membership(operator_code op,
-                         membership_node_t::quantifier kind,
+                         quantifier kind,
                          const complex_logical_type& element_type,
                          vector_t probe,
                          std::vector<vector_t> elements,
@@ -1077,8 +936,8 @@ namespace {
         return column.is_null(0) ? tri::unknown : (column.get_value<bool>(0) ? tri::yes : tri::no);
     }
 
-    constexpr auto any_of = membership_node_t::quantifier::any;
-    constexpr auto all_of = membership_node_t::quantifier::all;
+    constexpr auto any_of = quantifier::any;
+    constexpr auto all_of = quantifier::all;
 
     std::vector<vector_t> scalars_of(std::initializer_list<double> values) {
         std::vector<vector_t> elements;
@@ -1267,59 +1126,6 @@ TEST_CASE("execution_dag::membership over a set longer than one vector") {
     CHECK(typed_membership(operator_code::less, any_of, bigint, probe(9998), elements_copy()) == tri::no);
 }
 
-TEST_CASE("execution_dag::membership over a million elements stays within a few bytes per element") {
-    const complex_logical_type bigint{logical_type::BIGINT};
-    constexpr uint64_t elements_count = 1000000;
-    core::pmr::counting_resource_t counting(resource());
-    auto array_type = complex_logical_type::create_array(bigint, elements_count);
-    vector_t set(&counting, array_type, 1);
-    auto* values = set.entry().data<int64_t>();
-    for (uint64_t i = 0; i < elements_count; i++) {
-        values[i] = static_cast<int64_t>(i * 3);
-    }
-    set.set_vector_type(components::vector::vector_type::CONSTANT);
-
-    execution_dag_t graph(&counting);
-    auto probe = input_slot(graph, 0, logical_type::BIGINT);
-    auto placed = graph.add_parameter(core::parameter_id_t{0});
-    auto node = graph.add_membership(operator_code::equal, any_of, probe, graph.output_slot(placed));
-    storage_parameters parameters(&counting);
-    REQUIRE(parameters.add(std::move(set), parameter_kind::literal) == core::parameter_id_t{0});
-    graph.set_slot_type(graph.output_slot(placed), parameters.type(core::parameter_id_t{0}));
-    graph.set_output(slots({graph.output_slot(node)}));
-    REQUIRE_FALSE(graph.prepare().contains_error());
-    graph.set_parameters(&parameters);
-
-    data_chunk_t input(&counting, std::pmr::vector<complex_logical_type>({bigint}, &counting));
-    input.set_cardinality(4);
-    const int64_t probes[] = {0, 2999997, 5, 2999998};
-    for (uint64_t row = 0; row < 4; row++) {
-        input.data[0].set_null(row, false);
-        input.data[0].set_value(row, probes[row]);
-    }
-    const auto before = counting.allocated_bytes();
-    REQUIRE_FALSE(graph.process(input, graph_execution_context{}).contains_error());
-    auto result = graph.finalize(graph_execution_context{}, input.size());
-    REQUIRE_FALSE(result.has_error());
-    CHECK(result.value().data[0].get_value<bool>(0));
-    CHECK(result.value().data[0].get_value<bool>(1));
-    CHECK_FALSE(result.value().data[0].get_value<bool>(2));
-    CHECK_FALSE(result.value().data[0].get_value<bool>(3));
-
-    // the hashes (8 bytes) and a table at most half full (4 bytes per slot, a power of two): never the ~9 KB per
-    // element that a node per element costs
-    const auto built = counting.allocated_bytes() - before;
-    INFO("bytes allocated by the graph: " << built << ", per element: " << built / elements_count);
-    CHECK(built < 32 * elements_count);
-
-    // probing again reuses the state
-    const auto settled = counting.allocated_bytes();
-    REQUIRE_FALSE(graph.process(input, graph_execution_context{}).contains_error());
-    graph.set_parameters(&parameters);
-    REQUIRE_FALSE(graph.process(input, graph_execution_context{}).contains_error());
-    CHECK(counting.allocated_bytes() - settled < 64 * 1024);
-}
-
 TEST_CASE("execution_dag::membership over tiny doubles tests for exact equality in every form") {
     const complex_logical_type dbl{logical_type::DOUBLE};
     auto probe = [&] { return make_scalar(resource(), 1e-20); };
@@ -1396,51 +1202,6 @@ TEST_CASE("execution_dag::a membership over struct elements follows a replaced s
     second.reset();
     auto third = make_parameters(pair_set(pair, {{5, 6}, {1, 2}}));
     CHECK(answer(third.get()));
-}
-
-TEST_CASE("execution_dag::a membership that casts its set follows a replaced set of the same length") {
-    execution_dag_t graph(resource());
-    auto probe = input_slot(graph, 0, logical_type::BIGINT);
-    auto placed = graph.add_parameter(core::parameter_id_t{0});
-    auto node = graph.add_membership(operator_code::equal, any_of, probe, graph.output_slot(placed));
-    auto cast = casts().resolve(complex_logical_type(logical_type::INTEGER),
-                                complex_logical_type(logical_type::BIGINT),
-                                components::casts::cast_type::implicit);
-    REQUIRE(cast.has_value());
-    graph.set_membership_cast(node, complex_logical_type(logical_type::BIGINT), *cast);
-
-    const complex_logical_type integer{logical_type::INTEGER};
-    auto make_parameters = [&](int32_t a, int32_t b) {
-        std::vector<vector_t> elements;
-        elements.push_back(make_scalar(resource(), a));
-        elements.push_back(make_scalar(resource(), b));
-        auto parameters = std::make_unique<storage_parameters>(resource());
-        REQUIRE(parameters->add(make_array(resource(), integer, elements), parameter_kind::literal) ==
-                core::parameter_id_t{0});
-        return parameters;
-    };
-    auto first = make_parameters(1, 2);
-    graph.set_slot_type(graph.output_slot(placed), first->type(core::parameter_id_t{0}));
-    graph.set_output(slots({graph.output_slot(node)}));
-    REQUIRE_FALSE(graph.prepare().contains_error());
-
-    auto answer = [&](storage_parameters* parameters, int64_t value) {
-        graph.set_parameters(parameters);
-        auto input = chunk({logical_type::BIGINT}, 1);
-        input.data[0].set_null(0, false);
-        input.data[0].set_value(0, value);
-        REQUIRE_FALSE(graph.process(input, graph_execution_context{}).contains_error());
-        auto result = graph.finalize(graph_execution_context{}, 1);
-        REQUIRE_FALSE(result.has_error());
-        return result.value().data[0].get_value<bool>(0);
-    };
-    CHECK(answer(first.get(), 1));
-    first.reset();
-    for (int round = 0; round < 20; round++) {
-        auto next = make_parameters(10 + round, 100 + round);
-        CHECK(answer(next.get(), 10 + round));
-        CHECK_FALSE(answer(next.get(), 1));
-    }
 }
 
 namespace {

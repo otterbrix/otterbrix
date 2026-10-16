@@ -203,6 +203,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_engine_lifecycle.cpp
         test_parameterized_queries.cpp
         test_list_array.cpp
+        test_quantified.cpp
         test_lost_wakeup_streaming.cpp
         test_lost_wakeup_realpath.cpp
         test_bounded_execution.cpp

@@ -943,6 +943,8 @@ namespace services::collection::executor {
                             ? components::vector::make_null(
                                   resource(),
                                   components::types::complex_logical_type{components::types::logical_type::BOOLEAN})
+                        : mapping.compacter == &components::vector::compact_to_list_value
+                            ? components::vector::make_list(resource(), column_type, {})
                             : components::vector::make_array(resource(), column_type, {}));
                 }
                 continue;
@@ -973,6 +975,22 @@ namespace services::collection::executor {
                 plan.parameters->set_parameter(
                     mapping.id,
                     components::vector::make_array(resource(), sub_node->output_types().front(), {}));
+                continue;
+            }
+            if (mapping.compacter == &components::vector::compact_to_list_value && compacted_is_untyped) {
+                // A set of no rows is an empty list of the sub-query's column type, as the set of any rows is.
+                const auto& sub_node = plan.sub_queries[i];
+                if (!sub_node->has_output_types()) {
+                    co_return execute_result_t{make_cursor(
+                        resource(),
+                        core::error_t{core::error_code_t::sql_parse_error,
+                                      std::pmr::string{"ANY / ALL (SELECT ...): the sub-query's element type could "
+                                                       "not be resolved from the schema",
+                                                       resource()}})};
+                }
+                plan.parameters->set_parameter(
+                    mapping.id,
+                    components::vector::make_list(resource(), sub_node->output_types().front(), {}));
                 continue;
             }
             if (mapping.compacter == &components::vector::compact_to_single_value && compacted_is_untyped &&

@@ -6,6 +6,7 @@
 #include <components/logical_plan/forward.hpp>
 #include <components/types/tri_bool.hpp>
 #include <components/vector/operations/apply_operator.hpp>
+#include <components/vector/operations/apply_quantified.hpp>
 
 #include <limits>
 #include <optional>
@@ -199,6 +200,30 @@ namespace components::planner::optimizer {
             return {true, out.is_null(0) ? types::tri_bool_t::unknown : types::tri_of(out.get_value<bool>(0))};
         }
 
+        std::pair<bool, types::tri_bool_t> eval_quantified(const vector::storage_parameters& storage,
+                                                           const compare_expression_t& expr,
+                                                           const vector::vector_t& probe,
+                                                           const vector::vector_t& set) {
+            vector::operations::element_test_t test{to_operator_code(expr.inner_op())};
+            if (expr.inner_op() == compare_type::regex) {
+                auto flags = expr.regex_flags_param();
+                if (!flags.has_value()) {
+                    return {false, types::tri_bool_t::unknown};
+                }
+                test = vector::operations::element_test_t{
+                    vector::operations::match_flags_of(storage.at(*flags).get_value<std::string_view>(0))};
+            } else if (!vector::operations::is_quantifiable(test.code())) {
+                return {false, types::tri_bool_t::unknown};
+            }
+            vector::vector_t out(storage.resource(), types::complex_logical_type{types::logical_type::BOOLEAN}, 1);
+            auto kind = expr.type() == compare_type::any ? vector::operations::quantifier::any
+                                                               : vector::operations::quantifier::all;
+            if (vector::operations::apply_quantified(test, kind, probe, set, &out, 1).contains_error()) {
+                return {false, types::tri_bool_t::unknown};
+            }
+            return {true, out.is_null(0) ? types::tri_bool_t::unknown : types::tri_of(out.get_value<bool>(0))};
+        }
+
         // Try to fold a compare expression where both sides are constant parameters
         void
         try_fold_compare(compare_expression_t& expr, parameter_node_t* parameters, const graph_execution_context& ctx) {
@@ -234,13 +259,14 @@ namespace components::planner::optimizer {
             auto right_id = std::get<core::parameter_id_t>(expr.right());
 
             const auto& storage = parameters->parameters();
-            auto [ok, result] = eval_compare(
-                storage.resource(), expr.type(), storage.at(left_id), storage.at(right_id), ctx);
+            bool quantified = expr.type() == compare_type::any || expr.type() == compare_type::all;
+            auto [ok, result] =
+                quantified ? eval_quantified(storage, expr, storage.at(left_id), storage.at(right_id))
+                           : eval_compare(storage.resource(), expr.type(), storage.at(left_id), storage.at(right_id), ctx);
             if (ok) {
                 expr.set_type(folded_type(result));
             }
-            // !ok: this comparison kind has no fold (regex / ANY / ALL / IS [NOT] NULL) — a skip, not an
-            // assert, since folding is only an optimization and the runtime evaluator answers it anyway.
+            // otherwise this comparison kind has no fold
         }
 
         // Check if a union expression's children are all folded to a specific type

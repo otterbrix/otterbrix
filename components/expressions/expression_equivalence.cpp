@@ -97,7 +97,6 @@ namespace components::expressions {
                     const auto* right = static_cast<const compare_expression_t*>(rhs);
                     // Compare the regex flags by id, as equality always has.
                     return left->type() == right->type() && left->inner_op() == right->inner_op() &&
-                           left->set_element_type() == right->set_element_type() &&
                            left->regex_flags_param() == right->regex_flags_param() &&
                            same_param(left->left(), right->left(), parameters) &&
                            same_param(left->right(), right->right(), parameters) &&

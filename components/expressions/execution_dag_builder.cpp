@@ -267,88 +267,37 @@ namespace components::expressions {
 
         // ANY / ALL
         core::result_wrapper_t<slot_id_t> builder_t::quantified_slot(const compare_expression_t* expression) {
-            const bool is_any = expression->type() == compare_type::any;
-            // A regex inner op is a match call per element, not an operator.
-            const bool is_match = expression->inner_op() == compare_type::regex;
+            const auto kind = expression->type() == compare_type::any ? vector::operations::quantifier::any
+                                                                      : vector::operations::quantifier::all;
+            const bool match = expression->inner_op() == compare_type::regex;
             const auto inner = to_operator_code(expression->inner_op());
-            if (!is_match && inner == operators::operator_code::invalid) {
+            if (!match && !vector::operations::is_quantifiable(inner)) {
                 return core::error_t(core::error_code_t::unimplemented_yet,
                                      std::pmr::string{"execution graph builder: " + to_string(expression->type()) +
                                                           " over " + to_string(expression->inner_op()),
                                                       resource()});
             }
-            if (!std::holds_alternative<core::parameter_id_t>(expression->right())) {
-                return core::error_t(core::error_code_t::invalid_parameter,
-                                     std::pmr::string{"execution graph builder: " + to_string(expression->type()) +
-                                                          " expects its set as a bound parameter",
-                                                      resource()});
+            auto probe = slot_of(expression->left());
+            if (probe.has_error()) {
+                return probe;
             }
-            const auto id = std::get<core::parameter_id_t>(expression->right());
-            const auto& set_type = parameters_.type(id);
-            auto left = slot_of(expression->left());
-            if (left.has_error()) {
-                return left;
+            auto set = slot_of(expression->right());
+            if (set.has_error()) {
+                return set;
             }
-            auto set_node = graph_->add_parameter(id);
-            const auto set_slot = graph_->output_slot(set_node);
-            graph_->set_slot_type(set_slot, set_type);
-
-            if (set_type.type() == logical_type::NA) {
-                auto node = graph_->add_operator(is_any ? operators::operator_code::is_not_null
-                                                        : operators::operator_code::is_null,
-                                                 set_slot);
-                graph_->set_slot_type(graph_->output_slot(node), complex_logical_type{logical_type::BOOLEAN});
-                return graph_->output_slot(node);
+            if (!match) {
+                return graph_->output_slot(graph_->add_membership(inner, kind, probe.value(), set.value()));
             }
-
-            const auto element_count =
-                static_cast<const types::array_logical_type_extension*>(set_type.extension())->size();
-            if (element_count == 0) {
-                return core::error_t(core::error_code_t::invalid_parameter,
-                                     std::pmr::string{"execution graph builder: set parameter holds no elements and "
-                                                      "is not the empty-set sentinel",
-                                                      resource()});
+            const auto flags_id = expression->regex_flags_param();
+            if (!flags_id.has_value()) {
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"execution graph builder: match carries no flags parameter", resource()});
             }
-            const auto element_type = set_type.child_type();
-            // The probe has the type the set is cast to, when it is cast.
-            const bool set_is_cast = expression->set_element_type().type() != logical_type::INVALID;
-            if (graph_->slot_type(left.value()).type() == logical_type::NA) {
-                graph_->set_slot_type(left.value(), set_is_cast ? expression->set_element_type() : element_type);
-            }
-
-            if (!is_match) {
-                auto membership = graph_->add_membership(inner,
-                                                         is_any ? execution_dag::membership_node_t::quantifier::any
-                                                                : execution_dag::membership_node_t::quantifier::all,
-                                                         left.value(),
-                                                         set_slot);
-                if (set_is_cast) {
-                    graph_->set_membership_cast(membership,
-                                                expression->set_element_type(),
-                                                expression->set_element_cast());
-                }
-                return graph_->output_slot(membership);
-            }
-
-            // A regex ANY is an OR over the per-element matches, ALL an AND: one fold node over the N of them.
-            execution_dag::slot_list_t results(resource());
-            results.reserve(element_count);
-            for (size_t index = 0; index < element_count; index++) {
-                std::pmr::vector<size_t> step({index}, resource());
-                auto element_node = graph_->add_field(set_slot, step);
-                const auto element_slot = graph_->output_slot(element_node);
-                graph_->set_slot_type(element_slot, element_type);
-                auto matched = match_slot(expression, left.value(), element_slot);
-                if (matched.has_error()) {
-                    return matched;
-                }
-                results.push_back(matched.value());
-            }
-            auto fold = graph_->add_blend(is_any ? execution_dag::blend_node_t::blend_kind::logical_or
-                                                 : execution_dag::blend_node_t::blend_kind::logical_and,
-                                          results);
-            graph_->set_slot_type(graph_->output_slot(fold), complex_logical_type{logical_type::BOOLEAN});
-            return graph_->output_slot(fold);
+            auto flags_node = graph_->add_parameter(*flags_id);
+            const auto flags_slot = graph_->output_slot(flags_node);
+            graph_->set_slot_type(flags_slot, parameters_.type(*flags_id));
+            return graph_->output_slot(graph_->add_membership_match(kind, probe.value(), set.value(), flags_slot));
         }
 
         core::result_wrapper_t<slot_id_t> builder_t::compare_slot(const compare_expression_t* expression) {

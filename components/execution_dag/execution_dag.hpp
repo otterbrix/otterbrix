@@ -5,6 +5,7 @@
 #include <components/compute/kernel_executor.hpp>
 #include <components/execution_context/graph_execution_context.hpp>
 #include <components/operators/operator_code.hpp>
+#include <components/vector/operations/apply_quantified.hpp>
 #include <components/vector/storage_parameters.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector.hpp>
@@ -273,75 +274,32 @@ namespace components::execution_dag {
         bool placed_{false};
     };
 
-    // [2] inputs (probe, set), [1] BOOLEAN output
-    // `probe <op> ANY|ALL (set)`, the set being one ARRAY value. The graph stays the same size whatever the set
-    // size: the set is hashed (= and <>) or reduced to its extremes (< <= > >=) once, when the node first sees it,
-    // and each probe row costs O(1) after that. ALL is NOT ANY of the negated operator, with NULL staying NULL.
+    // [2] inputs (probe, set), or [3] (probe, set, flags) for a match, [1] BOOLEAN output
+    // `probe <op> ANY|ALL (set)`, answered by vector::operations::apply_quantified; a match takes regexp_like's
+    // flags in place of the op. A constant set is one value for the whole run, so the node prepares it once and
+    // keeps it until the parameters are bound again.
     class membership_node_t final : public execution_node_t {
     public:
-        enum class quantifier
-        {
-            any,
-            all
-        };
-
         membership_node_t(std::pmr::memory_resource* resource,
                           operators::operator_code op,
-                          quantifier kind,
-                          slot_id_t probe,
-                          slot_id_t set,
+                          vector::operations::quantifier kind,
+                          bool is_constant_set,
+                          slot_list_t inputs,
                           slot_id_t output);
 
         core::error_t process(const graph_execution_context& context, uint64_t count) override;
 
         operators::operator_code code() const noexcept { return op_; }
-        quantifier kind() const noexcept { return kind_; }
-
-        // The set is cast to `target` once, when its state is built
-        void set_element_cast(types::complex_logical_type target, casts::cast_t cast) {
-            element_target_ = std::move(target);
-            element_cast_ = std::move(cast);
-        }
+        vector::operations::quantifier kind() const noexcept { return kind_; }
 
     private:
         [[nodiscard]] core::error_t validate() const override;
-        void set_parameters(const storage_parameters*) noexcept override { rebound_ = true; }
-
-        [[nodiscard]] core::error_t ensure_state(const graph_execution_context& context);
-        [[nodiscard]] core::error_t build_state(const vector::vector_t& elements, uint64_t count);
-        [[nodiscard]] bool has_witness(const vector::vector_t& probe, uint64_t row, uint64_t hash) const;
+        void set_parameters(const storage_parameters* parameters) noexcept override;
 
         operators::operator_code op_;
-        quantifier kind_;
-        // ALL tests the negated operator for a witness, then negates the answer
-        operators::operator_code witness_op_;
-        bool negated_;
-
-        types::complex_logical_type element_target_{types::logical_type::INVALID};
-        casts::cast_t element_cast_;
-
-        // -- state of the set bound last. rebound_ is raised by set_parameters(); only then the set is looked at again,
-        // and only a different buffer rebuilds the state.
-        bool rebound_{true};
-        bool ready_{false};
-        // references the set looked at: its buffers stay alive, so a new set cannot take their addresses
-        std::optional<vector::vector_t> set_;
-        uint64_t source_count_{0};
-        std::optional<vector::vector_t> elements_;
-        uint64_t element_count_{0};
-        uint64_t non_null_count_{0};
-        bool has_null_{false};
-        // <> : the first non-NULL element, and whether every other one equals it
-        uint64_t first_{0};
-        uint64_t first_hash_{0};
-        bool uniform_{true};
-        // < <= > >= : the extremes of the non-NULL elements
-        uint64_t min_{0};
-        uint64_t max_{0};
-        // =  : open addressing over the non-NULL elements, index + 1 (0 is empty), at most half full
-        std::optional<vector::vector_t> hashes_;
-        std::pmr::vector<uint32_t> table_;
-        uint32_t table_shift_{0};
+        vector::operations::quantifier kind_;
+        bool is_constant_set_;
+        vector::operations::quantified_set_t prepared_;
     };
 
     using execution_node_ptr = boost::intrusive_ptr<execution_node_t>;
@@ -375,13 +333,16 @@ namespace components::execution_dag {
         node_id_t add_operator(operators::operator_code op, slot_id_t operand);
         node_id_t add_function(compute::function_ptr function, const slot_list_t& inputs, size_t output_count);
         node_id_t add_parameter(core::parameter_id_t id);
-        // `probe <op> ANY|ALL (set)`; op is a comparison. The set's element type must be the probe's, or be cast to
-        // it through set_membership_cast.
+        // `probe <op> ANY|ALL (set)`; op is a comparison, and the set's element type is the probe's.
         node_id_t add_membership(operators::operator_code op,
-                                 membership_node_t::quantifier kind,
+                                 vector::operations::quantifier kind,
                                  slot_id_t probe,
                                  slot_id_t set);
-        void set_membership_cast(node_id_t node, const types::complex_logical_type& target, casts::cast_t cast);
+        // `probe [NOT] LIKE|ILIKE|~ ANY|ALL (set)`: a set of patterns, matched as regexp_like's `flags` say.
+        node_id_t add_membership_match(vector::operations::quantifier kind,
+                                       slot_id_t probe,
+                                       slot_id_t set,
+                                       slot_id_t flags);
         node_id_t add_blend(blend_node_t::blend_kind kind, const slot_list_t& inputs);
         // Declares and returns N + 1 BOOLEAN mask slots (one per condition, plus the DEFAULT).
         node_id_t add_case_when(const slot_list_t& conditions, slot_list_t& masks);
@@ -491,6 +452,9 @@ namespace components::execution_dag {
         };
 
         node_id_t append(execution_node_ptr node);
+        // Whether the slot can hold a different value from one row (or chunk) to the next: it reads an input
+        // column, or is made by a node with no inputs or by a reduction. A parameter does not.
+        [[nodiscard]] bool varies_by_row(slot_id_t slot) const;
         // Drives one node: settles its row count from its inputs, and processes the node
         core::error_t run(execution_node_t* node, const graph_execution_context& context, uint64_t ambient);
         // Points every bound slot at `input`

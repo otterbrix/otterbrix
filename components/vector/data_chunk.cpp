@@ -488,4 +488,43 @@ namespace components::vector {
         return result;
     }
 
+    core::result_wrapper_t<vector_t> compact_to_list_value(const std::pmr::vector<data_chunk_t>& chunks) {
+        size_t total_rows = 0;
+        const data_chunk_t* typed = nullptr;
+        for (const auto& c : chunks) {
+            total_rows += c.size();
+            if (c.empty()) {
+                continue;
+            }
+            if (c.column_count() != 1) {
+                return core::error_t(
+                    core::error_code_t::conversion_failure,
+                    std::pmr::string{"could not convert data_chunk_t to a list value", chunks.front().resource()});
+            }
+            if (typed == nullptr) {
+                typed = &c;
+            } else if (c.data[0].type() != typed->data[0].type()) {
+                return core::error_t(
+                    core::error_code_t::conversion_failure,
+                    std::pmr::string{"could not convert data_chunk_t to a list value: the column changes its type "
+                                     "between chunks",
+                                     chunks.front().resource()});
+            }
+        }
+        // No row has no type to give the list; the sub-query's schema does (the executor builds it from that).
+        if (total_rows == 0) {
+            return make_null(chunks.front().resource(), types::complex_logical_type{types::logical_type::NA});
+        }
+        auto result = make_list(chunks.front().resource(), typed->data[0].type(), {});
+        auto* buffer = static_cast<list_vector_buffer_t*>(result.auxiliary().get());
+        buffer->reserve(total_rows);
+        for (const auto& c : chunks) {
+            if (!c.empty()) {
+                buffer->append(c.data[0], c.size());
+            }
+        }
+        result.data<types::list_entry_t>()[0] = types::list_entry_t{0, total_rows};
+        return result;
+    }
+
 } // namespace components::vector

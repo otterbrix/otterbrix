@@ -41,7 +41,6 @@ namespace components::expressions {
                                                    clone_param(resource, src->right()));
                 dst->set_key(src->key());
                 dst->set_inner_op(src->inner_op());
-                dst->set_set_element_cast(src->set_element_type(), src->set_element_cast());
                 if (src->do_not_fold()) {
                     dst->make_unfoldable();
                 }

@@ -106,5 +106,6 @@ namespace components::vector {
     core::result_wrapper_t<vector_t> compact_to_bool_value(const std::pmr::vector<data_chunk_t>& chunks);
     core::result_wrapper_t<vector_t> compact_to_single_value(const std::pmr::vector<data_chunk_t>& chunks);
     core::result_wrapper_t<vector_t> compact_to_array_value(const std::pmr::vector<data_chunk_t>& chunks);
+    core::result_wrapper_t<vector_t> compact_to_list_value(const std::pmr::vector<data_chunk_t>& chunks);
 
 } // namespace components::vector

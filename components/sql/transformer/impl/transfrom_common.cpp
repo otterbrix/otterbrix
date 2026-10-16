@@ -221,6 +221,26 @@ namespace components::sql::transform {
                     return compare_type::invalid;
             }
         }
+
+        // The comparison an ANY / ALL quantifies; a match carries regexp_like's flags as well
+        struct quantified_op_t {
+            compare_type op;
+            std::string flags;
+        };
+
+        quantified_op_t quantified_op(std::string_view op_str) {
+            if (op_str == "~~" || op_str == "~~*" || op_str == "!~~" || op_str == "!~~*") {
+                std::string flags{"l"};
+                if (op_str == "~~*" || op_str == "!~~*") {
+                    flags += 'i';
+                }
+                if (op_str == "!~~" || op_str == "!~~*") {
+                    flags += 'n';
+                }
+                return {compare_type::regex, std::move(flags)};
+            }
+            return {get_compare_type(op_str), {}};
+        }
     } // namespace
 
     core::result_wrapper_t<expression_ptr>
@@ -1003,6 +1023,31 @@ namespace components::sql::transform {
                 expr->append_child(right);
                 return expr;
             }
+            case AEXPR_OP_ANY:
+            case AEXPR_OP_ALL: {
+                auto op_str = std::string_view(strVal(node->name->lst.back().data));
+                auto inner = quantified_op(op_str);
+                if (inner.op == compare_type::invalid) {
+                    return core::error_t(core::error_code_t::unimplemented_yet,
+                                         std::pmr::string{"operator " + std::string(op_str) +
+                                                              " is not supported with ANY / ALL over an array",
+                                                          resource_});
+                }
+                expression_context_t operand_context{names, plan};
+                operand_context.cast_annotates_key = true;
+                VALUE_OR_RETURN(auto probe, transform_expression(node->lexpr, operand_context));
+                VALUE_OR_RETURN(auto set, transform_expression(node->rexpr, operand_context));
+                auto expr = make_compare_expression(resource_,
+                                                    node->kind == AEXPR_OP_ANY ? compare_type::any : compare_type::all,
+                                                    probe,
+                                                    set);
+                expr->set_inner_op(inner.op);
+                if (inner.op == compare_type::regex) {
+                    expr->set_regex_flags(plan->parameters->add_parameter(vector::make_scalar(resource_, inner.flags),
+                                                                          vector::parameter_kind::literal));
+                }
+                return expr;
+            }
             case AEXPR_IN: {
                 if (nodeTag(node->lexpr) != T_ColumnRef && nodeTag(node->lexpr) != T_A_Indirection) {
                     return core::error_t(
@@ -1111,22 +1156,11 @@ namespace components::sql::transform {
                 VALUE_OR_RETURN(auto key, node_to_field(resource_, node->testexpr, names));
                 auto op_str = std::string_view(strVal(node->operName->lst.back().data));
                 // An unmapped operator is rejected here, never silently treated as `=`.
-                compare_type inner_op;
-                bool re_like = false;
-                bool re_icase = false;
-                bool re_negate = false;
-                if (op_str == "~~" || op_str == "~~*" || op_str == "!~~" || op_str == "!~~*") {
-                    inner_op = compare_type::regex;
-                    re_like = true;
-                    re_icase = (op_str == "~~*" || op_str == "!~~*");
-                    re_negate = (op_str == "!~~" || op_str == "!~~*");
-                } else {
-                    inner_op = get_compare_type(op_str);
-                    if (inner_op == compare_type::invalid) {
-                        return core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"unsupported operator in ANY/ALL subquery comparison", resource_});
-                    }
+                auto inner = quantified_op(op_str);
+                if (inner.op == compare_type::invalid) {
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"unsupported operator in ANY/ALL subquery comparison", resource_});
                 }
                 auto param_id = plan->parameters->add_parameter(
                     vector::make_null(resource_, types::complex_logical_type{types::logical_type::NA}),
@@ -1138,23 +1172,13 @@ namespace components::sql::transform {
                 if (sub_node.has_error()) {
                     return sub_node.error();
                 }
-                plan->sub_query_results.push_back({&vector::compact_to_array_value, param_id});
+                plan->sub_query_results.push_back({&vector::compact_to_list_value, param_id});
                 plan->sub_queries.emplace_back(std::move(sub_node.value()));
                 auto ctype = node->subLinkType == ANY_SUBLINK ? compare_type::any : compare_type::all;
                 auto expr = make_compare_expression(resource_, ctype, key.field, param_id);
-                expr->set_inner_op(inner_op);
-                if (inner_op == compare_type::regex) {
-                    std::string flags;
-                    if (re_like) {
-                        flags += 'l';
-                    }
-                    if (re_icase) {
-                        flags += 'i';
-                    }
-                    if (re_negate) {
-                        flags += 'n';
-                    }
-                    expr->set_regex_flags(plan->parameters->add_parameter(vector::make_scalar(resource_, flags),
+                expr->set_inner_op(inner.op);
+                if (inner.op == compare_type::regex) {
+                    expr->set_regex_flags(plan->parameters->add_parameter(vector::make_scalar(resource_, inner.flags),
                                                                           vector::parameter_kind::literal));
                 }
                 return expr;

@@ -85,36 +85,29 @@ namespace components::operators {
             }
 
             // Short-circuit: null parameter in a scalar comparison — SQL NULL semantics.
-            // col OP NULL → always false → empty. col OP ALL(empty) is vacuously true → scan all.
-            bool null_param_skip_filter = false;
+            // col OP NULL → always false → empty, and so is col OP ANY|ALL (NULL).
             if (expression_ && !expression_->is_union() && expression_->type() != expressions::compare_type::is_null &&
                 expression_->type() != expressions::compare_type::is_not_null &&
                 std::holds_alternative<core::parameter_id_t>(expression_->right())) {
                 auto pid = std::get<core::parameter_id_t>(expression_->right());
                 if (ctx->parameters.is_null(pid)) {
-                    if (expression_->type() != expressions::compare_type::all) {
-                        drained_ = true;
-                        emitted_any_ = true;
-                        co_return make_guard_chunk(resource_, guard_types_, projected_cols_);
-                    }
-                    null_param_skip_filter = true;
+                    drained_ = true;
+                    emitted_any_ = true;
+                    co_return make_guard_chunk(resource_, guard_types_, projected_cols_);
                 }
             }
 
-            std::unique_ptr<table::pushed_filter_t> filter;
-            if (!null_param_skip_filter) {
-                auto filter_result = transform_predicate(resource_,
-                                                         ctx->disk_address.resource(),
-                                                         expression_,
-                                                         &ctx->parameters,
-                                                         ctx->execution_context);
-                if (filter_result.has_error()) {
-                    set_error(filter_result.error());
-                    mark_failed();
-                    co_return filter_result.error();
-                }
-                filter = std::move(filter_result.value());
+            auto filter_result = transform_predicate(resource_,
+                                                     ctx->disk_address.resource(),
+                                                     expression_,
+                                                     &ctx->parameters,
+                                                     ctx->execution_context);
+            if (filter_result.has_error()) {
+                set_error(filter_result.error());
+                mark_failed();
+                co_return filter_result.error();
             }
+            auto filter = std::move(filter_result.value());
 
             // OPEN the cursor: the read-cap (offset+limit) is pushed down as the agent's
             // post-filter matched-row count cap. SELECT OFFSET is applied by operator_limit above.

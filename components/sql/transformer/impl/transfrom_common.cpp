@@ -596,7 +596,7 @@ namespace components::sql::transform {
             case T_SubLink: {
                 auto* sub = pg_ptr_cast<SubLink>(node);
                 auto param_id = context.plan->parameters->add_parameter(
-                    vector::make_null(resource_, types::complex_logical_type{types::logical_type::NA}),
+                    vector::make_null(resource_, sub_query_placeholder(sub->subLinkType)),
                     vector::parameter_kind::execution);
                 auto transform_inner = [&]() {
                     auto prev_pending = std::move(pending_internal_aggs_);
@@ -635,10 +635,8 @@ namespace components::sql::transform {
                         if (inner.has_error()) {
                             return inner.error();
                         }
-                        context.plan->sub_query_results.push_back({&vector::compact_to_array_value,
-                                                                   param_id,
-                                                                   /*boolean_required=*/false,
-                                                                   /*array_equality=*/true});
+                        context.plan->sub_query_results.push_back(
+                            {&vector::compact_to_list_value, param_id, /*boolean_required=*/false, /*ordered=*/true});
                         context.plan->sub_queries.emplace_back(std::move(inner.value()));
                         if (context.array_operand) {
                             *context.array_operand = true;
@@ -1127,7 +1125,7 @@ namespace components::sql::transform {
                 auto param_id1 = plan->parameters->add_parameter(vector::make_scalar(resource_, true),
                                                                  vector::parameter_kind::literal);
                 auto param_id2 = plan->parameters->add_parameter(
-                    vector::make_null(resource_, types::complex_logical_type{types::logical_type::NA}),
+                    vector::make_null(resource_, sub_query_placeholder(EXISTS_SUBLINK)),
                     vector::parameter_kind::execution);
                 // Transform before appending so nested sub_queries come first; save/restore the pending-
                 // aggregate stash so the inner epilogue doesn't steal this level's own.
@@ -1163,7 +1161,7 @@ namespace components::sql::transform {
                         std::pmr::string{"unsupported operator in ANY/ALL subquery comparison", resource_});
                 }
                 auto param_id = plan->parameters->add_parameter(
-                    vector::make_null(resource_, types::complex_logical_type{types::logical_type::NA}),
+                    vector::make_null(resource_, sub_query_placeholder(ANY_SUBLINK)),
                     vector::parameter_kind::execution);
                 auto prev_pending = std::move(pending_internal_aggs_);
                 pending_internal_aggs_.clear();
@@ -1188,7 +1186,7 @@ namespace components::sql::transform {
                 auto param_true = plan->parameters->add_parameter(vector::make_scalar(resource_, true),
                                                                   vector::parameter_kind::literal);
                 auto param_result = plan->parameters->add_parameter(
-                    vector::make_null(resource_, types::complex_logical_type{types::logical_type::NA}),
+                    vector::make_null(resource_, sub_query_placeholder(EXPR_SUBLINK)),
                     vector::parameter_kind::execution);
                 auto prev_pending = std::move(pending_internal_aggs_);
                 pending_internal_aggs_.clear();

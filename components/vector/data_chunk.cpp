@@ -404,7 +404,9 @@ namespace components::vector {
         }
     }
 
-    core::result_wrapper_t<vector_t> compact_to_bool_value(const std::pmr::vector<data_chunk_t>& chunks) {
+    core::result_wrapper_t<vector_t> compact_to_bool_value(std::pmr::memory_resource* resource,
+                                                           const std::pmr::vector<data_chunk_t>& chunks,
+                                                           const types::complex_logical_type&) {
         bool any = false;
         for (const auto& c : chunks) {
             if (!c.empty()) {
@@ -412,10 +414,12 @@ namespace components::vector {
                 break;
             }
         }
-        return make_scalar(chunks.front().resource(), any);
+        return make_scalar(resource, any);
     }
 
-    core::result_wrapper_t<vector_t> compact_to_single_value(const std::pmr::vector<data_chunk_t>& chunks) {
+    core::result_wrapper_t<vector_t> compact_to_single_value(std::pmr::memory_resource* resource,
+                                                             const std::pmr::vector<data_chunk_t>& chunks,
+                                                             const types::complex_logical_type& result_type) {
         size_t total_rows = 0;
         size_t cols = 0;
         for (const auto& c : chunks) {
@@ -427,21 +431,22 @@ namespace components::vector {
         if (cols == 1 && total_rows == 1) {
             for (const auto& c : chunks) {
                 if (c.size() == 1) {
-                    return make_constant_copy(c.resource(), c.data[0]);
+                    return make_constant_copy(resource, c.data[0]);
                 }
             }
         }
         // No cell means SQL NULL, not an error -- covers an empty scalar sub-query and the zero-column
         // row an ungrouped aggregate emits when its filtered input matches nothing.
         if (total_rows == 0 || cols == 0) {
-            return make_null(chunks.front().resource(), types::complex_logical_type{types::logical_type::NA});
+            return make_null(resource, result_type);
         }
-        return core::error_t(
-            core::error_code_t::conversion_failure,
-            std::pmr::string{"could not convert data_chunk_t to a single value", chunks.front().resource()});
+        return core::error_t(core::error_code_t::conversion_failure,
+                             std::pmr::string{"could not convert data_chunk_t to a single value", resource});
     }
 
-    core::result_wrapper_t<vector_t> compact_to_array_value(const std::pmr::vector<data_chunk_t>& chunks) {
+    core::result_wrapper_t<vector_t> compact_to_list_value(std::pmr::memory_resource* resource,
+                                                           const std::pmr::vector<data_chunk_t>& chunks,
+                                                           const types::complex_logical_type& result_type) {
         // Gathers every row of every chunk, unbounded -- PostgreSQL treats `x IN (SELECT ...)` as
         // a semi-join with no row cap, not capped at chunk 0's <=1024.
         size_t total_rows = 0;
@@ -452,54 +457,8 @@ namespace components::vector {
                 continue;
             }
             if (c.column_count() != 1) {
-                return core::error_t(
-                    core::error_code_t::conversion_failure,
-                    std::pmr::string{"could not convert data_chunk_t to a array value", chunks.front().resource()});
-            }
-            if (typed == nullptr) {
-                typed = &c;
-            } else if (c.data[0].type() != typed->data[0].type()) {
-                return core::error_t(
-                    core::error_code_t::conversion_failure,
-                    std::pmr::string{"could not convert data_chunk_t to a array value: the column changes its type "
-                                     "between chunks",
-                                     chunks.front().resource()});
-            }
-        }
-        if (total_rows == 0) {
-            // An empty sub-query is an empty semi-join per PostgreSQL (`IN ()` matches nothing,
-            // `NOT IN ()` everything), not a type error -- reuses the zero-row scalar sub-query's NA-null sentinel.
-            return make_null(chunks.front().resource(), types::complex_logical_type{types::logical_type::NA});
-        }
-        auto* resource = chunks.front().resource();
-        vector_t result(resource,
-                        types::complex_logical_type::create_array(typed->data[0].type(), total_rows),
-                        1);
-        result.set_vector_type(vector_type::CONSTANT);
-        auto& elements = result.entry();
-        uint64_t offset = 0;
-        for (const auto& c : chunks) {
-            if (c.empty()) {
-                continue;
-            }
-            vector_ops::copy(c.data[0], elements, c.size(), 0, offset);
-            offset += c.size();
-        }
-        return result;
-    }
-
-    core::result_wrapper_t<vector_t> compact_to_list_value(const std::pmr::vector<data_chunk_t>& chunks) {
-        size_t total_rows = 0;
-        const data_chunk_t* typed = nullptr;
-        for (const auto& c : chunks) {
-            total_rows += c.size();
-            if (c.empty()) {
-                continue;
-            }
-            if (c.column_count() != 1) {
-                return core::error_t(
-                    core::error_code_t::conversion_failure,
-                    std::pmr::string{"could not convert data_chunk_t to a list value", chunks.front().resource()});
+                return core::error_t(core::error_code_t::conversion_failure,
+                                     std::pmr::string{"could not convert data_chunk_t to a list value", resource});
             }
             if (typed == nullptr) {
                 typed = &c;
@@ -508,14 +467,13 @@ namespace components::vector {
                     core::error_code_t::conversion_failure,
                     std::pmr::string{"could not convert data_chunk_t to a list value: the column changes its type "
                                      "between chunks",
-                                     chunks.front().resource()});
+                                     resource});
             }
         }
-        // No row has no type to give the list; the sub-query's schema does (the executor builds it from that).
         if (total_rows == 0) {
-            return make_null(chunks.front().resource(), types::complex_logical_type{types::logical_type::NA});
+            return make_list(resource, result_type.child_type(), {});
         }
-        auto result = make_list(chunks.front().resource(), typed->data[0].type(), {});
+        auto result = make_list(resource, typed->data[0].type(), {});
         auto* buffer = static_cast<list_vector_buffer_t*>(result.auxiliary().get());
         buffer->reserve(total_rows);
         for (const auto& c : chunks) {

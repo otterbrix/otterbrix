@@ -19,9 +19,14 @@ namespace components::vector {
         execution
     };
 
+    [[nodiscard]] bool is_placeholder(const types::complex_logical_type& type) noexcept;
+
+    [[nodiscard]] types::complex_logical_type filled_placeholder(const types::complex_logical_type& placeholder,
+                                                                 const types::complex_logical_type& column);
+
     // The values a statement's expressions refer to by parameter_id_t. Append-only and dense: an id is the
     // slot's index, every slot always holds a one-row CONSTANT vector, so a lookup cannot miss. A slot is
-    // allocated with its final type, or with an NA-typed NULL that set() types once, and set() REPLACES the
+    // allocated with its final type, or with a placeholder NULL that set() types once, and set() REPLACES the
     // vector -- it never writes into the old buffer, so a graph slot that references it keeps a valid one.
     class storage_parameters {
     public:
@@ -35,8 +40,8 @@ namespace components::vector {
         [[nodiscard]] core::parameter_id_t add(vector_t&& value, parameter_kind kind);
 
         // `value` replaces the slot's vector. Aborts in every build when `id` is out of range, or when the
-        // slot and `value` have different types. Two slots may change type: an NA slot is typed by its first
-        // value, and an external ($N) slot takes the last bind whatever its type. The latter is safe because
+        // slot and `value` have different types. Two slots may change type: a placeholder slot is typed by a
+        // value of its shape, and an external ($N) slot takes the last bind whatever its type. The latter is safe because
         // transform_result refuses a bind after finalize(), so no graph is built against the old type.
         void set(core::parameter_id_t id, vector_t&& value);
 

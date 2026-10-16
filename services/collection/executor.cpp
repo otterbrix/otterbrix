@@ -907,17 +907,20 @@ namespace services::collection::executor {
                 co_return execute_result_t{std::move(sub_result.cursor)};
             }
             const auto& mapping = plan.sub_query_results[i];
+            const auto& sub_node = plan.sub_queries[i];
 
-            if (mapping.boolean_required) {
-                const auto& sub_node = plan.sub_queries[i];
-                if (!sub_node->has_output_types()) {
+            auto result_type = plan.parameters->parameters().type(mapping.id);
+            if (components::vector::is_placeholder(result_type)) {
+                if (!sub_node->has_output_types() || sub_node->output_types().size() != 1) {
                     co_return execute_result_t{make_cursor(
                         resource(),
                         core::error_t{core::error_code_t::sql_parse_error,
-                                      std::pmr::string{"argument of WHERE/HAVING must be type boolean: the sub-query's "
-                                                       "output type could not be resolved from the schema",
-                                                       resource()}})};
+                                      std::pmr::string{"subquery must return only one column", resource()}})};
                 }
+                result_type = components::vector::filled_placeholder(result_type, sub_node->output_types().front());
+            }
+
+            if (mapping.boolean_required) {
                 const auto out_type = sub_node->output_types().front().type();
                 if (out_type != components::types::logical_type::BOOLEAN &&
                     out_type != components::types::logical_type::NA) {
@@ -932,21 +935,8 @@ namespace services::collection::executor {
                 captured_subplans.push_back(std::move(*sub_result.captured_explain_ir));
             }
             if (plan_only) {
-                // Nothing runs, so no result will type the slot: the schema does, for the plan the EXPLAIN renders.
-                if (plan.sub_queries[i]->has_output_types()) {
-                    const auto& column_type = plan.sub_queries[i]->output_types().front();
-                    plan.parameters->set_parameter(
-                        mapping.id,
-                        mapping.compacter == &components::vector::compact_to_single_value
-                            ? components::vector::make_null(resource(), column_type)
-                        : mapping.compacter == &components::vector::compact_to_bool_value
-                            ? components::vector::make_null(
-                                  resource(),
-                                  components::types::complex_logical_type{components::types::logical_type::BOOLEAN})
-                        : mapping.compacter == &components::vector::compact_to_list_value
-                            ? components::vector::make_list(resource(), column_type, {})
-                            : components::vector::make_array(resource(), column_type, {}));
-                }
+                // Nothing runs: a NULL of the result's type stands for it in the plan the EXPLAIN renders.
+                plan.parameters->set_parameter(mapping.id, components::vector::make_null(resource(), result_type));
                 continue;
             }
             trace(log_,
@@ -955,51 +945,10 @@ namespace services::collection::executor {
                   sub_result.cursor->is_success(),
                   sub_result.cursor->size(),
                   sub_result.cursor->column_count());
-            auto compacted = mapping.compacter(sub_result.cursor->chunks());
+            auto compacted = mapping.compacter(resource(), sub_result.cursor->chunks(), result_type);
             trace(log_, "DBG subq[{}] compacted has_error={}", i, compacted.has_error());
             if (compacted.has_error()) {
                 co_return execute_result_t{make_cursor(resource(), compacted.error())};
-            }
-            const bool compacted_is_null = compacted.value().is_null(0);
-            const bool compacted_is_untyped = compacted.value().type().type() == components::types::logical_type::NA;
-            if (mapping.array_equality && compacted_is_null) {
-                const auto& sub_node = plan.sub_queries[i];
-                if (!sub_node->has_output_types()) {
-                    co_return execute_result_t{make_cursor(
-                        resource(),
-                        core::error_t{core::error_code_t::sql_parse_error,
-                                      std::pmr::string{"ARRAY(SELECT ...): the sub-query's element type could "
-                                                       "not be resolved from the schema",
-                                                       resource()}})};
-                }
-                plan.parameters->set_parameter(
-                    mapping.id,
-                    components::vector::make_array(resource(), sub_node->output_types().front(), {}));
-                continue;
-            }
-            if (mapping.compacter == &components::vector::compact_to_list_value && compacted_is_untyped) {
-                // A set of no rows is an empty list of the sub-query's column type, as the set of any rows is.
-                const auto& sub_node = plan.sub_queries[i];
-                if (!sub_node->has_output_types()) {
-                    co_return execute_result_t{make_cursor(
-                        resource(),
-                        core::error_t{core::error_code_t::sql_parse_error,
-                                      std::pmr::string{"ANY / ALL (SELECT ...): the sub-query's element type could "
-                                                       "not be resolved from the schema",
-                                                       resource()}})};
-                }
-                plan.parameters->set_parameter(
-                    mapping.id,
-                    components::vector::make_list(resource(), sub_node->output_types().front(), {}));
-                continue;
-            }
-            if (mapping.compacter == &components::vector::compact_to_single_value && compacted_is_untyped &&
-                plan.sub_queries[i]->has_output_types()) {
-                // A zero-row sub-query has no cell to take a type from; the schema knows it.
-                plan.parameters->set_parameter(
-                    mapping.id,
-                    components::vector::make_null(resource(), plan.sub_queries[i]->output_types().front()));
-                continue;
             }
             plan.parameters->set_parameter(mapping.id, std::move(compacted.value()));
         }

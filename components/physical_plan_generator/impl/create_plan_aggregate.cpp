@@ -341,6 +341,7 @@ namespace services::planner::impl {
 
         components::operators::operator_ptr match_op;
         components::operators::operator_ptr group_op;
+        const components::logical_plan::node_t* group_node = nullptr;
         components::operators::operator_ptr having_op;
         components::operators::operator_ptr sort_op;
         components::operators::operator_ptr select_op;
@@ -363,6 +364,7 @@ namespace services::planner::impl {
                     break;
                 }
                 case node_type::group_t: {
+                    group_node = child.get();
                     VALUE_OR_RETURN(group_op,
                                     create_plan(context,
                                                 function_registry,
@@ -442,8 +444,9 @@ namespace services::planner::impl {
         }
         if (group_op) {
             // Forwarded so zero input rows still build correctly-typed results (PostgreSQL TupleDesc model).
-            if (node->has_output_types()) {
-                group_op->set_output_types(node->output_types());
+            const auto* typed = group_node->has_output_types() ? group_node : node.get();
+            if (typed->has_output_types()) {
+                group_op->set_output_types(typed->output_types());
             }
             group_op->set_children(std::move(executor));
             executor = std::move(group_op);

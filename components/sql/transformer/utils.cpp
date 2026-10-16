@@ -2125,4 +2125,17 @@ namespace components::sql::transform {
         }
     }
 
+    types::complex_logical_type sub_query_placeholder(SubLinkType kind) {
+        switch (kind) {
+            case EXISTS_SUBLINK:
+                return types::complex_logical_type{types::logical_type::BOOLEAN};
+            case ALL_SUBLINK:
+            case ANY_SUBLINK:
+            case ARRAY_SUBLINK:
+                return types::complex_logical_type::create_list(types::complex_logical_type{types::logical_type::NA});
+            default:
+                return types::complex_logical_type{types::logical_type::NA};
+        }
+    }
+
 } // namespace components::sql::transform

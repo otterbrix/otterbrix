@@ -111,6 +111,20 @@ TEST_CASE("storage_parameters: a sub-query result takes its array in the NA slot
     CHECK(array.entry().get_value<int64_t>(2) == 3);
 }
 
+TEST_CASE("storage_parameters: a LIST<NA> placeholder") {
+    resource_tracer_t resource;
+    storage_parameters params(&resource);
+    auto placeholder = complex_logical_type::create_list(na());
+    auto slot = params.add(make_null(&resource, placeholder), parameter_kind::execution);
+    REQUIRE(is_placeholder(params.type(slot)));
+    CHECK(filled_placeholder(placeholder, bigint()) == complex_logical_type::create_list(bigint()));
+
+    vector_t elements[] = {make_scalar(&resource, int64_t{1}), make_scalar(&resource, int64_t{2})};
+    params.set(slot, make_list(&resource, bigint(), elements));
+    CHECK(params.type(slot) == complex_logical_type::create_list(bigint()));
+    CHECK_FALSE(is_placeholder(params.type(slot)));
+}
+
 TEST_CASE("storage_parameters: set_cell takes one row of a column and keeps the column's type") {
     resource_tracer_t resource;
     storage_parameters params(&resource);
@@ -295,7 +309,7 @@ TEST_CASE("compact_to_single_value: one cell keeps the column's type") {
     std::pmr::vector<data_chunk_t> chunks(&resource);
     chunks.emplace_back(bigint_chunk(&resource, 9, 1));
 
-    auto compacted = compact_to_single_value(chunks);
+    auto compacted = compact_to_single_value(&resource, chunks, bigint());
     REQUIRE_FALSE(compacted.has_error());
     CHECK(compacted.value().type() == bigint());
     CHECK(compacted.value().get_vector_type() == vector_type::CONSTANT);
@@ -308,20 +322,20 @@ TEST_CASE("compact_to_single_value: a NULL cell stays NULL and typed") {
     chunks.emplace_back(bigint_chunk(&resource, 9, 1));
     chunks.back().data[0].set_null(0, true);
 
-    auto compacted = compact_to_single_value(chunks);
+    auto compacted = compact_to_single_value(&resource, chunks, bigint());
     REQUIRE_FALSE(compacted.has_error());
     CHECK(compacted.value().type() == bigint());
     CHECK(compacted.value().is_null(0));
 }
 
-TEST_CASE("compact_to_single_value: no row is an untyped NULL") {
+TEST_CASE("compact_to_single_value: no row") {
     resource_tracer_t resource;
     std::pmr::vector<data_chunk_t> chunks(&resource);
     chunks.emplace_back(bigint_chunk(&resource, 0, 0));
 
-    auto compacted = compact_to_single_value(chunks);
+    auto compacted = compact_to_single_value(&resource, chunks, bigint());
     REQUIRE_FALSE(compacted.has_error());
-    CHECK(compacted.value().type().type() == logical_type::NA);
+    CHECK(compacted.value().type() == bigint());
     CHECK(compacted.value().is_null(0));
 }
 
@@ -331,58 +345,59 @@ TEST_CASE("compact_to_single_value: two rows are refused") {
     chunks.emplace_back(bigint_chunk(&resource, 1, 1));
     chunks.emplace_back(bigint_chunk(&resource, 2, 1));
 
-    CHECK(compact_to_single_value(chunks).has_error());
+    CHECK(compact_to_single_value(&resource, chunks, bigint()).has_error());
 }
 
 TEST_CASE("compact_to_bool_value: any row is true") {
     resource_tracer_t resource;
+    const complex_logical_type boolean{logical_type::BOOLEAN};
     std::pmr::vector<data_chunk_t> chunks(&resource);
     chunks.emplace_back(bigint_chunk(&resource, 0, 0));
     {
-        auto none = compact_to_bool_value(chunks);
+        auto none = compact_to_bool_value(&resource, chunks, boolean);
         REQUIRE_FALSE(none.has_error());
         CHECK(none.value().type().type() == logical_type::BOOLEAN);
         CHECK_FALSE(none.value().get_value<bool>(0));
     }
     chunks.emplace_back(bigint_chunk(&resource, 1, 2));
-    auto some = compact_to_bool_value(chunks);
+    auto some = compact_to_bool_value(&resource, chunks, boolean);
     REQUIRE_FALSE(some.has_error());
     CHECK(some.value().get_value<bool>(0));
 }
 
-TEST_CASE("compact_to_array_value: every row of every chunk lands in one array, NULL elements included") {
+TEST_CASE("compact_to_list_value: every row of every chunk lands in one list, NULL elements included") {
     resource_tracer_t resource;
     std::pmr::vector<data_chunk_t> chunks(&resource);
     chunks.emplace_back(bigint_chunk(&resource, 0, 1024));
     chunks.back().data[0].set_null(5, true);
     chunks.emplace_back(bigint_chunk(&resource, 1024, 300));
 
-    auto compacted = compact_to_array_value(chunks);
+    auto compacted = compact_to_list_value(&resource, chunks, complex_logical_type::create_list(bigint()));
     REQUIRE_FALSE(compacted.has_error());
-    const auto& array = compacted.value();
-    REQUIRE(array.type().type() == logical_type::ARRAY);
-    CHECK(array.type().child_type() == bigint());
-    CHECK(static_cast<const components::types::array_logical_type_extension*>(array.type().extension())->size() ==
-          1324);
-    CHECK(array.entry().get_value<int64_t>(0) == 0);
-    CHECK(array.entry().is_null(5));
-    CHECK(array.entry().get_value<int64_t>(1023) == 1023);
-    CHECK(array.entry().get_value<int64_t>(1024) == 1024);
-    CHECK(array.entry().get_value<int64_t>(1323) == 1323);
+    const auto& list = compacted.value();
+    REQUIRE(list.type() == complex_logical_type::create_list(bigint()));
+    const auto elements = sequence_of(list, 0);
+    REQUIRE(elements.length == 1324);
+    CHECK(elements.child->get_value<int64_t>(elements.offset) == 0);
+    CHECK(elements.child->is_null(elements.offset + 5));
+    CHECK(elements.child->get_value<int64_t>(elements.offset + 1023) == 1023);
+    CHECK(elements.child->get_value<int64_t>(elements.offset + 1024) == 1024);
+    CHECK(elements.child->get_value<int64_t>(elements.offset + 1323) == 1323);
 }
 
-TEST_CASE("compact_to_array_value: no row is an untyped NULL") {
+TEST_CASE("compact_to_list_value: no row") {
     resource_tracer_t resource;
     std::pmr::vector<data_chunk_t> chunks(&resource);
     chunks.emplace_back(bigint_chunk(&resource, 0, 0));
 
-    auto compacted = compact_to_array_value(chunks);
+    auto compacted = compact_to_list_value(&resource, chunks, complex_logical_type::create_list(bigint()));
     REQUIRE_FALSE(compacted.has_error());
-    CHECK(compacted.value().type().type() == logical_type::NA);
-    CHECK(compacted.value().is_null(0));
+    CHECK(compacted.value().type() == complex_logical_type::create_list(bigint()));
+    CHECK_FALSE(compacted.value().is_null(0));
+    CHECK(sequence_of(compacted.value(), 0).length == 0);
 }
 
-TEST_CASE("compact_to_array_value: a column that changes its type between chunks is refused") {
+TEST_CASE("compact_to_list_value: a column that changes its type between chunks is refused") {
     resource_tracer_t resource;
     std::pmr::vector<data_chunk_t> chunks(&resource);
     chunks.emplace_back(bigint_chunk(&resource, 0, 2));
@@ -392,10 +407,10 @@ TEST_CASE("compact_to_array_value: a column that changes its type between chunks
     other.set_cardinality(2);
     chunks.emplace_back(std::move(other));
 
-    CHECK(compact_to_array_value(chunks).has_error());
+    CHECK(compact_to_list_value(&resource, chunks, complex_logical_type::create_list(bigint())).has_error());
 }
 
-TEST_CASE("compact_to_array_value: more than one column is refused") {
+TEST_CASE("compact_to_list_value: more than one column is refused") {
     resource_tracer_t resource;
     std::pmr::vector<complex_logical_type> types(&resource);
     types.emplace_back(bigint());
@@ -404,5 +419,5 @@ TEST_CASE("compact_to_array_value: more than one column is refused") {
     chunks.emplace_back(&resource, types, 2);
     chunks.back().set_cardinality(1);
 
-    CHECK(compact_to_array_value(chunks).has_error());
+    CHECK(compact_to_list_value(&resource, chunks, complex_logical_type::create_list(bigint())).has_error());
 }

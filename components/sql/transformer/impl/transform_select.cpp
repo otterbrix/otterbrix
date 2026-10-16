@@ -1186,7 +1186,7 @@ namespace components::sql::transform {
                     auto param_true = plan->parameters->add_parameter(vector::make_scalar(resource_, true),
                                                                       vector::parameter_kind::literal);
                     auto param_exists = plan->parameters->add_parameter(
-                        vector::make_null(resource_, types::complex_logical_type{types::logical_type::NA}),
+                        vector::make_null(resource_, sub_query_placeholder(EXISTS_SUBLINK)),
                         vector::parameter_kind::execution);
                     plan->sub_query_results.push_back({&vector::compact_to_bool_value, param_exists});
                     if (body && body->type() == logical_plan::node_type::aggregate_t) {

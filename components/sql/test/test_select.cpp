@@ -318,7 +318,9 @@ TEST_CASE("components::sql::select_with_subquery") {
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE col1 IN (SELECT col2 FROM TestDatabase2.TestCollection2);)_",
         R"_($aggregate: {$match: {"col1": {$any: #0}}})_",
-        vec({make_null(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
+        vec({make_null(&resource,
+                       components::types::complex_logical_type::create_list(
+                           components::types::complex_logical_type{components::types::logical_type::NA}))}));
 }
 // DISTINCT on an aggregate call must survive every arm that builds one — transform_select,
 // resolve_having_operand, transform_a_expr_func — not just the select list.

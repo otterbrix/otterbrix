@@ -1864,6 +1864,40 @@ namespace services::dispatcher {
                         }
                     }
                 }
+                // cleanup of group output schema
+                if (node_group && node_select) {
+                    std::pmr::vector<complex_logical_type> group_types(resource);
+                    group_types.reserve(result.size());
+                    for (const auto& column : result) {
+                        group_types.push_back(column.type);
+                    }
+                    node_group->set_output_types(std::move(group_types));
+                    named_schema projected(resource);
+                    projected.reserve(node_select->expressions().size());
+                    for (const auto& expr : node_select->expressions()) {
+                        assert(expr->group() == expression_group::scalar && "a select under a group projects scalars");
+                        auto* scalar_expr = static_cast<scalar_expression_t*>(expr.get());
+                        if (scalar_expr->type() != scalar_type::get_field) {
+                            auto entry = type_from_t{node->result_alias(), scalar_expr->result_type()};
+                            if (!scalar_expr->key().is_null()) {
+                                entry.type.set_alias(scalar_expr->key().as_string());
+                            }
+                            projected.push_back(std::move(entry));
+                            continue;
+                        }
+                        const auto& key = scalar_expr->params().empty()
+                                              ? scalar_expr->key()
+                                              : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                        auto entry = result[key.path().front()];
+                        for (size_t depth = 1; depth < key.path().size(); depth++) {
+                            entry.type = entry.type.type() == logical_type::STRUCT
+                                             ? entry.type.child_types()[key.path()[depth]]
+                                             : entry.type.child_type();
+                        }
+                        projected.push_back(std::move(entry));
+                    }
+                    result = std::move(projected);
+                }
                 break;
             }
             case node_type::data_t: {

@@ -14,8 +14,11 @@ namespace components::logical_plan {
     // Compacts a sub-query result (ALL its cursor chunks) into a bound parameter value. Spanning every
     // chunk — not just the first — is what keeps an IN-list / scalar sub-query from being truncated at
     // DEFAULT_VECTOR_CAPACITY (1024) or to a single UNION-ALL branch.
+    // `result_type` is the type of the value, from the sub-query's schema.
     using subquery_compacter =
-        core::result_wrapper_t<vector::vector_t> (*)(const std::pmr::vector<vector::data_chunk_t>& chunks);
+        core::result_wrapper_t<vector::vector_t> (*)(std::pmr::memory_resource* resource,
+                                                     const std::pmr::vector<vector::data_chunk_t>& chunks,
+                                                     const types::complex_logical_type& result_type);
 
     struct id_result_mapping {
         subquery_compacter compacter = nullptr;
@@ -26,12 +29,9 @@ namespace components::logical_plan {
         // binding (else a numeric scalar would silently coerce to bool). false for every
         // other sub-query form (IN / scalar comparison / EXISTS), where any type is legal.
         bool boolean_required = false;
-        // A scalar-equality against ARRAY(SELECT ...): `col = ARRAY(SELECT ...)`. Only this form needs a
-        // 0-row result rebuilt as a typed empty array `{}` (so `col = {}` compares against a real empty
-        // array); IN / ANY / ALL keep the NA-null sentinel (their empty-set semantics rely on it). false
-        // for every other form. Kept last: the push_back sites aggregate-initialize (compacter, id)
-        // and rely on the trailing bools' defaults.
-        bool array_equality = false;
+        // ARRAY(SELECT ...): the order of the rows is the order of the elements
+        // if ordering can not be observed, we can drop ordering node in sub-query
+        bool ordered = false;
     };
 
     // EXPLAIN mode for the whole plan. `plan` renders the physical plan without executing;

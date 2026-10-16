@@ -102,10 +102,19 @@ namespace components::vector {
     void validate_chunk_capacity(vector::data_chunk_t& chunk, size_t filled_size);
 
     // Sub-query result compacters: fold ALL of a cursor's chunks (not just the first) into one bound
-    // parameter value, so a >1024-row or multi-branch result is not silently truncated.
-    core::result_wrapper_t<vector_t> compact_to_bool_value(const std::pmr::vector<data_chunk_t>& chunks);
-    core::result_wrapper_t<vector_t> compact_to_single_value(const std::pmr::vector<data_chunk_t>& chunks);
-    core::result_wrapper_t<vector_t> compact_to_array_value(const std::pmr::vector<data_chunk_t>& chunks);
-    core::result_wrapper_t<vector_t> compact_to_list_value(const std::pmr::vector<data_chunk_t>& chunks);
+    // parameter value, so a >1024-row or multi-branch result is not silently truncated. `result_type` is the
+    // type of that value, from the sub-query's schema: what a result of no row takes.
+    // EXISTS: whether there is a row
+    core::result_wrapper_t<vector_t> compact_to_bool_value(std::pmr::memory_resource* resource,
+                                                           const std::pmr::vector<data_chunk_t>& chunks,
+                                                           const types::complex_logical_type& result_type);
+    // A scalar sub-query: its one cell, NULL for no row
+    core::result_wrapper_t<vector_t> compact_to_single_value(std::pmr::memory_resource* resource,
+                                                             const std::pmr::vector<data_chunk_t>& chunks,
+                                                             const types::complex_logical_type& result_type);
+    // IN / ANY / ALL and ARRAY(SELECT ...): every row, in order, as one LIST
+    core::result_wrapper_t<vector_t> compact_to_list_value(std::pmr::memory_resource* resource,
+                                                           const std::pmr::vector<data_chunk_t>& chunks,
+                                                           const types::complex_logical_type& result_type);
 
 } // namespace components::vector

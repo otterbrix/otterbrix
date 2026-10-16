@@ -255,6 +255,8 @@ namespace components::sql::transform {
         return expressions::compare_type::invalid;
     }
 
+    types::complex_logical_type sub_query_placeholder(SubLinkType kind);
+
     inline types::logical_type get_logical_type(std::string_view str) {
         static const std::unordered_map<std::string_view, types::logical_type> lookup = {
             {"int2", types::logical_type::SMALLINT},

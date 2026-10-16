@@ -13,6 +13,8 @@
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_cte_scan.hpp>
 #include <components/logical_plan/node_data.hpp>
+#include <components/logical_plan/node_delete.hpp>
+#include <components/logical_plan/node_fk_cascade.hpp>
 #include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
@@ -1367,7 +1369,7 @@ namespace {
 
     static bool run_and_get_pushdown(std::pmr::memory_resource* r, const node_ptr& plan, bool enable) {
         auto params = make_parameter_node(r);
-        auto root = components::planner::optimize(r, plan, params.get(), test_execution_context(), nullptr, enable);
+        auto root = components::planner::optimize(r, plan, params.get(), test_execution_context(), enable);
         for (const auto& child : root->children()) {
             if (child && child->type() == node_type::group_t) {
                 return static_cast<node_group_t*>(child.get())->pushdown();
@@ -1669,169 +1671,189 @@ namespace {
         return expression_ptr(make_scalar_expression(r, scalar_type::get_field, pruned_key(r, name, idx)));
     }
 
-    node_aggregate_ptr make_select_agg(std::pmr::memory_resource* r, oid_t oid, const node_select_ptr& sel) {
-        auto agg = make_node_aggregate(r, qualified_name_t{pdb(), prel()});
-        agg->set_table_oid(oid);
-        agg->append_child(sel);
-        return agg;
-    }
-
-    void add_resolved_table(std::pmr::memory_resource* r,
-                            components::logical_plan::catalog_resolves_t& resolves,
-                            oid_t oid,
-                            const std::string& relname,
-                            size_t ncols) {
-        components::logical_plan::resolve_entry_t entry;
-        entry.dbname = static_cast<const std::string&>(pdb());
-        entry.relname = relname;
+    // A stored table of `ncols` BIGINT columns.
+    components::logical_plan::resolved_table_metadata_t pruned_table(oid_t oid, size_t ncols) {
         components::logical_plan::resolved_table_metadata_t md;
         md.table_oid = oid;
         md.relkind = 'r';
         md.columns.resize(ncols);
-        entry.table_md = std::move(md);
-        resolves.ensure(r, components::logical_plan::resolve_kind::table).add(std::move(entry));
+        return md;
     }
+
+    std::pmr::vector<components::types::complex_logical_type> bigints(std::pmr::memory_resource* r, size_t ncols) {
+        return std::pmr::vector<components::types::complex_logical_type>(
+            ncols,
+            components::types::complex_logical_type{components::types::logical_type::BIGINT},
+            r);
+    }
+
+    node_aggregate_ptr make_scan_agg(std::pmr::memory_resource* r,
+                                     const components::logical_plan::resolved_table_metadata_t& md) {
+        auto agg = make_node_aggregate(r, qualified_name_t{pdb(), prel()});
+        agg->set_table_oid(md.table_oid);
+        agg->set_table_metadata(&md);
+        return agg;
+    }
+
+    size_t own_column(const expression_ptr& expression) { return expression->key().path().front(); }
 } // namespace
 
-TEST_CASE("optimizer::column_pruning::plain_select_projects_single_column") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto sel = make_node_select(&resource);
-    sel->append_expression(proj_get_field(&resource, "a", 0));
-    auto agg = make_select_agg(&resource, oid_t{9100}, sel);
-
-    auto root = components::planner::optimize(&resource, agg, params.get(), test_execution_context());
-    auto* a = static_cast<node_aggregate_t*>(root.get());
-    REQUIRE(a->projected_cols() == std::vector<size_t>{0});
-}
-
-TEST_CASE("optimizer::column_pruning::plain_select_two_columns") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto sel = make_node_select(&resource);
-    sel->append_expression(proj_get_field(&resource, "a", 0));
-    sel->append_expression(proj_get_field(&resource, "c", 2));
-    auto agg = make_select_agg(&resource, oid_t{9101}, sel);
-
-    auto root = components::planner::optimize(&resource, agg, params.get(), test_execution_context());
-    auto* a = static_cast<node_aggregate_t*>(root.get());
-    REQUIRE(a->projected_cols() == (std::vector<size_t>{0, 2}));
-}
-
-TEST_CASE("optimizer::column_pruning::where_column_included_even_if_not_selected") {
+TEST_CASE("optimizer::column_pruning") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
     auto pid = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
                                      components::vector::parameter_kind::literal);
-    auto sel = make_node_select(&resource);
-    sel->append_expression(proj_get_field(&resource, "a", 0));
-    auto match =
-        make_node_match(&resource,
-                        qualified_name_t{pdb(), prel()},
-                        make_compare_expression(&resource, compare_type::gt, pruned_key(&resource, "b", 1), pid));
-    auto agg = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
-    agg->set_table_oid(oid_t{9102});
-    agg->append_child(sel);
-    agg->append_child(match);
 
-    auto root = components::planner::optimize(&resource, agg, params.get(), test_execution_context());
-    auto* a = static_cast<node_aggregate_t*>(root.get());
-    REQUIRE(a->projected_cols() == (std::vector<size_t>{0, 1}));
-}
+    SECTION("plain select") {
+        const auto md = pruned_table(oid_t{9100}, 4);
+        auto sel = make_node_select(&resource);
+        sel->append_expression(proj_get_field(&resource, "a", 0));
+        sel->append_expression(proj_get_field(&resource, "c", 2));
+        auto agg = make_scan_agg(&resource, md);
+        agg->append_child(sel);
 
-TEST_CASE("optimizer::column_pruning::select_star_disables_projection") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto sel = make_node_select(&resource);
-    sel->append_expression(expression_ptr(make_scalar_expression(&resource, scalar_type::star_expand, key{&resource})));
-    auto agg = make_select_agg(&resource, oid_t{9103}, sel);
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        REQUIRE(agg->projected_cols() == (std::vector<size_t>{0, 2}));
+        REQUIRE(own_column(sel->expressions()[0]) == 0);
+        REQUIRE(own_column(sel->expressions()[1]) == 1);
+    }
 
-    auto root = components::planner::optimize(&resource, agg, params.get(), test_execution_context());
-    auto* a = static_cast<node_aggregate_t*>(root.get());
-    REQUIRE(a->projected_cols().empty());
-}
+    SECTION("where on an unselected column") {
+        const auto md = pruned_table(oid_t{9102}, 4);
+        auto sel = make_node_select(&resource);
+        sel->append_expression(proj_get_field(&resource, "a", 0));
+        auto where = make_compare_expression(&resource, compare_type::gt, pruned_key(&resource, "c", 2), pid);
+        auto agg = make_scan_agg(&resource, md);
+        agg->append_child(sel);
+        agg->append_child(make_node_match(&resource, qualified_name_t{pdb(), prel()}, where));
 
-TEST_CASE("optimizer::column_pruning::select_star_with_where_reads_all") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
-                                     components::vector::parameter_kind::literal);
-    auto match =
-        make_node_match(&resource,
-                        qualified_name_t{pdb(), prel()},
-                        make_compare_expression(&resource, compare_type::gt, pruned_key(&resource, "a", 0), pid));
-    auto agg = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
-    agg->set_table_oid(oid_t{9104});
-    agg->append_child(match);
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        REQUIRE(agg->projected_cols() == (std::vector<size_t>{0, 2}));
+        REQUIRE(as_key(static_cast<compare_expression_t*>(where.get())->left()).path().front() == 1);
+    }
 
-    auto root = components::planner::optimize(&resource, agg, params.get(), test_execution_context());
-    auto* a = static_cast<node_aggregate_t*>(root.get());
-    REQUIRE(a->projected_cols().empty());
-}
+    SECTION("select star") {
+        const auto md = pruned_table(oid_t{9103}, 3);
+        auto sel = make_node_select(&resource);
+        sel->append_expression(
+            expression_ptr(make_scalar_expression(&resource, scalar_type::star_expand, key{&resource})));
+        auto agg = make_scan_agg(&resource, md);
+        agg->append_child(sel);
 
-TEST_CASE("optimizer::column_pruning::group_by_projects_key_and_agg_arg") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    std::vector<expression_ptr> group_exprs;
-    group_exprs.push_back(
-        expression_ptr(make_scalar_expression(&resource, scalar_type::group_field, pruned_key(&resource, "k", 0))));
-    auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "sum_x"));
-    sum->append_param(pruned_key(&resource, "x", 2));
-    group_exprs.push_back(expression_ptr(sum));
-    auto group = make_node_group(&resource, group_exprs);
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        REQUIRE(agg->projected_cols().empty());
+    }
 
-    // The group's $select carries output indices, not storage indices; the rule must ignore it.
-    auto sel = make_node_select(&resource);
-    sel->append_expression(proj_get_field(&resource, "k", 0));
-    sel->append_expression(proj_get_field(&resource, "sum_x", 1));
+    SECTION("scan without projection") {
+        const auto md = pruned_table(oid_t{9104}, 3);
+        auto where = make_compare_expression(&resource, compare_type::gt, pruned_key(&resource, "c", 2), pid);
+        auto agg = make_scan_agg(&resource, md);
+        agg->append_child(make_node_match(&resource, qualified_name_t{pdb(), prel()}, where));
 
-    auto agg = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
-    agg->set_table_oid(oid_t{9105});
-    agg->append_child(group);
-    agg->append_child(sel);
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        REQUIRE(agg->projected_cols().empty());
+        REQUIRE(as_key(static_cast<compare_expression_t*>(where.get())->left()).path().front() == 2);
+    }
 
-    auto root = components::planner::optimize(&resource, agg, params.get(), test_execution_context());
-    auto* a = static_cast<node_aggregate_t*>(root.get());
-    REQUIRE(a->projected_cols() == (std::vector<size_t>{0, 2}));
-}
+    SECTION("group by") {
+        const auto md = pruned_table(oid_t{9105}, 4);
+        std::vector<expression_ptr> group_exprs;
+        group_exprs.push_back(expression_ptr(
+            make_scalar_expression(&resource, scalar_type::group_field, pruned_key(&resource, "k", 1))));
+        auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "sum_x"));
+        sum->append_param(pruned_key(&resource, "x", 3));
+        group_exprs.push_back(expression_ptr(sum));
+        auto group = make_node_group(&resource, group_exprs);
+        group->set_input_types(bigints(&resource, 4));
 
-TEST_CASE("optimizer::column_pruning::inner_join_splits_columns_per_side") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    constexpr auto oid1 = oid_t{9110};
-    constexpr auto oid2 = oid_t{9111};
+        // The group's $select reads the group output, not the scan.
+        auto sel = make_node_select(&resource);
+        sel->append_expression(proj_get_field(&resource, "k", 0));
+        sel->append_expression(proj_get_field(&resource, "sum_x", 1));
 
-    auto agg_t1 = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
-    agg_t1->set_table_oid(oid1);
-    auto agg_t2 = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
-    agg_t2->set_table_oid(oid2);
+        auto agg = make_scan_agg(&resource, md);
+        agg->append_child(group);
+        agg->append_child(sel);
 
-    auto join = make_node_join(&resource, join_type::inner);
-    join->append_child(agg_t1);
-    join->append_child(agg_t2);
-    join->append_expression(make_compare_expression(&resource,
-                                                    compare_type::eq,
-                                                    pruned_key(&resource, "k", 1, side_t::left),
-                                                    pruned_key(&resource, "k", 0, side_t::right)));
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        REQUIRE(agg->projected_cols() == (std::vector<size_t>{1, 3}));
+        REQUIRE(own_column(group->expressions()[0]) == 0);
+        REQUIRE(as_key(static_cast<aggregate_expression_t*>(sum.get())->params().front()).path().front() == 1);
+        REQUIRE(group->input_types().size() == 2);
+        REQUIRE(own_column(sel->expressions()[0]) == 0);
+        REQUIRE(own_column(sel->expressions()[1]) == 1);
+    }
 
-    auto sel = make_node_select(&resource);
-    sel->append_expression(proj_get_field(&resource, "a", 0));
+    SECTION("inner join") {
+        const auto md1 = pruned_table(oid_t{9110}, 3);
+        const auto md2 = pruned_table(oid_t{9111}, 3);
 
-    auto parent = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
-    parent->append_child(join);
-    parent->append_child(sel);
+        auto agg_t1 = make_scan_agg(&resource, md1);
+        agg_t1->set_output_types(bigints(&resource, 3));
+        auto agg_t2 = make_scan_agg(&resource, md2);
+        agg_t2->set_output_types(bigints(&resource, 3));
 
-    components::logical_plan::catalog_resolves_t resolves;
-    add_resolved_table(&resource, resolves, oid1, "t1", 2);
-    add_resolved_table(&resource, resolves, oid2, "t2", 2);
+        // t1 (a, k, z) JOIN t2 (k, y, w) ON t1.k = t2.k
+        auto join = make_node_join(&resource, join_type::inner);
+        join->append_child(agg_t1);
+        join->append_child(agg_t2);
+        auto on = make_compare_expression(&resource,
+                                          compare_type::eq,
+                                          pruned_key(&resource, "k", 1, side_t::left),
+                                          pruned_key(&resource, "k", 0, side_t::right));
+        join->append_expression(on);
+        join->set_output_types(bigints(&resource, 6));
 
-    components::planner::optimize(&resource,
-                                  boost::static_pointer_cast<components::logical_plan::node_t>(parent),
-                                  params.get(), test_execution_context(),
-                                  &resolves);
+        // SELECT t1.a, t2.y: joined positions 0 and 3 + 1.
+        auto sel = make_node_select(&resource);
+        sel->append_expression(proj_get_field(&resource, "a", 0));
+        sel->append_expression(proj_get_field(&resource, "y", 4));
 
-    REQUIRE(agg_t1->projected_cols() == (std::vector<size_t>{0, 1}));
-    REQUIRE(agg_t2->projected_cols() == std::vector<size_t>{0});
+        auto parent = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
+        parent->append_child(join);
+        parent->append_child(sel);
+
+        components::planner::optimize(&resource,
+                                      boost::static_pointer_cast<components::logical_plan::node_t>(parent),
+                                      params.get(),
+                                      test_execution_context());
+
+        REQUIRE(agg_t1->projected_cols() == (std::vector<size_t>{0, 1}));
+        REQUIRE(agg_t2->projected_cols() == (std::vector<size_t>{0, 1}));
+        REQUIRE(agg_t1->output_types().size() == 2);
+        REQUIRE(join->output_types().size() == 4);
+        auto* on_compare = static_cast<compare_expression_t*>(on.get());
+        REQUIRE(as_key(on_compare->left()).path().front() == 1);
+        REQUIRE(as_key(on_compare->right()).path().front() == 0);
+        REQUIRE(own_column(sel->expressions()[0]) == 0);
+        REQUIRE(own_column(sel->expressions()[1]) == 3);
+    }
+
+    SECTION("delete") {
+        auto md = pruned_table(oid_t{9120}, 6);
+        md.columns[3].attname = "k";
+
+        // DELETE FROM t (c0..c5) WHERE c4 > 5, an index on c3, an FK whose parent column is c1.
+        auto where = make_compare_expression(&resource, compare_type::gt, pruned_key(&resource, "c4", 4), pid);
+        auto del = make_node_delete(&resource,
+                                    make_node_match(&resource, qualified_name_t{pdb(), prel()}, where),
+                                    make_node_limit(&resource, limit_t::all()));
+        del->set_table_oid(md.table_oid);
+        del->set_table_metadata(&md);
+        del->set_index_key_columns({3});
+        components::catalog::fk_info_t fk;
+        fk.parent_col_indices = {1};
+        del->set_referencing_fks({fk});
+        auto cascade =
+            boost::intrusive_ptr(new node_fk_cascade_t(&resource, core::dbname_t{}, core::relname_t{}, fk));
+        cascade->append_child(del);
+
+        components::planner::optimize(&resource, cascade, params.get(), test_execution_context());
+        REQUIRE(del->projected_cols() == (std::vector<size_t>{1, 3, 4}));
+        REQUIRE(as_key(static_cast<compare_expression_t*>(where.get())->left()).path().front() == 2);
+        REQUIRE(del->referencing_fks().front().parent_col_indices == std::vector<size_t>{0});
+        REQUIRE(cascade->fk().parent_col_indices == std::vector<size_t>{0});
+    }
 }
 
 // A WHERE match above a union is cloned onto each branch via positional identity (output column i == branch
@@ -2592,7 +2614,6 @@ TEST_CASE("optimizer::host_rules::stage_order_then_registration_order") {
                                   agg,
                                   params.get(),
                                   test_execution_context(),
-                                  nullptr,
                                   /*can_push_to_agent=*/false,
                                   rules);
     REQUIRE(rule_trace() == std::vector<int>{1, 11, 2, 3, 4, 5});
@@ -2613,7 +2634,6 @@ TEST_CASE("optimizer::host_rules::aggregate_pushdown_stage_sees_the_stamp") {
                                   agg,
                                   params.get(),
                                   test_execution_context(),
-                                  nullptr,
                                   /*can_push_to_agent=*/true,
                                   rules);
     REQUIRE(stamp_trace() == std::vector<std::pair<int, bool>>{{3, false}, {4, true}, {5, true}});

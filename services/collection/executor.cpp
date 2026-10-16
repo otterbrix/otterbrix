@@ -1814,7 +1814,6 @@ namespace services::collection::executor {
                                                                 std::move(plan.sub_queries.back()),
                                                                 plan.parameters.get(),
                                                                 context_storage.execution_context,
-                                                                &plan.catalog_resolves,
                                                                 can_push_to_agent,
                                                                 optimizer_rules_);
 

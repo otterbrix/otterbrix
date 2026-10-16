@@ -15,6 +15,7 @@ namespace components::logical_plan {
                           catalog::fk_info_t fk);
 
         const catalog::fk_info_t& fk() const noexcept { return fk_; }
+        catalog::fk_info_t& fk() noexcept { return fk_; }
 
     private:
         hash_t hash_impl() const override;

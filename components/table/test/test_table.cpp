@@ -320,7 +320,7 @@ TEST_CASE("components::table::data_table") {
     auto scan_and_check =
         [&](data_table_t& table, table_scan_state& state, const col_layout& L, size_t expected_rows, auto&& map) {
             std::pmr::vector<data_chunk_t> batches(&resource);
-            table.scan_batched(table.copy_types(), nullptr, batches, state, &resource);
+            table.scan_batched(table.copy_types(), batches, state, &resource);
             size_t produced = 0;
             for (auto& result : batches) {
                 for (size_t local = 0; local < result.size(); ++local, ++produced) {
@@ -375,7 +375,6 @@ TEST_CASE("components::table::data_table") {
                               rows,
                               count,
                               state,
-                              std::vector<size_t>{},
                               transaction_data::committed(),
                               fetch_visibility_t::SNAPSHOT);
             REQUIRE(result.size() == count);

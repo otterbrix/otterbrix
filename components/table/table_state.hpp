@@ -57,11 +57,9 @@ namespace components::table {
         const table_filter_t* filter();
         bool scan(vector::data_chunk_t& result);
         // Batched scan: emit one data_chunk_t per ≤DEFAULT_VECTOR_CAPACITY rows directly,
-        // skipping the accumulate-then-split round-trip. `projected_cols` is a pointer so
-        // callers can pass nullptr for full-schema chunks or a non-null vector to use the
-        // projected (sparse) chunk constructor.
-        void scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
-                          const std::vector<size_t>* projected_cols,
+        // skipping the accumulate-then-split round-trip. `chunk_types` are the scanned columns' types, in
+        // column_ids() order.
+        void scan_batched(const std::pmr::vector<types::complex_logical_type>& chunk_types,
                           std::pmr::vector<vector::data_chunk_t>& batches,
                           std::pmr::memory_resource* resource);
         // Single-batch iterator: fills ONE ≤DEFAULT_VECTOR_CAPACITY batch into `result` (one
@@ -74,11 +72,9 @@ namespace components::table {
 
         [[nodiscard]] const std::vector<uint64_t>& visible_to_physical() const noexcept;
         [[nodiscard]] uint64_t physical_column(uint64_t visible) const noexcept;
-        [[nodiscard]] uint64_t result_width() const noexcept { return result_width_; }
 
     private:
         table_scan_state& parent_;
-        uint64_t result_width_ = 0;
     };
 
     class table_scan_state {

@@ -60,6 +60,16 @@ namespace {
         uint64_t total_rows() const override { return inner_.total_rows(); }
         uint64_t calculate_size() override { return inner_.calculate_size(); }
         void scan(data_chunk_t& o, const table_filter_t* f, int64_t l) override { inner_.scan(o, f, l); }
+        void scan_projected(data_chunk_t& o, const table_filter_t* f, int l, const std::vector<size_t>& p) override {
+            inner_.scan_projected(o, f, l, p);
+        }
+        void scan_projected(data_chunk_t& o,
+                            const table_filter_t* f,
+                            int l,
+                            const std::vector<size_t>& p,
+                            transaction_data txn) override {
+            inner_.scan_projected(o, f, l, p, txn);
+        }
         [[nodiscard]] core::result_wrapper_t<bool> fetch(data_chunk_t& o,
                                                          const vector_t& ids,
                                                          uint64_t c,

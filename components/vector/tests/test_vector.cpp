@@ -613,24 +613,6 @@ TEST_CASE("components::vector::cells_equal: UNION compares the tag and the activ
     REQUIRE(vector::cells_equal(u, 0, u, 1));
 }
 
-TEST_CASE("components::vector::data_chunk_t::at: a path past the chunk width answers nullptr") {
-    auto resource = core::pmr::otterbrix_resource();
-
-    std::pmr::vector<components::types::complex_logical_type> no_types(&resource);
-    components::vector::data_chunk_t chunk(&resource, no_types, /*capacity=*/1);
-    chunk.set_cardinality(0);
-    REQUIRE(chunk.size() == 0);
-    REQUIRE(chunk.column_count() == 0);
-
-    std::pmr::vector<size_t> left_path(&resource);
-    left_path.push_back(9);
-    std::pmr::vector<size_t> right_path(&resource);
-    right_path.push_back(11);
-
-    REQUIRE(chunk.at(left_path) == nullptr);
-    REQUIRE(chunk.at(right_path) == nullptr);
-}
-
 TEST_CASE("components::vector::vector: a UNION vector is well formed, nested UNION members included") {
     using namespace components;
     auto resource = core::pmr::otterbrix_resource();
@@ -682,47 +664,6 @@ TEST_CASE("components::vector::make_null: an ARRAY NULL row, whatever its elemen
         REQUIRE(copy.is_null(0));
         copy.flatten(2);
         REQUIRE(copy.is_null(1));
-    }
-}
-
-TEST_CASE("components::vector::data_chunk_t::slice keeps an unprojected column a placeholder") {
-    using namespace components;
-    auto resource = core::pmr::otterbrix_resource();
-
-    std::pmr::vector<types::complex_logical_type> types(&resource);
-    types.emplace_back(types::logical_type::BIGINT);
-    types.emplace_back(types::logical_type::STRING_LITERAL);
-    vector::data_chunk_t source(&resource, types, std::vector<size_t>{0}, 4);
-    for (uint64_t i = 0; i < 4; i++) {
-        source.data[0].set_value(i, static_cast<int64_t>(i * 10));
-    }
-    source.set_cardinality(4);
-
-    vector::indexing_vector_t selection(&resource, 2);
-    selection.set_index(0, 3);
-    selection.set_index(1, 1);
-
-    auto is_placeholder = [](const vector::vector_t& v) { return v.data() == nullptr && v.auxiliary() == nullptr; };
-
-    SECTION("slice from another chunk") {
-        vector::data_chunk_t sliced(&resource, types, std::vector<size_t>{}, 2);
-        sliced.slice(source, selection, 2);
-        REQUIRE(is_placeholder(sliced.data[1]));
-
-        vector::data_chunk_t copied(&resource, types, std::vector<size_t>{0}, 2);
-        sliced.copy(copied, 0);
-        REQUIRE(copied.data[0].get_value<int64_t>(0) == 30);
-        REQUIRE(copied.data[0].get_value<int64_t>(1) == 10);
-        REQUIRE(is_placeholder(copied.data[1]));
-    }
-    SECTION("slice in place") {
-        source.slice(selection, 2);
-        REQUIRE(is_placeholder(source.data[1]));
-
-        vector::data_chunk_t copied(&resource, types, std::vector<size_t>{0}, 2);
-        source.copy(copied, 0);
-        REQUIRE(copied.data[0].get_value<int64_t>(0) == 30);
-        REQUIRE(is_placeholder(copied.data[1]));
     }
 }
 

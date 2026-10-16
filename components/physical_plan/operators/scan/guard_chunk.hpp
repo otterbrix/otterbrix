@@ -8,9 +8,8 @@
 
 namespace components::operators {
 
-    // A scan's schema'd 0-row chunk. Pruned scans emit full-width chunks whose non-projected columns are buffer-less
-    // placeholders, so column ordinals stay stable plan-wide (PR #477); the guard has the same shape as real batches,
-    // since operators above index it by table ordinal.
+    // A scan's schema'd 0-row chunk, shaped as its real batches: the projected columns of `types` in projection
+    // order, or every column when nothing is projected.
     vector::data_chunk_t make_guard_chunk(std::pmr::memory_resource* resource,
                                           const std::pmr::vector<types::complex_logical_type>& types,
                                           const std::vector<size_t>& projected_cols);

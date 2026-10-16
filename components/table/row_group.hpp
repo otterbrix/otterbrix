@@ -3,6 +3,7 @@
 #include "row_version_manager.hpp"
 #include "storage/data_pointer.hpp"
 #include <boost/smart_ptr/intrusive_ptr.hpp>
+#include <limits>
 #include <optional>
 
 namespace components::vector {
@@ -13,7 +14,6 @@ namespace components::table {
 
 #ifdef DEV_MODE
     uint64_t gathered_borrowed_strings() noexcept;
-    uint64_t predicate_row_fetches() noexcept;
     uint64_t string_materializations() noexcept;
     uint64_t gather_rows_fetched() noexcept;
     uint64_t escaping_borrowed_cells() noexcept;
@@ -77,19 +77,11 @@ namespace components::table {
         void scan(collection_scan_state& state, vector::data_chunk_t& result);
         void scan_committed(collection_scan_state& state, vector::data_chunk_t& result, table_scan_type type);
 
-        core::result_wrapper_t<vector::vector_t>
-        // Indexed by the column number the filter names, holding the row group's index for that column.
-        evaluate_predicate(const table_filter_t& filter,
-                           int64_t base_row,
-                           uint64_t count,
-                           const std::vector<uint64_t>& column_indices);
-
         void fetch_row(column_fetch_state& state,
                        const std::pmr::vector<storage_index_t>& column_ids,
                        int64_t row_id,
                        vector::data_chunk_t& result,
-                       uint64_t result_idx,
-                       const std::vector<size_t>& projected_cols);
+                       uint64_t result_idx);
 
         // Point-fetch visibility gate asked BEFORE fetch_row gathers; no version manager means every row is visible.
         bool is_visible(const transaction_data& txn, int64_t row_id);
@@ -171,14 +163,14 @@ namespace components::table {
         uint64_t get_column_count() const;
         std::vector<boost::intrusive_ptr<column_data_t>>& columns();
 
-        void filter_indexing(std::pmr::memory_resource* resource,
-                             uint64_t vector_index,
-                             vector::indexing_vector_t& indexing,
-                             const table_filter_t* filter,
-                             uint64_t vector_count,
-                             uint64_t& approved_tuple_count,
-                             core::error_t& error,
-                             const std::vector<uint64_t>& column_indices);
+        // A scan position the filter does not read.
+        static constexpr size_t predicate_input_absent = std::numeric_limits<size_t>::max();
+        template<table_scan_type TYPE>
+        core::result_wrapper_t<vector::vector_t> evaluate_predicate(collection_scan_state& state,
+                                                                    const vector::data_chunk_t& result,
+                                                                    uint64_t max_count,
+                                                                    std::pmr::vector<size_t>& input_of,
+                                                                    std::pmr::vector<vector::vector_t>& inputs);
 
         template<table_scan_type TYPE>
         void templated_scan(collection_scan_state& state, vector::data_chunk_t& result);

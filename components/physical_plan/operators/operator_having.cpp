@@ -2,14 +2,6 @@
 
 namespace components::operators {
 
-    namespace {
-        // Placeholder columns (produced by projected scans) have no buffer and no auxiliary; they
-        // must be skipped when reading values. operator_hash_group output is dense, so this is defensive.
-        bool is_placeholder(const vector::vector_t& v) noexcept {
-            return v.data() == nullptr && v.auxiliary() == nullptr;
-        }
-    } // namespace
-
     operator_having_t::operator_having_t(std::pmr::memory_resource* resource,
                                          log_t log,
                                          const expressions::expression_ptr& expression)
@@ -27,16 +19,6 @@ namespace components::operators {
             for (size_t j = 0; j < input.column_count(); j++) {
                 stream_types_.push_back(input.data[j].type());
             }
-            // Only slots with real data flow downstream; a projected scan leaves un-projected slots
-            // as placeholders (no buffer) so column indices stay stable.
-            stream_populated_cols_.clear();
-            stream_populated_cols_.reserve(input.column_count());
-            for (size_t j = 0; j < input.column_count(); j++) {
-                if (!is_placeholder(input.data[j])) {
-                    stream_populated_cols_.push_back(j);
-                }
-            }
-            stream_sparse_ = stream_populated_cols_.size() != input.column_count();
             condition_ = expressions::classify_condition(expression_);
             if (condition_ == expressions::condition_kind::computed) {
                 auto graph = expressions::build_condition_graph(resource_,
@@ -87,12 +69,10 @@ namespace components::operators {
             return core::error_t::no_error(); // nothing survived — finalize() emits the columns
         }
 
-        // TYPED, no-box gather: data_chunk_t::copy routes each column through vector_ops::copy
-        // skips placeholder columns, gathers row_ids (all-zero over a
-        // group sink — identical to match's zero sentinel), and sets the target cardinality itself.
-        vector::data_chunk_t out_chunk =
-            stream_sparse_ ? vector::data_chunk_t(resource_, stream_types_, stream_populated_cols_, out_count)
-                           : vector::data_chunk_t(resource_, stream_types_, out_count);
+        // TYPED, no-box gather: data_chunk_t::copy routes each column through vector_ops::copy,
+        // gathers row_ids (all-zero over a group sink — identical to match's zero sentinel), and
+        // sets the target cardinality itself.
+        vector::data_chunk_t out_chunk(resource_, stream_types_, out_count);
         input.copy(out_chunk, sel, out_count);
         out.emplace_back(std::move(out_chunk));
         note_emitted();
@@ -104,9 +84,7 @@ namespace components::operators {
             return core::error_t::no_error();
         }
         // Built exactly as a surviving batch would be, so the columns match position for position.
-        vector::data_chunk_t empty = stream_sparse_
-                                         ? vector::data_chunk_t(resource_, stream_types_, stream_populated_cols_, 0)
-                                         : vector::data_chunk_t(resource_, stream_types_, 0);
+        vector::data_chunk_t empty(resource_, stream_types_, 0);
         empty.set_cardinality(0);
         out.emplace_back(std::move(empty));
         return core::error_t::no_error();

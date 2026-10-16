@@ -91,8 +91,8 @@ namespace components::operators {
         std::pmr::vector<hash_entry_t> index_;
         uint64_t index_mask_{0};
 
-        // Per-chunk scratch, allocated once at plan time and refilled: the key columns the graph
-        // wrote (referenced, never copied), one hash per row, and each row's group id.
+        // Per-chunk scratch, allocated once and refilled: the key columns the graph wrote (referenced,
+        // never copied; built on the first chunk), one hash per row, and each row's group id.
         std::pmr::vector<vector::data_chunk_t> key_probe_;
         std::pmr::vector<vector::vector_t> hashes_;
         std::vector<uint64_t> key_columns_;

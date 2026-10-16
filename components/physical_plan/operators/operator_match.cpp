@@ -4,14 +4,6 @@
 
 namespace components::operators {
 
-    namespace {
-        // Placeholder columns (produced by projected scans) have no buffer and no auxiliary.
-        // They must be skipped when reading values — vector_t::value() would crash otherwise.
-        bool is_placeholder(const vector::vector_t& v) noexcept {
-            return v.data() == nullptr && v.auxiliary() == nullptr;
-        }
-    } // namespace
-
     operator_match_t::operator_match_t(std::pmr::memory_resource* resource,
                                        log_t log,
                                        const expressions::expression_ptr& expression,
@@ -20,59 +12,13 @@ namespace components::operators {
         , expression_(std::move(expression))
         , cap_(cap) {}
 
-    // Build the predicate + the populated-column projection metadata for one input
-    // chunk schema. Shared one-time setup for both the materialized and the streaming
-    // entry point: the predicate depends only on the (stable) chunk SCHEMA, not its
-    // arena, so each entry point builds it once.
-    //
-    // DEFECT FIX (b): the predicate and the `types` working copy are allocated on the
-    // caller-chosen STABLE `resource`, NOT on the per-batch sample.resource(). The
-    // caller passes effective_resource_(sample) — the operator's own resource_ when it
-    // has one, else the input chunk's resource captured once for the whole streaming
-    // run (see push()). Over a SCAN source this is the operator's resource exactly as
-    // before; over a SINK (a group/join output) it is the sink operator's stable
-    // resource, which outlives every batch — so a predicate whose value-getter closures
-    // were allocated here does NOT dangle on the second finalize chunk (the prior code
-    // rebuilt against each batch's arena). The types are COPIED element-wise from the
-    // sample's column types (never move-assigned from sample.types(), whose vector is
-    // allocated on the foreign/null sink arena — that move-assign compares allocators
-    // and dereferences the dangling sink resource).
-    void operator_match_t::build_schema_metadata_(const vector::data_chunk_t& sample,
-                                                  std::pmr::vector<types::complex_logical_type>& types,
-                                                  std::vector<size_t>& populated_cols,
-                                                  bool& sparse) {
-        // `types` is already constructed on `resource` by the caller (so its allocator
-        // is the stable resource, never null), so an in-place fill is safe.
-        types.clear();
-        types.reserve(sample.column_count());
-        for (size_t j = 0; j < sample.column_count(); j++) {
-            types.push_back(sample.data[j].type());
-        }
-
-        // populated_cols: only slots with real data flow downstream. A projected scan
-        // leaves the un-projected slots as placeholders (no buffer) so column indices
-        // stay stable; vector_t::value() would crash on those, so they are skipped.
-        populated_cols.clear();
-        populated_cols.reserve(sample.column_count());
-        for (size_t j = 0; j < sample.column_count(); j++) {
-            if (!is_placeholder(sample.data[j])) {
-                populated_cols.push_back(j);
-            }
-        }
-        sparse = populated_cols.size() != sample.column_count();
-    }
-
-    // Shared filter core (R6): filter ONE chunk through the predicate + projection,
+    // Shared filter core (R6): filter ONE chunk through the predicate,
     // advancing the caller-owned LIMIT running counter `limit_total` across batches,
     // and append the surviving-rows chunk to `out`. Called by push() (per
     // streamed batch, MEMBER counter). The predicate compares chunk against itself
-    // (single-input filter), surviving rows carry their absolute row_id, and only
-    // populated (non-placeholder) columns are copied — exactly as the prior single-loop
-    // implementation did.
+    // (single-input filter) and surviving rows carry their absolute row_id.
     core::error_t operator_match_t::filter_batch_(std::pmr::memory_resource* resource,
                                                   const vector::vector_t* decisions,
-                                                  const std::vector<size_t>& populated_cols,
-                                                  bool sparse,
                                                   const std::pmr::vector<types::complex_logical_type>& types,
                                                   const vector::data_chunk_t& chunk,
                                                   uint64_t& limit_total,
@@ -108,12 +54,10 @@ namespace components::operators {
         }
 
         // TYPED, no-box gather, the same one operator_having uses: data_chunk_t::copy routes each
-        // column through vector_ops::copy, skips
-        // placeholder columns and sets the target cardinality itself. row_ids are gathered
-        // unconditionally: over a SINK the input's are zero-filled placeholders, so gathering them
+        // column through vector_ops::copy and sets the target cardinality itself. row_ids are gathered
+        // unconditionally: over a SINK the input's are zero-filled, so gathering them
         // reproduces exactly the zero sentinel the per-cell path left behind.
-        vector::data_chunk_t out_chunk = sparse ? vector::data_chunk_t(resource, types, populated_cols, out_count)
-                                                : vector::data_chunk_t(resource, types, out_count);
+        vector::data_chunk_t out_chunk(resource, types, out_count);
         chunk.copy(out_chunk, sel, out_count);
         out.emplace_back(std::move(out_chunk));
         note_emitted();
@@ -142,7 +86,11 @@ namespace components::operators {
             // old (null) allocator and crash.
             stream_types_.~vector();
             new (&stream_types_) std::pmr::vector<types::complex_logical_type>(stream_resource_);
-            build_schema_metadata_(input, stream_types_, stream_populated_cols_, stream_sparse_);
+            // Copied element-wise: input.types() lives on different resource.
+            stream_types_.reserve(input.column_count());
+            for (const auto& column : input.data) {
+                stream_types_.push_back(column.type());
+            }
             condition_ = expressions::classify_condition(expression_);
             if (condition_ == expressions::condition_kind::computed) {
                 auto built = expressions::build_condition_graph(stream_resource_,
@@ -175,8 +123,6 @@ namespace components::operators {
         const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
         return filter_batch_(stream_resource_,
                              decisions,
-                             stream_populated_cols_,
-                             stream_sparse_,
                              stream_types_,
                              input,
                              stream_limit_total_,
@@ -188,9 +134,7 @@ namespace components::operators {
             return core::error_t::no_error();
         }
         auto* res = stream_resource_ ? stream_resource_ : resource_;
-        vector::data_chunk_t empty = stream_sparse_
-                                         ? vector::data_chunk_t(res, stream_types_, stream_populated_cols_, 0)
-                                         : vector::data_chunk_t(res, stream_types_, 0);
+        vector::data_chunk_t empty(res, stream_types_, 0);
         empty.set_cardinality(0);
         out.emplace_back(std::move(empty));
         return core::error_t::no_error();

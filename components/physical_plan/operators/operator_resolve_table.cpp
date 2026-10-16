@@ -38,7 +38,7 @@ namespace components::operators {
             std::string attdefspec;
         };
 
-        // A too-narrow projection doesn't fail; the column silently reads back as an empty placeholder.
+        // A keyed read answers exactly these columns, in this order.
         std::pmr::vector<std::uint64_t> pg_class_oid_and_namespace(std::pmr::memory_resource* resource) {
             std::pmr::vector<std::uint64_t> cols(resource);
             cols.emplace_back(catalog::pg_class_col::oid);
@@ -182,20 +182,14 @@ namespace components::operators {
                 };
                 std::vector<candidate_t> candidates;
                 for (const auto& chunk : lookup_batches) {
-                    if (chunk.column_count() == 0) {
-                        continue;
-                    }
                     for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                         if (chunk.is_null(0, i)) {
                             continue;
                         }
                         const auto oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                        const bool has_ns = chunk.column_count() > catalog::pg_class_col::relnamespace &&
-                                            !chunk.is_null(catalog::pg_class_col::relnamespace, i);
-                        const auto ns =
-                            has_ns ? static_cast<catalog::oid_t>(
-                                         chunk.get_value<std::uint32_t>(catalog::pg_class_col::relnamespace, i))
-                                   : catalog::INVALID_OID;
+                        const auto ns = chunk.is_null(1, i)
+                                            ? catalog::INVALID_OID
+                                            : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                         if (std::none_of(candidates.begin(), candidates.end(), [oid](const candidate_t& cand) {
                                 return cand.oid == oid;
                             })) {
@@ -238,11 +232,8 @@ namespace components::operators {
                                 co_return;
                             }
                             auto& nm_batches = nm_batches_r.value();
-                            if (!nm_batches.empty() && nm_batches[0].size() != 0 &&
-                                nm_batches[0].column_count() > catalog::pg_namespace_col::nspname &&
-                                !nm_batches[0].is_null(catalog::pg_namespace_col::nspname, 0)) {
-                                holder_dbnames.emplace_back(
-                                    nm_batches[0].get_value<std::string_view>(catalog::pg_namespace_col::nspname, 0));
+                            if (!nm_batches.empty() && nm_batches[0].size() != 0 && !nm_batches[0].is_null(0, 0)) {
+                                holder_dbnames.emplace_back(nm_batches[0].get_value<std::string_view>(0, 0));
                             }
                         }
                         std::sort(holder_dbnames.begin(), holder_dbnames.end());
@@ -290,13 +281,13 @@ namespace components::operators {
                     co_return;
                 }
                 auto& pc_batches = pc_batches_r.value();
-                if (!pc_batches.empty() && pc_batches[0].size() != 0 && pc_batches[0].column_count() >= 4) {
+                if (!pc_batches.empty() && pc_batches[0].size() != 0) {
                     found = true;
-                    if (!pc_batches[0].is_null(2, 0)) {
-                        namespace_oid = static_cast<catalog::oid_t>(pc_batches[0].get_value<std::uint32_t>(2, 0));
+                    if (!pc_batches[0].is_null(0, 0)) {
+                        namespace_oid = static_cast<catalog::oid_t>(pc_batches[0].get_value<std::uint32_t>(0, 0));
                     }
-                    if (!pc_batches[0].is_null(3, 0)) {
-                        auto rk_cell = pc_batches[0].get_value<std::string_view>(3, 0);
+                    if (!pc_batches[0].is_null(1, 0)) {
+                        auto rk_cell = pc_batches[0].get_value<std::string_view>(1, 0);
                         relkind = rk_cell.empty() ? catalog::relkind::regular : rk_cell.front();
                     } else {
                         relkind = catalog::relkind::regular;
@@ -327,9 +318,8 @@ namespace components::operators {
                     co_return;
                 }
                 auto& pr_batches = pr_batches_r.value();
-                if (!pr_batches.empty() && pr_batches[0].size() != 0 && pr_batches[0].column_count() >= 5 &&
-                    !pr_batches[0].is_null(4, 0)) {
-                    view_sql.assign(pr_batches[0].get_value<std::string_view>(4, 0));
+                if (!pr_batches.empty() && pr_batches[0].size() != 0 && !pr_batches[0].is_null(0, 0)) {
+                    view_sql.assign(pr_batches[0].get_value<std::string_view>(0, 0));
                 }
             }
 

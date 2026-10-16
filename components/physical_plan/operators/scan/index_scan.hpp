@@ -33,9 +33,9 @@ namespace components::operators {
                    components::logical_plan::index_type preferred_index_type,
                    logical_plan::row_cap_t cap,
                    std::vector<size_t> projected_cols,
-                   // Position of the indexed column in a fetched chunk, or -1 when plan-gen could
-                   // not resolve it. Feeds the recheck below; -1 leaves the answer on the epoch
-                   // gate alone.
+                   // Position of the indexed column in a fetched chunk (one projected_cols holds), or -1
+                   // when plan-gen could not resolve it. Feeds the recheck below; -1 leaves the answer on
+                   // the epoch gate alone.
                    int64_t key_chunk_col);
 
         const expressions::key_t& key() const { return key_; }
@@ -104,9 +104,6 @@ namespace components::operators {
         // for unnamed text columns too.
         const std::vector<size_t> projected_cols_;
         const int64_t key_chunk_col_;
-        // projected_cols_ widened by key_chunk_col_ so the recheck has the cell to read. Built once:
-        // a per-fetch copy would allocate on the point-lookup path.
-        std::vector<size_t> fetch_cols_;
 
         // If the scan drains having produced zero rows, it emits one schema'd 0-row guard chunk
         // (scalar aggregate COUNT=0 / OUTER-join NULL-pad) before it ends the stream.

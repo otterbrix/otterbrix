@@ -270,11 +270,9 @@ namespace components::operators {
                 }
                 std::optional<data_chunk_t> left_part;
                 if (rows.size() != index) {
-                    left_part.emplace(resource_, staged.types(), std::vector<size_t>{}, rows.size());
-                    left_part->slice(staged, left_selection, rows.size());
+                    left_part.emplace(dml_detail::sliced_rows(resource_, staged, left_selection, rows.size()));
                 }
-                data_chunk_t right_part(resource_, source_right.types(), std::vector<size_t>{}, rows.size());
-                right_part.slice(source_right, right_selection, rows.size());
+                auto right_part = dml_detail::sliced_rows(resource_, source_right, right_selection, rows.size());
                 auto proj = evaluate_projection(resource_,
                                                 returning_,
                                                 left_part.has_value() ? &*left_part : &staged,
@@ -300,11 +298,7 @@ namespace components::operators {
     core::error_t
     operator_delete::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
 #ifdef DEV_MODE
-        for (const auto& column : input.data) {
-            if (column.data() != nullptr || column.auxiliary() != nullptr) {
-                g_delete_scanned_columns.fetch_add(1, std::memory_order_relaxed);
-            }
-        }
+        g_delete_scanned_columns.fetch_add(input.column_count(), std::memory_order_relaxed);
 #endif
         if (right_ && right_->output()) {
             return consume_join_batch_(ctx, input, right_->output()->chunks());

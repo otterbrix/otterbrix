@@ -510,6 +510,41 @@ namespace services::catalog_resolve {
         });
     }
 
+    // A DELETE's index mirror removes the old entries by value, so we have to read every key column.
+    void stamp_index_key_columns(components::logical_plan::node_t* root,
+                                 components::catalog::oid_t table_oid,
+                                 const std::pmr::vector<components::index::keys_base_storage_t>& indexes) {
+        using namespace components::logical_plan;
+        if (root == nullptr || table_oid == components::catalog::INVALID_OID || indexes.empty()) {
+            return;
+        }
+        for_each_node(root, [table_oid, &indexes](node_t* n) {
+            if (n->type() != node_type::delete_t || n->table_oid() != table_oid || n->table_metadata() == nullptr) {
+                return;
+            }
+            const auto& columns = n->table_metadata()->columns;
+            std::vector<size_t> key_columns;
+            for (const auto& keys : indexes) {
+                for (const auto& key : keys) {
+                    auto name = key.as_string();
+                    auto found = std::find_if(columns.begin(), columns.end(), [&name](const auto& column) {
+                        return column.attname == name;
+                    });
+                    if (found == columns.end()) {
+                        key_columns.clear();
+                        for (size_t column = 0; column < columns.size(); ++column) {
+                            key_columns.push_back(column);
+                        }
+                        static_cast<node_delete_t*>(n)->set_index_key_columns(std::move(key_columns));
+                        return;
+                    }
+                    key_columns.push_back(static_cast<size_t>(found - columns.begin()));
+                }
+            }
+            static_cast<node_delete_t*>(n)->set_index_key_columns(std::move(key_columns));
+        });
+    }
+
     void bind_catalog_data(components::logical_plan::node_t* root, const catalog_resolves_t& resolves) {
         using namespace components::logical_plan;
         if (!root)
@@ -1392,6 +1427,7 @@ namespace services::dispatcher {
             for (std::size_t i = 0; i < keys_futures.size(); ++i) {
                 auto keys = co_await std::move(keys_futures[i]);
                 catalog_resolve::stamp_table_has_indexes(root.get(), queried_oids[i], !keys.empty());
+                catalog_resolve::stamp_index_key_columns(root.get(), queried_oids[i], keys);
                 collections_ctx->index_info_slot(queried_oids[i]).keys = std::move(keys);
             }
             for (std::size_t i = 0; i < desc_futures.size(); ++i) {

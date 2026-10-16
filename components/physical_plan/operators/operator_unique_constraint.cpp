@@ -90,15 +90,13 @@ namespace components::operators {
                 key_types.push_back(in_chunks.front().data[src].type());
             }
             key_chunks->reserve(in_chunks.size());
-            // Every key column below is reference()d off the write-set column, so the view owns no
-            // column buffer: an EMPTY projection list makes all of them placeholders
-            // (components/vector/data_chunk.cpp:120-122). The plain ctor allocated a full
-            // capacity-sized buffer per key column, zeroed it, and dropped it unread at the
-            // reference() -- 8 KiB per BIGINT key per chunk. Same shape execution_dag.cpp:122 builds.
-            const std::vector<size_t> no_owned_columns;
+            // Every key column below references the write-set column, so the view owns no column buffer.
             for (const auto& chunk : in_chunks) {
                 const uint64_t n = chunk.size();
-                vector::data_chunk_t keys_chunk(resource, key_types, no_owned_columns, n == 0 ? 1 : n);
+                vector::data_chunk_t keys_chunk(resource,
+                                                std::pmr::vector<types::complex_logical_type>{resource},
+                                                n == 0 ? 1 : n);
+                keys_chunk.data.reserve(sources.size());
                 for (std::size_t j = 0; j < sources.size(); ++j) {
                     // Every chunk is read at the front chunk's positions, so a layout/type mismatch would read
                     // past the array or the wrong column in silence. Same per-chunk guard as
@@ -111,7 +109,7 @@ namespace components::operators {
                                     "the chunks disagree about the table's shape");
                         return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
                     }
-                    keys_chunk.data[j].reference(chunk.data[sources[j]]);
+                    keys_chunk.data.emplace_back(chunk.data[sources[j]]);
                 }
                 keys_chunk.set_cardinality(n);
                 key_chunks->emplace_back(std::move(keys_chunk));

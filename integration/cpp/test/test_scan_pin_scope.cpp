@@ -77,12 +77,9 @@ TEST_CASE("integration::cpp::test_scan_pin_scope::a_scan_pins_per_segment_not_pe
     CHECK(pins <= bound);
 }
 
-// Predicate evaluation fetches row by row, but must not PIN per row.
-//
-// row_group_t::evaluate_predicate hoists a column_fetch_state out of its loops so the pin can be
-// reused across the rows of a segment; every fetch_row in column_segment.cpp has to go through that
-// cache (get_or_insert_handle) instead of pinning segment.block itself. Otherwise the pin cost
-// above is paid per row, per referenced column.
+// A filtered scan pins per segment too: the predicate reads its columns a vector at a time, and the
+// surviving rows of the other columns are gathered through one column_fetch_state per vector, whose
+// handle cache (get_or_insert_handle) every fetch_row in column_segment.cpp must go through.
 //
 // Hidden ([.]). Run it with [predpin].
 TEST_CASE("integration::cpp::test_scan_pin_scope::predicate_evaluation_pins_per_segment", "[.][predpin]") {
@@ -124,15 +121,12 @@ TEST_CASE("integration::cpp::test_scan_pin_scope::predicate_evaluation_pins_per_
     }
     WARN("selective filter query: " << elapsed_us << " us per run");
     const auto pins = components::table::storage::buffer_pins();
-    const auto fetches = components::table::predicate_row_fetches();
 
-    WARN("filter query: " << fetches << " predicate fetches, " << pins << " buffer pins, "
-                          << (kRows / components::vector::DEFAULT_VECTOR_CAPACITY) << " segments");
-
-    // If the predicate path runs at all, its pins must be proportional to the SEGMENTS it touches,
-    // not to the rows it examines. The check is skipped when the path is not exercised at all —
-    // saying so is more useful than a green tick that means nothing.
-    if (fetches > 0) {
-        CHECK(pins < fetches / 4);
-    }
+    // Six runs of a two-column read, bounded as the plain scan above.
+    const uint64_t segments = kRows / components::vector::DEFAULT_VECTOR_CAPACITY;
+    const uint64_t bound = 6 * 2 * segments * 16;
+    INFO("pins for 6 filtered scans of " << kRows << " rows: " << pins << " (segments " << segments << ", bound "
+                                         << bound << ")");
+    REQUIRE(pins > 0);
+    CHECK(pins <= bound);
 }

@@ -37,16 +37,9 @@ namespace {
         }
     }
 
-    struct resolved_path_t {
-        const vector_t* array;
-        size_t index;
-        const vector_t* leaf;
-    };
-
-    resolved_path_t resolve_path(const std::vector<vector_t>& data, const std::pmr::vector<size_t>& col_path) {
-        if (col_path.front() >= data.size()) {
-            return {.array = nullptr, .index = 0, .leaf = nullptr};
-        }
+    const vector_t* resolve_path(const std::vector<vector_t>& data, const std::pmr::vector<size_t>& col_path) {
+        assert(!col_path.empty());
+        assert(col_path.front() < data.size());
         const vector_t* sub_column = &data[col_path.front()];
         for (auto it = std::next(col_path.begin()); it != col_path.end(); ++it) {
             auto t = sub_column->type().type();
@@ -54,37 +47,13 @@ namespace {
                 // Only a trailing subscript resolves — arr[i].field would index a vector that
                 // doesn't exist, since the field lives once per element, not once per row.
                 if (std::next(it) != col_path.end()) {
-                    return {.array = nullptr, .index = 0, .leaf = nullptr};
+                    return nullptr;
                 }
-                return {.array = sub_column, .index = *it, .leaf = &sub_column->entry()};
+                return &sub_column->entry();
             }
             sub_column = sub_column->entries()[*it].get();
         }
-        return {.array = nullptr, .index = 0, .leaf = sub_column};
-    }
-
-    vector_t align_to_rows(const vector_t& array, size_t index, uint64_t count, std::pmr::memory_resource* resource) {
-        const vector_t& child = array.entry();
-        const bool is_list = array.type().type() == types::logical_type::LIST;
-        const size_t stride =
-            is_list ? 0 : static_cast<const types::array_logical_type_extension*>(array.type().extension())->size();
-
-        vector_t out(resource, child.type(), count);
-        for (uint64_t i = 0; i < count; ++i) {
-            uint64_t pos;
-            if (is_list) {
-                const auto& offlen = array.data<types::list_entry_t>()[i];
-                if (index >= offlen.length) {
-                    out.validity().set_invalid(i);
-                    continue;
-                }
-                pos = offlen.offset + index;
-            } else {
-                pos = i * stride + index;
-            }
-            vector_ops::copy(child, out, pos + 1, pos, i);
-        }
-        return out;
+        return sub_column;
     }
 } // namespace
 
@@ -98,30 +67,6 @@ namespace components::vector {
         assert(capacity <= DEFAULT_VECTOR_CAPACITY);
         for (uint64_t i = 0; i < types.size(); i++) {
             data.emplace_back(resource_, types[i], capacity_);
-        }
-    }
-
-    data_chunk_t::data_chunk_t(std::pmr::memory_resource* resource,
-                               const std::pmr::vector<types::complex_logical_type>& all_types,
-                               const std::vector<size_t>& projected_cols,
-                               uint64_t capacity)
-        : resource_(resource)
-        , capacity_(capacity)
-        , row_ids(resource, types::logical_type::BIGINT, capacity) {
-        assert(capacity <= DEFAULT_VECTOR_CAPACITY);
-        std::vector<bool> needed(all_types.size(), false);
-        for (size_t idx : projected_cols) {
-            if (idx < all_types.size()) {
-                needed[idx] = true;
-            }
-        }
-        data.reserve(all_types.size());
-        for (size_t i = 0; i < all_types.size(); i++) {
-            if (needed[i]) {
-                data.emplace_back(resource_, all_types[i], capacity_);
-            } else {
-                data.emplace_back(resource_, all_types[i], false, false, 0);
-            }
         }
     }
 
@@ -139,12 +84,6 @@ namespace components::vector {
         row_ids = std::move(other.row_ids);
         data = std::move(other.data);
         return *this;
-    }
-
-    // A real ARRAY/STRUCT/LIST keeps auxiliary() set with null data(); NA legitimately allocates
-    // neither, so only an unprojected column has both null.
-    bool is_unprojected_placeholder(const vector_t& v) noexcept {
-        return v.type().type() != types::logical_type::NA && v.data() == nullptr && v.auxiliary() == nullptr;
     }
 
     // NA-typed vectors are CONSTANT, not FLAT, so skipping them here keeps the FLAT-destination
@@ -165,12 +104,6 @@ namespace components::vector {
         }
     }
 
-    void data_chunk_t::drop_unprojected_placeholders() {
-        data.erase(
-            std::remove_if(data.begin(), data.end(), [](const vector_t& v) { return is_unprojected_placeholder(v); }),
-            data.end());
-    }
-
     void data_chunk_t::destroy() {
         data.clear();
         capacity_ = 0;
@@ -186,20 +119,11 @@ namespace components::vector {
     }
 
     const vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) const {
-        return resolve_path(data, col_path).leaf;
+        return resolve_path(data, col_path);
     }
 
     vector_t* data_chunk_t::at(const std::pmr::vector<size_t>& col_path) {
         return const_cast<vector_t*>(std::as_const(*this).at(col_path));
-    }
-
-    data_chunk_t::at_aligned_t data_chunk_t::at_aligned(const std::pmr::vector<size_t>& col_path,
-                                                        std::pmr::memory_resource* resource) const {
-        auto resolved = resolve_path(data, col_path);
-        if (resolved.array) {
-            return at_aligned_t{align_to_rows(*resolved.array, resolved.index, size(), resource)};
-        }
-        return at_aligned_t{resolved.leaf};
     }
 
     bool data_chunk_t::all_constant() const {
@@ -226,7 +150,7 @@ namespace components::vector {
         assert(other.size() == 0);
 
         for (uint64_t i = 0; i < column_count(); i++) {
-            if (is_unprojected_placeholder(data[i]) || is_null_typed(other.data[i]))
+            if (is_null_typed(other.data[i]))
                 continue;
             if (data[i].type().type() == types::logical_type::NA)
                 continue;
@@ -247,7 +171,7 @@ namespace components::vector {
         assert(source_count <= size());
 
         for (uint64_t i = 0; i < column_count(); i++) {
-            if (is_unprojected_placeholder(data[i]) || is_null_typed(other.data[i]))
+            if (is_null_typed(other.data[i]))
                 continue;
             if (data[i].type().type() == types::logical_type::NA)
                 continue;
@@ -388,9 +312,6 @@ namespace components::vector {
         // process default resource, which this project forbids.
         indexing_cache_t merge_cache{resource_};
         for (uint64_t c = 0; c < column_count(); c++) {
-            if (is_unprojected_placeholder(data[c])) {
-                continue;
-            }
             data[c].slice(indexing_vector, count, merge_cache);
         }
     }
@@ -403,9 +324,7 @@ namespace components::vector {
         count_ = count;
         indexing_cache_t merge_cache{resource_};
         for (uint64_t c = 0; c < other.column_count(); c++) {
-            if (is_unprojected_placeholder(other.data[c])) {
-                data[col_offset + c] = vector_t(resource_, other.data[c].type(), false, false, 0);
-            } else if (other.data[c].get_vector_type() == vector_type::DICTIONARY) {
+            if (other.data[c].get_vector_type() == vector_type::DICTIONARY) {
                 data[col_offset + c].reference(other.data[c]);
                 data[col_offset + c].slice(indexing, count, merge_cache);
             } else {
@@ -428,12 +347,7 @@ namespace components::vector {
         result.count_ = count;
         result.data.reserve(column_count());
         for (uint64_t c = 0; c < column_count(); c++) {
-            if (is_unprojected_placeholder(data[c])) {
-                // Preserve placeholder status — slicing nullptr would produce a bogus offset pointer.
-                result.data.emplace_back(resource, data[c].type(), false, false, 0);
-            } else {
-                result.data.emplace_back(data[c], offset, count);
-            }
+            result.data.emplace_back(data[c], offset, count);
         }
         result.row_ids = vector_t(resource, types::logical_type::BIGINT, count);
         if (count > 0) {
@@ -475,8 +389,6 @@ namespace components::vector {
             new_size = is_power_of_two(new_size) ? new_size * 2 : next_power_of_two(new_size);
         }
         for (auto& column : data) {
-            if (is_unprojected_placeholder(column))
-                continue;
             column.resize(capacity_, new_size);
         }
         row_ids.resize(capacity_, new_size);

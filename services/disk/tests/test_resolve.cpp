@@ -412,10 +412,10 @@ TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
     REQUIRE(projected.size() == 1);
     REQUIRE(full[0].size() == 1);
     REQUIRE(projected[0].size() == 1);
-    REQUIRE(projected[0].column_count() == full[0].column_count());
-    REQUIRE(projected[0].data[2].get_value<std::int64_t>(0) == full[0].data[2].get_value<std::int64_t>(0));
-    // The key column survives projection: the filter needs it, so the agent keeps it.
-    REQUIRE(projected[0].data[0].get_value<std::int64_t>(0) == std::int64_t{7});
+    // The answer is exactly the projection: the key column the filter needed is not handed back.
+    REQUIRE(full[0].column_count() == 3);
+    REQUIRE(projected[0].column_count() == 1);
+    REQUIRE(projected[0].data[0].get_value<std::int64_t>(0) == full[0].data[2].get_value<std::int64_t>(0));
 }
 
 // scan_table is the single door for catalog reads; its error legs must answer with an error, never an empty batch.

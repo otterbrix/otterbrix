@@ -140,14 +140,12 @@ namespace components::execution_dag {
     }
 
     vector::data_chunk_t function_node_t::argument_chunk(uint64_t count) const {
-        std::pmr::vector<types::complex_logical_type> argument_types(resource());
-        argument_types.reserve(input_indices_.size());
+        vector::data_chunk_t arguments(resource(),
+                                       std::pmr::vector<types::complex_logical_type>{resource()},
+                                       count > 0 ? count : 1);
+        arguments.data.reserve(input_indices_.size());
         for (size_t position = 0; position < input_indices_.size(); position++) {
-            argument_types.push_back(input(position).type());
-        }
-        vector::data_chunk_t arguments(resource(), argument_types, std::vector<size_t>{}, count > 0 ? count : 1);
-        for (size_t position = 0; position < input_indices_.size(); position++) {
-            arguments.data[position].reference(input(position));
+            arguments.data.emplace_back(input(position));
         }
         arguments.set_cardinality(count);
         // TODO: function kernel accept only flat vectors for now
@@ -1560,14 +1558,10 @@ namespace components::execution_dag {
             return error;
         }
         const uint64_t rows = emitted_rows(ambient);
-        std::pmr::vector<types::complex_logical_type> output_types(resource_);
-        output_types.reserve(output_slots_.size());
+        vector::data_chunk_t result(resource_, std::pmr::vector<types::complex_logical_type>{resource_}, capacity_);
+        result.data.reserve(output_slots_.size());
         for (auto slot : output_slots_) {
-            output_types.push_back(slots_[slot].type);
-        }
-        vector::data_chunk_t result(resource_, output_types, std::vector<size_t>{}, capacity_);
-        for (size_t index = 0; index < output_slots_.size(); index++) {
-            result.data[index].reference(data_storage_[output_slots_[index]]);
+            result.data.emplace_back(data_storage_[slot]);
         }
         result.set_cardinality(rows);
         return result;

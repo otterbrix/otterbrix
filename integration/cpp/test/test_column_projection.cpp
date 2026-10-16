@@ -1,8 +1,7 @@
 // Integration tests for the column projection optimization.
 //
-// The optimizer's post_validate_optimize() pass populates node_aggregate_t's
-// projected_cols field, and scan/match/join operators cooperate to produce
-// correct results even when some chunks carry placeholder columns.
+// The optimizer's column_pruning pass populates node_aggregate_t's projected_cols
+// field and rebases every key onto the narrowed row; scans emit only those columns.
 //
 // These tests focus on end-to-end correctness across the cases the optimization
 // is expected to handle:
@@ -25,8 +24,7 @@ using namespace test_helpers;
 
 // Disk-backed end-to-end coverage: the column_pruning optimizer rule
 // populates node_aggregate_t::projected_cols, so the owning disk agent's
-// storage_fetch_next_batch reads ONLY the projected storage columns (a WIDE chunk
-// whose non-projected slots are placeholders, indexed by original storage position).
+// storage_fetch_next_batch reads ONLY the projected storage columns, in projection order.
 // Wrong projection here would return garbage / crash, so pinning concrete values
 // validates the on-disk projection path end to end — the path the in-memory tests
 // below do NOT exercise.
@@ -659,14 +657,11 @@ TEST_CASE("integration::cpp::column_projection::limit_does_not_break_projection"
 }
 
 // The schema'd 0-row empty-guard a drained scan emits (so a scalar aggregate still
-// produces its COUNT=0 row, and an OUTER join can NULL-pad) must obey the same
-// contract as real pruned batches (PR #477): FULL table width, with buffer-less
-// placeholders in the non-projected slots, so operators above keep indexing by
-// table ordinal (e.g. the COUNT(e) arg path is e's storage ordinal). A guard
-// narrowed to the projected types makes those ordinal reads out-of-bounds — silent
-// in a regular build, a heap-buffer-overflow under ASAN. These queries pass
-// pre-fix in non-ASAN builds; their job is to lock the guard-chunk shape and act
-// as the ASAN tripwire.
+// produces its COUNT=0 row, and an OUTER join can NULL-pad) must have the same
+// shape as real pruned batches: the projected columns, in projection order, which
+// the operators above address by their rebased positions. A guard of any other
+// shape makes those reads out-of-bounds — silent in a regular build, a
+// heap-buffer-overflow under ASAN; these queries are the ASAN tripwire.
 TEST_CASE("integration::cpp::column_projection::empty_input_scalar_aggregate_guard") {
     auto config = make_test_config(integration_fixture_path("col_proj/empty_guard"));
     test_spaces space(config);
@@ -682,8 +677,8 @@ TEST_CASE("integration::cpp::column_projection::empty_input_scalar_aggregate_gua
 
     INFO("pruned filtered scan (full_scan) + WHERE filtering everything + scalar aggregate");
     {
-        // projected_cols = {c, e}; the COUNT arg resolves at e's table ordinal inside
-        // the 0-row guard chunk the drained scan emits.
+        // projected_cols = {c, e}; the COUNT arg reads e at position 1 of the 0-row guard
+        // chunk the drained scan emits.
         auto cur = exec(dispatcher, "SELECT COUNT(e) AS cnt FROM db.wide WHERE c > 999999;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);

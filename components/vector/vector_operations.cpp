@@ -746,12 +746,6 @@ namespace components::vector::vector_ops {
             return;
         }
 
-        // A non-projected placeholder column has no data buffer; skipping it is safe since downstream never
-        // reads that slot either.
-        if (source.get_vector_type() == vector_type::FLAT && source.data() == nullptr && !source.auxiliary()) {
-            return;
-        }
-
         indexing_vector_t owned_indexing(source.resource());
         const indexing_vector_t* indexing_ptr = &indexing;
 

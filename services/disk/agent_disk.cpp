@@ -937,7 +937,7 @@ namespace services::disk {
                                   resource()};
             co_return core::error_t{core::error_code_t::stale_index, std::move(what)};
         }
-        auto types = entry->storage->types();
+        auto types = entry->storage->read_types(projected_cols.empty() ? nullptr : &projected_cols, txn);
         const bool capped = limit >= 0;
         const uint64_t budget = capped ? static_cast<uint64_t>(limit) : 0;
         uint64_t produced = 0;
@@ -1025,7 +1025,9 @@ namespace services::disk {
                     core::error_code_t::missing_table,
                     std::pmr::string{"scan filter: storage is not owned by this agent", resource()}};
             }
-            auto built = build_filter_(filter.get(), it->second->storage->types());
+            auto built = build_filter_(
+                filter.get(),
+                it->second->storage->read_types(projected_cols.empty() ? nullptr : &projected_cols, txn));
             if (built.has_error()) {
                 co_return built.error();
             }
@@ -1052,18 +1054,11 @@ namespace services::disk {
                                                 const components::table::transaction_data& txn,
                                                 std::pmr::memory_resource* resource,
                                                 PerBatch&& fn) {
-        auto all_types = storage.types(txn);
+        auto read_types = storage.read_types(projected, txn);
         scan_position.next_row = 0;
         scan_position.max_row = static_cast<int64_t>(storage.total_rows());
         while (!scan_position.drained && scan_position.next_row < scan_position.max_row) {
-            components::vector::data_chunk_t batch =
-                projected ? components::vector::data_chunk_t{resource,
-                                                             all_types,
-                                                             *projected,
-                                                             components::vector::DEFAULT_VECTOR_CAPACITY}
-                          : components::vector::data_chunk_t{resource,
-                                                             all_types,
-                                                             components::vector::DEFAULT_VECTOR_CAPACITY};
+            components::vector::data_chunk_t batch{resource, read_types, components::vector::DEFAULT_VECTOR_CAPACITY};
             auto fetch_r = storage.fetch_next_batch(batch, scan_position, filter, projected, txn);
             if (fetch_r.has_error()) {
                 return fetch_r.error();
@@ -1176,7 +1171,9 @@ namespace services::disk {
                 what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
                 co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
             }
-            auto built = build_filter_(filter.get(), it->second->storage->types());
+            auto built = build_filter_(
+                filter.get(),
+                it->second->storage->read_types(projected_cols.empty() ? nullptr : &projected_cols, txn));
             if (built.has_error()) {
                 co_return built.error();
             }
@@ -1220,9 +1217,7 @@ namespace services::disk {
         }
         auto* storage = storage_it->second->storage.get();
 
-        // Not all columns are visible to all transactions
         auto all_types = storage->types();
-        auto visible_types = storage->types(scan.txn);
         const bool schema_unchanged = [&] {
             const auto& physical = storage_it->second->table_storage.table().columns();
             if (physical.size() != scan.open_columns.size() || all_types.size() != scan.open_types.size()) {
@@ -1239,7 +1234,6 @@ namespace services::disk {
         }();
 
         std::vector<size_t> remapped_projected;
-        std::vector<std::pair<size_t, size_t>> reslot;
         if (!schema_unchanged) {
             std::vector<active_scan_t::open_column_t> current_columns;
             collect_identity(*storage_it->second, current_columns);
@@ -1291,14 +1285,13 @@ namespace services::disk {
                 }
             }
 
-            reslot.reserve(scan.projected_cols.empty() ? scan.open_columns.size() : scan.projected_cols.size());
-            remapped_projected.reserve(reslot.capacity());
+            remapped_projected.reserve(scan.projected_cols.empty() ? scan.open_columns.size()
+                                                                   : scan.projected_cols.size());
             auto need_slot = [&](size_t slot) -> bool {
                 if (slot >= open_to_current.size() || open_to_current[slot] == gone) {
                     return false;
                 }
                 remapped_projected.push_back(open_to_current[slot]);
-                reslot.emplace_back(slot, open_to_current[slot]);
                 return true;
             };
             if (scan.projected_cols.empty()) {
@@ -1318,15 +1311,9 @@ namespace services::disk {
 
         const std::vector<size_t>* projected_ptr =
             schema_unchanged ? (scan.projected_cols.empty() ? nullptr : &scan.projected_cols) : &remapped_projected;
-        auto batch =
-            projected_ptr
-                ? std::make_unique<components::vector::data_chunk_t>(resource(),
-                                                                     visible_types,
-                                                                     *projected_ptr,
-                                                                     components::vector::DEFAULT_VECTOR_CAPACITY)
-                : std::make_unique<components::vector::data_chunk_t>(resource(),
-                                                                     visible_types,
-                                                                     components::vector::DEFAULT_VECTOR_CAPACITY);
+        auto batch = std::make_unique<components::vector::data_chunk_t>(resource(),
+                                                                        storage->read_types(projected_ptr, scan.txn),
+                                                                        components::vector::DEFAULT_VECTOR_CAPACITY);
         auto fetch_r = storage->fetch_next_batch(*batch, scan.pos, scan.filter.get(), projected_ptr, scan.txn);
         if (fetch_r.has_error()) {
             active_scans_.erase(cit);
@@ -1345,25 +1332,6 @@ namespace services::disk {
         if (batch->size() == 0) {
             active_scans_.erase(cit);
             co_return make_drained(cursor_id);
-        }
-
-        if (!schema_unchanged) {
-            std::pmr::vector<components::types::complex_logical_type> open_types{resource()};
-            open_types.assign(scan.open_types.begin(), scan.open_types.end());
-            auto reshaped =
-                scan.projected_cols.empty()
-                    ? std::make_unique<components::vector::data_chunk_t>(resource(),
-                                                                         open_types,
-                                                                         components::vector::DEFAULT_VECTOR_CAPACITY)
-                    : std::make_unique<components::vector::data_chunk_t>(resource(),
-                                                                         open_types,
-                                                                         scan.projected_cols,
-                                                                         components::vector::DEFAULT_VECTOR_CAPACITY);
-            for (const auto& [open_slot, current_ordinal] : reslot) {
-                reshaped->data[open_slot].reference(batch->data[current_ordinal]);
-            }
-            reshaped->set_cardinality(batch->size());
-            batch = std::move(reshaped);
         }
         co_return fetch_batch_t{std::move(batch), cursor_id};
     }
@@ -1427,7 +1395,9 @@ namespace services::disk {
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
-        auto built = build_filter_(filter.get(), it->second->storage->types());
+        auto built = build_filter_(
+            filter.get(),
+            it->second->storage->read_types(projected_cols.empty() ? nullptr : &projected_cols, txn));
         if (built.has_error()) {
             co_return built.error();
         }
@@ -1562,7 +1532,6 @@ namespace services::disk {
         }
 
         std::vector<std::size_t> projected_cols(key_col_indices.begin(), key_col_indices.end());
-        std::vector<std::uint64_t> scan_col_ids(key_col_indices.begin(), key_col_indices.end());
         components::storage::scan_position_t pos{};
         auto scan_error = for_each_storage_batch(
             storage,
@@ -1573,20 +1542,19 @@ namespace services::disk {
             resource,
             [&](components::vector::data_chunk_t& batch) -> core::error_t {
                 const uint64_t rows = batch.size();
-                for (auto ci : key_col_indices) {
-                    auto& col = batch.data[ci];
+                for (auto& col : batch.data) {
                     if (col.get_vector_type() != components::vector::vector_type::FLAT) {
                         col.flatten(rows);
                     }
                 }
                 components::vector::vector_t row_hash_vec(resource, components::types::logical_type::UBIGINT, rows);
-                batch.hash(scan_col_ids, row_hash_vec);
+                batch.hash(row_hash_vec);
                 const auto* row_hashes = row_hash_vec.data<std::uint64_t>();
                 const auto* row_ids = batch.row_ids.data<std::int64_t>();
                 for (uint64_t r = 0; r < rows; ++r) {
                     bool any_null = false;
-                    for (auto ci : key_col_indices) {
-                        if (batch.data[ci].is_null(r)) {
+                    for (const auto& col : batch.data) {
+                        if (col.is_null(r)) {
                             any_null = true;
                             break;
                         }
@@ -1601,10 +1569,7 @@ namespace services::disk {
                     for (std::uint64_t cand : it_h->second) {
                         bool match = true;
                         for (std::size_t j = 0; j < key_col_indices.size(); ++j) {
-                            if (!components::vector::cells_equal(norm_keys.data[j],
-                                                                 cand,
-                                                                 batch.data[key_col_indices[j]],
-                                                                 r)) {
+                            if (!components::vector::cells_equal(norm_keys.data[j], cand, batch.data[j], r)) {
                                 match = false;
                                 break;
                             }
@@ -1753,10 +1718,28 @@ namespace services::disk {
                                     std::pmr::string{"keyed read: key batch too large to bind", resource()}};
         }
 
+        std::vector<std::size_t> scan_projection(projected_cols.begin(), projected_cols.end());
+        std::vector<std::size_t> key_positions;
+        key_positions.reserve(narity);
+        for (const auto key_col : key_col_indices) {
+            if (projected_cols.empty()) {
+                key_positions.push_back(static_cast<std::size_t>(key_col));
+                continue;
+            }
+            auto found = std::find(scan_projection.begin(), scan_projection.end(), key_col);
+            if (found == scan_projection.end()) {
+                scan_projection.push_back(static_cast<std::size_t>(key_col));
+                found = std::prev(scan_projection.end());
+            }
+            key_positions.push_back(static_cast<std::size_t>(found - scan_projection.begin()));
+        }
+        auto read_types =
+            entry->storage->read_types(scan_projection.empty() ? nullptr : &scan_projection, txn);
+
         auto make_eq_child = [&](std::size_t col, std::uint32_t param_id) {
             expr::key_t column{resource()};
             column.set_path(
-                std::pmr::vector<size_t>{{key_col_indices[col]}, std::pmr::polymorphic_allocator<size_t>{resource()}});
+                std::pmr::vector<size_t>{{key_positions[col]}, std::pmr::polymorphic_allocator<size_t>{resource()}});
             return expr::make_compare_expression(resource(),
                                                  expr::compare_type::eq,
                                                  column,
@@ -1793,8 +1776,7 @@ namespace services::disk {
             if (tuple_predicate) {
                 all_predicate->append_child(std::move(tuple_predicate));
             }
-            auto key_built =
-                expr::build_condition_graph(resource(), key_parameters, key_predicate.get(), entry->storage->types());
+            auto key_built = expr::build_condition_graph(resource(), key_parameters, key_predicate.get(), read_types);
             if (key_built.has_error()) {
                 co_return key_built.error();
             }
@@ -1810,8 +1792,7 @@ namespace services::disk {
         if (nkeys == 1) {
             scan_filter = std::move(key_filters.front());
         } else {
-            auto all_built =
-                expr::build_condition_graph(resource(), all_parameters, all_predicate.get(), entry->storage->types());
+            auto all_built = expr::build_condition_graph(resource(), all_parameters, all_predicate.get(), read_types);
             if (all_built.has_error()) {
                 co_return all_built.error();
             }
@@ -1824,13 +1805,6 @@ namespace services::disk {
 #ifdef DEV_MODE
         g_catalog_key_scans.fetch_add(1, std::memory_order_relaxed);
 #endif
-        std::vector<std::size_t> scan_projection(projected_cols.begin(), projected_cols.end());
-        for (const auto key_col : key_col_indices) {
-            if (!scan_projection.empty() &&
-                std::find(scan_projection.begin(), scan_projection.end(), key_col) == scan_projection.end()) {
-                scan_projection.push_back(static_cast<std::size_t>(key_col));
-            }
-        }
         auto scan_r = scan_local(table_oid,
                                  scan_filter.get(),
                                  int64_t{-1},
@@ -1840,18 +1814,25 @@ namespace services::disk {
             co_return scan_r.error();
         }
         auto matched = std::move(scan_r.value());
+        std::size_t answer_width = projected_cols.empty() ? read_types.size() : projected_cols.size();
 
         if (nkeys == 1) {
+            for (auto& chunk : matched) {
+                chunk.data.erase(chunk.data.begin() + static_cast<std::ptrdiff_t>(answer_width), chunk.data.end());
+            }
             result[0] = std::move(matched);
             co_return std::move(result);
         }
 
+        std::pmr::vector<components::types::complex_logical_type> answer_types(
+            read_types.begin(),
+            read_types.begin() + static_cast<std::ptrdiff_t>(answer_width),
+            resource());
         for (auto& chunk : matched) {
             const auto rows = chunk.size();
             if (rows == 0) {
                 continue;
             }
-            const auto chunk_types = chunk.types();
             for (std::uint64_t i = 0; i < nkeys; ++i) {
                 auto decided = expr::run_graph(key_filters[i]->graph.get(),
                                                key_filters[i]->parameters,
@@ -1872,14 +1853,8 @@ namespace services::disk {
                 if (count == 0) {
                     continue;
                 }
-                components::vector::data_chunk_t out =
-                    scan_projection.empty()
-                        ? components::vector::data_chunk_t{resource(), chunk_types, count}
-                        : components::vector::data_chunk_t{resource(), chunk_types, scan_projection, count};
-                for (std::size_t c = 0; c < chunk.column_count(); ++c) {
-                    if (out.data[c].data() == nullptr && out.data[c].auxiliary() == nullptr) {
-                        continue;
-                    }
+                components::vector::data_chunk_t out{resource(), answer_types, count};
+                for (std::size_t c = 0; c < answer_width; ++c) {
                     components::vector::vector_ops::copy(chunk.data[c], out.data[c], selected, count, 0, 0);
                 }
                 components::vector::vector_ops::copy(chunk.row_ids, out.row_ids, selected, count, 0, 0);
@@ -2467,14 +2442,20 @@ namespace services::disk {
 
             auto& table = entry.table_storage.table();
             const uint64_t total = entry.storage->total_rows();
-            const auto types = entry.storage->types();
+            // The catalog read holds the name, then the namespace and the tombstone when the key has them.
             std::vector<size_t> projected{static_cast<size_t>(key.name_col)};
+            uint64_t held_name_col = 0;
+            int64_t held_ns_col = -1;
+            int64_t held_tombstone_col = -1;
             if (key.ns_col >= 0) {
+                held_ns_col = static_cast<int64_t>(projected.size());
                 projected.push_back(static_cast<size_t>(key.ns_col));
             }
             if (key.tombstone_col >= 0) {
+                held_tombstone_col = static_cast<int64_t>(projected.size());
                 projected.push_back(static_cast<size_t>(key.tombstone_col));
             }
+            auto types = entry.storage->read_types(&projected, txn);
             auto is_tombstone = [](const components::vector::data_chunk_t& rows, int64_t column, uint64_t index) {
                 return column >= 0 && !rows.is_null(static_cast<uint64_t>(column), index) &&
                        rows.get_value<bool>(static_cast<uint64_t>(column), index);
@@ -2522,13 +2503,13 @@ namespace services::disk {
                 }
                 const auto* got_ids = chunk.row_ids.data<int64_t>();
                 for (uint64_t i = 0; i < chunk.size(); i++) {
-                    if (chunk.is_null(key.name_col, i) || is_tombstone(chunk, key.tombstone_col, i)) {
+                    if (chunk.is_null(held_name_col, i) || is_tombstone(chunk, held_tombstone_col, i)) {
                         continue;
                     }
-                    auto held_name = chunk.get_value<std::string_view>(key.name_col, i);
-                    bool held_has_ns = key.ns_col >= 0 && !chunk.is_null(static_cast<uint64_t>(key.ns_col), i);
+                    auto held_name = chunk.get_value<std::string_view>(held_name_col, i);
+                    bool held_has_ns = held_ns_col >= 0 && !chunk.is_null(static_cast<uint64_t>(held_ns_col), i);
                     std::uint32_t held_ns =
-                        held_has_ns ? chunk.get_value<std::uint32_t>(static_cast<uint64_t>(key.ns_col), i) : 0;
+                        held_has_ns ? chunk.get_value<std::uint32_t>(static_cast<uint64_t>(held_ns_col), i) : 0;
                     for (const auto& wanted : incoming) {
                         if (held_name != wanted.name) {
                             continue;
@@ -2755,10 +2736,10 @@ namespace services::disk {
                             {oid_col_idx},
                             &scan_resource,
                             ctx.txn,
-                            [&, oid_col_idx](components::vector::data_chunk_t& chunk, uint64_t i) {
-                                if (chunk.is_null(static_cast<uint64_t>(oid_col_idx), i))
+                            [&](components::vector::data_chunk_t& chunk, uint64_t i) {
+                                if (chunk.is_null(0, i))
                                     return true;
-                                auto v = chunk.get_value<std::uint32_t>(static_cast<uint64_t>(oid_col_idx), i);
+                                auto v = chunk.get_value<std::uint32_t>(0, i);
                                 if (static_cast<components::catalog::oid_t>(v) == target_oid) {
                                     row_ids.push_back(chunk.row_ids.data<std::int64_t>()[i]);
                                 }

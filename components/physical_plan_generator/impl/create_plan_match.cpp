@@ -1,5 +1,6 @@
 #include "create_plan_match.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdlib>
 
@@ -114,22 +115,31 @@ namespace services::planner::impl {
             return true;
         }
 
-        // Where the indexed column lands in a fetched chunk, so index_scan can re-read it off the row
-        // and re-apply the comparison the index answered. -1 when the table's columns were not
-        // resolved into this context, or the key names none of them (a path into a nested value):
-        // the scan then runs without the recheck rather than refusing every answer.
+        // Where the indexed column lands in a fetched chunk of `projected_cols` (empty: every column), so
+        // index_scan can re-read it off the row and re-apply the comparison the index answered. -1 when
+        // the table's columns were not resolved into this context, or the key names none of them (a path
+        // into a nested value): the scan then runs without the recheck rather than refusing every answer.
         int64_t indexed_chunk_position(const context_storage_t& context,
                                        components::catalog::oid_t table_oid,
-                                       const components::expressions::key_t& key) {
+                                       const components::expressions::key_t& key,
+                                       const std::vector<size_t>& projected_cols) {
             const auto* metadata = context.table_metadata_for(table_oid);
             if (metadata == nullptr) {
                 return -1;
             }
             const auto name = key.as_string();
             for (const auto& column : metadata->columns) {
-                if (column.chunk_position >= 0 && column.attname == name) {
+                if (column.chunk_position < 0 || column.attname != name) {
+                    continue;
+                }
+                if (projected_cols.empty()) {
                     return column.chunk_position;
                 }
+                auto position = static_cast<size_t>(column.chunk_position);
+                auto found = std::find(projected_cols.begin(), projected_cols.end(), position);
+                // Pruning keeps every column the WHERE reads, the indexed one included.
+                assert(found != projected_cols.end() && "index_scan: the indexed column was pruned from its scan");
+                return static_cast<int64_t>(found - projected_cols.begin());
             }
             return -1;
         }
@@ -162,7 +172,10 @@ namespace services::planner::impl {
                                                                       preferred_index_type,
                                                                       cap,
                                                                       projected_cols,
-                                                                      indexed_chunk_position(context, table_oid, key)));
+                                                                      indexed_chunk_position(context,
+                                                                                             table_oid,
+                                                                                             key,
+                                                                                             projected_cols)));
                         }
                     }
 

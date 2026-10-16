@@ -24,7 +24,6 @@ namespace components::table {
 #ifdef DEV_MODE
     namespace {
         std::atomic<uint64_t> g_gathered_borrowed_strings{0};
-        std::atomic<uint64_t> g_predicate_row_fetches{0};
         std::atomic<uint64_t> g_string_materializations{0};
         std::atomic<uint64_t> g_gather_rows_fetched{0};
         std::atomic<uint64_t> g_escaping_borrowed_cells{0};
@@ -41,10 +40,8 @@ namespace components::table {
     void note_escaping_borrowed_cells(uint64_t cells) noexcept {
         g_escaping_borrowed_cells.fetch_add(cells, std::memory_order_relaxed);
     }
-    uint64_t predicate_row_fetches() noexcept { return g_predicate_row_fetches.load(std::memory_order_relaxed); }
     void reset_gathered_borrowed_strings() noexcept {
         g_gathered_borrowed_strings.store(0, std::memory_order_relaxed);
-        g_predicate_row_fetches.store(0, std::memory_order_relaxed);
         g_string_materializations.store(0, std::memory_order_relaxed);
         g_gather_rows_fetched.store(0, std::memory_order_relaxed);
         g_escaping_borrowed_cells.store(0, std::memory_order_relaxed);
@@ -222,58 +219,48 @@ namespace components::table {
         }
     }
 
-    // The decision is indexed by vector offset, so a caller holding a visibility selection reads straight into it.
-    core::result_wrapper_t<vector::vector_t>
-    row_group_t::evaluate_predicate(const table_filter_t& filter,
-                                    int64_t base_row,
-                                    uint64_t count,
-                                    const std::vector<uint64_t>& column_indices) {
-        auto* res = collection_->resource();
-        std::vector<size_t> referenced;
-        size_t width = 0;
-        std::pmr::vector<types::complex_logical_type> chunk_types(res);
+    template<table_scan_type TYPE>
+    core::result_wrapper_t<vector::vector_t> row_group_t::evaluate_predicate(collection_scan_state& state,
+                                                                             const vector::data_chunk_t& result,
+                                                                             uint64_t max_count,
+                                                                             std::pmr::vector<size_t>& input_of,
+                                                                             std::pmr::vector<vector::vector_t>& inputs) {
+        const auto& filter = *state.filter();
+        const auto& column_ids = state.column_ids();
+        auto* resource = result.resource();
         for (const auto& binding : filter.graph->input_bindings()) {
-            referenced.push_back(binding.column);
-            width = std::max(width, binding.column + 1);
-            if (binding.column >= chunk_types.size()) {
-                chunk_types.resize(binding.column + 1, types::complex_logical_type{types::logical_type::BIGINT});
+            assert(binding.column < column_ids.size() && "the filter binds a column the scan does not read");
+            if (input_of[binding.column] != predicate_input_absent) {
+                continue;
             }
-            chunk_types[binding.column] = filter.graph->slot_type(binding.slot);
-        }
-        for (size_t column = 0; column < width && column < get_column_count(); column++) {
-            bool bound = false;
-            for (size_t r : referenced) {
-                if (r == column) {
-                    bound = true;
-                    break;
-                }
+            input_of[binding.column] = inputs.size();
+            auto& read = inputs.emplace_back(resource, result.data[binding.column].type(), max_count);
+            auto& column_state = state.column_scans[binding.column];
+            auto& col_data = get_column(state.physical_column(column_ids[binding.column].primary_index()));
+            auto offset = column_state.result_offset;
+            column_state.result_offset = 0;
+            if (TYPE == table_scan_type::REGULAR) {
+                col_data.scan(column_state, read, max_count);
+            } else {
+                col_data.scan_committed(column_state, read, max_count);
             }
-            if (!bound) {
-                chunk_types[column] = get_column(column_indices[column]).type();
-            }
-        }
-        vector::data_chunk_t rows{res, chunk_types, referenced, count};
-        // State stays outside the loop (child per column, not shared) so pins live until run_graph reads `rows`.
-        column_fetch_state fetch_state;
-        size_t child_slot = 0;
-        for (size_t column : referenced) {
-            auto& column_state = fetch_state.child(child_slot++);
-            const size_t physical = column_indices[column];
-            for (uint64_t row = 0; row < count; row++) {
-#ifdef DEV_MODE
-                g_predicate_row_fetches.fetch_add(1, std::memory_order_relaxed);
-#endif
-                get_column(physical).fetch_row(column_state,
-                                               base_row + static_cast<int64_t>(row),
-                                               rows.data[column],
-                                               row);
-                if (fetch_state.absorb_error(column_state)) {
-                    return fetch_state.fetch_error;
-                }
+            column_state.result_offset = offset;
+            if (column_state.has_error()) {
+                return column_state.scan_error;
             }
         }
-        rows.set_cardinality(count);
-        auto decided = expressions::run_graph(filter.graph.get(), filter.parameters, rows, filter.context);
+        // The graph reads only its bound columns
+        vector::data_chunk_t view(resource, std::pmr::vector<types::complex_logical_type>{resource}, max_count);
+        view.data.reserve(result.column_count());
+        for (size_t column = 0; column < result.column_count(); column++) {
+            if (input_of[column] != predicate_input_absent) {
+                view.data.emplace_back(inputs[input_of[column]], 0, max_count);
+            } else {
+                view.data.emplace_back(result.data[column], 0, max_count);
+            }
+        }
+        view.set_cardinality(max_count);
+        auto decided = expressions::run_graph(filter.graph.get(), filter.parameters, view, filter.context);
         if (decided.has_error()) {
             return decided.error();
         }
@@ -283,36 +270,10 @@ namespace components::table {
     // Pruning needs a constant filter's bound to compare against the segment min/max, and a graph exposes none.
     bool row_group_t::check_zonemap_segments(collection_scan_state&) { return true; }
 
-    void row_group_t::filter_indexing(std::pmr::memory_resource* resource,
-                                      uint64_t vector_index,
-                                      vector::indexing_vector_t& indexing,
-                                      const table_filter_t* filter,
-                                      uint64_t vector_count,
-                                      uint64_t& approved_tuple_count,
-                                      core::error_t& error,
-                                      const std::vector<uint64_t>& column_indices) {
-        const int64_t base_row = static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY);
-        auto decided = evaluate_predicate(*filter, base_row, vector_count, column_indices);
-        if (decided.has_error()) {
-            error = decided.error();
-            return;
-        }
-        const auto& decisions = decided.value();
-        vector::indexing_vector_t new_indexing(resource, approved_tuple_count);
-        uint64_t result_count = 0;
-        for (uint64_t i = 0; i < approved_tuple_count; i++) {
-            auto idx = indexing.get_index(i);
-            new_indexing.set_index(result_count, idx);
-            result_count += !decisions.is_null(idx) && decisions.get_value<bool>(idx);
-        }
-        indexing = new_indexing;
-        approved_tuple_count = result_count;
-    }
-
     template<table_scan_type TYPE>
     void row_group_t::templated_scan(collection_scan_state& state, vector::data_chunk_t& result) {
-        assert(result.column_count() >= state.result_width() && "a scan chunk narrower than its scanned ordinals");
         const auto& column_ids = state.column_ids();
+        assert(result.column_count() == column_ids.size() && "templated_scan: result.data[i] receives column_ids[i]");
         auto* filter = state.filter();
         for (auto& column_state : state.column_scans) {
             column_state.result_offset = result.size();
@@ -344,13 +305,11 @@ namespace components::table {
 
             if (count == max_count && !filter) {
                 for (uint64_t i = 0; i < column_ids.size(); i++) {
-                    const auto& column = column_ids[i];
-                    const size_t out_idx = column.primary_index();
-                    auto& col_data = get_column(state.physical_column(column.primary_index()));
+                    auto& col_data = get_column(state.physical_column(column_ids[i].primary_index()));
                     if (TYPE == table_scan_type::REGULAR) {
-                        col_data.scan(state.column_scans[i], result.data[out_idx], max_count);
+                        col_data.scan(state.column_scans[i], result.data[i], max_count);
                     } else {
-                        col_data.scan_committed(state.column_scans[i], result.data[out_idx], max_count);
+                        col_data.scan_committed(state.column_scans[i], result.data[i], max_count);
                     }
                 }
                 state.valid_indexing = vector::indexing_vector_t(result.resource(), 0, result.capacity());
@@ -368,32 +327,46 @@ namespace components::table {
                 } else {
                     indexing.reset(nullptr);
                 }
+                std::pmr::vector<size_t> input_of(column_ids.size(), predicate_input_absent, result.resource());
+                std::pmr::vector<vector::vector_t> inputs(result.resource());
                 if (filter) {
-                    filter_indexing(collection_->resource(),
-                                    state.vector_index,
-                                    indexing,
-                                    filter,
-                                    max_count,
-                                    approved_tuple_count,
-                                    state.scan_error,
-                                    state.visible_to_physical());
-                    if (state.has_error()) {
+                    auto decided = evaluate_predicate<TYPE>(state, result, max_count, input_of, inputs);
+                    if (decided.has_error()) {
+                        state.scan_error = decided.error();
                         return;
                     }
+                    const vector::vector_t& decisions = decided.value();
+                    vector::indexing_vector_t narrowed(result.resource(), approved_tuple_count);
+                    uint64_t narrowed_count = 0;
+                    for (uint64_t i = 0; i < approved_tuple_count; i++) {
+                        auto idx = indexing.get_index(i);
+                        narrowed.set_index(narrowed_count, idx);
+                        narrowed_count += !decisions.is_null(idx) && decisions.get_value<bool>(idx);
+                    }
+                    indexing = narrowed;
+                    approved_tuple_count = narrowed_count;
                 }
                 if (approved_tuple_count == 0) {
                     for (uint64_t i = 0; i < column_ids.size(); i++) {
-                        auto& col_idx = column_ids[i];
-                        auto& col_data = get_column(col_idx);
-                        col_data.skip(state.column_scans[i]);
+                        if (input_of[i] == predicate_input_absent) {
+                            get_column(state.physical_column(column_ids[i].primary_index()))
+                                .skip(state.column_scans[i]);
+                        }
                     }
                     state.vector_index++;
                     continue;
                 }
                 for (uint64_t i = 0; i < column_ids.size(); i++) {
-                    auto& column = column_ids[i];
-                    const size_t out_idx = column.primary_index();
-                    auto& col_data = get_column(state.physical_column(column.primary_index()));
+                    if (input_of[i] != predicate_input_absent) {
+                        vector::vector_ops::copy(inputs[input_of[i]],
+                                                 result.data[i],
+                                                 indexing,
+                                                 approved_tuple_count,
+                                                 0,
+                                                 state.column_scans[i].result_offset);
+                        continue;
+                    }
+                    auto& col_data = get_column(state.physical_column(column_ids[i].primary_index()));
                     if (TYPE == table_scan_type::REGULAR) {
                         // Selective filter: gather only surviving rows via fetch_row instead of scanning+slicing
                         // (measured ~7x fewer decompressed rows at 0.2% survival; per-row gather wins below ~20%
@@ -409,14 +382,14 @@ namespace components::table {
                             fetch_state.result_outlives_pins = true;
 #ifdef DEV_MODE
                             if (!fetch_state.result_outlives_pins &&
-                                result.data[out_idx].type().to_physical_type() == types::physical_type::STRING) {
+                                result.data[i].type().to_physical_type() == types::physical_type::STRING) {
                                 g_gathered_borrowed_strings.fetch_add(approved_tuple_count, std::memory_order_relaxed);
                             }
 #endif
                             for (uint64_t k = 0; k < approved_tuple_count; k++) {
                                 col_data.fetch_row(fetch_state,
                                                    static_cast<int64_t>(base + indexing.get_index(k)),
-                                                   result.data[out_idx],
+                                                   result.data[i],
                                                    off + k);
                                 // A pin OOM leaves the cell unwritten; abort via scan_error, not garbage.
                                 if (fetch_state.fetch_error.contains_error()) {
@@ -426,7 +399,7 @@ namespace components::table {
                             }
                             col_data.skip(state.column_scans[i], max_count);
                         } else {
-                            vector::vector_t select_vector(result.resource(), result.data[out_idx].type(), max_count);
+                            vector::vector_t select_vector(result.resource(), result.data[i].type(), max_count);
                             auto prev_offset = state.column_scans[i].result_offset;
                             state.column_scans[i].result_offset = 0;
                             col_data.select(max_count,
@@ -436,7 +409,7 @@ namespace components::table {
                                             approved_tuple_count);
                             state.column_scans[i].result_offset = prev_offset;
                             vector::vector_ops::copy(select_vector,
-                                                     result.data[out_idx],
+                                                     result.data[i],
                                                      approved_tuple_count,
                                                      0,
                                                      state.column_scans[i].result_offset);
@@ -444,7 +417,7 @@ namespace components::table {
                     } else {
                         col_data.select_committed(max_count,
                                                   state.column_scans[i],
-                                                  result.data[out_idx],
+                                                  result.data[i],
                                                   indexing,
                                                   approved_tuple_count);
                     }
@@ -498,15 +471,9 @@ namespace components::table {
                                 const std::pmr::vector<storage_index_t>& column_ids,
                                 int64_t row_id,
                                 vector::data_chunk_t& result,
-                                uint64_t result_idx,
-                                const std::vector<size_t>& projected_cols) {
+                                uint64_t result_idx) {
+        assert(result.column_count() == column_ids.size() && "fetch_row: result.data[i] receives column_ids[i]");
         for (uint64_t col_idx = 0; col_idx < column_ids.size(); col_idx++) {
-            // Mapping is positional (column_ids[i] -> result.data[i]); skip unwanted columns instead of dropping them.
-            if (!projected_cols.empty() &&
-                std::find(projected_cols.begin(), projected_cols.end(), static_cast<size_t>(col_idx)) ==
-                    projected_cols.end()) {
-                continue;
-            }
             auto& result_vector = result.data[col_idx];
             assert(result_vector.get_vector_type() == vector::vector_type::FLAT);
             assert(!result_vector.is_null(result_idx));

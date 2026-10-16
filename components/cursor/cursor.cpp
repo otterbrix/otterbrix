@@ -39,10 +39,6 @@ namespace components::cursor {
         , chunk_starts_(1, 0, resource)
         , type_data_(resource)
         , error_(core::error_t::no_error()) {
-        // Strip placeholder columns (created by projected_cols scans to keep
-        // storage indices stable for downstream operators). User-facing
-        // iteration should only see real data.
-        chunk.drop_unprojected_placeholders();
         // Mirror final column shape into type_data_ so callers querying the
         // result's typed-column descriptor see one entry per output column.
         const auto& chunk_types = chunk.types();
@@ -56,10 +52,9 @@ namespace components::cursor {
         , type_data_(resource)
         , error_(core::error_t::no_error()) {
         // Keep the chunks as-is (each ≤DEFAULT_VECTOR_CAPACITY); never combine into one
-        // oversized chunk. Drop placeholder columns per chunk (same shape across all).
+        // oversized chunk.
         std::size_t total = 0;
-        for (auto& c : chunks_) {
-            c.drop_unprojected_placeholders();
+        for (const auto& c : chunks_) {
             chunk_starts_.push_back(total);
             total += c.size();
         }

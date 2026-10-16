@@ -12,9 +12,8 @@ namespace components::planner {
 
     // Single optimization pass. Runs AFTER the planner rewrite, i.e. after
     // resolve → validate → enrich → planner.create_plan, so node->table_oid()
-    // is populated, the plan's `resolves` table entries carry their resolved
-    // metadata, and the schema stamps key.side()/key.path() set by validate_schema
-    // are present.
+    // and node->table_metadata() are populated, and the schema stamps
+    // key.side()/key.path() set by validate_schema are present.
     // Rules (in order):
     //   - constant_folding (on parameter expressions)
     //   - pushdown_filter
@@ -32,7 +31,6 @@ namespace components::planner {
                                     logical_plan::node_ptr node,
                                     logical_plan::parameter_node_t* parameters,
                                     const graph_execution_context& ctx,
-                                    const logical_plan::catalog_resolves_t* resolves = nullptr,
                                     bool can_push_to_agent = false,
                                     std::span<const optimizer_rule_t> host_rules = {});
 

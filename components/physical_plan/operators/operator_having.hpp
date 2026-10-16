@@ -42,8 +42,6 @@ namespace components::operators {
         std::unique_ptr<execution_dag::execution_dag_t> graph_;
         expressions::condition_kind condition_{expressions::condition_kind::always};
         std::pmr::vector<types::complex_logical_type> stream_types_{resource_};
-        std::vector<size_t> stream_populated_cols_;
-        bool stream_sparse_{false};
         bool stream_ready_{false};
     };
 

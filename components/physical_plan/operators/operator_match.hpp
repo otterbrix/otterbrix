@@ -46,23 +46,15 @@ namespace components::operators {
         // to `out`; row_ids are gathered with the rest (zero placeholders over a sink).
         [[nodiscard]] core::error_t filter_batch_(std::pmr::memory_resource* resource,
                                                   const vector::vector_t* decisions,
-                                                  const std::vector<size_t>& populated_cols,
-                                                  bool sparse,
                                                   const std::pmr::vector<types::complex_logical_type>& types,
                                                   const vector::data_chunk_t& chunk,
                                                   uint64_t& limit_total,
                                                   chunks_vector_t& out);
 
-        void build_schema_metadata_(const vector::data_chunk_t& sample,
-                                    std::pmr::vector<types::complex_logical_type>& types,
-                                    std::vector<size_t>& populated_cols,
-                                    bool& sparse);
         // Resource the streaming run allocates on (resource_, or the first batch's if null);
         // stream_types_ rebinds to it before first use.
         std::pmr::memory_resource* stream_resource_{nullptr};
         std::pmr::vector<types::complex_logical_type> stream_types_{resource_};
-        std::vector<size_t> stream_populated_cols_;
-        bool stream_sparse_{false};
         bool stream_ready_{false};
     };
 

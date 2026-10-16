@@ -210,11 +210,6 @@ namespace components::operators {
                                              res_types_,
                                              indices_left_,
                                              indices_right_);
-            join_detail::compute_active_indices(input,
-                                                build_chunks.front(),
-                                                indices_left_,
-                                                indices_right_,
-                                                &active_indices_);
             build_index_();
             index_built_ = true;
         }

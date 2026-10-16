@@ -39,14 +39,27 @@ namespace components::operators::dml_detail {
         return chunk.row_ids.data<int64_t>()[row];
     }
 
-    // Matched rows of `source` as a slice: no cell is copied, unprojected columns stay placeholders. The row ids are
-    // gathered into an owned vector, since the storage sink overwrites them in place.
+    // The selected rows of `source` as a slice over its columns: no cell is copied. The row ids are left unfilled.
+    inline vector::data_chunk_t sliced_rows(std::pmr::memory_resource* resource,
+                                            const vector::data_chunk_t& source,
+                                            const vector::indexing_vector_t& selection,
+                                            uint64_t count) {
+        vector::data_chunk_t sliced(resource, std::pmr::vector<types::complex_logical_type>{resource}, count);
+        sliced.data.reserve(source.column_count());
+        for (const auto& column : source.data) {
+            sliced.data.emplace_back(column);
+        }
+        sliced.slice(selection, count);
+        return sliced;
+    }
+
+    // Matched rows of `source` as a slice. The row ids are gathered into an owned vector, since the storage sink
+    // overwrites them in place.
     inline vector::data_chunk_t slice_matched(std::pmr::memory_resource* resource,
                                               const vector::data_chunk_t& source,
                                               const vector::indexing_vector_t& selection,
                                               uint64_t count) {
-        vector::data_chunk_t sliced(resource, source.types(), std::vector<size_t>{}, count);
-        sliced.slice(source, selection, count);
+        auto sliced = sliced_rows(resource, source, selection, count);
         vector::vector_ops::copy(source.row_ids, sliced.row_ids, selection, count, 0, 0);
         return sliced;
     }
@@ -66,13 +79,7 @@ namespace components::operators::dml_detail {
         if (returning_keeps_slice(count, source.capacity())) {
             return slice_matched(resource, source, selection, count);
         }
-        std::vector<size_t> populated;
-        for (size_t column = 0; column < source.column_count(); ++column) {
-            if (!vector::is_unprojected_placeholder(source.data[column])) {
-                populated.push_back(column);
-            }
-        }
-        vector::data_chunk_t owned(resource, source.types(), populated, count);
+        vector::data_chunk_t owned(resource, source.types(), count);
         source.copy(owned, selection, count);
         return owned;
     }

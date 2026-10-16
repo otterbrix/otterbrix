@@ -91,7 +91,6 @@ namespace components::operators {
             build_chunk_offsets_.clear();
             indices_left_.clear();
             indices_right_.clear();
-            active_indices_.clear();
             builder_.reset();
         }
 
@@ -121,9 +120,7 @@ namespace components::operators {
         std::pmr::vector<uint8_t> build_matched_{resource_};
         std::pmr::vector<uint64_t> build_chunk_offsets_{resource_};
 
-        // Output slots that need a real buffer
-        std::vector<size_t> active_indices_;
-        join_detail::join_builder builder_{resource_, res_types_, indices_left_, indices_right_, active_indices_};
+        join_detail::join_builder builder_{resource_, res_types_, indices_left_, indices_right_};
         vector::vector_t hashes_{resource_, types::logical_type::UBIGINT, vector::DEFAULT_VECTOR_CAPACITY};
         std::vector<uint64_t> probe_hash_cols_;
         std::vector<uint64_t> build_hash_cols_;

@@ -1,6 +1,5 @@
 #include "index_scan.hpp"
-
-#include <algorithm>
+#include "guard_chunk.hpp"
 
 #include <components/expressions/forward.hpp>
 #include <components/vector/operations/apply_operator.hpp>
@@ -38,17 +37,7 @@ namespace components::operators {
         , preferred_index_type_(preferred_index_type)
         , cap_(cap)
         , projected_cols_(std::move(projected_cols))
-        , key_chunk_col_(key_chunk_col)
-        , fetch_cols_(projected_cols_) {
-        // An EMPTY projection already means every column, so the key cell is there; widening it would
-        // NARROW the answer to one column instead.
-        if (key_chunk_col_ >= 0 && !fetch_cols_.empty()) {
-            const auto key_col = static_cast<size_t>(key_chunk_col_);
-            if (std::find(fetch_cols_.begin(), fetch_cols_.end(), key_col) == fetch_cols_.end()) {
-                fetch_cols_.push_back(key_col);
-            }
-        }
-    }
+        , key_chunk_col_(key_chunk_col) {}
 
     core::error_t index_scan::recheck_answered_rows_(const pipeline::context_t* ctx,
                                                      const vector::vector_t& key) const {
@@ -167,7 +156,7 @@ namespace components::operators {
                                                     table_oid_,
                                                     std::move(row_ids),
                                                     count,
-                                                    fetch_cols_,
+                                                    projected_cols_,
                                                     ctx->txn,
                                                     table::fetch_visibility_t::SNAPSHOT,
                                                     // -1 uncapped, else stops after this many rows.
@@ -303,7 +292,7 @@ namespace components::operators {
         if (!emitted_any_) {
             // 0-row guard: lets a scalar aggregate emit COUNT=0 / OUTER join NULL-pad.
             emitted_any_ = true;
-            co_return vector::data_chunk_t{resource_, guard_types_, 0};
+            co_return make_guard_chunk(resource_, guard_types_, projected_cols_);
         }
         co_return std::nullopt;
     }

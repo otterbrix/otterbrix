@@ -5,11 +5,12 @@
 template<class T, class U>
 constexpr bool cmp_less(T t, U u) noexcept {
     if constexpr (std::is_floating_point_v<T> && std::is_floating_point_v<U>) {
-        return t < u;
+        using common_t = std::common_type_t<T, U>;
+        return core::float_order(common_t(t), common_t(u)) < 0;
     } else if constexpr (std::is_floating_point_v<T> && !std::is_floating_point_v<U>) {
-        return t < T(u);
+        return core::float_order(t, T(u)) < 0;
     } else if constexpr (!std::is_floating_point_v<T> && std::is_floating_point_v<U>) {
-        return U(t) < u;
+        return core::float_order(U(t), u) < 0;
     } else if constexpr (std::is_signed_v<T> == std::is_signed_v<U>) {
         return t < u;
     } else if constexpr (std::is_signed_v<T>) {

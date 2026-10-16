@@ -1,6 +1,7 @@
 #include "sort.hpp"
 
 #include <components/vector/operations/apply_operator.hpp>
+#include <core/operations_helper.hpp>
 
 namespace components::sort {
 
@@ -31,7 +32,12 @@ namespace components::sort {
         int compare_typed(const vector::vector_t& va, size_t a, const vector::vector_t& vb, size_t b) {
             auto* da = va.data<T>();
             auto* db = vb.data<T>();
-            return (da[a] < db[b]) ? -1 : (da[a] > db[b]) ? 1 : 0;
+            if constexpr (std::is_floating_point_v<T>) {
+                const auto ordering = core::float_order(da[a], db[b]);
+                return ordering < 0 ? -1 : (ordering > 0 ? 1 : 0);
+            } else {
+                return (da[a] < db[b]) ? -1 : (da[a] > db[b]) ? 1 : 0;
+            }
         }
 
         int compare_values(const vector::vector_t& va, size_t a, const vector::vector_t& vb, size_t b) {

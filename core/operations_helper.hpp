@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <compare>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -17,18 +18,24 @@ namespace core {
         ->std::convertible_to<size_t>;
     };
 
+    // The one order of two floats, for every comparison, sort and equality: NaN equals NaN and sorts above every
+    // other value, -0 equals +0. The order is total, so a sort over it is stable, and it agrees with the hash,
+    // which buckets every NaN together.
+    template<typename T>
+    constexpr std::weak_ordering float_order(T x, T y) requires std::is_floating_point_v<T> {
+        const bool x_nan = std::isnan(x);
+        const bool y_nan = std::isnan(y);
+        if (x_nan || y_nan) {
+            return x_nan == y_nan ? std::weak_ordering::equivalent
+                                  : (x_nan ? std::weak_ordering::greater : std::weak_ordering::less);
+        }
+        return x < y ? std::weak_ordering::less : (y < x ? std::weak_ordering::greater : std::weak_ordering::equivalent);
+    }
+
     template<typename T>
     bool constexpr is_equals(T x, T y) {
         if constexpr (std::is_floating_point_v<T>) {
-            // NaN compares EQUAL to NaN and unequal to everything else (Postgres float
-            // semantics). The hash+verify dedup paths (GROUP BY / hash join / UNIQUE /
-            // FK semi-join) bucket identical NaN bit patterns together via std::hash,
-            // so the verify half must agree — an all-false NaN would let a UNIQUE/PK
-            // NaN duplicate through and make an FK NaN never match its own parent.
-            if (std::isnan(x) || std::isnan(y)) {
-                return std::isnan(x) && std::isnan(y);
-            }
-            return std::fabs(x - y) < std::numeric_limits<T>::epsilon();
+            return float_order(x, y) == 0;
         } else {
             return x == y;
         }

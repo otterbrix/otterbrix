@@ -3,6 +3,7 @@
 #include <components/types/operations_helper.hpp>
 #include <components/vector/cell_equal.hpp>
 #include <core/date/date_types.hpp>
+#include <core/operations_helper.hpp>
 
 #include <cassert>
 #include <cmath>
@@ -76,13 +77,23 @@ namespace components::vector::operations {
         // excluded, while the rows that DO select the arm still raise on a zero divisor.
         inline bool skip_row(const bool* active, uint64_t row) noexcept { return active != nullptr && !active[row]; }
 
-        // SQL equality on floats is exact comparison; so we explicitly suppress warning here
+        // Floats compare by core::float_order, every other type by its own operators
         template<typename T>
         bool equals(const T& lhs, const T& rhs) {
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wfloat-equal"
-            return lhs == rhs;
-#pragma GCC diagnostic pop
+            if constexpr (std::is_floating_point_v<T>) {
+                return core::float_order(lhs, rhs) == 0;
+            } else {
+                return lhs == rhs;
+            }
+        }
+
+        template<typename T>
+        bool less_than(const T& lhs, const T& rhs) {
+            if constexpr (std::is_floating_point_v<T>) {
+                return core::float_order(lhs, rhs) < 0;
+            } else {
+                return lhs < rhs;
+            }
         }
 
         template<typename T>
@@ -181,16 +192,16 @@ namespace components::vector::operations {
                         write<bool>(output, row, !equals(lhs, rhs));
                         break;
                     case operator_code::less:
-                        write<bool>(output, row, lhs < rhs);
+                        write<bool>(output, row, less_than(lhs, rhs));
                         break;
                     case operator_code::less_equal:
-                        write<bool>(output, row, lhs <= rhs);
+                        write<bool>(output, row, !less_than(rhs, lhs));
                         break;
                     case operator_code::greater:
-                        write<bool>(output, row, lhs > rhs);
+                        write<bool>(output, row, less_than(rhs, lhs));
                         break;
                     case operator_code::greater_equal:
-                        write<bool>(output, row, lhs >= rhs);
+                        write<bool>(output, row, !less_than(lhs, rhs));
                         break;
                     default:
                         return core::error_t(
@@ -680,7 +691,7 @@ namespace components::vector::operations {
                 if (equals(lhs, rhs)) {
                     return std::partial_ordering::equivalent;
                 }
-                return lhs < rhs ? std::partial_ordering::less : std::partial_ordering::greater;
+                return less_than(lhs, rhs) ? std::partial_ordering::less : std::partial_ordering::greater;
             }
         };
 

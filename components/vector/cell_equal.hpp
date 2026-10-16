@@ -16,10 +16,8 @@ namespace components::vector {
     // through vector_t::get_value, which resolves DICTIONARY/CONSTANT indirection —
     // the hash half of every hash+verify pair resolves it too (to_unified_format),
     // so a raw data<T>()[row] read on a filter-sliced input would compare the WRONG
-    // cell and break the hash/verify agreement. Equality is core::is_equals — the
-    // ONE float-equality policy (NaN==NaN true, ±0 equal; epsilon-close-but-unequal
-    // values land in different buckets, so the tolerance is unreachable here) and
-    // plain == for every other type.
+    // cell and break the hash/verify agreement. Equality is core::is_equals — floats
+    // are equal where core::float_order says so, every other type by plain ==.
     template<typename T>
     inline bool cells_equal_typed(const vector_t& a, std::size_t ra, const vector_t& b, std::size_t rb) {
         return core::is_equals(a.get_value<T>(ra), b.get_value<T>(rb));

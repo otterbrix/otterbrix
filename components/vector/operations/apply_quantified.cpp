@@ -6,7 +6,6 @@
 #include <components/vector/vector_operations.hpp>
 #include <core/regex/like_to_regex.hpp>
 
-#include <cmath>
 #include <compare>
 #include <functional>
 #include <limits>
@@ -40,35 +39,6 @@ namespace components::vector::operations {
             }
         }
 
-        template<typename T>
-        std::partial_ordering float_order(T left, T right) noexcept {
-            const bool left_nan = std::isnan(left);
-            const bool right_nan = std::isnan(right);
-            if (left_nan || right_nan) {
-                return left_nan == right_nan ? std::partial_ordering::equivalent
-                                             : (left_nan ? std::partial_ordering::greater
-                                                         : std::partial_ordering::less);
-            }
-            return left < right ? std::partial_ordering::less
-                                : (left > right ? std::partial_ordering::greater : std::partial_ordering::equivalent);
-        }
-
-        // PostgreSQL's order for floats, where NaN is the greatest value and equals NaN (compare_cells leaves NaN
-        // unordered), compare_cells for everything else
-        std::partial_ordering element_order(const vector_t& left,
-                                            uint64_t left_row,
-                                            const vector_t& right,
-                                            uint64_t right_row) {
-            switch (left.type().to_physical_type()) {
-                case types::physical_type::FLOAT:
-                    return float_order(left.get_value<float>(left_row), right.get_value<float>(right_row));
-                case types::physical_type::DOUBLE:
-                    return float_order(left.get_value<double>(left_row), right.get_value<double>(right_row));
-                default:
-                    return compare_cells(left, left_row, right, right_row);
-            }
-        }
-
         // `probe code element` for a non-NULL pair
         bool holds(operator_code code,
                    const vector_t& probe,
@@ -81,15 +51,15 @@ namespace components::vector::operations {
                 case operator_code::not_equal:
                     return !cells_equal(probe, row, elements, index);
                 case operator_code::less:
-                    return element_order(probe, row, elements, index) == std::partial_ordering::less;
+                    return compare_cells(probe, row, elements, index) == std::partial_ordering::less;
                 case operator_code::less_equal: {
-                    const auto order = element_order(probe, row, elements, index);
+                    const auto order = compare_cells(probe, row, elements, index);
                     return order == std::partial_ordering::less || order == std::partial_ordering::equivalent;
                 }
                 case operator_code::greater:
-                    return element_order(probe, row, elements, index) == std::partial_ordering::greater;
+                    return compare_cells(probe, row, elements, index) == std::partial_ordering::greater;
                 default: {
-                    const auto order = element_order(probe, row, elements, index);
+                    const auto order = compare_cells(probe, row, elements, index);
                     return order == std::partial_ordering::greater || order == std::partial_ordering::equivalent;
                 }
             }
@@ -270,10 +240,10 @@ namespace components::vector::operations {
                 min_ = index;
                 max_ = index;
             } else if (ordering) {
-                if (element_order(elements, index, elements, min_) == std::partial_ordering::less) {
+                if (compare_cells(elements, index, elements, min_) == std::partial_ordering::less) {
                     min_ = index;
                 }
-                if (element_order(elements, index, elements, max_) == std::partial_ordering::greater) {
+                if (compare_cells(elements, index, elements, max_) == std::partial_ordering::greater) {
                     max_ = index;
                 }
             }
@@ -298,7 +268,6 @@ namespace components::vector::operations {
         }
 
         if (witness_.code() == operator_code::not_equal) {
-            // equality here is the hash's: values that differ only within the float tolerance are different
             first_hash_ = hashes_[first_];
             for (uint64_t index = 0; index < element_count_ && uniform_; index++) {
                 if (!elements.is_null(index) &&

@@ -4,11 +4,22 @@
 #include <components/table/storage/metadata_reader.hpp>
 #include <components/table/storage/metadata_writer.hpp>
 #include <components/vector/vector.hpp>
+#include <core/operations_helper.hpp>
 #include <string_view>
+#include <type_traits>
 
 namespace components::table {
 
     namespace {
+
+        template<typename T>
+        bool less_than(const T& lhs, const T& rhs) {
+            if constexpr (std::is_floating_point_v<T>) {
+                return core::float_order(lhs, rhs) < 0;
+            } else {
+                return lhs < rhs;
+            }
+        }
 
         template<typename T>
         void update_numeric_stats(base_statistics_t& stats, vector::vector_t& vec, uint64_t count) {
@@ -34,9 +45,9 @@ namespace components::table {
                     local_max = val;
                     found_valid = true;
                 } else {
-                    if (val < local_min)
+                    if (less_than(val, local_min))
                         local_min = val;
-                    if (val > local_max)
+                    if (less_than(local_max, val))
                         local_max = val;
                 }
             }
@@ -44,10 +55,10 @@ namespace components::table {
             stats.set_null_count(stats.null_count() + null_count);
             if (found_valid) {
                 if (stats.has_bounds()) {
-                    if (stats.min_as<T>() < local_min) {
+                    if (less_than(stats.min_as<T>(), local_min)) {
                         local_min = stats.min_as<T>();
                     }
-                    if (stats.max_as<T>() > local_max) {
+                    if (less_than(local_max, stats.max_as<T>())) {
                         local_max = stats.max_as<T>();
                     }
                 }

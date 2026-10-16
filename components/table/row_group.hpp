@@ -120,7 +120,10 @@ namespace components::table {
 
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(row_group_append_state& append_state);
         [[nodiscard]] core::result_wrapper_t<bool>
-        append(row_group_append_state& append_state, vector::data_chunk_t& chunk, uint64_t append_count);
+        append(row_group_append_state& append_state,
+               vector::data_chunk_t& chunk,
+               uint64_t chunk_offset,
+               uint64_t append_count);
         [[nodiscard]] core::error_t unwind_append(const append_cut_t& cut, uint64_t column_count);
 
         void get_column_segment_info(uint64_t row_group_index, std::vector<column_segment_info>& result);

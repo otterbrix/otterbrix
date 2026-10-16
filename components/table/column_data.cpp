@@ -239,9 +239,9 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool>
-    column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
+    column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t offset, uint64_t count) {
         base_statistics_t batch_stats(resource_, type_.type());
-        batch_stats.update(vector, count);
+        batch_stats.update(vector, offset, count);
         statistics_.merge(batch_stats);
         if (state.current) {
             if (state.current->segment_statistics().has_stats()) {
@@ -252,14 +252,15 @@ namespace components::table {
                 state.current->set_segment_statistics(std::move(batch_stats));
             }
         }
-        vector::unified_vector_format uvf(vector.resource(), count);
-        vector.to_unified_format(count, uvf);
-        return append_data(state, uvf, count);
+        vector::unified_vector_format uvf(vector.resource(), offset + count);
+        vector.to_unified_format(offset + count, uvf);
+        return append_data(state, uvf, offset, count);
     }
 
-    core::result_wrapper_t<bool>
-    column_data_t::append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t append_count) {
-        uint64_t offset = 0;
+    core::result_wrapper_t<bool> column_data_t::append_data(column_append_state& state,
+                                                            vector::unified_vector_format& uvf,
+                                                            uint64_t offset,
+                                                            uint64_t append_count) {
         // The collection's packer, shared by every column; the collection flushes it once per append.
         storage::partial_block_manager_t& pbm = *state.pbm;
         while (true) {

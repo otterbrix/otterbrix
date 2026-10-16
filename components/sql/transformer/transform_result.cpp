@@ -50,8 +50,7 @@ namespace components::sql::transform {
                                   size_t chunk_index,
                                   size_t row) {
             for (const auto& loc : locations) {
-                if (loc.first / vector::DEFAULT_VECTOR_CAPACITY == chunk_index &&
-                    loc.first % vector::DEFAULT_VECTOR_CAPACITY == row && loc.second == column_name) {
+                if (loc.chunk_index == chunk_index && loc.row == row && loc.column == column_name) {
                     return true;
                 }
             }
@@ -193,18 +192,13 @@ namespace components::sql::transform {
                 return *this;
             }
 
-            // captured structure biding are not possible before C++20
-            // TODO: const auto& [i, key] : it->second after C++20
             for (const auto& param : it->second) {
-                // param.first is the GLOBAL row; route it to its ≤CAP chunk + local row.
-                const size_t chunk_index = param.first / vector::DEFAULT_VECTOR_CAPACITY;
-                const size_t local_row = param.first % vector::DEFAULT_VECTOR_CAPACITY;
-                if (chunk_index >= param_insert_rows_.size()) {
+                if (param.chunk_index >= param_insert_rows_.size()) {
                     continue;
                 }
-                auto& chunk = param_insert_rows_[chunk_index];
+                auto& chunk = param_insert_rows_[param.chunk_index];
                 auto column = std::find_if(chunk.data.begin(), chunk.data.end(), [&param](const vector::vector_t& col) {
-                    return col.type().alias() == param.second;
+                    return col.type().alias() == param.column;
                 });
                 size_t column_index = static_cast<size_t>(column - chunk.data.begin());
                 if (column == chunk.data.end()) {
@@ -212,7 +206,7 @@ namespace components::sql::transform {
                     // silently putting its values under another column's name downstream.
                     last_error_ = core::error_t(
                         core::error_code_t::sql_parse_error,
-                        std::pmr::string{"Parameter $" + std::to_string(id) + " routes to column '" + param.second +
+                        std::pmr::string{"Parameter $" + std::to_string(id) + " routes to column '" + param.column +
                                              "', which is missing from the INSERT working chunk",
                                          resource_});
                     return *this;
@@ -228,7 +222,7 @@ namespace components::sql::transform {
                     for (size_t ci = 0; ci < param_insert_rows_.size() && !foreign_cells_present; ++ci) {
                         const auto& col = param_insert_rows_[ci].data[column_index];
                         for (size_t row = 0; row < param_insert_rows_[ci].size(); ++row) {
-                            if (!col.is_null(row) && !row_belongs_to_param(it->second, param.second, ci, row)) {
+                            if (!col.is_null(row) && !row_belongs_to_param(it->second, param.column, ci, row)) {
                                 foreign_cells_present = true;
                                 break;
                             }
@@ -249,14 +243,14 @@ namespace components::sql::transform {
                                               std::pmr::string{"Parameter $" + std::to_string(id) +
                                                                    " of an incompatible type "
                                                                    "routes to column '" +
-                                                                   param.second +
+                                                                   param.column +
                                                                    "': the values already written there cannot "
                                                                    "be converted to it",
                                                                resource_});
                             return *this;
                         }
                     }
-                    target.set_alias(param.second);
+                    target.set_alias(param.column);
                     if (column->type() != target) {
                         // Retype must touch EVERY chunk so all chunks keep one type layout
                         // (column_index is identical across chunks because they grow in lockstep).
@@ -265,7 +259,7 @@ namespace components::sql::transform {
                                                                                ci,
                                                                                column_index,
                                                                                target,
-                                                                               param.second,
+                                                                               param.column,
                                                                                it->second);
                             if (retype_error.contains_error()) {
                                 last_error_ = std::move(retype_error);
@@ -284,14 +278,14 @@ namespace components::sql::transform {
                                 core::error_t(core::error_code_t::sql_parse_error,
                                               std::pmr::string{"Parameter $" + std::to_string(id) +
                                                                    " cannot be converted to the type of column '" +
-                                                                   param.second + "'",
+                                                                   param.column + "'",
                                                                resource_});
                             return *this;
                         }
                         cell = casted.value();
                     }
                 }
-                chunk.set_value(column_index, local_row, cell);
+                chunk.set_value(column_index, param.row, cell);
             }
         } else {
             auto it = param_map_.find(id);

@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "collection.hpp"
+#include "row_id_batch.hpp"
 #include "storage/metadata_reader.hpp"
 #include "storage/metadata_writer.hpp"
 
@@ -114,8 +115,8 @@ namespace components::table {
                    const transaction_data& txn,
                    fetch_visibility_t visibility);
 
-        [[nodiscard]] core::result_wrapper_t<uint64_t>
-        delete_rows(vector::vector_t& row_ids, uint64_t count, const transaction_data& txn);
+        [[nodiscard]] core::result_wrapper_t<uint64_t> delete_rows(std::span<row_ids_t> row_ids,
+                                                                   const transaction_data& txn);
 
         // write_conflict when concurrent DDL altered the table (no longer root); true on success.
         [[nodiscard]] core::result_wrapper_t<bool> append_lock(table_append_state& state);
@@ -188,6 +189,14 @@ namespace components::table {
 
         // The parent stays root; this table lists the parent's columns and shares its collection read-only.
         void latch_construction_error(const data_table_t& parent, const core::error_t& error);
+
+        // Refuses on the first conflict; otherwise `claimed` holds the ids still to stamp (it is cleared first).
+        [[nodiscard]] core::error_t collect_claims(const int64_t* ids,
+                                                   uint64_t count,
+                                                   const transaction_data& txn,
+                                                   std::pmr::vector<int64_t>* claimed);
+        [[nodiscard]] core::result_wrapper_t<uint64_t> stamp_claimed(std::span<int64_t> claimed,
+                                                                     const transaction_data& txn);
 
         void initialize_scan_with_offset(table_scan_state& state,
                                          const std::vector<storage_index_t>& column_ids,

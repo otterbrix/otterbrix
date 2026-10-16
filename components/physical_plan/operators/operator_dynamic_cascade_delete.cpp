@@ -229,7 +229,7 @@ namespace components::operators {
                                                           exec_ctx,
                                                           kPgClass,
                                                           std::move(pc_keys),
-                                                          components::operators::make_keys_chunk(resource, probe_oids),
+                                                          components::operators::make_keys_batch(resource, probe_oids),
                                                           std::pmr::vector<std::uint64_t>{resource});
             auto pc_results_r = co_await std::move(pcf);
             if (pc_results_r.has_error()) {

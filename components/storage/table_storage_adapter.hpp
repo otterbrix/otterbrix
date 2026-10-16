@@ -33,56 +33,6 @@ namespace components::storage {
 
         uint64_t calculate_size() override { return table_.calculate_size(); }
 
-        void scan(vector::data_chunk_t& output, const table::table_filter_t* filter, int64_t limit) override {
-            auto column_indices = begin_read(nullptr, table::transaction_data::committed());
-            table::table_scan_state state(resource_);
-            table_.initialize_scan(state, column_indices, table::transaction_data::committed(), filter);
-            table_.scan(output, state);
-            if (limit >= 0) {
-                output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
-            }
-        }
-
-        void scan(vector::data_chunk_t& output,
-                  const table::table_filter_t* filter,
-                  int64_t limit,
-                  table::transaction_data txn) override {
-            auto column_indices = begin_read(nullptr, txn);
-            table::table_scan_state state(resource_);
-            table_.initialize_scan(state, column_indices, txn, filter);
-            table_.scan(output, state);
-            if (limit >= 0) {
-                output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
-            }
-        }
-
-        void scan_projected(vector::data_chunk_t& output,
-                            const table::table_filter_t* filter,
-                            int limit,
-                            const std::vector<size_t>& projected_cols) override {
-            auto column_indices = begin_read(&projected_cols, table::transaction_data::committed());
-            table::table_scan_state state(resource_);
-            table_.initialize_scan(state, column_indices, table::transaction_data::committed(), filter);
-            table_.scan(output, state);
-            if (limit >= 0) {
-                output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
-            }
-        }
-
-        void scan_projected(vector::data_chunk_t& output,
-                            const table::table_filter_t* filter,
-                            int limit,
-                            const std::vector<size_t>& projected_cols,
-                            table::transaction_data txn) override {
-            auto column_indices = begin_read(&projected_cols, txn);
-            table::table_scan_state state(resource_);
-            table_.initialize_scan(state, column_indices, txn, filter);
-            table_.scan(output, state);
-            if (limit >= 0) {
-                output.set_cardinality(std::min(output.size(), static_cast<uint64_t>(limit)));
-            }
-        }
-
         [[nodiscard]] core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
                                                                 const table::table_filter_t* filter,
                                                                 int64_t limit,
@@ -215,7 +165,8 @@ namespace components::storage {
 
             // An update is a delete then an append: if the delete refuses, appending would leave
             // both the old and the new row.
-            auto deleted = table_.delete_rows(row_ids, count, txn);
+            table::row_ids_t window{row_ids, count};
+            auto deleted = table_.delete_rows(std::span(&window, 1), txn);
             if (deleted.has_error()) {
                 return deleted.convert_error<appended_range_t>();
             }
@@ -240,9 +191,9 @@ namespace components::storage {
             return appended_range_t{start_row, count};
         }
 
-        core::result_wrapper_t<uint64_t>
-        delete_rows(vector::vector_t& row_ids, uint64_t count, const table::transaction_data& txn) override {
-            return table_.delete_rows(row_ids, count, txn);
+        core::result_wrapper_t<uint64_t> delete_rows(std::span<table::row_ids_t> row_ids,
+                                                     const table::transaction_data& txn) override {
+            return table_.delete_rows(row_ids, txn);
         }
 
         void commit_append(uint64_t commit_id, int64_t row_start, uint64_t count) override {

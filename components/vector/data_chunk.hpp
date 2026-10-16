@@ -29,6 +29,7 @@ namespace components::vector {
         uint64_t column_count() const { return data.size(); }
         void set_cardinality(uint64_t count) {
             assert(count <= capacity_);
+            assert(count <= DEFAULT_VECTOR_CAPACITY);
             count_ = count;
         }
         void set_capacity(uint64_t capacity) { capacity_ = capacity; }
@@ -146,8 +147,6 @@ namespace components::vector {
         vector_t row_ids;
         std::vector<vector_t> data;
     };
-
-    void validate_chunk_capacity(vector::data_chunk_t& chunk, size_t filled_size);
 
     // Sub-query result compacters: fold ALL of a cursor's chunks (not just the first) into one bound
     // parameter value, so a >1024-row or multi-branch result is not silently truncated.

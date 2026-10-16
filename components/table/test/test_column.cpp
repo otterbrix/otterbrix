@@ -76,7 +76,7 @@ TEST_CASE("components::table::column") {
 
             column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
-            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(column->append(state, v, 0, test_size).has_error());
             REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
@@ -124,7 +124,7 @@ TEST_CASE("components::table::column") {
 
             column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
-            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(column->append(state, v, 0, test_size).has_error());
             REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
@@ -183,7 +183,7 @@ TEST_CASE("components::table::column") {
 
             column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
-            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(column->append(state, v, 0, test_size).has_error());
             REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
@@ -254,7 +254,7 @@ TEST_CASE("components::table::column") {
 
             column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
-            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(column->append(state, v, 0, test_size).has_error());
             REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
@@ -323,7 +323,7 @@ TEST_CASE("components::table::column") {
 
             column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
-            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(column->append(state, v, 0, test_size).has_error());
             REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
@@ -392,7 +392,7 @@ TEST_CASE("components::table::column") {
 
             column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
-            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(column->append(state, v, 0, test_size).has_error());
             REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {
@@ -476,7 +476,7 @@ TEST_CASE("components::table::column") {
 
             column_append_state state{&state_pbm};
             REQUIRE_FALSE(column->initialize_append(state).has_error());
-            REQUIRE_FALSE(column->append(state, v, test_size).has_error());
+            REQUIRE_FALSE(column->append(state, v, 0, test_size).has_error());
             REQUIRE_FALSE(state_pbm.flush_partial_blocks().has_error());
         }
         {

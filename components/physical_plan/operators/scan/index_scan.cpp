@@ -128,15 +128,13 @@ namespace components::operators {
         if (count == 0) {
             co_return std::pmr::vector<vector::data_chunk_t>{resource_};
         }
-        vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);
-        std::memcpy(row_ids.data(), row_ids_vec_.data() + pos_, count * sizeof(int64_t));
+        auto row_ids = table::make_row_id_batch(resource_, std::span{row_ids_vec_.data() + pos_, count});
 
         auto [_f, ff] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                     &services::disk::manager_disk_t::storage_fetch,
                                                     ctx->session,
                                                     table_oid_,
                                                     std::move(row_ids),
-                                                    count,
                                                     fetch_cols_,
                                                     ctx->txn,
                                                     table::fetch_visibility_t::SNAPSHOT,

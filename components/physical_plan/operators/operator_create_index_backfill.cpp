@@ -164,22 +164,12 @@ namespace components::operators {
             for (uint64_t base = 0; base < total_rows; base += components::vector::DEFAULT_VECTOR_CAPACITY) {
                 const uint64_t count =
                     std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, total_rows - base);
-                // create_data, but no zeroing: every one of `count` slots is written right below.
-                components::vector::vector_t fetch_ids(
-                    resource_,
-                    components::types::complex_logical_type{components::types::logical_type::BIGINT},
-                    /*create_data=*/true,
-                    /*zero_data=*/false,
-                    count);
-                for (uint64_t k = 0; k < count; ++k) {
-                    fetch_ids.data<int64_t>()[k] = static_cast<int64_t>(base + k);
-                }
+                auto fetch_ids = components::table::make_row_id_range(resource_, static_cast<int64_t>(base), count);
                 auto [_fb, fbf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                               &services::disk::manager_disk_t::storage_fetch,
                                                               ctx->session,
                                                               table_oid_,
                                                               std::move(fetch_ids),
-                                                              count,
                                                               std::vector<size_t>{},
                                                               components::table::transaction_data::committed(),
                                                               components::table::fetch_visibility_t::RAW,

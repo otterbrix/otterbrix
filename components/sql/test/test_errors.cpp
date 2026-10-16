@@ -225,6 +225,25 @@ TEST_CASE("components::sql::errors") {
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE (5 -> 'a') ? 'b';",
                            R"_(unsupported base operand for jsonb operator)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE 5 ? 'a';", R"_(unsupported base operand for jsonb operator)_");
+    TEST_TRANSFORMER_ERROR("SELECT 1 WHERE ? 'a';", R"_(operator ? is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT 1 WHERE ~~ 'x';", R"_(operator ~~ is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT 1 WHERE -> 'a';", R"_(operator -> is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT j ? FROM d.t;", R"_(operator ? is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE j ?;", R"_(operator ? is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE j ~~;", R"_(operator ~~ is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE (-> 'a') ? 'b';", R"_(operator -> is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT j ->> FROM d.t;", R"_(operator ->> is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT #- 'a' FROM d.t;", R"_(operator #- is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 |);", R"_(operator | is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 <=);", R"_(operator <= is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 ~~);", R"_(operator ~~ is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 ?);", R"_(operator ? is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 ->);", R"_(operator -> is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 + (2 |));", R"_(operator | is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t (a) VALUES (1), (2 |);", R"_(operator | is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 OPERATOR(pg_catalog.+));",
+                           R"_(operator + is missing its operand)_");
+    TEST_TRANSFORMER_OK("SELECT * FROM d.t WHERE j ? 'k';");
 }
 
 // Ignoring CONCURRENTLY would run a plain refresh under the caller's name.

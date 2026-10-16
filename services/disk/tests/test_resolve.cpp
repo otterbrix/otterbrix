@@ -265,13 +265,12 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
     for (std::size_t i = 0; i < N; ++i) {
         std::pmr::vector<std::uint64_t> single_key_cols{&fx.resource};
         single_key_cols.emplace_back(0);
-        auto single =
-            disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                                                 fx.ctx(),
-                                                 table_oid,
-                                                 std::move(single_key_cols),
-                                                 test_probe::test_key_chunk(&fx.resource, probe_keys[i]),
-                                                 std::pmr::vector<std::uint64_t>{&fx.resource}));
+        auto single = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
+                                                           fx.ctx(),
+                                                           table_oid,
+                                                           std::move(single_key_cols),
+                                                           test_probe::test_key_chunk(&fx.resource, probe_keys[i]),
+                                                           std::pmr::vector<std::uint64_t>{&fx.resource}));
 
         std::uint64_t single_total = total_rows(single);
         std::uint64_t batched_total = 0;

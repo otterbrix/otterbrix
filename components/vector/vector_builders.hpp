@@ -27,9 +27,8 @@ namespace components::vector {
     // string-like T needs STRING_LITERAL storage). A mismatch aborts in every build.
     template<typename T>
     vector_t make_scalar(std::pmr::memory_resource* resource, const types::complex_logical_type& type, T value) {
-        const auto expected = detail::is_string_like_v<T>
-                                      ? types::physical_type::STRING
-                                      : types::to_physical_type(types::to_logical_type<T>());
+        const auto expected = detail::is_string_like_v<T> ? types::physical_type::STRING
+                                                          : types::to_physical_type(types::to_logical_type<T>());
         if (type.to_physical_type() != expected) {
             assert(false && "make_scalar: the value's physical type does not match the vector type");
             std::abort();
@@ -48,7 +47,9 @@ namespace components::vector {
     template<typename T>
     vector_t make_scalar(std::pmr::memory_resource* resource, T value) {
         if constexpr (detail::is_string_like_v<T>) {
-            return make_scalar(resource, types::complex_logical_type{types::logical_type::STRING_LITERAL}, std::move(value));
+            return make_scalar(resource,
+                               types::complex_logical_type{types::logical_type::STRING_LITERAL},
+                               std::move(value));
         } else {
             static_assert(types::to_logical_type<T>() != types::logical_type::INVALID,
                           "make_scalar<T>: no logical type for T; pass the type explicitly");
@@ -68,8 +69,9 @@ namespace components::vector {
     vector_t make_null(std::pmr::memory_resource* resource, const types::complex_logical_type& type);
 
     // `value` is the unscaled integer; the storage width (INT16/32/64/128) follows from the type.
-    vector_t
-    make_decimal(std::pmr::memory_resource* resource, const types::complex_logical_type& decimal_type, types::int128_t value);
+    vector_t make_decimal(std::pmr::memory_resource* resource,
+                          const types::complex_logical_type& decimal_type,
+                          types::int128_t value);
     // An invalid (width, scale) comes back as the error complex_logical_type::create_decimal reports.
     core::result_wrapper_t<vector_t>
     make_decimal(std::pmr::memory_resource* resource, types::int128_t value, uint8_t width, uint8_t scale);

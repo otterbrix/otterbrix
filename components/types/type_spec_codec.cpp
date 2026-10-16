@@ -1,6 +1,5 @@
 #include "type_spec_codec.hpp"
 
-
 #include <cstring>
 #include <string>
 

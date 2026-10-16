@@ -45,10 +45,7 @@ namespace components::operators {
             }
         }
 
-        auto built = expressions::build_graph(resource_,
-                                              pipeline_context->parameters,
-                                              key_expressions,
-                                              probe.types());
+        auto built = expressions::build_graph(resource_, pipeline_context->parameters, key_expressions, probe.types());
         if (built.has_error()) {
             return built.error();
         }

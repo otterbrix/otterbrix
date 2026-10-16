@@ -1,10 +1,10 @@
-#include <components/vector/cell_equal.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/table/transaction_manager.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <core/file/local_file_system.hpp>
 #include <cstdio>
 #include <string>

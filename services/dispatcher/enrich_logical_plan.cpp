@@ -284,9 +284,9 @@ namespace services::dispatcher { namespace {
         std::pmr::unordered_map<uint64_t, cell_ptrs> by_column(resource);
         for (const auto& cell : cells) {
             if (cell.row >= total_rows || cell.column >= node->column_bindings().size()) {
-                return core::error_t(core::error_code_t::schema_error,
-                                     std::pmr::string{"INSERT: a deferred VALUES cell points outside the VALUES list",
-                                                      resource});
+                return core::error_t(
+                    core::error_code_t::schema_error,
+                    std::pmr::string{"INSERT: a deferred VALUES cell points outside the VALUES list", resource});
             }
             auto found = by_column.find(cell.column);
             if (found == by_column.end()) {

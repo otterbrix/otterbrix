@@ -12,8 +12,8 @@
 #include <components/vector/vector_builders.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <core/file/local_file_system.hpp>
-#include <services/dispatcher/dispatcher.hpp>
 #include <cstring>
+#include <services/dispatcher/dispatcher.hpp>
 
 namespace services::disk {
 
@@ -1025,9 +1025,9 @@ namespace services::disk {
                     core::error_code_t::missing_table,
                     std::pmr::string{"scan filter: storage is not owned by this agent", resource()}};
             }
-            auto built = build_filter_(
-                filter.get(),
-                it->second->storage->read_types(projected_cols.empty() ? nullptr : &projected_cols, txn));
+            auto built =
+                build_filter_(filter.get(),
+                              it->second->storage->read_types(projected_cols.empty() ? nullptr : &projected_cols, txn));
             if (built.has_error()) {
                 co_return built.error();
             }
@@ -1171,9 +1171,9 @@ namespace services::disk {
                 what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
                 co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
             }
-            auto built = build_filter_(
-                filter.get(),
-                it->second->storage->read_types(projected_cols.empty() ? nullptr : &projected_cols, txn));
+            auto built =
+                build_filter_(filter.get(),
+                              it->second->storage->read_types(projected_cols.empty() ? nullptr : &projected_cols, txn));
             if (built.has_error()) {
                 co_return built.error();
             }
@@ -1395,9 +1395,9 @@ namespace services::disk {
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
             co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
         }
-        auto built = build_filter_(
-            filter.get(),
-            it->second->storage->read_types(projected_cols.empty() ? nullptr : &projected_cols, txn));
+        auto built =
+            build_filter_(filter.get(),
+                          it->second->storage->read_types(projected_cols.empty() ? nullptr : &projected_cols, txn));
         if (built.has_error()) {
             co_return built.error();
         }
@@ -1733,8 +1733,7 @@ namespace services::disk {
             }
             key_positions.push_back(static_cast<std::size_t>(found - scan_projection.begin()));
         }
-        auto read_types =
-            entry->storage->read_types(scan_projection.empty() ? nullptr : &scan_projection, txn);
+        auto read_types = entry->storage->read_types(scan_projection.empty() ? nullptr : &scan_projection, txn);
 
         auto make_eq_child = [&](std::size_t col, std::uint32_t param_id) {
             expr::key_t column{resource()};

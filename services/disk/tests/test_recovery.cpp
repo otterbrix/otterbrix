@@ -263,9 +263,8 @@ TEST_CASE("services::disk::recovery::dynamic_schema_persists_across_restart") {
                 const auto attname =
                     chunk.is_null(2, i) ? std::string{} : std::string(chunk.get_value<std::string_view>(2, i));
                 const auto atttypid =
-                    chunk.is_null(3, i)
-                        ? components::catalog::INVALID_OID
-                        : static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
+                    chunk.is_null(3, i) ? components::catalog::INVALID_OID
+                                        : static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
                 const auto refcount = chunk.get_value<std::int64_t>(6, i);
                 REQUIRE(refcount == 1);
                 if (attname == "a") {

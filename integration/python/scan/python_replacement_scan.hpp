@@ -16,12 +16,12 @@ namespace otterbrix {
     class scan_t {
     public:
         //! Try to perform a replacement, returns NULL on error.
-        static std::unique_ptr<components::tableref::table_ref_t>
-        try_replacement_object(const py::object& entry, const std::string& name);
+        static std::unique_ptr<components::tableref::table_ref_t> try_replacement_object(const py::object& entry,
+                                                                                         const std::string& name);
 
         //! Perform a replacement or throw if it failed
-        static std::unique_ptr<components::tableref::table_ref_t>
-        replacement_object(const py::object& entry, const std::string& name);
+        static std::unique_ptr<components::tableref::table_ref_t> replacement_object(const py::object& entry,
+                                                                                     const std::string& name);
 
         static std::pair<components::logical_plan::node_data_ptr,
                          std::unique_ptr<std::vector<components::table::column_definition_t>>>

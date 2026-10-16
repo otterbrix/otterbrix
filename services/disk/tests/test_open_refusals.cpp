@@ -159,7 +159,11 @@ namespace {
     uint64_t rows_where_value_is(open_fixture& fx, catalog::oid_t table_oid, std::int64_t value) {
         std::pmr::vector<std::uint64_t> key_cols(&fx.resource);
         key_cols.emplace_back(0);
-        auto batches = test_probe::probe_read(fx, fx.ctx(), table_oid, std::move(key_cols), services::disk::test_probe::test_key_chunk(&fx.resource, value));
+        auto batches = test_probe::probe_read(fx,
+                                              fx.ctx(),
+                                              table_oid,
+                                              std::move(key_cols),
+                                              services::disk::test_probe::test_key_chunk(&fx.resource, value));
         uint64_t total = 0;
         for (const auto& c : batches) {
             total += c.size();

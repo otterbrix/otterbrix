@@ -1,12 +1,12 @@
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <components/catalog/catalog_oids.hpp>
-#include <components/vector/vector_builders.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/vector/vector_builders.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 #include <filesystem>
@@ -177,12 +177,7 @@ TEST_CASE("integration::cpp::test_wal_pool::index_durability") {
         FILL_COLLECTION_WAL(database_name, collection_name, kDocuments);
 
         // Verify index works before restart
-        CHECK_FIND_WAL(database_name,
-                       collection_name,
-                       "count",
-                       compare_type::eq,
-                       50,
-                       1);
+        CHECK_FIND_WAL(database_name, collection_name, "count", compare_type::eq, 50, 1);
     }
 
     INFO("phase 2: restart and verify index survived");
@@ -190,24 +185,9 @@ TEST_CASE("integration::cpp::test_wal_pool::index_durability") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        CHECK_FIND_WAL(database_name,
-                       collection_name,
-                       "count",
-                       compare_type::eq,
-                       1,
-                       1);
-        CHECK_FIND_WAL(database_name,
-                       collection_name,
-                       "count",
-                       compare_type::eq,
-                       50,
-                       1);
-        CHECK_FIND_WAL(database_name,
-                       collection_name,
-                       "count",
-                       compare_type::gt,
-                       90,
-                       10);
+        CHECK_FIND_WAL(database_name, collection_name, "count", compare_type::eq, 1, 1);
+        CHECK_FIND_WAL(database_name, collection_name, "count", compare_type::eq, 50, 1);
+        CHECK_FIND_WAL(database_name, collection_name, "count", compare_type::gt, 90, 10);
     }
 }
 

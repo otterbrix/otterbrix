@@ -49,10 +49,8 @@ namespace {
         std::size_t bytes;
     };
 
-    taken_t taken_for(uint64_t rows,
-                      uint64_t width = 64,
-                      bool with_right = true,
-                      logical_plan::row_cap_t affected_bound = {}) {
+    taken_t
+    taken_for(uint64_t rows, uint64_t width = 64, bool with_right = true, logical_plan::row_cap_t affected_bound = {}) {
         core::pmr::otterbrix_resource upstream;
         core::pmr::counting_resource_t arena{&upstream};
         logical_plan::storage_parameters parameters{&arena};
@@ -62,12 +60,12 @@ namespace {
                                 pipeline::no_mailbox()};
 
         std::pmr::vector<operators::projected_column_t> returning{&arena};
-        returning.emplace_back(&arena,
-                               "*",
-                               expressions::expression_ptr(expressions::make_scalar_expression(
-                                   &arena,
-                                   expressions::scalar_type::star_expand,
-                                   expressions::key_t{&arena})));
+        returning.emplace_back(
+            &arena,
+            "*",
+            expressions::expression_ptr(expressions::make_scalar_expression(&arena,
+                                                                            expressions::scalar_type::star_expand,
+                                                                            expressions::key_t{&arena})));
         operators::operator_delete op{&arena,
                                       log_t{},
                                       catalog::oid_t{1},
@@ -170,11 +168,11 @@ namespace {
 
         expressions::key_t id{&arena, "id"};
         id.set_path(std::pmr::vector<size_t>(std::initializer_list<size_t>{0}, &arena));
-        expressions::expression_ptr condition = expressions::make_compare_expression(
-            &arena,
-            expressions::compare_type::lt,
-            expressions::param_storage{id},
-            expressions::param_storage{core::parameter_id_t{0}});
+        expressions::expression_ptr condition =
+            expressions::make_compare_expression(&arena,
+                                                 expressions::compare_type::lt,
+                                                 expressions::param_storage{id},
+                                                 expressions::param_storage{core::parameter_id_t{0}});
         operators::operator_delete op{&arena,
                                       log_t{},
                                       catalog::oid_t{1},
@@ -211,16 +209,13 @@ namespace {
 
     std::unique_ptr<operators::operator_delete> star_delete(std::pmr::memory_resource* resource) {
         std::pmr::vector<operators::projected_column_t> returning{resource};
-        returning.emplace_back(resource,
-                               "*",
-                               expressions::expression_ptr(expressions::make_scalar_expression(
-                                   resource,
-                                   expressions::scalar_type::star_expand,
-                                   expressions::key_t{resource})));
-        return std::make_unique<operators::operator_delete>(resource,
-                                                            log_t{},
-                                                            catalog::oid_t{1},
-                                                            std::move(returning));
+        returning.emplace_back(
+            resource,
+            "*",
+            expressions::expression_ptr(expressions::make_scalar_expression(resource,
+                                                                            expressions::scalar_type::star_expand,
+                                                                            expressions::key_t{resource})));
+        return std::make_unique<operators::operator_delete>(resource, log_t{}, catalog::oid_t{1}, std::move(returning));
     }
 
     // Plain DELETE ... RETURNING * of batches whose few rows sit in a scan-sized chunk, as a pushed-down filter

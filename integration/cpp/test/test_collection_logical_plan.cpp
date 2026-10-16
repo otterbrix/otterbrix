@@ -411,13 +411,13 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                                    expressions::scalar_type::constant,
                                                                    expressions::key_t{dispatcher->resource(), "count"});
             update_expr->append_param(id_par{1});
-            auto upd = WRAP_DML_TARGET(table_database_name,
-                                       table_collection_name,
-                                       make_node_update(dispatcher->resource(),
-                                                        match,
-                                                        logical_plan::make_node_limit(dispatcher->resource(),
-                                                                                      logical_plan::limit_t::all()),
-                                                        {update_expr}));
+            auto upd = WRAP_DML_TARGET(
+                table_database_name,
+                table_collection_name,
+                make_node_update(dispatcher->resource(),
+                                 match,
+                                 logical_plan::make_node_limit(dispatcher->resource(), logical_plan::limit_t::all()),
+                                 {update_expr}));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), 20),
                                           components::vector::parameter_kind::literal) == id_par{0});
@@ -490,13 +490,13 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                                                                    expressions::scalar_type::constant,
                                                                    key{std::move(path)});
             update_expr->append_param(id_par{1});
-            auto upd = WRAP_DML_TARGET(table_database_name,
-                                       table_collection_name,
-                                       make_node_update(dispatcher->resource(),
-                                                        match,
-                                                        logical_plan::make_node_limit(dispatcher->resource(),
-                                                                                      logical_plan::limit_t::all()),
-                                                        {update_expr}));
+            auto upd = WRAP_DML_TARGET(
+                table_database_name,
+                table_collection_name,
+                make_node_update(dispatcher->resource(),
+                                 match,
+                                 logical_plan::make_node_limit(dispatcher->resource(), logical_plan::limit_t::all()),
+                                 {update_expr}));
             auto params = logical_plan::make_parameter_node(dispatcher->resource());
             REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), 1000),
                                           components::vector::parameter_kind::literal) == id_par{0});
@@ -787,8 +787,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 REQUIRE(cell11.value() == (num + 25) * 2 * 10);
                 auto cell12 = cur->get<std::string_view>(0, static_cast<size_t>(num));
                 REQUIRE_FALSE(cell12.has_error());
-                REQUIRE(cell12.value() ==
-                        "Name " + std::to_string((num + 25) * 2));
+                REQUIRE(cell12.value() == "Name " + std::to_string((num + 25) * 2));
             }
         }
         INFO("left is raw data");
@@ -823,8 +822,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 REQUIRE(cell15.value() == (num + 25) * 2 * 10);
                 auto cell16 = cur->get<std::string_view>(0, static_cast<size_t>(num));
                 REQUIRE_FALSE(cell16.has_error());
-                REQUIRE(cell16.value() ==
-                        "Name " + std::to_string((num + 25) * 2));
+                REQUIRE(cell16.value() == "Name " + std::to_string((num + 25) * 2));
             }
         }
         INFO("both are raw data");
@@ -857,8 +855,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 REQUIRE(cell19.value() == (num + 25) * 2 * 10);
                 auto cell20 = cur->get<std::string_view>(0, static_cast<size_t>(num));
                 REQUIRE_FALSE(cell20.has_error());
-                REQUIRE(cell20.value() ==
-                        "Name " + std::to_string((num + 25) * 2));
+                REQUIRE(cell20.value() == "Name " + std::to_string((num + 25) * 2));
             }
         }
         INFO("both are raw data with complex join expr");
@@ -903,8 +900,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 REQUIRE(cell23.value() == (num + 25) * 2 * 10);
                 auto cell24 = cur->get<std::string_view>(0, static_cast<size_t>(index));
                 REQUIRE_FALSE(cell24.has_error());
-                REQUIRE(cell24.value() ==
-                        "Name " + std::to_string((num + 25) * 2));
+                REQUIRE(cell24.value() == "Name " + std::to_string((num + 25) * 2));
             }
         }
         INFO("join raw data with aggregate");
@@ -1016,8 +1012,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
                 REQUIRE(cell26.value() == (reversed + 25) * 2 * 10);
                 auto cell27 = cur->get<double>(3, static_cast<size_t>(num));
                 REQUIRE_FALSE(cell27.has_error());
-                REQUIRE(cell27.value() ==
-                        Catch::Approx(static_cast<double>((reversed + 25) * 2)));
+                REQUIRE(cell27.value() == Catch::Approx(static_cast<double>((reversed + 25) * 2)));
                 auto cell28 = cur->get<int64_t>(4, static_cast<size_t>(num));
                 REQUIRE_FALSE(cell28.has_error());
                 REQUIRE(cell28.value() == (reversed + 25) * 2 * 10);

@@ -666,11 +666,16 @@ TEST_CASE("services::disk::wal_catalog::wal_disabled_append_no_record") {
         std::pmr::vector<std::uint64_t> keys{&fx.resource};
         keys.emplace_back(components::catalog::pg_index_col::indexrelid);
         auto batches =
-            services::disk::test_probe::probe_read(fx, auto_ctx(), pg_index, std::move(keys), services::disk::test_probe::test_key_chunk(&fx.resource, idx_oid));
+            services::disk::test_probe::probe_read(fx,
+                                                   auto_ctx(),
+                                                   pg_index,
+                                                   std::move(keys),
+                                                   services::disk::test_probe::test_key_chunk(&fx.resource, idx_oid));
         std::size_t found = 0;
         for (const auto& chunk : batches) {
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {
-                if (!chunk.is_null(0, i) && static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)) == idx_oid)
+                if (!chunk.is_null(0, i) &&
+                    static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)) == idx_oid)
                     ++found;
             }
         }
@@ -829,7 +834,11 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
     auto read_added_at = [&](fixture& fx, catalog::oid_t attoid) -> std::int64_t {
         std::pmr::vector<std::uint64_t> keys{&fx.resource};
         keys.emplace_back(catalog::pg_attribute_col::attoid);
-        auto batches = test_probe::probe_read(fx, auto_ctx(), pg_attr, std::move(keys), services::disk::test_probe::test_key_chunk(&fx.resource, attoid));
+        auto batches = test_probe::probe_read(fx,
+                                              auto_ctx(),
+                                              pg_attr,
+                                              std::move(keys),
+                                              services::disk::test_probe::test_key_chunk(&fx.resource, attoid));
         for (auto& chunk : batches) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
                 if (chunk.is_null(catalog::pg_attribute_col::added_at_commit_id, i))
@@ -850,7 +859,11 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
         {
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_attribute_col::attrelid);
-            auto batches = test_probe::probe_read(fx, auto_ctx(), pg_attr, std::move(keys), services::disk::test_probe::test_key_chunk(&fx.resource, table_oid));
+            auto batches = test_probe::probe_read(fx,
+                                                  auto_ctx(),
+                                                  pg_attr,
+                                                  std::move(keys),
+                                                  services::disk::test_probe::test_key_chunk(&fx.resource, table_oid));
             for (auto& chunk : batches) {
                 for (uint64_t i = 0; i < chunk.size(); ++i) {
                     if (chunk.is_null(catalog::pg_attribute_col::attoid, i))

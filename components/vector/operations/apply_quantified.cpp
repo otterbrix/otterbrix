@@ -40,11 +40,7 @@ namespace components::vector::operations {
         }
 
         // `probe code element` for a non-NULL pair
-        bool holds(operator_code code,
-                   const vector_t& probe,
-                   uint64_t row,
-                   const vector_t& elements,
-                   uint64_t index) {
+        bool holds(operator_code code, const vector_t& probe, uint64_t row, const vector_t& elements, uint64_t index) {
             switch (code) {
                 case operator_code::equal:
                     return cells_equal(probe, row, elements, index);
@@ -110,9 +106,7 @@ namespace components::vector::operations {
             return (hash * UINT64_C(0x9E3779B97F4A7C15)) >> shift;
         }
 
-        bool is_untyped(const vector_t& vector) noexcept {
-            return vector.type().type() == types::logical_type::NA;
-        }
+        bool is_untyped(const vector_t& vector) noexcept { return vector.type().type() == types::logical_type::NA; }
 
         // The answer of one row, given whether a witness was found among its non-NULL elements
         struct row_answer_t {
@@ -255,9 +249,9 @@ namespace components::vector::operations {
 
         if (!vector_ops::is_hashable(elements.type())) {
             prepared_ = false;
-            return core::error_t(core::error_code_t::invalid_parameter,
-                                 std::pmr::string{"quantified comparison: the set's elements cannot be hashed",
-                                                  resource_});
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string{"quantified comparison: the set's elements cannot be hashed", resource_});
         }
         vector_t shallow(elements);
         vector_t hashes(resource_, types::logical_type::UBIGINT, element_count_);
@@ -344,9 +338,9 @@ namespace components::vector::operations {
                                    const bool* active_rows,
                                    quantified_set_t* prepared) {
         if (!test.is_match() && !is_quantifiable(test.code())) {
-            return core::error_t(core::error_code_t::invalid_parameter,
-                                 std::pmr::string{"quantified comparison: the operator is not a comparison",
-                                                  output->resource()});
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string{"quantified comparison: the operator is not a comparison", output->resource()});
         }
         const bool untyped_set = is_untyped(set);
         if (!untyped_set) {

@@ -92,8 +92,8 @@ namespace components::sql::transform {
                 }
                 return joined;
             }
-            const auto strict = (type == compare_type::lt || type == compare_type::lte) ? compare_type::lt
-                                                                                        : compare_type::gt;
+            const auto strict =
+                (type == compare_type::lt || type == compare_type::lte) ? compare_type::lt : compare_type::gt;
             auto chain = union_of(compare_type::union_or);
             for (size_t k = 0; k < lefts.size(); k++) {
                 const auto link = k + 1 == lefts.size() ? type : strict;
@@ -502,8 +502,7 @@ namespace components::sql::transform {
                     if (auto compare_op = get_compare_type(sub_op);
                         compare_op != compare_type::invalid && compare_op != compare_type::regex && sub->lexpr) {
                         if (is_row_comparison(compare_op, sub)) {
-                            VALUE_OR_RETURN(auto rewritten,
-                                            lower_row_comparison(resource_, compare_op, sub, recurse));
+                            VALUE_OR_RETURN(auto rewritten, lower_row_comparison(resource_, compare_op, sub, recurse));
                             rewritten->set_key(expressions::key_t{resource_, std::string{sub_op}});
                             return param_storage{expression_ptr{rewritten}};
                         }
@@ -965,8 +964,7 @@ namespace components::sql::transform {
                 auto get_arg = [&](Node* operand) { return transform_expression(operand, operand_context); };
 
                 if (is_row_comparison(comp_type, node)) {
-                    VALUE_OR_RETURN(auto rewritten,
-                                    lower_row_comparison(resource_, comp_type, node, get_arg));
+                    VALUE_OR_RETURN(auto rewritten, lower_row_comparison(resource_, comp_type, node, get_arg));
                     return rewritten;
                 }
                 VALUE_OR_RETURN(auto left, get_arg(node->lexpr));
@@ -1124,9 +1122,9 @@ namespace components::sql::transform {
             case EXISTS_SUBLINK: {
                 auto param_id1 = plan->parameters->add_parameter(vector::make_scalar(resource_, true),
                                                                  vector::parameter_kind::literal);
-                auto param_id2 = plan->parameters->add_parameter(
-                    vector::make_null(resource_, sub_query_placeholder(EXISTS_SUBLINK)),
-                    vector::parameter_kind::execution);
+                auto param_id2 =
+                    plan->parameters->add_parameter(vector::make_null(resource_, sub_query_placeholder(EXISTS_SUBLINK)),
+                                                    vector::parameter_kind::execution);
                 // Transform before appending so nested sub_queries come first; save/restore the pending-
                 // aggregate stash so the inner epilogue doesn't steal this level's own.
                 auto prev_pending = std::move(pending_internal_aggs_);
@@ -1160,9 +1158,9 @@ namespace components::sql::transform {
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"unsupported operator in ANY/ALL subquery comparison", resource_});
                 }
-                auto param_id = plan->parameters->add_parameter(
-                    vector::make_null(resource_, sub_query_placeholder(ANY_SUBLINK)),
-                    vector::parameter_kind::execution);
+                auto param_id =
+                    plan->parameters->add_parameter(vector::make_null(resource_, sub_query_placeholder(ANY_SUBLINK)),
+                                                    vector::parameter_kind::execution);
                 auto prev_pending = std::move(pending_internal_aggs_);
                 pending_internal_aggs_.clear();
                 auto sub_node = transform(*node->subselect, plan);
@@ -1185,9 +1183,9 @@ namespace components::sql::transform {
                 // PostgreSQL allows this bare `WHERE (SELECT flag ...)`; >1 row errors, as PostgreSQL does.
                 auto param_true = plan->parameters->add_parameter(vector::make_scalar(resource_, true),
                                                                   vector::parameter_kind::literal);
-                auto param_result = plan->parameters->add_parameter(
-                    vector::make_null(resource_, sub_query_placeholder(EXPR_SUBLINK)),
-                    vector::parameter_kind::execution);
+                auto param_result =
+                    plan->parameters->add_parameter(vector::make_null(resource_, sub_query_placeholder(EXPR_SUBLINK)),
+                                                    vector::parameter_kind::execution);
                 auto prev_pending = std::move(pending_internal_aggs_);
                 pending_internal_aggs_.clear();
                 auto sub_node = transform(*node->subselect, plan);

@@ -185,13 +185,9 @@ namespace {
                 chunk.row_ids.data<int64_t>()[row] = storage_->number(position_++);
                 for (std::size_t col = 0; col < columns.size(); ++col) {
                     if (columns[col].type() == types::logical_type::STRING_LITERAL) {
-                        chunk.set_value(col,
-                                        row,
-                                        std::string_view{"s" + std::to_string(rows[row][col])});
+                        chunk.set_value(col, row, std::string_view{"s" + std::to_string(rows[row][col])});
                     } else if (columns[col].type() == types::logical_type::INTEGER) {
-                        chunk.set_value(col,
-                                        row,
-                                        static_cast<int32_t>(rows[row][col]));
+                        chunk.set_value(col, row, static_cast<int32_t>(rows[row][col]));
                     } else {
                         chunk.set_value(col, row, rows[row][col]);
                     }

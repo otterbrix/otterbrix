@@ -98,12 +98,11 @@ TEST_CASE("components::sql::update") {
             set_const(&resource, components::expressions::key_t{&resource, "name"}, core::parameter_id_t{1}));
         f.emplace_back(
             set_const(&resource, components::expressions::key_t{&resource, "is_doc"}, core::parameter_id_t{2}));
-        TEST_SIMPLE_UPDATE("UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true;",
-                           R"_($update: <oid:0> {$match: {$all_true}})_",
-                           vec({make_scalar(&resource, 10l),
-                                make_scalar(&resource, "new name"),
-                                make_scalar(&resource, true)}),
-                           f);
+        TEST_SIMPLE_UPDATE(
+            "UPDATE TestDatabase.TestCollection SET count = 10, name = 'new name', is_doc = true;",
+            R"_($update: <oid:0> {$match: {$all_true}})_",
+            vec({make_scalar(&resource, 10l), make_scalar(&resource, "new name"), make_scalar(&resource, true)}),
+            f);
     }
 }
 

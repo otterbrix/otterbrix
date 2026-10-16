@@ -340,8 +340,7 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_function_argument") {
         REQUIRE_FALSE(cell8.has_error());
         auto cell9 = cur->get<int64_t>(static_cast<uint64_t>(v_i), r);
         REQUIRE_FALSE(cell9.has_error());
-        got.emplace(cell8.value(),
-                    cell9.value());
+        got.emplace(cell8.value(), cell9.value());
     }
     std::multiset<std::pair<int64_t, int64_t>> expected{{1, 100}, {1, 101}, {2, 200}};
     REQUIRE(got == expected);

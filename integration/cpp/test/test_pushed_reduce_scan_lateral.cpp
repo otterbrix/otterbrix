@@ -70,8 +70,7 @@ TEST_CASE("integration::cpp::pushed_reduce_scan::lateral_correlated_aggregate_re
         REQUIRE_FALSE(cell0.has_error());
         auto cell1 = cur->get<int64_t>(static_cast<uint64_t>(s_i), r);
         REQUIRE_FALSE(cell1.has_error());
-        got.emplace(cell0.value(),
-                    cell1.value());
+        got.emplace(cell0.value(), cell1.value());
     }
     std::multiset<std::pair<int64_t, int64_t>> expected{{1, 201}, {2, 200}};
     REQUIRE(got == expected);

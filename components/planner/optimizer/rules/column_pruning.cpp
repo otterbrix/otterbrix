@@ -245,10 +245,8 @@ namespace components::planner::optimizer {
         }
 
         // The keys through which `aggregate` reads the row its input yields
-        bool row_keys(lp::node_aggregate_t& aggregate,
-                      const aggregate_parts_t& parts,
-                      key_refs_t& keys,
-                      bool* passes_row) {
+        bool
+        row_keys(lp::node_aggregate_t& aggregate, const aggregate_parts_t& parts, key_refs_t& keys, bool* passes_row) {
             *passes_row = false;
             if (parts.group != nullptr) {
                 for (auto& expression : parts.group->expressions()) {

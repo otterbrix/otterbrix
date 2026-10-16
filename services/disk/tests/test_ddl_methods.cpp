@@ -196,12 +196,13 @@ TEST_CASE("services::disk::ddl::computed_register_same_type_idempotent") {
     std::pmr::vector<std::uint64_t> k1{&fx.resource};
     k1.emplace_back(components::catalog::pg_computed_column_col::relid);
     k1.emplace_back(components::catalog::pg_computed_column_col::attname);
-    auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                                                        fx.ctx(),
-                                                        pg_cc,
-                                                        std::move(k1),
-                                                        test_probe::test_key_chunk(&fx.resource, table_oid, std::string_view{"count"}),
-                                                        std::pmr::vector<std::uint64_t>{&fx.resource}));
+    auto batches = disk_test_helpers::read_ok(
+        fx.invoke(&manager_disk_t::read_chunks_by_key,
+                  fx.ctx(),
+                  pg_cc,
+                  std::move(k1),
+                  test_probe::test_key_chunk(&fx.resource, table_oid, std::string_view{"count"}),
+                  std::pmr::vector<std::uint64_t>{&fx.resource}));
     std::uint64_t total = 0;
     for (const auto& c : batches) total += c.size();
     REQUIRE(total == 1);
@@ -255,12 +256,13 @@ TEST_CASE("services::disk::ddl::computed_unregister_marks_dead") {
     std::pmr::vector<std::uint64_t> k2{&fx.resource};
     k2.emplace_back(components::catalog::pg_computed_column_col::relid);
     k2.emplace_back(components::catalog::pg_computed_column_col::attname);
-    auto batches = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_key,
-                                                        fx.ctx(),
-                                                        pg_cc,
-                                                        std::move(k2),
-                                                        test_probe::test_key_chunk(&fx.resource, table_oid, std::string_view{"count"}),
-                                                        std::pmr::vector<std::uint64_t>{&fx.resource}));
+    auto batches = disk_test_helpers::read_ok(
+        fx.invoke(&manager_disk_t::read_chunks_by_key,
+                  fx.ctx(),
+                  pg_cc,
+                  std::move(k2),
+                  test_probe::test_key_chunk(&fx.resource, table_oid, std::string_view{"count"}),
+                  std::pmr::vector<std::uint64_t>{&fx.resource}));
     std::uint64_t total = 0;
     for (const auto& c : batches) total += c.size();
     REQUIRE(total == 2);

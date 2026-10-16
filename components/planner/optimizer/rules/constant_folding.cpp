@@ -56,9 +56,8 @@ namespace components::planner::optimizer {
         }
 
         // Every operand of a scalar expression is a foldable parameter id.
-        bool all_params_are_constants(const scalar_expression_t& expr,
-                                      size_t arity,
-                                      const storage_parameters& parameters) {
+        bool
+        all_params_are_constants(const scalar_expression_t& expr, size_t arity, const storage_parameters& parameters) {
             if (expr.params().size() != arity) {
                 return false;
             }
@@ -73,9 +72,8 @@ namespace components::planner::optimizer {
         // Try to fold a scalar arithmetic expression with constant params. On success, replaces the
         // expression's params with a single parameter_id_t of a NEW slot that holds the computed result
         // (a slot keeps its type, and the result may have another).
-        bool try_fold_scalar(scalar_expression_t& expr,
-                             parameter_node_t* parameters,
-                             const graph_execution_context& ctx) {
+        bool
+        try_fold_scalar(scalar_expression_t& expr, parameter_node_t* parameters, const graph_execution_context& ctx) {
             const auto op = folding_operator(expr.type());
             if (op == operator_code::invalid) {
                 return false;
@@ -99,10 +97,10 @@ namespace components::planner::optimizer {
             // Whatever the kernel refuses (a zero divisor, an overflow, operands of different types) is left
             // for the runtime to report.
             vector::vector_t out(storage.resource(), expr.result_type(), 1);
-            const auto error = arity == 2
-                                   ? vector::operations::apply_binary(
-                                         op, storage.at(left_id), storage.at(right_id), &out, ctx, 1)
-                                   : vector::operations::apply_unary(op, storage.at(left_id), &out, ctx, 1);
+            const auto error =
+                arity == 2
+                    ? vector::operations::apply_binary(op, storage.at(left_id), storage.at(right_id), &out, ctx, 1)
+                    : vector::operations::apply_unary(op, storage.at(left_id), &out, ctx, 1);
             if (error.contains_error()) {
                 return false;
             }
@@ -217,7 +215,7 @@ namespace components::planner::optimizer {
             }
             vector::vector_t out(storage.resource(), types::complex_logical_type{types::logical_type::BOOLEAN}, 1);
             auto kind = expr.type() == compare_type::any ? vector::operations::quantifier::any
-                                                               : vector::operations::quantifier::all;
+                                                         : vector::operations::quantifier::all;
             if (vector::operations::apply_quantified(test, kind, probe, set, &out, 1).contains_error()) {
                 return {false, types::tri_bool_t::unknown};
             }
@@ -261,8 +259,9 @@ namespace components::planner::optimizer {
             const auto& storage = parameters->parameters();
             bool quantified = expr.type() == compare_type::any || expr.type() == compare_type::all;
             auto [ok, result] =
-                quantified ? eval_quantified(storage, expr, storage.at(left_id), storage.at(right_id))
-                           : eval_compare(storage.resource(), expr.type(), storage.at(left_id), storage.at(right_id), ctx);
+                quantified
+                    ? eval_quantified(storage, expr, storage.at(left_id), storage.at(right_id))
+                    : eval_compare(storage.resource(), expr.type(), storage.at(left_id), storage.at(right_id), ctx);
             if (ok) {
                 expr.set_type(folded_type(result));
             }

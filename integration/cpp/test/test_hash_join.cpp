@@ -255,19 +255,19 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == static_cast<size_t>(matched));
         for (size_t row = 0; row < static_cast<size_t>(matched); ++row) {
-            const int64_t k = static_cast<int64_t>(row) + shift;     // 1250, 1251, ...
+            const int64_t k = static_cast<int64_t>(row) + shift; // 1250, 1251, ...
             auto cell0 = cur->get<int64_t>(0, row);
             REQUIRE_FALSE(cell0.has_error());
-            REQUIRE(cell0.value() == k);       // mbl.k
+            REQUIRE(cell0.value() == k); // mbl.k
             auto cell1 = cur->get<int64_t>(1, row);
             REQUIRE_FALSE(cell1.has_error());
             REQUIRE(cell1.value() == k * 100); // mbl.lv
             auto cell2 = cur->get<int64_t>(2, row);
             REQUIRE_FALSE(cell2.has_error());
-            REQUIRE(cell2.value() == k);       // mbr.k
+            REQUIRE(cell2.value() == k); // mbr.k
             auto cell3 = cur->get<int64_t>(3, row);
             REQUIRE_FALSE(cell3.has_error());
-            REQUIRE(cell3.value() == k * 7);   // mbr.rv
+            REQUIRE(cell3.value() == k * 7); // mbr.rv
         }
     }
 
@@ -279,10 +279,10 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == static_cast<size_t>(n)); // every left row once
         for (size_t row = 0; row < static_cast<size_t>(n); ++row) {
-            const int64_t k = static_cast<int64_t>(row);             // 0, 1, ... (sorted probe key)
+            const int64_t k = static_cast<int64_t>(row); // 0, 1, ... (sorted probe key)
             auto cell4 = cur->get<int64_t>(0, row);
             REQUIRE_FALSE(cell4.has_error());
-            REQUIRE(cell4.value() == k);       // mbl.k
+            REQUIRE(cell4.value() == k); // mbl.k
             auto cell5 = cur->get<int64_t>(1, row);
             REQUIRE_FALSE(cell5.has_error());
             REQUIRE(cell5.value() == k * 100); // mbl.lv
@@ -296,7 +296,7 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
             } else {
                 auto cell8 = cur->get<int64_t>(2, row);
                 REQUIRE_FALSE(cell8.has_error());
-                REQUIRE(cell8.value() == k);     // mbr.k
+                REQUIRE(cell8.value() == k); // mbr.k
                 auto cell9 = cur->get<int64_t>(3, row);
                 REQUIRE_FALSE(cell9.has_error());
                 REQUIRE(cell9.value() == k * 7); // mbr.rv
@@ -405,19 +405,19 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         for (size_t row = 0; row < 3; ++row) {
-            const int64_t k = static_cast<int64_t>(row) + 1;         // 1, 2, 3
+            const int64_t k = static_cast<int64_t>(row) + 1; // 1, 2, 3
             auto cell10 = cur->get<int64_t>(0, row);
             REQUIRE_FALSE(cell10.has_error());
-            REQUIRE(cell10.value() == k);       // small.k
+            REQUIRE(cell10.value() == k); // small.k
             auto cell11 = cur->get<int64_t>(1, row);
             REQUIRE_FALSE(cell11.has_error());
             REQUIRE(cell11.value() == k * 100); // small.sv
             auto cell12 = cur->get<int64_t>(2, row);
             REQUIRE_FALSE(cell12.has_error());
-            REQUIRE(cell12.value() == k);       // large.k
+            REQUIRE(cell12.value() == k); // large.k
             auto cell13 = cur->get<int64_t>(3, row);
             REQUIRE_FALSE(cell13.has_error());
-            REQUIRE(cell13.value() == k);       // large.lv
+            REQUIRE(cell13.value() == k); // large.lv
         }
     }
 
@@ -507,7 +507,7 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
             REQUIRE(cell18.value() == cell19.value()); // l_sk == s_sk
             auto cell20 = cur->get<int64_t>(2, row);
             REQUIRE_FALSE(cell20.has_error());
-            rev_sum += cell20.value();                                      // l_rev
+            rev_sum += cell20.value(); // l_rev
         }
         CHECK(rev_sum == 1000); // 100 + 200 + 300 + 400 (the l_sk=30 / rev=500 row is unmatched)
     }
@@ -652,25 +652,25 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
         REQUIRE(cur->size() == 2);
         auto cell23 = cur->get<int64_t>(0, 0);
         REQUIRE_FALSE(cell23.has_error());
-        CHECK(cell23.value() == 1);  // filt.k
+        CHECK(cell23.value() == 1); // filt.k
         auto cell24 = cur->get<int64_t>(1, 0);
         REQUIRE_FALSE(cell24.has_error());
-        CHECK(cell24.value() == 5);  // filt.x
+        CHECK(cell24.value() == 5); // filt.x
         auto cell25 = cur->get<int64_t>(2, 0);
         REQUIRE_FALSE(cell25.has_error());
-        CHECK(cell25.value() == 1);  // pln.k
+        CHECK(cell25.value() == 1); // pln.k
         auto cell26 = cur->get<int64_t>(3, 0);
         REQUIRE_FALSE(cell26.has_error());
         CHECK(cell26.value() == 10); // pln.y
         auto cell27 = cur->get<int64_t>(0, 1);
         REQUIRE_FALSE(cell27.has_error());
-        CHECK(cell27.value() == 3);  // filt.k
+        CHECK(cell27.value() == 3); // filt.k
         auto cell28 = cur->get<int64_t>(1, 1);
         REQUIRE_FALSE(cell28.has_error());
-        CHECK(cell28.value() == 5);  // filt.x
+        CHECK(cell28.value() == 5); // filt.x
         auto cell29 = cur->get<int64_t>(2, 1);
         REQUIRE_FALSE(cell29.has_error());
-        CHECK(cell29.value() == 3);  // pln.k
+        CHECK(cell29.value() == 3); // pln.k
         auto cell30 = cur->get<int64_t>(3, 1);
         REQUIRE_FALSE(cell30.has_error());
         CHECK(cell30.value() == 30); // pln.y
@@ -733,25 +733,25 @@ TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrap
         REQUIRE(cur->size() == 2);
         auto cell32 = cur->get<int64_t>(0, 0);
         REQUIRE_FALSE(cell32.has_error());
-        CHECK(cell32.value() == 1);  // big.k
+        CHECK(cell32.value() == 1); // big.k
         auto cell33 = cur->get<int64_t>(1, 0);
         REQUIRE_FALSE(cell33.has_error());
-        CHECK(cell33.value() == 1);  // big.x
+        CHECK(cell33.value() == 1); // big.x
         auto cell34 = cur->get<int64_t>(2, 0);
         REQUIRE_FALSE(cell34.has_error());
-        CHECK(cell34.value() == 1);  // tiny.k
+        CHECK(cell34.value() == 1); // tiny.k
         auto cell35 = cur->get<int64_t>(3, 0);
         REQUIRE_FALSE(cell35.has_error());
         CHECK(cell35.value() == 10); // tiny.y
         auto cell36 = cur->get<int64_t>(0, 1);
         REQUIRE_FALSE(cell36.has_error());
-        CHECK(cell36.value() == 2);  // big.k
+        CHECK(cell36.value() == 2); // big.k
         auto cell37 = cur->get<int64_t>(1, 1);
         REQUIRE_FALSE(cell37.has_error());
-        CHECK(cell37.value() == 2);  // big.x
+        CHECK(cell37.value() == 2); // big.x
         auto cell38 = cur->get<int64_t>(2, 1);
         REQUIRE_FALSE(cell38.has_error());
-        CHECK(cell38.value() == 2);  // tiny.k
+        CHECK(cell38.value() == 2); // tiny.k
         auto cell39 = cur->get<int64_t>(3, 1);
         REQUIRE_FALSE(cell39.has_error());
         CHECK(cell39.value() == 20); // tiny.y

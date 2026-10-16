@@ -121,12 +121,7 @@ namespace components::operators {
             produced = std::move(computed.value());
         }
         const vector::vector_t* decisions = produced.has_value() ? &produced->data.front() : nullptr;
-        return filter_batch_(stream_resource_,
-                             decisions,
-                             stream_types_,
-                             input,
-                             stream_limit_total_,
-                             out);
+        return filter_batch_(stream_resource_, decisions, stream_types_, input, stream_limit_total_, out);
     }
 
     core::error_t operator_match_t::finalize(pipeline::context_t* /*ctx*/, chunks_vector_t& out) {

@@ -148,7 +148,8 @@ namespace otterbrix { namespace util {
                     return py::object(std::move(list));
                 }
                 case logical_type::ARRAY: {
-                    const auto size = leaf.type().extension_as<components::types::array_logical_type_extension>()->size();
+                    const auto size =
+                        leaf.type().extension_as<components::types::array_logical_type_extension>()->size();
                     // do not remove the static cast here, it's required for building
                     // otterbrix-python with Emscripten.
                     //

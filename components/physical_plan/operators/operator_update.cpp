@@ -374,10 +374,8 @@ namespace components::operators {
         std::optional<vector::data_chunk_t> produced;
         if (condition_ == expressions::condition_kind::computed) {
             if (!graph_) {
-                auto built = expressions::build_condition_graph(resource,
-                                                                pipeline_context->parameters,
-                                                                expr_.get(),
-                                                                types);
+                auto built =
+                    expressions::build_condition_graph(resource, pipeline_context->parameters, expr_.get(), types);
                 if (built.has_error()) {
                     return built.error();
                 }

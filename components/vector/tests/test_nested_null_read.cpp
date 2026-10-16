@@ -42,7 +42,9 @@ TEST_CASE("nested null read: struct cell with a NULL field") {
     const auto declared = point_type(&resource);
     vector_t v(&resource, declared, 4);
 
-    put(make_struct(&resource, declared, pack(make_scalar<int64_t>(&resource, 1), make_null(&resource, bigint()))), v, 0);
+    put(make_struct(&resource, declared, pack(make_scalar<int64_t>(&resource, 1), make_null(&resource, bigint()))),
+        v,
+        0);
 
     REQUIRE_FALSE(v.is_null(0));
     REQUIRE(v.type() == declared);
@@ -116,9 +118,7 @@ TEST_CASE("nested null read: struct cell whose LIST field is entirely NULL") {
 
     vector_t v(&resource, declared, 4);
 
-    put(make_struct(&resource,
-                    declared,
-                    pack(make_scalar<int64_t>(&resource, 5), make_null(&resource, fields[1]))),
+    put(make_struct(&resource, declared, pack(make_scalar<int64_t>(&resource, 5), make_null(&resource, fields[1]))),
         v,
         0);
 

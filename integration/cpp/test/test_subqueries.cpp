@@ -2852,8 +2852,8 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_select_null") {
 
     REQUIRE(run("CREATE DATABASE pdb;")->is_success());
     REQUIRE(run("CREATE TABLE pdb.probe (id bigint, x bigint, s string);")->is_success());
-    REQUIRE(run("INSERT INTO pdb.probe (id, x, s) VALUES (1, 10, 'a'), (2, NULL, NULL), (3, 1500, 'b');")
-                ->is_success());
+    REQUIRE(
+        run("INSERT INTO pdb.probe (id, x, s) VALUES (1, 10, 'a'), (2, NULL, NULL), (3, 1500, 'b');")->is_success());
     REQUIRE(run("CREATE TABLE pdb.empty_set (k bigint);")->is_success());
 
     INFO("bigint IN (SELECT NULL): the NULL column is text, so the test is `bigint = text`");

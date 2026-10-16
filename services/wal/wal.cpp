@@ -14,8 +14,7 @@ namespace services::wal {
     namespace {
 
         // The width of the first chunk that disagrees with the attoid count, for the refusal message.
-        size_t shape_columns(const std::pmr::vector<components::vector::data_chunk_t>& chunks,
-                             size_t attoid_count) {
+        size_t shape_columns(const std::pmr::vector<components::vector::data_chunk_t>& chunks, size_t attoid_count) {
             for (const auto& chunk : chunks) {
                 if (chunk.column_count() != attoid_count) {
                     return chunk.column_count();
@@ -38,12 +37,12 @@ namespace services::wal {
                   static_cast<unsigned>(table_oid),
                   attoid_count,
                   column_count);
-            return core::result_wrapper_t<wal::id_t>{core::error_t{
-                core::error_code_t::invalid_parameter,
-                std::pmr::string{"wal record refused: " + std::to_string(attoid_count) + " attoids for " +
-                                     std::to_string(column_count) + " columns of table oid " +
-                                     std::to_string(static_cast<unsigned>(table_oid)),
-                                 resource}}};
+            return core::result_wrapper_t<wal::id_t>{
+                core::error_t{core::error_code_t::invalid_parameter,
+                              std::pmr::string{"wal record refused: " + std::to_string(attoid_count) + " attoids for " +
+                                                   std::to_string(column_count) + " columns of table oid " +
+                                                   std::to_string(static_cast<unsigned>(table_oid)),
+                                               resource}}};
         }
 
     } // namespace

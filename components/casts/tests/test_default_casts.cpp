@@ -4,9 +4,9 @@
 #include <components/casts/composite_cast.hpp>
 #include <components/casts/default_casts.hpp>
 
+#include <core/counting_resource.hpp>
 #include <core/date/date_parse.hpp>
 #include <core/date/date_to_string.hpp>
-#include <core/counting_resource.hpp>
 #include <core/pmr.hpp>
 
 #include <cmath>
@@ -2537,8 +2537,10 @@ namespace {
         register_default_casts(registry);
         graph_execution_context context{};
 
-        const complex_logical_type inner_i32 = complex_logical_type::create_array(complex_logical_type{logical_type::INTEGER}, 2);
-        const complex_logical_type inner_i64 = complex_logical_type::create_array(complex_logical_type{logical_type::BIGINT}, 2);
+        const complex_logical_type inner_i32 =
+            complex_logical_type::create_array(complex_logical_type{logical_type::INTEGER}, 2);
+        const complex_logical_type inner_i64 =
+            complex_logical_type::create_array(complex_logical_type{logical_type::BIGINT}, 2);
         const complex_logical_type wide = complex_logical_type::create_array(inner_i32, 3);
         const complex_logical_type narrow = complex_logical_type::create_array(inner_i64, 2);
         auto composite = registry.resolve(wide, narrow, cast_type::explicit_only);
@@ -2703,9 +2705,7 @@ TEST_CASE("default casts: numeric overflow into DECIMAL is a refusal") {
         CHECK(result.get_value<int16_t>(0) ==
               static_cast<int16_t>(types::decimal_special::not_a_number(types::physical_type::INT16)));
     }
-    SECTION("a fitting value still casts") {
-        CHECK_FALSE(bigint_cast(99).contains_error());
-    }
+    SECTION("a fitting value still casts") { CHECK_FALSE(bigint_cast(99).contains_error()); }
 }
 
 TEST_CASE("default casts: DECIMAL to an integer refuses what does not fit instead of answering NULL") {

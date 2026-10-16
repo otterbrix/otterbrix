@@ -64,8 +64,7 @@ struct void_callback_t<void> {
         REQUIRE(core::is_equals(test_value.template value<TestValueType>(), check_value));
     }
     template<typename TestValueType, typename CheckValueType>
-    auto operator()(const box_t&, CheckValueType) const
-        requires(!core::CanCompare<TestValueType, CheckValueType>) {
+    auto operator()(const box_t&, CheckValueType) const requires(!core::CanCompare<TestValueType, CheckValueType>) {
         throw std::logic_error("given types do not have an == operator");
     }
 };

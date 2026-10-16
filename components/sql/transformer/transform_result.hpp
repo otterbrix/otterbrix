@@ -41,8 +41,7 @@ namespace components::sql::transform {
         transform_result& operator=(transform_result&&) = default;
 
         template<typename T>
-            requires(!std::same_as<std::remove_cvref_t<T>, vector::vector_t>)
-        transform_result& bind(size_t id, T&& value) {
+        requires(!std::same_as<std::remove_cvref_t<T>, vector::vector_t>) transform_result& bind(size_t id, T&& value) {
             return bind(id, vector::make_scalar(resource_, std::forward<T>(value)));
         }
 

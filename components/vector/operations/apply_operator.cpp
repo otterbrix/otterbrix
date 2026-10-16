@@ -785,10 +785,9 @@ namespace components::vector::operations {
                         write<bool>(output, row, ordering != std::partial_ordering::less);
                         break;
                     default:
-                        return core::error_t(
-                            core::error_code_t::invalid_parameter,
-                            std::pmr::string{"ordered_compare encountered unsupported operator code",
-                                             output->resource()});
+                        return core::error_t(core::error_code_t::invalid_parameter,
+                                             std::pmr::string{"ordered_compare encountered unsupported operator code",
+                                                              output->resource()});
                 }
             }
             return core::error_t::no_error();
@@ -978,16 +977,16 @@ namespace components::vector::operations {
         }
         // If casts were applied correctly, left and right should be the same
         if (left.type().to_physical_type() != right.type().to_physical_type()) {
-            return core::error_t(core::error_code_t::invalid_parameter,
-                                 std::pmr::string{"operator operands must be pre-cast to a common type",
-                                                  output->resource()});
+            return core::error_t(
+                core::error_code_t::invalid_parameter,
+                std::pmr::string{"operator operands must be pre-cast to a common type", output->resource()});
         }
         if (is_decimal(left) && (code == operator_code::multiply || code == operator_code::divide)) {
             if (!is_decimal(right) || !is_decimal(*output) || decimal_scale(left) != decimal_scale(right) ||
                 decimal_scale(left) != decimal_scale(*output)) {
-                return core::error_t(core::error_code_t::invalid_parameter,
-                                     std::pmr::string{"decimal operands and result must share a scale",
-                                                      output->resource()});
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"decimal operands and result must share a scale", output->resource()});
             }
             return types::simple_physical_type_switch<decimal_dispatch>(left.type().to_physical_type(),
                                                                         code,

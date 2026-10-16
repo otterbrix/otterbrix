@@ -14,8 +14,8 @@
 #include <components/logical_plan/node_cte_scan.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
-#include <components/logical_plan/node_fk_cascade.hpp>
 #include <components/logical_plan/node_extension.hpp>
+#include <components/logical_plan/node_fk_cascade.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -747,12 +747,11 @@ TEST_CASE("optimizer::unary_minus_the_fold_declines_stays_an_expression") {
         auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
                                          components::vector::parameter_kind::literal);
         expression_ptr comp;
-        unary_minus_in_compare(
-            &resource,
-            params.get(),
-            id0,
-            components::types::complex_logical_type(components::types::logical_type::INVALID),
-            comp);
+        unary_minus_in_compare(&resource,
+                               params.get(),
+                               id0,
+                               components::types::complex_logical_type(components::types::logical_type::INVALID),
+                               comp);
         REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
         REQUIRE(params->parameters().size() == 1);
     }
@@ -772,12 +771,11 @@ TEST_CASE("optimizer::unary_minus_the_fold_declines_stays_an_expression") {
         auto id0 = params->add_parameter(components::vector::make_scalar(&resource, uint64_t(5)),
                                          components::vector::parameter_kind::literal);
         expression_ptr comp;
-        unary_minus_in_compare(
-            &resource,
-            params.get(),
-            id0,
-            components::types::complex_logical_type(components::types::logical_type::UBIGINT),
-            comp);
+        unary_minus_in_compare(&resource,
+                               params.get(),
+                               id0,
+                               components::types::complex_logical_type(components::types::logical_type::UBIGINT),
+                               comp);
         REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
         REQUIRE(params->parameters().size() == 1);
     }
@@ -791,8 +789,11 @@ TEST_CASE("optimizer::try_cast_that_answers_null_is_not_folded") {
 
     const components::types::complex_logical_type bigint(components::types::logical_type::BIGINT);
     const components::types::complex_logical_type smallint(components::types::logical_type::SMALLINT);
-    auto cast = make_cast_expression(
-        &resource, id0, smallint, test_cast(bigint, smallint), components::casts::cast_kind::try_cast);
+    auto cast = make_cast_expression(&resource,
+                                     id0,
+                                     smallint,
+                                     test_cast(bigint, smallint),
+                                     components::casts::cast_kind::try_cast);
     auto comp = make_compare_expression(&resource,
                                         compare_type::eq,
                                         key(&resource, "field", side_t::left),
@@ -1758,8 +1759,8 @@ TEST_CASE("optimizer::column_pruning") {
     SECTION("group by") {
         const auto md = pruned_table(oid_t{9105}, 4);
         std::vector<expression_ptr> group_exprs;
-        group_exprs.push_back(expression_ptr(
-            make_scalar_expression(&resource, scalar_type::group_field, pruned_key(&resource, "k", 1))));
+        group_exprs.push_back(
+            expression_ptr(make_scalar_expression(&resource, scalar_type::group_field, pruned_key(&resource, "k", 1))));
         auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "sum_x"));
         sum->append_param(pruned_key(&resource, "x", 3));
         group_exprs.push_back(expression_ptr(sum));
@@ -1844,8 +1845,7 @@ TEST_CASE("optimizer::column_pruning") {
         components::catalog::fk_info_t fk;
         fk.parent_col_indices = {1};
         del->set_referencing_fks({fk});
-        auto cascade =
-            boost::intrusive_ptr(new node_fk_cascade_t(&resource, core::dbname_t{}, core::relname_t{}, fk));
+        auto cascade = boost::intrusive_ptr(new node_fk_cascade_t(&resource, core::dbname_t{}, core::relname_t{}, fk));
         cascade->append_child(del);
 
         components::planner::optimize(&resource, cascade, params.get(), test_execution_context());
@@ -2763,11 +2763,11 @@ TEST_CASE("optimizer::scalar_fold_date_plus_interval") {
     const auto feb01 = date::from_sys_days(sys_days{year{2024} / February / 1});
     auto id0 = params->add_parameter(vec::make_scalar(&resource, complex_logical_type{logical_type::DATE}, jan31),
                                      vec::parameter_kind::literal);
-    auto id1 = params->add_parameter(
-        vec::make_scalar(&resource,
-                         complex_logical_type{logical_type::INTERVAL},
-                         date::interval_t{date::microseconds{0}, date::days{1}, date::months{0}}),
-        vec::parameter_kind::literal);
+    auto id1 =
+        params->add_parameter(vec::make_scalar(&resource,
+                                               complex_logical_type{logical_type::INTERVAL},
+                                               date::interval_t{date::microseconds{0}, date::days{1}, date::months{0}}),
+                              vec::parameter_kind::literal);
 
     auto s = fold_scalar_pair(&resource, params, scalar_type::add, complex_logical_type{logical_type::DATE}, id0, id1);
 

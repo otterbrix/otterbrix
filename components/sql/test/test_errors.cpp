@@ -36,7 +36,6 @@ using namespace components::sql;
         REQUIRE_FALSE(result.get_error().contains_error());                                                            \
     }
 
-
 TEST_CASE("components::sql::errors") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);

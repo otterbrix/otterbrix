@@ -1,14 +1,14 @@
 #include <catch2/catch_test_macros.hpp>
-#include <components/vector/vector_builders.hpp>
 #include <components/expressions/execution_dag_builder.hpp>
 #include <components/table/data_table.hpp>
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
+#include <components/vector/cell_equal.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/file/local_file_system.hpp>
 #include <cstdio>
 #include <math.h>
-#include <components/vector/cell_equal.hpp>
 #include <string>
 #include <unistd.h>
 
@@ -234,7 +234,8 @@ TEST_CASE("components::table::data_table") {
             REQUIRE(seq.length == array_size);
             for (size_t j = 0; j < array_size; j++) {
                 REQUIRE(seq.child->type().type() == logical_type::STRING_LITERAL);
-                REQUIRE(seq.child->get_value<std::string_view>(seq.offset + j) == generate_string(idx * array_size + j));
+                REQUIRE(seq.child->get_value<std::string_view>(seq.offset + j) ==
+                        generate_string(idx * array_size + j));
             }
         }
         {

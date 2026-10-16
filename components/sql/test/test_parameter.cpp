@@ -21,10 +21,12 @@ using components::vector::make_scalar;
 using vec = std::vector<components::vector::vector_t>;
 
 #define TEST_PARAMS_SELECT(QUERY, RESULT, BIND)                                                                        \
-    {SECTION(QUERY){auto select = linitial(raw_parser(&arena_resource, QUERY));                                        \
-    auto binder = transformer.transform(pg_cell_to_node_cast(select));                                                 \
-    TEST_PARAMS(RESULT, BIND)                                                                                          \
-    }                                                                                                                  \
+    {                                                                                                                  \
+        SECTION(QUERY) {                                                                                               \
+            auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
+            auto binder = transformer.transform(pg_cell_to_node_cast(select));                                         \
+            TEST_PARAMS(RESULT, BIND)                                                                                  \
+        }                                                                                                              \
     }
 
 // Transformer now wraps SELECT/UPDATE in sequence_t(resolve_*..., consumer);

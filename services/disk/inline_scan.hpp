@@ -51,7 +51,9 @@ namespace services::disk::detail {
             state.local_state.txn = txn;
 
             while (true) {
-                components::vector::data_chunk_t chunk(resource, read_types, components::vector::DEFAULT_VECTOR_CAPACITY);
+                components::vector::data_chunk_t chunk(resource,
+                                                       read_types,
+                                                       components::vector::DEFAULT_VECTOR_CAPACITY);
                 table.scan(chunk, state);
                 if (chunk.size() == 0)
                     break;

@@ -81,10 +81,7 @@ TEST_CASE("integration::cpp::lateral_join::an_outer_column_of_another_type_than_
     logical_plan::storage_parameters params{&resource};
     REQUIRE(params.add(vector::make_null(&resource, types::complex_logical_type{types::logical_type::NA}),
                        vector::parameter_kind::execution) == core::parameter_id_t(0));
-    pipeline::context_t ctx(std::move(params),
-                            pipeline::no_mailbox(),
-                            pipeline::no_mailbox(),
-                            pipeline::no_mailbox());
+    pipeline::context_t ctx(std::move(params), pipeline::no_mailbox(), pipeline::no_mailbox(), pipeline::no_mailbox());
     ctx.runner = &runner;
 
     auto fut = join->await_async_and_resume(&ctx);

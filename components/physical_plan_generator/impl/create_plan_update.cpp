@@ -54,12 +54,9 @@ namespace services::planner::impl {
                                                                                         where,
                                                                                         cap));
             plan->set_storage_sink(std::move(sink), std::move(columns));
-            VALUE_OR_RETURN(auto source_op,
-                            create_plan(context,
-                                        function_registry,
-                                        node_source,
-                                        components::logical_plan::limit_t::all(),
-                                        params));
+            VALUE_OR_RETURN(
+                auto source_op,
+                create_plan(context, function_registry, node_source, components::logical_plan::limit_t::all(), params));
             plan->set_children(std::move(scan), std::move(source_op));
             return plan;
         }

@@ -1421,16 +1421,13 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->size() == 3);
         auto cell9 = cur->get<core::date::timestamp_t>(0, 0);
         REQUIRE_FALSE(cell9.has_error());
-        REQUIRE(cell9.value() ==
-                *core::date::parse_timestamp("2024-01-02 00:00:00"));
+        REQUIRE(cell9.value() == *core::date::parse_timestamp("2024-01-02 00:00:00"));
         auto cell10 = cur->get<core::date::timestamp_t>(0, 1);
         REQUIRE_FALSE(cell10.has_error());
-        REQUIRE(cell10.value() ==
-                *core::date::parse_timestamp("2024-03-16 12:30:00"));
+        REQUIRE(cell10.value() == *core::date::parse_timestamp("2024-03-16 12:30:00"));
         auto cell11 = cur->get<core::date::timestamp_t>(0, 2);
         REQUIRE_FALSE(cell11.has_error());
-        REQUIRE(cell11.value() ==
-                *core::date::parse_timestamp("2025-01-01 23:59:00"));
+        REQUIRE(cell11.value() == *core::date::parse_timestamp("2025-01-01 23:59:00"));
     }
 
     INFO("N5. TIMESTAMP - INTERVAL '1 day' = TIMESTAMP");
@@ -1444,16 +1441,13 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->size() == 3);
         auto cell12 = cur->get<core::date::timestamp_t>(0, 0);
         REQUIRE_FALSE(cell12.has_error());
-        REQUIRE(cell12.value() ==
-                *core::date::parse_timestamp("2023-12-31 00:00:00"));
+        REQUIRE(cell12.value() == *core::date::parse_timestamp("2023-12-31 00:00:00"));
         auto cell13 = cur->get<core::date::timestamp_t>(0, 1);
         REQUIRE_FALSE(cell13.has_error());
-        REQUIRE(cell13.value() ==
-                *core::date::parse_timestamp("2024-03-14 12:30:00"));
+        REQUIRE(cell13.value() == *core::date::parse_timestamp("2024-03-14 12:30:00"));
         auto cell14 = cur->get<core::date::timestamp_t>(0, 2);
         REQUIRE_FALSE(cell14.has_error());
-        REQUIRE(cell14.value() ==
-                *core::date::parse_timestamp("2024-12-30 23:59:00"));
+        REQUIRE(cell14.value() == *core::date::parse_timestamp("2024-12-30 23:59:00"));
     }
 
     INFO("N6. TIMESTAMP column + INTERVAL column = TIMESTAMP");
@@ -1467,16 +1461,13 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->size() == 3);
         auto cell15 = cur->get<core::date::timestamp_t>(0, 0);
         REQUIRE_FALSE(cell15.has_error());
-        REQUIRE(cell15.value() ==
-                *core::date::parse_timestamp("2024-01-02 00:00:00"));
+        REQUIRE(cell15.value() == *core::date::parse_timestamp("2024-01-02 00:00:00"));
         auto cell16 = cur->get<core::date::timestamp_t>(0, 1);
         REQUIRE_FALSE(cell16.has_error());
-        REQUIRE(cell16.value() ==
-                *core::date::parse_timestamp("2024-03-22 12:30:00"));
+        REQUIRE(cell16.value() == *core::date::parse_timestamp("2024-03-22 12:30:00"));
         auto cell17 = cur->get<core::date::timestamp_t>(0, 2);
         REQUIRE_FALSE(cell17.has_error());
-        REQUIRE(cell17.value() ==
-                *core::date::parse_timestamp("2025-01-30 23:59:00"));
+        REQUIRE(cell17.value() == *core::date::parse_timestamp("2025-01-30 23:59:00"));
     }
 
     INFO("N7. DATE - DATE = INTERVAL (days difference)");
@@ -1757,16 +1748,13 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->size() == 3);
         auto cell48 = cur->get<core::date::timestamp_t>(0, 0);
         REQUIRE_FALSE(cell48.has_error());
-        REQUIRE(cell48.value() ==
-                *core::date::parse_timestamp("2024-03-01 00:00:00"));
+        REQUIRE(cell48.value() == *core::date::parse_timestamp("2024-03-01 00:00:00"));
         auto cell49 = cur->get<core::date::timestamp_t>(0, 1);
         REQUIRE_FALSE(cell49.has_error());
-        REQUIRE(cell49.value() ==
-                *core::date::parse_timestamp("2024-05-15 12:30:00"));
+        REQUIRE(cell49.value() == *core::date::parse_timestamp("2024-05-15 12:30:00"));
         auto cell50 = cur->get<core::date::timestamp_t>(0, 2);
         REQUIRE_FALSE(cell50.has_error());
-        REQUIRE(cell50.value() ==
-                *core::date::parse_timestamp("2025-02-28 23:59:00"));
+        REQUIRE(cell50.value() == *core::date::parse_timestamp("2025-02-28 23:59:00"));
     }
 
     INFO("N23. iv + d = DATE (INTERVAL column + DATE column)");
@@ -1810,16 +1798,13 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
         REQUIRE(cur->size() == 3);
         auto cell54 = cur->get<core::date::timestamptz_t>(0, 0);
         REQUIRE_FALSE(cell54.has_error());
-        REQUIRE(cell54.value() ==
-                *core::date::parse_timestamptz("2024-01-02 00:00:00+00:00"));
+        REQUIRE(cell54.value() == *core::date::parse_timestamptz("2024-01-02 00:00:00+00:00"));
         auto cell55 = cur->get<core::date::timestamptz_t>(0, 1);
         REQUIRE_FALSE(cell55.has_error());
-        REQUIRE(cell55.value() ==
-                *core::date::parse_timestamptz("2024-03-16 12:30:00+00:00"));
+        REQUIRE(cell55.value() == *core::date::parse_timestamptz("2024-03-16 12:30:00+00:00"));
         auto cell56 = cur->get<core::date::timestamptz_t>(0, 2);
         REQUIRE_FALSE(cell56.has_error());
-        REQUIRE(cell56.value() ==
-                *core::date::parse_timestamptz("2025-01-01 23:59:00+00:00"));
+        REQUIRE(cell56.value() == *core::date::parse_timestamptz("2025-01-01 23:59:00+00:00"));
     }
 
     INFO("N26. TIMESTAMPTZ - TIMESTAMPTZ = INTERVAL (µs difference)");

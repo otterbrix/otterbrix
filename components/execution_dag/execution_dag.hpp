@@ -5,9 +5,9 @@
 #include <components/compute/kernel_executor.hpp>
 #include <components/execution_context/graph_execution_context.hpp>
 #include <components/operators/operator_code.hpp>
+#include <components/vector/data_chunk.hpp>
 #include <components/vector/operations/apply_quantified.hpp>
 #include <components/vector/storage_parameters.hpp>
-#include <components/vector/data_chunk.hpp>
 #include <components/vector/vector.hpp>
 #include <core/parameter_id.hpp>
 #include <core/result_wrapper.hpp>
@@ -18,8 +18,8 @@
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 
 #include <limits>
-#include <optional>
 #include <memory_resource>
+#include <optional>
 #include <unordered_map>
 
 STRONG_TYPEDEF(size_t, slot_id_t);
@@ -155,8 +155,7 @@ namespace components::execution_dag {
     private:
         [[nodiscard]] core::error_t validate() const override;
         [[nodiscard]] core::error_t ensure_executor();
-        [[nodiscard]] core::result_wrapper_t<uint64_t> select_distinct(vector::data_chunk_t& arguments,
-                                                                       uint64_t count);
+        [[nodiscard]] core::result_wrapper_t<uint64_t> select_distinct(vector::data_chunk_t& arguments, uint64_t count);
 
         vector::data_chunk_t argument_chunk(uint64_t count) const;
 
@@ -341,10 +340,8 @@ namespace components::execution_dag {
                                  slot_id_t probe,
                                  slot_id_t set);
         // `probe [NOT] LIKE|ILIKE|~ ANY|ALL (set)`: a set of patterns, matched as regexp_like's `flags` say.
-        node_id_t add_membership_match(vector::operations::quantifier kind,
-                                       slot_id_t probe,
-                                       slot_id_t set,
-                                       slot_id_t flags);
+        node_id_t
+        add_membership_match(vector::operations::quantifier kind, slot_id_t probe, slot_id_t set, slot_id_t flags);
         node_id_t add_blend(blend_node_t::blend_kind kind, const slot_list_t& inputs);
         // Declares and returns N + 1 BOOLEAN mask slots (one per condition, plus the DEFAULT).
         node_id_t add_case_when(const slot_list_t& conditions, slot_list_t& masks);

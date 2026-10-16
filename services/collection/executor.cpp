@@ -2630,9 +2630,8 @@ namespace services::collection::executor {
         };
         constexpr std::size_t no_piece = static_cast<std::size_t>(-1);
 
-        void collect_pieces(components::operators::operator_t* root,
-                            std::size_t parent,
-                            std::pmr::vector<piece_t>& pieces) {
+        void
+        collect_pieces(components::operators::operator_t* root, std::size_t parent, std::pmr::vector<piece_t>& pieces) {
             const std::size_t self = pieces.size();
             pieces.push_back(
                 piece_t{root,
@@ -2710,8 +2709,8 @@ namespace services::collection::executor {
             // Top-down, as PostgreSQL starts a Limit before it asks below for a row: the Limit nodes of this piece
             // and of the pieces above it (the path up to the plan root, outermost first) are started first; those of
             // a piece beside it are not, they start when that piece runs.
-            if (auto start_err = co_await await_opens_at_start_(
-                    opened, opens_at_start_on_path(pieces, plan.get(), resource()));
+            if (auto start_err =
+                    co_await await_opens_at_start_(opened, opens_at_start_on_path(pieces, plan.get(), resource()));
                 start_err.contains_error()) {
                 cursor = make_cursor(resource(), std::move(start_err));
                 break;

@@ -64,8 +64,8 @@ namespace {
             REQUIRE(cell4.value() == 50);
             auto cell5 = cur->get<double>(5, 0);
             REQUIRE_FALSE(cell5.has_error());
-            REQUIRE(cell5.value() == Catch::Approx(30.0)); // 150 / 5
-            REQUIRE(services::disk::pushdown_reply_rows() > 0);               // was-actually-pushed proof
+            REQUIRE(cell5.value() == Catch::Approx(30.0));      // 150 / 5
+            REQUIRE(services::disk::pushdown_reply_rows() > 0); // was-actually-pushed proof
         }
 
         INFO("scalar aggregates WITH a builtin WHERE (v >= 30 -> rows 30,50,40)");
@@ -106,7 +106,7 @@ namespace {
             REQUIRE(cur->size() == 1);
             auto cell11 = cur->is_null(0, 0);
             REQUIRE_FALSE(cell11.has_error());
-            REQUIRE(cell11.value());              // SUM over no rows
+            REQUIRE(cell11.value()); // SUM over no rows
             auto cell12 = cur->get<uint64_t>(1, 0);
             REQUIRE_FALSE(cell12.has_error());
             REQUIRE(cell12.value() == 0); // COUNT(*) over no rows
@@ -115,13 +115,13 @@ namespace {
             REQUIRE(cell13.value() == 0); // COUNT(v) over no rows
             auto cell14 = cur->is_null(3, 0);
             REQUIRE_FALSE(cell14.has_error());
-            REQUIRE(cell14.value());              // MIN over no rows
+            REQUIRE(cell14.value()); // MIN over no rows
             auto cell15 = cur->is_null(4, 0);
             REQUIRE_FALSE(cell15.has_error());
-            REQUIRE(cell15.value());              // MAX over no rows
+            REQUIRE(cell15.value()); // MAX over no rows
             auto cell16 = cur->is_null(5, 0);
             REQUIRE_FALSE(cell16.has_error());
-            REQUIRE(cell16.value());              // AVG over no rows
+            REQUIRE(cell16.value()); // AVG over no rows
         }
     }
 

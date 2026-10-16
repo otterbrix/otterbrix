@@ -18,6 +18,8 @@
 using services::index::tests::index_fixture_path;
 using services::index::tests::index_fixture_root;
 
+using services::index::bitcask_index_disk_t;
+using services::index::btree_index_disk_t;
 using services::index::tests::find;
 using services::index::tests::lower_bound;
 using services::index::tests::make_null;
@@ -26,8 +28,6 @@ using services::index::tests::put;
 using services::index::tests::scan_range;
 using services::index::tests::take;
 using services::index::tests::upper_bound;
-using services::index::bitcask_index_disk_t;
-using services::index::btree_index_disk_t;
 
 std::string padded_string(int i, std::size_t size = 24) {
     auto s = std::to_string(i);
@@ -305,14 +305,10 @@ TEST_CASE("services::index::index_disk::temporal_keys_decode_to_tree_keys_in_ord
     };
 
     require_strict_order(logical_type::DATE, std::vector<int32_t>{-400, -1, 0, 1, 19722, 20087});
-    require_strict_order(logical_type::TIME,
-                         std::vector<int64_t>{0, 1, 45'296'000'000, 86'399'999'999});
-    require_strict_order(logical_type::TIMESTAMP,
-                         std::vector<int64_t>{-62'135'596'800'000'000,
-                                              -1,
-                                              0,
-                                              1'704'067'200'000'000,
-                                              1'735'689'599'999'999});
+    require_strict_order(logical_type::TIME, std::vector<int64_t>{0, 1, 45'296'000'000, 86'399'999'999});
+    require_strict_order(
+        logical_type::TIMESTAMP,
+        std::vector<int64_t>{-62'135'596'800'000'000, -1, 0, 1'704'067'200'000'000, 1'735'689'599'999'999});
     require_strict_order(logical_type::TIMESTAMP_TZ, std::vector<int64_t>{-5'555'555, 0, 7'777'777, 9'999'999'999});
 }
 
@@ -368,9 +364,7 @@ TEST_CASE("services::index::index_disk::timestamp_keys") {
     std::filesystem::create_directories(path);
     auto index = btree_index_disk_t(path, &resource);
 
-    const auto key = [&](int i) {
-        return make_scalar(&resource, timestamp_t{microseconds{int64_t{i} * 1'000'000}});
-    };
+    const auto key = [&](int i) { return make_scalar(&resource, timestamp_t{microseconds{int64_t{i} * 1'000'000}}); };
     for (int i = 49; i >= -50; --i) {
         put(index, key(i), static_cast<int64_t>(i + 51));
     }
@@ -732,10 +726,8 @@ TEST_CASE("services::index::index_disk::a_corrupt_block_refuses_the_probe_instea
         REQUIRE(probe.contains_error());
 
         btree_index_disk_t::result ranged(&resource);
-        auto scan = scan_range(index,
-                               components::expressions::compare_type::gte,
-                               make_scalar(&resource, int64_t{1}),
-                               ranged);
+        auto scan =
+            scan_range(index, components::expressions::compare_type::gte, make_scalar(&resource, int64_t{1}), ranged);
         INFO("and so must the range walk, whose subset is the same wrong answer");
         REQUIRE(scan.contains_error());
     }

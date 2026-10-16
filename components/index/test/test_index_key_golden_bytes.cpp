@@ -177,10 +177,8 @@ TEST_CASE("index key bytes: 0.0 and -0.0 are different keys to bitcask but equal
     size_t pos_p = 0;
     size_t pos_n = 0;
     bool ok = true;
-    const auto view_p =
-        read_tagged_value(reinterpret_cast<const char*>(positive.data()), positive.size(), pos_p, &ok);
-    const auto view_n =
-        read_tagged_value(reinterpret_cast<const char*>(negative.data()), negative.size(), pos_n, &ok);
+    const auto view_p = read_tagged_value(reinterpret_cast<const char*>(positive.data()), positive.size(), pos_p, &ok);
+    const auto view_n = read_tagged_value(reinterpret_cast<const char*>(negative.data()), negative.size(), pos_n, &ok);
     REQUIRE(ok);
     REQUIRE(view_p == view_n);
 }
@@ -341,8 +339,7 @@ TEST_CASE("index key bytes: decode of the pinned bytes (btree key view and key v
     ok = true;
     const bytes_t decimal{0x16, 0x04, 0x02, 0x2E, 0xFB};
     size_t pos = 0;
-    const auto refused =
-        read_tagged_value(reinterpret_cast<const char*>(decimal.data()), decimal.size(), pos, &ok);
+    const auto refused = read_tagged_value(reinterpret_cast<const char*>(decimal.data()), decimal.size(), pos, &ok);
     REQUIRE(refused.type() == physical_type::NA);
     REQUIRE_FALSE(ok);
 

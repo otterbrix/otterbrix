@@ -1,17 +1,17 @@
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <components/vector/data_chunk_binary.hpp>
+#include <components/vector/vector_builders.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <core/pmr.hpp>
+#include <cstring>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/wal.hpp>
 #include <services/wal/wal_binary.hpp>
-#include <components/vector/cell_equal.hpp>
-#include <components/vector/vector_builders.hpp>
-#include <components/vector/vector_operations.hpp>
-#include <array>
-#include <cstring>
 
 #include "wal_test_attoids.hpp"
 
@@ -29,13 +29,9 @@ to_chunk_batch(const components::vector::data_chunk_t& chunk) {
     return batch;
 }
 
-static void put(const vector_t& cell, vector_t& target, uint64_t row) {
-    vector_ops::copy(cell, target, 1, 0, row);
-}
+static void put(const vector_t& cell, vector_t& target, uint64_t row) { vector_ops::copy(cell, target, 1, 0, row); }
 
-static uint64_t len(const vector_t& v, uint64_t row) {
-    return sequence_of(v, row).length;
-}
+static uint64_t len(const vector_t& v, uint64_t row) { return sequence_of(v, row).length; }
 
 template<typename T>
 static T elem(const vector_t& v, uint64_t row, uint64_t i) {

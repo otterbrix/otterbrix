@@ -92,7 +92,8 @@ TEST_CASE("components::sql::insert_into") {
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(cell_equals(chunk.data[0], 0, components::vector::make_scalar(&resource, int64_t{43})));
-        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_scalar(&resource, std::string_view{"some text"})));
+        REQUIRE(
+            cell_equals(chunk.data[1], 0, components::vector::make_scalar(&resource, std::string_view{"some text"})));
     }
 
     SECTION("insert into array") {
@@ -113,10 +114,10 @@ TEST_CASE("components::sql::insert_into") {
         }
         REQUIRE(cell_equals(chunk.data[0],
                             0,
-                            components::vector::make_array(&resource,
-                                                           components::types::complex_logical_type{
-                                                               components::types::logical_type::BIGINT},
-                                                           elements)));
+                            components::vector::make_array(
+                                &resource,
+                                components::types::complex_logical_type{components::types::logical_type::BIGINT},
+                                elements)));
     }
 
     SECTION("insert into multi-documents") {

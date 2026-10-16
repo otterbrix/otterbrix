@@ -117,10 +117,8 @@ namespace components::operators {
             }
             auto expression =
                 expressions::make_scalar_expression(resource_, expressions::scalar_type::get_field, field);
-            auto slot = expressions::build_expression(graph_.get(),
-                                                      pipeline_context->parameters,
-                                                      expression.get(),
-                                                      types);
+            auto slot =
+                expressions::build_expression(graph_.get(), pipeline_context->parameters, expression.get(), types);
             if (slot.has_error()) {
                 return slot.error();
             }
@@ -131,10 +129,7 @@ namespace components::operators {
         execution_dag::slot_list_t outputs(resource_);
         outputs.reserve(outputs_.size());
         for (const auto& output : outputs_) {
-            auto slot = expressions::build_expression(graph_.get(),
-                                                      pipeline_context->parameters,
-                                                      output.get(),
-                                                      types);
+            auto slot = expressions::build_expression(graph_.get(), pipeline_context->parameters, output.get(), types);
             if (slot.has_error()) {
                 return slot.error();
             }

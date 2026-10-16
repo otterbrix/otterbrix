@@ -2,10 +2,10 @@
 // coroutines, whose unhandled_exception() is EMPTY, so a throw HANGS the statement instead of
 // erroring. Each refusal is pinned to the error channel its caller already reads.
 
+#include <catch2/catch_test_macros.hpp>
 #include <components/vector/cell_equal.hpp>
 #include <components/vector/vector_builders.hpp>
 #include <components/vector/vector_operations.hpp>
-#include <catch2/catch_test_macros.hpp>
 
 #include <components/table/array_column_data.hpp>
 #include <components/table/column_data.hpp>

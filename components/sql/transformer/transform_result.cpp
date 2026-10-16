@@ -16,7 +16,13 @@ namespace components::sql::transform {
         // What a bound LIMIT/OFFSET parameter holds: a bigint-compatible value, NULL (LIMIT ALL / OFFSET 0), or
         // something that is neither: a UINT64 past INT64_MAX (out_of_range) or another type (bad).
         struct limit_argument_t {
-            enum class kind_t { value, null, out_of_range, bad } kind{kind_t::bad};
+            enum class kind_t
+            {
+                value,
+                null,
+                out_of_range,
+                bad
+            } kind{kind_t::bad};
             int64_t value{0};
         };
 

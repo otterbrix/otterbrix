@@ -70,12 +70,12 @@ TEST_CASE("integration::cpp::undefined_side_key::delete") {
     auto params = logical_plan::make_parameter_node(r);
     const auto id = params->add_parameter(components::vector::make_scalar(r, int64_t{2}),
                                           components::vector::parameter_kind::literal);
-    auto del = test_dml_target(
-        logical_plan::make_node_delete(r,
-                                       match_id_eq(d, id),
-                                       logical_plan::make_node_limit(r, logical_plan::limit_t::all())),
-        core::dbname_t{"m"},
-        core::relname_t{"t"});
+    auto del =
+        test_dml_target(logical_plan::make_node_delete(r,
+                                                       match_id_eq(d, id),
+                                                       logical_plan::make_node_limit(r, logical_plan::limit_t::all())),
+                        core::dbname_t{"m"},
+                        core::relname_t{"t"});
     auto cur = d->execute_plan(otterbrix::session_id_t(), logical_plan::execution_plan_t{r, del, params});
     REQUIRE(cur);
     INFO((cur->is_success() ? std::string{} : std::string{cur->get_error().what}));

@@ -274,7 +274,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::null_key_matches_nothing") {
     data_chunk_t keys(&resource, ktypes, 2);
     keys.set_cardinality(2);
     keys.set_value(0, 0, static_cast<int64_t>(30)); // placeholder
-    keys.data[0].validity().set_invalid(0);                                     // then NULL it
+    keys.data[0].validity().set_invalid(0);         // then NULL it
     keys.set_value(0, 1, static_cast<int64_t>(30));
 
     auto kidx = key_indices(&resource, {0});

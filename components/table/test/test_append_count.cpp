@@ -151,7 +151,8 @@ namespace {
             }
             if (cells) {
                 for (uint64_t i = 0; i < chunk.size(); i++) {
-                    cells->push_back(row_t{chunk.data[0].get_value<int64_t>(i), make_constant_copy(&env.resource, chunk.data[1], i)});
+                    cells->push_back(row_t{chunk.data[0].get_value<int64_t>(i),
+                                           make_constant_copy(&env.resource, chunk.data[1], i)});
                 }
             }
             seen += chunk.size();

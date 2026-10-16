@@ -99,13 +99,12 @@ namespace services::disk::test_probe {
     // Issue a single-key read against `table_oid` filtering key_cols[j] == key_vals[j], exactly as
     // the production read path would observe the rows.
     template<typename Fx>
-    std::pmr::vector<components::vector::data_chunk_t>
-    probe_read(Fx& fx,
-               components::execution_context_t ctx,
-               catalog::oid_t table_oid,
-               std::pmr::vector<std::uint64_t> key_cols,
-               components::vector::data_chunk_t keys,
-               bool committed_scan = true) {
+    std::pmr::vector<components::vector::data_chunk_t> probe_read(Fx& fx,
+                                                                  components::execution_context_t ctx,
+                                                                  catalog::oid_t table_oid,
+                                                                  std::pmr::vector<std::uint64_t> key_cols,
+                                                                  components::vector::data_chunk_t keys,
+                                                                  bool committed_scan = true) {
         // committed_scan=true (default) scans committed-only (transaction_data::committed()), mirroring the deleted
         // resolve_* disk path; committed_scan=false uses the caller's real ctx.txn, matching production
         // operator_resolve_* semantics (read-your-own-uncommitted-catalog-writes).
@@ -148,7 +147,12 @@ namespace services::disk::test_probe {
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_class_col::relnamespace);
             keys.emplace_back(catalog::pg_class_col::relname);
-            auto batches = probe_read(fx, ctx, pg_class, std::move(keys), test_key_chunk(&fx.resource, namespace_oid, std::string_view{name}), committed_scan);
+            auto batches = probe_read(fx,
+                                      ctx,
+                                      pg_class,
+                                      std::move(keys),
+                                      test_key_chunk(&fx.resource, namespace_oid, std::string_view{name}),
+                                      committed_scan);
             for (const auto& chunk : batches) {
                 bool stop = false;
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
@@ -188,7 +192,12 @@ namespace services::disk::test_probe {
 
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_computed_column_col::relid);
-            auto batches = probe_read(fx, ctx, pg_computed_column, std::move(keys), test_key_chunk(&fx.resource, out.oid), committed_scan);
+            auto batches = probe_read(fx,
+                                      ctx,
+                                      pg_computed_column,
+                                      std::move(keys),
+                                      test_key_chunk(&fx.resource, out.oid),
+                                      committed_scan);
             for (const auto& chunk : batches) {
                 if (chunk.column_count() < 7)
                     continue;
@@ -200,9 +209,10 @@ namespace services::disk::test_probe {
                     if (!chunk.data[2].is_null(i)) {
                         row.attname = std::string(chunk.data[2].template get_value<std::string_view>(i));
                     }
-                    row.atttypid = chunk.data[3].is_null(i)
-                                       ? catalog::INVALID_OID
-                                       : static_cast<catalog::oid_t>(chunk.data[3].template get_value<std::uint32_t>(i));
+                    row.atttypid =
+                        chunk.data[3].is_null(i)
+                            ? catalog::INVALID_OID
+                            : static_cast<catalog::oid_t>(chunk.data[3].template get_value<std::uint32_t>(i));
                     if (!chunk.data[4].is_null(i)) {
                         row.atttypspec = std::string(chunk.data[4].template get_value<std::string_view>(i));
                     }
@@ -246,18 +256,25 @@ namespace services::disk::test_probe {
             std::vector<probe_column_info_t> rows;
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_attribute_col::attrelid);
-            auto batches = probe_read(fx, ctx, pg_attribute, std::move(keys), test_key_chunk(&fx.resource, out.oid), committed_scan);
+            auto batches = probe_read(fx,
+                                      ctx,
+                                      pg_attribute,
+                                      std::move(keys),
+                                      test_key_chunk(&fx.resource, out.oid),
+                                      committed_scan);
             for (const auto& chunk : batches) {
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                     if (!chunk.data[7].is_null(i) && chunk.data[7].template get_value<bool>(i))
                         continue;
                     if (!chunk.data[10].is_null(i)) {
-                        const auto added_at = static_cast<std::uint64_t>(chunk.data[10].template get_value<std::int64_t>(i));
+                        const auto added_at =
+                            static_cast<std::uint64_t>(chunk.data[10].template get_value<std::int64_t>(i));
                         if (added_at > snapshot_start_time)
                             continue;
                     }
                     if (!chunk.data[11].is_null(i)) {
-                        const auto dropped_at = static_cast<std::uint64_t>(chunk.data[11].template get_value<std::int64_t>(i));
+                        const auto dropped_at =
+                            static_cast<std::uint64_t>(chunk.data[11].template get_value<std::int64_t>(i));
                         if (dropped_at != 0 && dropped_at <= snapshot_start_time)
                             continue;
                     }
@@ -306,7 +323,11 @@ namespace services::disk::test_probe {
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_type_col::typnamespace);
             keys.emplace_back(catalog::pg_type_col::typname);
-            auto batches = probe_read(fx, ctx, pg_type, std::move(keys), test_key_chunk(&fx.resource, namespace_oid, std::string_view{name}));
+            auto batches = probe_read(fx,
+                                      ctx,
+                                      pg_type,
+                                      std::move(keys),
+                                      test_key_chunk(&fx.resource, namespace_oid, std::string_view{name}));
             for (const auto& chunk : batches) {
                 bool stop = false;
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
@@ -333,7 +354,11 @@ namespace services::disk::test_probe {
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_class_col::relnamespace);
             keys.emplace_back(catalog::pg_class_col::relname);
-            auto batches = probe_read(fx, ctx, pg_class, std::move(keys), test_key_chunk(&fx.resource, namespace_oid, std::string_view{name}));
+            auto batches = probe_read(fx,
+                                      ctx,
+                                      pg_class,
+                                      std::move(keys),
+                                      test_key_chunk(&fx.resource, namespace_oid, std::string_view{name}));
             for (const auto& chunk : batches) {
                 bool stop = false;
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
@@ -363,7 +388,8 @@ namespace services::disk::test_probe {
         {
             std::pmr::vector<std::uint64_t> keys{&fx.resource};
             keys.emplace_back(catalog::pg_attribute_col::attrelid);
-            auto batches = probe_read(fx, ctx, pg_attribute, std::move(keys), test_key_chunk(&fx.resource, composite_oid));
+            auto batches =
+                probe_read(fx, ctx, pg_attribute, std::move(keys), test_key_chunk(&fx.resource, composite_oid));
             for (const auto& chunk : batches) {
                 for (std::uint64_t i = 0; i < chunk.size(); ++i) {
                     if (!chunk.data[7].is_null(i) && chunk.data[7].template get_value<bool>(i))
@@ -430,8 +456,11 @@ namespace services::disk::test_probe {
         std::pmr::vector<std::uint64_t> keys{&fx.resource};
         keys.emplace_back(catalog::pg_proc_col::pronamespace);
         keys.emplace_back(catalog::pg_proc_col::proname);
-        auto batches = probe_read(
-            fx, ctx, pg_proc, std::move(keys), test_key_chunk(&fx.resource, namespace_oid, std::string_view{name}));
+        auto batches = probe_read(fx,
+                                  ctx,
+                                  pg_proc,
+                                  std::move(keys),
+                                  test_key_chunk(&fx.resource, namespace_oid, std::string_view{name}));
         for (const auto& chunk : batches) {
             bool stop = false;
             for (std::uint64_t i = 0; i < chunk.size(); ++i) {

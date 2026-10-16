@@ -59,8 +59,9 @@ namespace components::operators {
         };
 
         // A table's live columns in attnum order
-        std::pmr::vector<live_column_t> live_columns(std::pmr::memory_resource* resource,
-                                                     const std::pmr::vector<components::vector::data_chunk_t>& attributes) {
+        std::pmr::vector<live_column_t>
+        live_columns(std::pmr::memory_resource* resource,
+                     const std::pmr::vector<components::vector::data_chunk_t>& attributes) {
             std::pmr::vector<live_column_t> columns(resource);
             for (const auto& attr_chunk : attributes) {
                 for (uint64_t row = 0; row < attr_chunk.size(); ++row) {
@@ -68,7 +69,8 @@ namespace components::operators {
                         continue;
                     }
                     live_column_t column;
-                    column.attoid = static_cast<catalog::oid_t>(attr_chunk.get_value<std::uint32_t>(attr_at::attoid, row));
+                    column.attoid =
+                        static_cast<catalog::oid_t>(attr_chunk.get_value<std::uint32_t>(attr_at::attoid, row));
                     column.attnum = attr_chunk.is_null(attr_at::attnum, row)
                                         ? 0
                                         : attr_chunk.get_value<std::int32_t>(attr_at::attnum, row);
@@ -507,7 +509,8 @@ namespace components::operators {
                             const auto& column = child_columns[position];
                             std::string def_spec;
                             if (!column.chunk->is_null(attr_at::attdefspec, column.row)) {
-                                def_spec.assign(column.chunk->get_value<std::string_view>(attr_at::attdefspec, column.row));
+                                def_spec.assign(
+                                    column.chunk->get_value<std::string_view>(attr_at::attdefspec, column.row));
                             }
                             fk.child_col_default_specs.push_back(std::move(def_spec));
                         }

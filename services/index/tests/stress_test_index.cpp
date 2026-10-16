@@ -17,11 +17,11 @@
 using services::index::tests::index_fixture_path;
 using services::index::tests::index_fixture_root;
 
+using services::index::bitcask_index_disk_t;
 using services::index::tests::find;
 using services::index::tests::make_scalar;
 using services::index::tests::put;
 using services::index::tests::take;
-using services::index::bitcask_index_disk_t;
 
 namespace {
     // bitcask's find() answers with a core::result_wrapper_t (a keydir walk that met an

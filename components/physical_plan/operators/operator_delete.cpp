@@ -3,8 +3,8 @@
 #include "dml_util.hpp"
 #include "join_utils.hpp"
 #include <atomic>
-#include <optional>
 #include <components/vector/vector_operations.hpp>
+#include <optional>
 
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>

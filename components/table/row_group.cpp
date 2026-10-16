@@ -220,11 +220,12 @@ namespace components::table {
     }
 
     template<table_scan_type TYPE>
-    core::result_wrapper_t<vector::vector_t> row_group_t::evaluate_predicate(collection_scan_state& state,
-                                                                             const vector::data_chunk_t& result,
-                                                                             uint64_t max_count,
-                                                                             std::pmr::vector<size_t>& input_of,
-                                                                             std::pmr::vector<vector::vector_t>& inputs) {
+    core::result_wrapper_t<vector::vector_t>
+    row_group_t::evaluate_predicate(collection_scan_state& state,
+                                    const vector::data_chunk_t& result,
+                                    uint64_t max_count,
+                                    std::pmr::vector<size_t>& input_of,
+                                    std::pmr::vector<vector::vector_t>& inputs) {
         const auto& filter = *state.filter();
         const auto& column_ids = state.column_ids();
         auto* resource = result.resource();

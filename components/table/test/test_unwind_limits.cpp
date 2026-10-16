@@ -10,8 +10,8 @@
 #include <components/table/storage/metadata_writer.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
-#include <components/vector/vector_builders.hpp>
 #include <components/table/test/fault_injection_file.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/file/local_file_system.hpp>
 
 #include <cstdio>
@@ -104,7 +104,8 @@ namespace {
             }
             if (cells) {
                 for (uint64_t i = 0; i < chunk.size(); i++) {
-                    cells->push_back(row_t{chunk.data[0].get_value<int64_t>(i), make_constant_copy(&env.resource, chunk.data[1], i)});
+                    cells->push_back(row_t{chunk.data[0].get_value<int64_t>(i),
+                                           make_constant_copy(&env.resource, chunk.data[1], i)});
                 }
             }
             seen += chunk.size();

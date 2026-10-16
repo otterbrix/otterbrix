@@ -13,8 +13,7 @@ inline bool parameter_equals(const components::logical_plan::parameter_node_t& n
 }
 
 // Row `row` of `column` is the one-row `expected`: same type, same cell.
-inline bool cell_equals(const components::vector::vector_t& column,
-                        uint64_t row,
-                        const components::vector::vector_t& expected) {
+inline bool
+cell_equals(const components::vector::vector_t& column, uint64_t row, const components::vector::vector_t& expected) {
     return column.type() == expected.type() && components::vector::cells_equal(column, row, expected, 0);
 }

@@ -397,9 +397,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
     }
 
     INFO("verify initial state via index");
-    {
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, 50, 50);
-    }
+    { CHECK_FIND_COUNT(compare_type::gt, side_t::left, 50, 50); }
 
     INFO("delete rows where count > 90");
     {
@@ -431,9 +429,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
     }
 
     INFO("verify index after delete");
-    {
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, 50, 40);
-    }
+    { CHECK_FIND_COUNT(compare_type::gt, side_t::left, 50, 40); }
 
     INFO("update row where count == 50 to count = 999");
     {

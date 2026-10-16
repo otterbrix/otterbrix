@@ -162,20 +162,17 @@ namespace services::planner::impl {
                                                         : std::get<core::parameter_id_t>(comp_expr->left());
                             auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
                             auto preferred_index_type = context.preferred_index_type_for_compare(table_oid, key, ctype);
-                            return boost::intrusive_ptr(
-                                new components::operators::index_scan(context.resource,
-                                                                      context.log.clone(),
-                                                                      table_oid,
-                                                                      key,
-                                                                      param_id,
-                                                                      ctype,
-                                                                      preferred_index_type,
-                                                                      cap,
-                                                                      projected_cols,
-                                                                      indexed_chunk_position(context,
-                                                                                             table_oid,
-                                                                                             key,
-                                                                                             projected_cols)));
+                            return boost::intrusive_ptr(new components::operators::index_scan(
+                                context.resource,
+                                context.log.clone(),
+                                table_oid,
+                                key,
+                                param_id,
+                                ctype,
+                                preferred_index_type,
+                                cap,
+                                projected_cols,
+                                indexed_chunk_position(context, table_oid, key, projected_cols)));
                         }
                     }
 
@@ -190,11 +187,8 @@ namespace services::planner::impl {
                     // here could starve the filter of matching rows. operator_match's own limit is an
                     // advisory hint under operator_limit for SELECT, but the authoritative affected-row
                     // bound for DML (no operator_limit over a DML root).
-                    auto match_operator =
-                        boost::intrusive_ptr(new components::operators::operator_match_t(context.resource,
-                                                                                         context.log.clone(),
-                                                                                         expr,
-                                                                                         cap));
+                    auto match_operator = boost::intrusive_ptr(
+                        new components::operators::operator_match_t(context.resource, context.log.clone(), expr, cap));
                     match_operator->set_children(boost::intrusive_ptr(
                         new components::operators::full_scan(context.resource,
                                                              context.log.clone(),

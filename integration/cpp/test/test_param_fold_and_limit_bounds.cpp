@@ -3,18 +3,18 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <components/cursor/cursor.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
-#include <components/cursor/cursor.hpp>
 #include <components/vector/vector_builders.hpp>
 
 #include <cstdint>
 #include <limits>
 #include <set>
-#include <string_view>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -311,10 +311,10 @@ TEST_CASE("integration::cpp::param_storage::rebinding_a_parameter_with_another_t
     auto* d = space.dispatcher();
     seed_rows(d, 5);
 
-    auto cur = d->execute_sql_with_params(otterbrix::session_id_t(),
-                                          "SELECT x FROM m.t WHERE x = $1;",
-                                          {{1, i64(d->resource(), 1)},
-                                           {1, components::vector::make_scalar(d->resource(), std::string("abc"))}});
+    auto cur = d->execute_sql_with_params(
+        otterbrix::session_id_t(),
+        "SELECT x FROM m.t WHERE x = $1;",
+        {{1, i64(d->resource(), 1)}, {1, components::vector::make_scalar(d->resource(), std::string("abc"))}});
     INFO(describe(*cur));
     REQUIRE(cur->is_error());
 }
@@ -328,10 +328,10 @@ TEST_CASE("integration::cpp::param_storage::rebinding_a_text_parameter_with_an_i
     auto* d = space.dispatcher();
     seed_rows(d, 5);
 
-    auto cur = d->execute_sql_with_params(otterbrix::session_id_t(),
-                                          "SELECT x FROM m.t WHERE x = $1;",
-                                          {{1, components::vector::make_scalar(d->resource(), std::string("abc"))},
-                                           {1, i64(d->resource(), 3)}});
+    auto cur = d->execute_sql_with_params(
+        otterbrix::session_id_t(),
+        "SELECT x FROM m.t WHERE x = $1;",
+        {{1, components::vector::make_scalar(d->resource(), std::string("abc"))}, {1, i64(d->resource(), 3)}});
     INFO(describe(*cur));
     REQUIRE(cur->is_success());
     CHECK(column_values(*cur) == std::set<int64_t>{3});
@@ -478,8 +478,9 @@ TEST_CASE("integration::cpp::param_fold::prefix_operator_over_a_parameter_or_lit
     REQUIRE(ok(d, "CREATE DATABASE m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (x BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO m.t (x) VALUES (3), (-3), (5), (-6);"));
-    auto cur = d->execute_sql_with_params(
-        otterbrix::session_id_t(), "SELECT x FROM m.t WHERE x = -$1;", {{1, i64(d->resource(), 3)}});
+    auto cur = d->execute_sql_with_params(otterbrix::session_id_t(),
+                                          "SELECT x FROM m.t WHERE x = -$1;",
+                                          {{1, i64(d->resource(), 3)}});
     INFO(describe(*cur));
     REQUIRE(cur->is_success());
     CHECK(column_values(*cur) == std::set<int64_t>{-3});
@@ -617,10 +618,14 @@ TEST_CASE("integration::cpp::limit_bounds::a_parameter_of_the_wrong_type_is_refu
     auto* d = space.dispatcher();
     seed_rows(d, 5);
     const auto oops = [d] { return components::vector::make_scalar(d->resource(), std::string("oops")); };
-    expect_param_error_text(
-        d, "SELECT x FROM m.t LIMIT $1;", {{1, oops()}}, "argument of LIMIT must be type bigint, not type text");
-    expect_param_error_text(
-        d, "SELECT x FROM m.t OFFSET $1;", {{1, oops()}}, "argument of OFFSET must be type bigint, not type text");
+    expect_param_error_text(d,
+                            "SELECT x FROM m.t LIMIT $1;",
+                            {{1, oops()}},
+                            "argument of LIMIT must be type bigint, not type text");
+    expect_param_error_text(d,
+                            "SELECT x FROM m.t OFFSET $1;",
+                            {{1, oops()}},
+                            "argument of OFFSET must be type bigint, not type text");
     // a UINT64 past INT64_MAX is neither NULL (no limit) nor a count
     const auto too_big = [d] {
         return components::vector::make_scalar(d->resource(), std::numeric_limits<uint64_t>::max());
@@ -668,15 +673,10 @@ TEST_CASE("integration::cpp::limit_bounds::a_sub_query_is_validated_when_it_runs
     seed_rows(d, 5);
     expect_error_text(d, "SELECT * FROM (SELECT x FROM m.t LIMIT -1) s;", limit_text);
     expect_error_text(d, "WITH c AS (SELECT x FROM m.t LIMIT -1) SELECT * FROM c;", limit_text);
-    expect_error_text(d,
-                      "SELECT x FROM m.t UNION ALL SELECT x FROM (SELECT x FROM m.t LIMIT -1) s;",
-                      limit_text);
+    expect_error_text(d, "SELECT x FROM m.t UNION ALL SELECT x FROM (SELECT x FROM m.t LIMIT -1) s;", limit_text);
     expect_rows(d, "SELECT * FROM (SELECT x FROM m.t LIMIT NULL) s;", 5);
     expect_rows(d, "SELECT * FROM (SELECT x FROM m.t LIMIT ALL OFFSET 1) s;", 4);
-    expect_param_rows(d,
-                      "SELECT * FROM (SELECT x FROM m.t LIMIT $1) s;",
-                      {{1, null_value(d->resource())}},
-                      5);
+    expect_param_rows(d, "SELECT * FROM (SELECT x FROM m.t LIMIT $1) s;", {{1, null_value(d->resource())}}, 5);
 }
 
 TEST_CASE("integration::cpp::limit_bounds::a_lateral_over_an_empty_outer_never_starts_its_limit") {
@@ -742,9 +742,7 @@ TEST_CASE("integration::cpp::limit_bounds::the_limit_is_refused_before_a_deeper_
     REQUIRE(ok(d, "INSERT INTO m.t (x) VALUES (0), (1);"));
     // control: a single piece
     expect_error_text(d, "SELECT 1 / x FROM m.t LIMIT -1;", limit_text);
-    expect_error_text(d,
-                      "SELECT * FROM (SELECT 1 / x AS y FROM m.t) s JOIN m.t u ON s.y = u.x LIMIT -1;",
-                      limit_text);
+    expect_error_text(d, "SELECT * FROM (SELECT 1 / x AS y FROM m.t) s JOIN m.t u ON s.y = u.x LIMIT -1;", limit_text);
     expect_error_text(d, "SELECT * FROM (SELECT 1 / x AS y FROM m.t) s, m.t u LIMIT -1;", limit_text);
     expect_error_text(d, "SELECT 1 / x FROM m.t UNION ALL SELECT x FROM m.t LIMIT -1;", limit_text);
 }

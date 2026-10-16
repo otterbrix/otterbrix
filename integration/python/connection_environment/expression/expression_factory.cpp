@@ -256,9 +256,9 @@ namespace otterbrix {
         // is what keeps the two numberings the same.
         for (size_t index = 0; index < counter; ++index) {
             const auto expected = core::parameter_id_t{static_cast<uint32_t>(index)};
-            [[maybe_unused]] const auto id = params->add_parameter(
-                components::vector::make_constant_copy(resource, values.at(expected)),
-                components::vector::parameter_kind::literal);
+            [[maybe_unused]] const auto id =
+                params->add_parameter(components::vector::make_constant_copy(resource, values.at(expected)),
+                                      components::vector::parameter_kind::literal);
             assert(id == expected);
         }
         return params;

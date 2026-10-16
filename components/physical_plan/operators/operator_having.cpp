@@ -21,10 +21,8 @@ namespace components::operators {
             }
             condition_ = expressions::classify_condition(expression_);
             if (condition_ == expressions::condition_kind::computed) {
-                auto graph = expressions::build_condition_graph(resource_,
-                                                                ctx->parameters,
-                                                                expression_.get(),
-                                                                stream_types_);
+                auto graph =
+                    expressions::build_condition_graph(resource_, ctx->parameters, expression_.get(), stream_types_);
                 if (graph.has_error()) {
                     return graph.error();
                 }
@@ -45,8 +43,7 @@ namespace components::operators {
         // THIS operator does the row elimination below.
         std::optional<vector::data_chunk_t> produced;
         if (graph_) {
-            auto computed =
-                expressions::run_graph(graph_.get(), ctx->parameters, input, ctx->execution_context);
+            auto computed = expressions::run_graph(graph_.get(), ctx->parameters, input, ctx->execution_context);
             if (computed.has_error()) {
                 return computed.error();
             }

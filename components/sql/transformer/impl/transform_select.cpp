@@ -505,8 +505,8 @@ namespace components::sql::transform {
             }
         }
 
-        const auto limit = has_count ? logical_plan::limit_t(limit_val, offset_val)
-                                     : logical_plan::limit_t::all_from(offset_val);
+        const auto limit =
+            has_count ? logical_plan::limit_t(limit_val, offset_val) : logical_plan::limit_t::all_from(offset_val);
         // A window that changes nothing needs no Limit node; a parameter may still turn into one.
         if (!limit.is_effective() && !limit_param && !offset_param) {
             return nullptr;

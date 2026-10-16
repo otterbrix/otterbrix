@@ -64,8 +64,7 @@ namespace {
                 return value;
             }
         }();
-        const auto expected_type =
-            is_text ? logical_type::STRING_LITERAL : components::types::to_logical_type<T>();
+        const auto expected_type = is_text ? logical_type::STRING_LITERAL : components::types::to_logical_type<T>();
 
         auto built = make_scalar<T>(&resource, value);
         REQUIRE(built.type().type() == expected_type);
@@ -376,16 +375,15 @@ TEST_CASE("make_list") {
     }
     SECTION("list of struct") {
         const auto point = point_type(&resource);
-        auto built = make_list(&resource,
-                               point,
-                               pack(make_struct(&resource,
-                                                point,
-                                                pack(make_scalar<int64_t>(&resource, 1),
-                                                     make_scalar<std::string_view>(&resource, "x"))),
-                                    make_struct(&resource,
-                                                point,
-                                                pack(make_null(&resource, bigint()),
-                                                     make_scalar<std::string_view>(&resource, "y")))));
+        auto built = make_list(
+            &resource,
+            point,
+            pack(make_struct(&resource,
+                             point,
+                             pack(make_scalar<int64_t>(&resource, 1), make_scalar<std::string_view>(&resource, "x"))),
+                 make_struct(&resource,
+                             point,
+                             pack(make_null(&resource, bigint()), make_scalar<std::string_view>(&resource, "y")))));
         REQUIRE(built.type() == complex_logical_type::create_list(point));
         const auto seq = sequence_of(built, 0);
         REQUIRE(seq.length == 2);
@@ -414,10 +412,10 @@ TEST_CASE("make_array") {
         REQUIRE(built.entry().is_null(1));
     }
     SECTION("strings") {
-        auto built = make_array(&resource,
-                                varchar(),
-                                pack(make_scalar<std::string_view>(&resource, "p"),
-                                     make_scalar<std::string_view>(&resource, "q")));
+        auto built = make_array(
+            &resource,
+            varchar(),
+            pack(make_scalar<std::string_view>(&resource, "p"), make_scalar<std::string_view>(&resource, "q")));
         REQUIRE(length(built, 0) == 2);
         REQUIRE(element<std::string_view>(built, 0, 0) == "p");
         REQUIRE(element<std::string_view>(built, 0, 1) == "q");
@@ -446,10 +444,10 @@ TEST_CASE("make_struct") {
     const auto point = point_type(&resource);
 
     SECTION("fields") {
-        auto built = make_struct(
-            &resource,
-            point,
-            pack(make_scalar<int64_t>(&resource, 5), make_scalar<std::string_view>(&resource, "five")));
+        auto built =
+            make_struct(&resource,
+                        point,
+                        pack(make_scalar<int64_t>(&resource, 5), make_scalar<std::string_view>(&resource, "five")));
         REQUIRE(built.type() == point);
         REQUIRE(built.get_vector_type() == vector_type::CONSTANT);
         REQUIRE_FALSE(built.is_null(0));
@@ -457,10 +455,10 @@ TEST_CASE("make_struct") {
         REQUIRE(field<std::string_view>(built, 0, 1) == "five");
     }
     SECTION("NULL field") {
-        auto built = make_struct(
-            &resource,
-            point,
-            pack(make_null(&resource, bigint()), make_scalar<std::string_view>(&resource, "five")));
+        auto built =
+            make_struct(&resource,
+                        point,
+                        pack(make_null(&resource, bigint()), make_scalar<std::string_view>(&resource, "five")));
         REQUIRE_FALSE(built.is_null(0));
         REQUIRE(built.entries()[0]->is_null(0));
         REQUIRE(field<std::string_view>(built, 0, 1) == "five");
@@ -471,13 +469,13 @@ TEST_CASE("make_struct") {
         fields.emplace_back(complex_logical_type::create_list(bigint()));
         fields.back().set_alias("tags");
         const auto type = complex_logical_type::create_struct("rec", fields);
-        auto built = make_struct(&resource,
-                                 type,
-                                 pack(make_scalar<int64_t>(&resource, 1),
-                                      make_list(&resource,
-                                                bigint(),
-                                                pack(make_scalar<int64_t>(&resource, 10),
-                                                     make_scalar<int64_t>(&resource, 20)))));
+        auto built = make_struct(
+            &resource,
+            type,
+            pack(make_scalar<int64_t>(&resource, 1),
+                 make_list(&resource,
+                           bigint(),
+                           pack(make_scalar<int64_t>(&resource, 10), make_scalar<int64_t>(&resource, 20)))));
         REQUIRE(built.type() == type);
         REQUIRE(field<int64_t>(built, 0, 0) == 1);
         const auto& tags = *resolve_cell(built, 0).vec->entries()[1];
@@ -486,10 +484,10 @@ TEST_CASE("make_struct") {
         REQUIRE(element<int64_t>(tags, 0, 1) == 20);
     }
     SECTION("flatten") {
-        auto built = make_struct(
-            &resource,
-            point,
-            pack(make_scalar<int64_t>(&resource, 5), make_scalar<std::string_view>(&resource, "five")));
+        auto built =
+            make_struct(&resource,
+                        point,
+                        pack(make_scalar<int64_t>(&resource, 5), make_scalar<std::string_view>(&resource, "five")));
         built.flatten(3);
         for (uint64_t row = 0; row < 3; row++) {
             REQUIRE(field<int64_t>(built, row, 0) == 5);
@@ -503,12 +501,12 @@ TEST_CASE("make_map") {
     const auto map_type = complex_logical_type::create_map(&resource, varchar(), bigint());
 
     SECTION("entries") {
-        auto built = make_map(&resource,
-                              varchar(),
-                              bigint(),
-                              pack(make_scalar<std::string_view>(&resource, "a"),
-                                   make_scalar<std::string_view>(&resource, "b")),
-                              pack(make_scalar<int64_t>(&resource, 1), make_scalar<int64_t>(&resource, 2)));
+        auto built =
+            make_map(&resource,
+                     varchar(),
+                     bigint(),
+                     pack(make_scalar<std::string_view>(&resource, "a"), make_scalar<std::string_view>(&resource, "b")),
+                     pack(make_scalar<int64_t>(&resource, 1), make_scalar<int64_t>(&resource, 2)));
         REQUIRE(built.type().type() == logical_type::MAP);
         REQUIRE(built.type() == map_type);
         REQUIRE(built.get_vector_type() == vector_type::CONSTANT);

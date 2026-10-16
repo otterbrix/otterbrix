@@ -1,8 +1,8 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
-#include <components/logical_plan/node_limit.hpp>
 #include <components/expressions/compare_expression.hpp>
+#include <components/logical_plan/node_limit.hpp>
 
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>

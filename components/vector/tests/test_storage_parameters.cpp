@@ -264,9 +264,7 @@ TEST_CASE("storage_parameters: clone is a deep copy of every type family on the 
     CHECK(source_resource.total_allocated() == source_bytes_before);
 
     // The clone owns its buffers: the source can go away first.
-    {
-        storage_parameters doomed(std::move(source));
-    }
+    { storage_parameters doomed(std::move(source)); }
     CHECK(clone->at(scalar).get_value<int64_t>(0) == 42);
     CHECK(clone->at(text).get_value<std::string_view>(0) == "a string long enough to be on the heap");
     CHECK(clone->at(decimal_id).type().type() == logical_type::DECIMAL);

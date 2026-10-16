@@ -1,6 +1,5 @@
 #include "kernel_signature.hpp"
 
-
 #include <algorithm>
 
 namespace components::compute {

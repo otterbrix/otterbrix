@@ -52,9 +52,9 @@ auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list {
 
 using components::logical_plan::node_aggregate_t;
 using components::logical_plan::parameter_node_t;
+using components::logical_plan::aggregate::operator_type;
 using components::vector::parameter_kind;
 using components::vector::vector_t;
-using components::logical_plan::aggregate::operator_type;
 
 using ex_key_t = components::expressions::key_t;
 using components::expressions::expression_ptr;

@@ -29,7 +29,8 @@ namespace core {
             return x_nan == y_nan ? std::weak_ordering::equivalent
                                   : (x_nan ? std::weak_ordering::greater : std::weak_ordering::less);
         }
-        return x < y ? std::weak_ordering::less : (y < x ? std::weak_ordering::greater : std::weak_ordering::equivalent);
+        return x < y ? std::weak_ordering::less
+                     : (y < x ? std::weak_ordering::greater : std::weak_ordering::equivalent);
     }
 
     template<typename T>

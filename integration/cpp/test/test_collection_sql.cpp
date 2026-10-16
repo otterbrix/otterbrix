@@ -528,8 +528,7 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
                     5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
             auto cell34 = cur->get<double>(3, number);
             REQUIRE_FALSE(cell34.has_error());
-            REQUIRE(cell34.value() ==
-                    Catch::Approx(static_cast<double>(number % 20 + (number + 10) % 20) / 2));
+            REQUIRE(cell34.value() == Catch::Approx(static_cast<double>(number % 20 + (number + 10) % 20) / 2));
             auto cell35 = cur->get<int64_t>(4, number);
             REQUIRE_FALSE(cell35.has_error());
             REQUIRE(cell35.value() == static_cast<int64_t>(number) % 20);
@@ -564,8 +563,7 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
             REQUIRE(cell39.value() == 5 * (number % 20) + 5 * ((number + 10) % 20));
             auto cell40 = cur->get<double>(3, row);
             REQUIRE_FALSE(cell40.has_error());
-            REQUIRE(cell40.value() ==
-                    Catch::Approx(static_cast<double>(number % 20 + (number + 10) % 20) / 2));
+            REQUIRE(cell40.value() == Catch::Approx(static_cast<double>(number % 20 + (number + 10) % 20) / 2));
             auto cell41 = cur->get<int64_t>(4, row);
             REQUIRE_FALSE(cell41.has_error());
             REQUIRE(cell41.value() == number % 20);

@@ -113,7 +113,7 @@ TEST_CASE("integration::cpp::streaming_index_scan::point_lookup_and_empty_result
         REQUIRE(cur->size() == 1);
         auto cell1 = cur->get<int64_t>(0, 0);
         REQUIRE_FALSE(cell1.has_error());
-        REQUIRE(cell1.value() == 4000);  // col id, row 0
+        REQUIRE(cell1.value() == 4000); // col id, row 0
         auto cell2 = cur->get<int64_t>(1, 0);
         REQUIRE_FALSE(cell2.has_error());
         REQUIRE(cell2.value() == 40000); // col val, row 0

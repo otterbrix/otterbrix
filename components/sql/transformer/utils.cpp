@@ -1,6 +1,8 @@
 #include "utils.hpp"
 
 #include <components/base/identifier_types.hpp>
+#include <components/catalog/type_display.hpp>
+#include <components/execution_context/graph_execution_context.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_create_index.hpp>
@@ -9,23 +11,21 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_update.hpp>
-#include <components/catalog/type_display.hpp>
-#include <components/execution_context/graph_execution_context.hpp>
 #include <components/operators/operator_code.hpp>
 #include <components/vector/operations/apply_operator.hpp>
-#include <components/vector/vector_operations.hpp>
 #include <components/vector/vector_builders.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <core/date/date_parse.hpp>
 
 #include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <cassert>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <string_view>
-#include <cstring>
 
 namespace components::sql::transform {
     namespace {
@@ -1188,71 +1188,72 @@ namespace components::sql::transform {
     } // namespace
 
     namespace {
-    core::result_wrapper_t<vector::vector_t>
-    cast_string_literal(std::pmr::memory_resource* resource,
-                        const types::complex_logical_type& target_type,
-                        std::string_view str) {
-        if (types::is_duration(target_type.type())) {
-            switch (target_type.type()) {
-                case types::logical_type::DATE:
-                    if (auto parsed = core::date::parse_date(str)) {
-                        return vector::make_scalar(resource,
-                                                   types::complex_logical_type{types::logical_type::DATE},
-                                                   *parsed);
-                    }
-                    return core::error_t(core::error_code_t::sql_parse_error,
-                                         std::pmr::string{"invalid DATE literal: " + std::string(str), resource});
-                case types::logical_type::TIME:
-                    if (auto parsed = core::date::parse_time(str)) {
-                        return vector::make_scalar(resource,
-                                                   types::complex_logical_type{types::logical_type::TIME},
-                                                   *parsed);
-                    }
-                    return core::error_t(core::error_code_t::sql_parse_error,
-                                         std::pmr::string{"invalid TIME literal: " + std::string(str), resource});
-                case types::logical_type::TIME_TZ:
-                    if (auto parsed = core::date::parse_timetz(str)) {
-                        return vector::make_scalar(resource,
-                                                   types::complex_logical_type{types::logical_type::TIME_TZ},
-                                                   *parsed);
-                    }
-                    return core::error_t(core::error_code_t::sql_parse_error,
-                                         std::pmr::string{"invalid TIMETZ literal: " + std::string(str), resource});
-                case types::logical_type::TIMESTAMP:
-                    if (auto parsed = core::date::parse_timestamp(str)) {
-                        return vector::make_scalar(resource,
-                                                   types::complex_logical_type{types::logical_type::TIMESTAMP},
-                                                   *parsed);
-                    }
-                    return core::error_t(core::error_code_t::sql_parse_error,
-                                         std::pmr::string{"invalid TIMESTAMP literal: " + std::string(str), resource});
-                case types::logical_type::TIMESTAMP_TZ:
-                    if (auto parsed = core::date::parse_timestamptz(str)) {
-                        return vector::make_scalar(resource,
-                                                   types::complex_logical_type{types::logical_type::TIMESTAMP_TZ},
-                                                   *parsed);
-                    }
-                    return core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"invalid TIMESTAMPTZ literal: " + std::string(str), resource});
-                case types::logical_type::INTERVAL:
-                    if (auto parsed = core::date::parse_interval(str)) {
-                        return vector::make_scalar(resource,
-                                                   types::complex_logical_type{types::logical_type::INTERVAL},
-                                                   *parsed);
-                    }
-                    return core::error_t(core::error_code_t::sql_parse_error,
-                                         std::pmr::string{"invalid INTERVAL literal: " + std::string(str), resource});
-                default:
-                    return core::error_t(core::error_code_t::sql_parse_error,
-                                         std::pmr::string{"unsupported duration cast target", resource});
+        core::result_wrapper_t<vector::vector_t> cast_string_literal(std::pmr::memory_resource* resource,
+                                                                     const types::complex_logical_type& target_type,
+                                                                     std::string_view str) {
+            if (types::is_duration(target_type.type())) {
+                switch (target_type.type()) {
+                    case types::logical_type::DATE:
+                        if (auto parsed = core::date::parse_date(str)) {
+                            return vector::make_scalar(resource,
+                                                       types::complex_logical_type{types::logical_type::DATE},
+                                                       *parsed);
+                        }
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"invalid DATE literal: " + std::string(str), resource});
+                    case types::logical_type::TIME:
+                        if (auto parsed = core::date::parse_time(str)) {
+                            return vector::make_scalar(resource,
+                                                       types::complex_logical_type{types::logical_type::TIME},
+                                                       *parsed);
+                        }
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"invalid TIME literal: " + std::string(str), resource});
+                    case types::logical_type::TIME_TZ:
+                        if (auto parsed = core::date::parse_timetz(str)) {
+                            return vector::make_scalar(resource,
+                                                       types::complex_logical_type{types::logical_type::TIME_TZ},
+                                                       *parsed);
+                        }
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"invalid TIMETZ literal: " + std::string(str), resource});
+                    case types::logical_type::TIMESTAMP:
+                        if (auto parsed = core::date::parse_timestamp(str)) {
+                            return vector::make_scalar(resource,
+                                                       types::complex_logical_type{types::logical_type::TIMESTAMP},
+                                                       *parsed);
+                        }
+                        return core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"invalid TIMESTAMP literal: " + std::string(str), resource});
+                    case types::logical_type::TIMESTAMP_TZ:
+                        if (auto parsed = core::date::parse_timestamptz(str)) {
+                            return vector::make_scalar(resource,
+                                                       types::complex_logical_type{types::logical_type::TIMESTAMP_TZ},
+                                                       *parsed);
+                        }
+                        return core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"invalid TIMESTAMPTZ literal: " + std::string(str), resource});
+                    case types::logical_type::INTERVAL:
+                        if (auto parsed = core::date::parse_interval(str)) {
+                            return vector::make_scalar(resource,
+                                                       types::complex_logical_type{types::logical_type::INTERVAL},
+                                                       *parsed);
+                        }
+                        return core::error_t(
+                            core::error_code_t::sql_parse_error,
+                            std::pmr::string{"invalid INTERVAL literal: " + std::string(str), resource});
+                    default:
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"unsupported duration cast target", resource});
+                }
             }
+            if (target_type.type() == types::logical_type::UNKNOWN) {
+                return vector::make_scalar(resource, str);
+            }
+            return cast_literal_text(resource, target_type, std::string(str), /*is_string_literal=*/true);
         }
-        if (target_type.type() == types::logical_type::UNKNOWN) {
-            return vector::make_scalar(resource, str);
-        }
-        return cast_literal_text(resource, target_type, std::string(str), /*is_string_literal=*/true);
-    }
 
     } // namespace
 
@@ -1410,10 +1411,10 @@ namespace components::sql::transform {
         } else if (op_str == "%") {
             code = op_t::mod;
         } else {
-            return core::error_t(core::error_code_t::sql_parse_error,
-                                 std::pmr::string{"Unknown arithmetic operator in constant expression: " +
-                                                      std::string(op_str),
-                                                  resource});
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"Unknown arithmetic operator in constant expression: " + std::string(op_str),
+                                 resource});
         }
 
         auto& lhs = left.value();
@@ -1505,8 +1506,8 @@ namespace components::sql::transform {
         // numeric(38,20) DEFAULT 0.12345678901234567890 became ...168, short by 722 at the 20th place).
         // INSERT/UPDATE values still lose the digits this way; don't duplicate the fix here.
         core::result_wrapper_t<vector::vector_t> default_clause_value(std::pmr::memory_resource* resource,
-                                                                     const types::complex_logical_type& declared,
-                                                                     Node* expr) {
+                                                                      const types::complex_logical_type& declared,
+                                                                      Node* expr) {
             if (declared.type() == types::logical_type::DECIMAL && declared.extension() != nullptr &&
                 nodeTag(expr) == T_A_Const) {
                 Value* value = &pg_ptr_cast<A_Const>(expr)->val;

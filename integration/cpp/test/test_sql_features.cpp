@@ -3,13 +3,13 @@
 #include "types/operations_helper.hpp"
 
 #include <catch2/catch_approx.hpp>
-#include <components/vector/vector_builders.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/date/date_parse.hpp>
 #include <core/date/timezones.hpp>
 #include <random>
@@ -1933,8 +1933,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
         REQUIRE(cur->size() == 1);
         auto cell44 = cur->get<core::date::timestamp_t>(1, 0);
         REQUIRE_FALSE(cell44.has_error());
-        REQUIRE(cell44.value() ==
-                *core::date::parse_timestamp("2024-03-15 12:30:45"));
+        REQUIRE(cell44.value() == *core::date::parse_timestamp("2024-03-15 12:30:45"));
     }
 
     INFO("WHERE less than on TIMESTAMP");
@@ -2111,8 +2110,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
         REQUIRE(cur->size() == 1);
         auto cell57 = cur->get<core::date::timestamp_t>(1, 0);
         REQUIRE_FALSE(cell57.has_error());
-        REQUIRE(cell57.value() ==
-                *core::date::parse_timestamp("2024-12-31 23:59:59"));
+        REQUIRE(cell57.value() == *core::date::parse_timestamp("2024-12-31 23:59:59"));
     }
 
     INFO("TIMESTAMP_TZ column equals TIMESTAMP literal (TIMESTAMP implicit widening to TIMESTAMP_TZ)");
@@ -2180,8 +2178,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
         REQUIRE(cur->size() == 1);
         auto cell59 = cur->get<core::date::timestamp_t>(1, 0);
         REQUIRE_FALSE(cell59.has_error());
-        REQUIRE(cell59.value() ==
-                *core::date::parse_timestamp("2024-06-15 00:00:00"));
+        REQUIRE(cell59.value() == *core::date::parse_timestamp("2024-06-15 00:00:00"));
     }
 
     INFO("INSERT: TIMESTAMP widened to TIMESTAMPTZ");
@@ -2193,8 +2190,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
         REQUIRE(cur->size() == 1);
         auto cell60 = cur->get<core::date::timestamptz_t>(2, 0);
         REQUIRE_FALSE(cell60.has_error());
-        REQUIRE(cell60.value() ==
-                *core::date::parse_timestamptz("2024-06-15 06:00:00+00:00"));
+        REQUIRE(cell60.value() == *core::date::parse_timestamptz("2024-06-15 06:00:00+00:00"));
     }
 
     INFO("INSERT: TIME widened to TIME_TZ with zero offset");
@@ -5716,7 +5712,6 @@ TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in
         REQUIRE(disk_cur->size() == 1);
         auto cell73 = disk_cur->get<core::date::timestamp_t>(0, 0);
         REQUIRE_FALSE(cell73.has_error());
-        REQUIRE(cell73.value() ==
-                *core::date::parse_timestamp("2024-03-01 08:00:00"));
+        REQUIRE(cell73.value() == *core::date::parse_timestamp("2024-03-01 08:00:00"));
     }
 }

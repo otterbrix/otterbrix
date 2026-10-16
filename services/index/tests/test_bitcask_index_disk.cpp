@@ -33,6 +33,8 @@
 using services::index::tests::index_fixture_path;
 using services::index::tests::index_fixture_root;
 
+using services::index::bitcask_index_disk_t;
+using services::index::btree_index_disk_t;
 using services::index::tests::find;
 using services::index::tests::make_null;
 using services::index::tests::make_scalar;
@@ -40,8 +42,6 @@ using services::index::tests::put;
 using services::index::tests::take;
 using services::index::tests::try_put;
 using services::index::tests::try_take;
-using services::index::bitcask_index_disk_t;
-using services::index::btree_index_disk_t;
 
 namespace {
     services::index::key_batch_t entries(std::pmr::memory_resource* resource,

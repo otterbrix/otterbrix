@@ -18,21 +18,23 @@ using vec = std::vector<components::vector::vector_t>;
 // Transformer now wraps SELECT in sequence_t(resolve_*..., aggregate); descend
 // to the aggregate consumer when inspecting its rendered form.
 #define TEST_SIMPLE_SELECT(QUERY, RESULT, PARAMS)                                                                      \
-    {SECTION(QUERY){auto select = linitial(raw_parser(&arena_resource, QUERY));                                        \
-    auto _wrap = transformer.transform(pg_cell_to_node_cast(select)).finalize();                                       \
-    REQUIRE(!_wrap.has_error());                                                                                       \
-    auto result = _wrap.value();                                                                                       \
-    auto node = result.sub_queries.back();                                                                             \
-    if (node->type() == components::logical_plan::node_type::sequence_t) {                                             \
-        node = node->children().back();                                                                                \
-    }                                                                                                                  \
-    auto agg = result.parameters;                                                                                      \
-    REQUIRE(node->to_string() == RESULT);                                                                              \
-    REQUIRE(agg->parameters().size() == PARAMS.size());                                                                \
-    for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                                       \
-        REQUIRE(parameter_equals(*agg, core::parameter_id_t(uint32_t(i)), PARAMS.at(i)));                              \
-    }                                                                                                                  \
-    }                                                                                                                  \
+    {                                                                                                                  \
+        SECTION(QUERY) {                                                                                               \
+            auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
+            auto _wrap = transformer.transform(pg_cell_to_node_cast(select)).finalize();                               \
+            REQUIRE(!_wrap.has_error());                                                                               \
+            auto result = _wrap.value();                                                                               \
+            auto node = result.sub_queries.back();                                                                     \
+            if (node->type() == components::logical_plan::node_type::sequence_t) {                                     \
+                node = node->children().back();                                                                        \
+            }                                                                                                          \
+            auto agg = result.parameters;                                                                              \
+            REQUIRE(node->to_string() == RESULT);                                                                      \
+            REQUIRE(agg->parameters().size() == PARAMS.size());                                                        \
+            for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                               \
+                REQUIRE(parameter_equals(*agg, core::parameter_id_t(uint32_t(i)), PARAMS.at(i)));                      \
+            }                                                                                                          \
+        }                                                                                                              \
     }
 
 TEST_CASE("components::sql::select_from_where") {
@@ -46,9 +48,7 @@ TEST_CASE("components::sql::select_from_where") {
                        R"_($aggregate: {$limit: 101})_",
                        vec());
 
-    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection LIMIT ALL;)_",
-                       R"_($aggregate: {})_",
-                       vec());
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection LIMIT ALL;)_", R"_($aggregate: {})_", vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM UID.TestDatabase.TestSchema.TestCollection;)_", R"_($aggregate: {})_", vec());
 

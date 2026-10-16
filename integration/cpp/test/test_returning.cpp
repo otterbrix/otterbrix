@@ -995,10 +995,10 @@ TEST_CASE("integration::cpp::test_returning::delete_using_returning_boolean_read
     REQUIRE(exec("CREATE TABLE TestDatabase.T (k bigint, flag boolean);")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.S (k bigint, flag boolean);")->is_success());
     // T row 0 is unmatched with a NULL flag, so the matched row 1 is output row 0 over a NULL outer position.
-    REQUIRE(exec("INSERT INTO TestDatabase.T (k, flag) VALUES (0, NULL), (1, true), (2, false), (3, true);")
-                ->is_success());
-    REQUIRE(exec("INSERT INTO TestDatabase.S (k, flag) VALUES (99, NULL), (1, true), (2, true), (3, NULL);")
-                ->is_success());
+    REQUIRE(
+        exec("INSERT INTO TestDatabase.T (k, flag) VALUES (0, NULL), (1, true), (2, false), (3, true);")->is_success());
+    REQUIRE(
+        exec("INSERT INTO TestDatabase.S (k, flag) VALUES (99, NULL), (1, true), (2, true), (3, NULL);")->is_success());
 
     // 1 when the flag is TRUE, 0 for FALSE or NULL.
     auto cur = exec("DELETE FROM TestDatabase.T USING TestDatabase.S WHERE T.k = S.k "

@@ -28,7 +28,8 @@ namespace {
         return {std::forward<Vectors>(vectors)...};
     }
 
-    vector_t map_of(std::pmr::memory_resource* resource, std::string_view k1, vector_t v1, std::string_view k2, vector_t v2) {
+    vector_t
+    map_of(std::pmr::memory_resource* resource, std::string_view k1, vector_t v1, std::string_view k2, vector_t v2) {
         auto keys = pack(make_scalar<std::string_view>(resource, k1), make_scalar<std::string_view>(resource, k2));
         auto values = pack(std::move(v1), std::move(v2));
         return make_map(resource, varchar(), bigint(), keys, values);
@@ -68,7 +69,8 @@ TEST_CASE("nested compare: MAP") {
         CHECK(sort_compare(&resource, ba, ab) > 0);
     }
     SECTION("a NULL value") {
-        auto with_null = map_of(&resource, "a", make_null(&resource, bigint()), "b", make_scalar<int64_t>(&resource, 2));
+        auto with_null =
+            map_of(&resource, "a", make_null(&resource, bigint()), "b", make_scalar<int64_t>(&resource, 2));
         auto with_null_again =
             map_of(&resource, "a", make_null(&resource, bigint()), "b", make_scalar<int64_t>(&resource, 2));
         CHECK(cells_equal(with_null, 0, with_null_again, 0));
@@ -108,9 +110,7 @@ TEST_CASE("nested compare: STRUCT and LIST of STRUCT") {
         CHECK(sort_compare(&resource, one_b, make_point(1, "b")) == 0);
     }
     SECTION("LIST(STRUCT): element-wise ordering") {
-        auto list_of = [&](vector_t element) {
-            return make_list(&resource, point, pack(std::move(element)));
-        };
+        auto list_of = [&](vector_t element) { return make_list(&resource, point, pack(std::move(element))); };
         auto smallest = list_of(make_point(1, "b"));
         auto middle = list_of(make_point(1, "z"));
         auto largest = list_of(make_point(2, "a"));

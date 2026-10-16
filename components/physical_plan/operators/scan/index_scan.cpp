@@ -4,9 +4,9 @@
 #include <components/expressions/forward.hpp>
 #include <components/vector/operations/apply_operator.hpp>
 #include <components/vector/vector_builders.hpp>
+#include <cstring>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>
-#include <cstring>
 
 namespace components::operators {
 

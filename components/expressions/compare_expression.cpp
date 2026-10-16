@@ -110,8 +110,8 @@ namespace components::expressions {
 
     bool compare_expression_t::equal_impl(const expression_i* rhs) const {
         auto* other = static_cast<const compare_expression_t*>(rhs);
-        return type_ == other->type_ && inner_op_ == other->inner_op_ && regex_flags_param_ == other->regex_flags_param_ &&
-               left_ == other->left_ && right_ == other->right_ &&
+        return type_ == other->type_ && inner_op_ == other->inner_op_ &&
+               regex_flags_param_ == other->regex_flags_param_ && left_ == other->left_ && right_ == other->right_ &&
                children_.size() == other->children_.size() &&
                std::equal(children_.begin(), children_.end(), other->children_.begin());
     }

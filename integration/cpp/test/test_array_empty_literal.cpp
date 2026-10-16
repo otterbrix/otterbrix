@@ -24,9 +24,8 @@ TEST_CASE("integration::cpp::array_empty_literal::empty_array_through_lateral") 
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    auto cur = test_helpers::exec(
-        dispatcher,
-        "SELECT * FROM (SELECT ARRAY[] AS a) t, LATERAL (SELECT t.a AS b LIMIT 1) s;");
+    auto cur =
+        test_helpers::exec(dispatcher, "SELECT * FROM (SELECT ARRAY[] AS a) t, LATERAL (SELECT t.a AS b LIMIT 1) s;");
     REQUIRE_FALSE(cur->is_error());
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1);

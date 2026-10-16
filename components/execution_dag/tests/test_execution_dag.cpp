@@ -19,9 +19,9 @@ using components::casts::cast_kind;
 using components::operators::operator_code;
 using components::types::complex_logical_type;
 using components::types::logical_type;
+using components::vector::data_chunk_t;
 using components::vector::parameter_kind;
 using components::vector::storage_parameters;
-using components::vector::data_chunk_t;
 
 namespace {
 
@@ -745,15 +745,12 @@ namespace {
         std::vector<tri> answers;
         for (uint64_t row = 0; row < probes.size(); row++) {
             const auto& column = result.value().data[0];
-            answers.push_back(column.is_null(row) ? tri::unknown
-                                                  : (column.get_value<bool>(row) ? tri::yes : tri::no));
+            answers.push_back(column.is_null(row) ? tri::unknown : (column.get_value<bool>(row) ? tri::yes : tri::no));
         }
         return answers;
     }
 
-    const char* name_of(tri value) {
-        return value == tri::yes ? "TRUE" : (value == tri::no ? "FALSE" : "UNKNOWN");
-    }
+    const char* name_of(tri value) { return value == tri::yes ? "TRUE" : (value == tri::no ? "FALSE" : "UNKNOWN"); }
 
 } // namespace
 
@@ -801,8 +798,7 @@ TEST_CASE("execution_dag::membership") {
                                          graph.output_slot(placed_probe),
                                          graph.output_slot(placed_set));
         storage_parameters parameters(resource());
-        REQUIRE(parameters.add(bigint_set({10, std::nullopt, 30}), parameter_kind::literal) ==
-                core::parameter_id_t{0});
+        REQUIRE(parameters.add(bigint_set({10, std::nullopt, 30}), parameter_kind::literal) == core::parameter_id_t{0});
         REQUIRE(parameters.add(make_scalar(resource(), int64_t{30}), parameter_kind::literal) ==
                 core::parameter_id_t{1});
         graph.set_slot_type(graph.output_slot(placed_set), parameters.type(core::parameter_id_t{0}));
@@ -827,8 +823,7 @@ TEST_CASE("execution_dag::membership") {
         auto placed = graph.add_parameter(core::parameter_id_t{0});
         auto node = graph.add_membership(operator_code::equal, quantifier::any, probe, graph.output_slot(placed));
         storage_parameters parameters(resource());
-        REQUIRE(parameters.add(bigint_set({10, std::nullopt, 30}), parameter_kind::literal) ==
-                core::parameter_id_t{0});
+        REQUIRE(parameters.add(bigint_set({10, std::nullopt, 30}), parameter_kind::literal) == core::parameter_id_t{0});
         graph.set_slot_type(graph.output_slot(placed), parameters.type(core::parameter_id_t{0}));
         graph.set_output(slots({graph.output_slot(node)}));
         REQUIRE_FALSE(graph.prepare().contains_error());
@@ -847,9 +842,9 @@ TEST_CASE("execution_dag::membership") {
         vector_t dictionary(resource(), complex_logical_type{logical_type::BIGINT}, 4);
         dictionary.slice(base, selection, 3);
 
-        data_chunk_t input(resource(),
-                           std::pmr::vector<complex_logical_type>({complex_logical_type{logical_type::BIGINT}},
-                                                                  resource()));
+        data_chunk_t input(
+            resource(),
+            std::pmr::vector<complex_logical_type>({complex_logical_type{logical_type::BIGINT}}, resource()));
         input.data[0].reference(dictionary);
         input.set_cardinality(3);
         REQUIRE_FALSE(graph.process(input, graph_execution_context{}).contains_error());
@@ -920,10 +915,7 @@ namespace {
         graph.set_slot_type(graph.output_slot(placed_set), parameters.type(core::parameter_id_t{0}));
         auto placed_probe = graph.add_parameter(core::parameter_id_t{1});
         graph.set_slot_type(graph.output_slot(placed_probe), parameters.type(core::parameter_id_t{1}));
-        auto node = graph.add_membership(op,
-                                         kind,
-                                         graph.output_slot(placed_probe),
-                                         graph.output_slot(placed_set));
+        auto node = graph.add_membership(op, kind, graph.output_slot(placed_probe), graph.output_slot(placed_set));
         graph.set_output(slots({graph.output_slot(node)}));
         REQUIRE_FALSE(graph.prepare().contains_error());
         graph.set_parameters(&parameters);
@@ -980,16 +972,12 @@ TEST_CASE("execution_dag::membership over strings") {
         [&](int id) { return make_scalar(resource(), std::string("value-") + std::to_string(id)); },
         [&] { return make_null(resource(), text); });
     // ordering is lexicographic
-    CHECK(typed_membership(operator_code::less,
-                           any_of,
-                           text,
-                           make_scalar(resource(), std::string("b")),
-                           [&] {
-                               std::vector<vector_t> elements;
-                               elements.push_back(make_scalar(resource(), std::string("a")));
-                               elements.push_back(make_scalar(resource(), std::string("c")));
-                               return elements;
-                           }()) == tri::yes);
+    CHECK(typed_membership(operator_code::less, any_of, text, make_scalar(resource(), std::string("b")), [&] {
+              std::vector<vector_t> elements;
+              elements.push_back(make_scalar(resource(), std::string("a")));
+              elements.push_back(make_scalar(resource(), std::string("c")));
+              return elements;
+          }()) == tri::yes);
 }
 
 TEST_CASE("execution_dag::membership over decimals") {
@@ -1025,35 +1013,23 @@ TEST_CASE("execution_dag::membership over UUIDs") {
 TEST_CASE("execution_dag::membership over enums") {
     const auto mood = complex_logical_type::create_enum("mood", {{"sad", 0}, {"ok", 1}, {"happy", 2}});
     auto value_of = [&](int id) { return make_scalar<int32_t>(resource(), mood, id % 3); };
-    CHECK(typed_membership(operator_code::equal,
-                           any_of,
-                           mood,
-                           value_of(1),
-                           [&] {
-                               std::vector<vector_t> elements;
-                               elements.push_back(value_of(0));
-                               elements.push_back(value_of(1));
-                               return elements;
-                           }()) == tri::yes);
-    CHECK(typed_membership(operator_code::not_equal,
-                           all_of,
-                           mood,
-                           value_of(2),
-                           [&] {
-                               std::vector<vector_t> elements;
-                               elements.push_back(value_of(0));
-                               elements.push_back(value_of(1));
-                               return elements;
-                           }()) == tri::yes);
-    CHECK(typed_membership(operator_code::equal,
-                           any_of,
-                           mood,
-                           make_null(resource(), mood),
-                           [&] {
-                               std::vector<vector_t> elements;
-                               elements.push_back(value_of(0));
-                               return elements;
-                           }()) == tri::unknown);
+    CHECK(typed_membership(operator_code::equal, any_of, mood, value_of(1), [&] {
+              std::vector<vector_t> elements;
+              elements.push_back(value_of(0));
+              elements.push_back(value_of(1));
+              return elements;
+          }()) == tri::yes);
+    CHECK(typed_membership(operator_code::not_equal, all_of, mood, value_of(2), [&] {
+              std::vector<vector_t> elements;
+              elements.push_back(value_of(0));
+              elements.push_back(value_of(1));
+              return elements;
+          }()) == tri::yes);
+    CHECK(typed_membership(operator_code::equal, any_of, mood, make_null(resource(), mood), [&] {
+              std::vector<vector_t> elements;
+              elements.push_back(value_of(0));
+              return elements;
+          }()) == tri::unknown);
 }
 
 TEST_CASE("execution_dag::membership over nested values") {

@@ -53,8 +53,8 @@ namespace otterbrix {
         }
     } // namespace
 
-    std::unique_ptr<components::tableref::table_ref_t>
-    scan_t::try_replacement_object(const py::object& entry, const std::string& /*name*/) {
+    std::unique_ptr<components::tableref::table_ref_t> scan_t::try_replacement_object(const py::object& entry,
+                                                                                      const std::string& /*name*/) {
         if (framework_object_detection_t::is_polars_dataframe(entry)) {
             // Polars exposes the Arrow C-stream PyCapsule interface; route through the core arrow path.
             return build_arrow_table_ref(entry);
@@ -105,8 +105,8 @@ namespace otterbrix {
         return nullptr;
     }
 
-    std::unique_ptr<components::tableref::table_ref_t>
-    scan_t::replacement_object(const py::object& entry, const std::string& name) {
+    std::unique_ptr<components::tableref::table_ref_t> scan_t::replacement_object(const py::object& entry,
+                                                                                  const std::string& name) {
         auto ref = try_replacement_object(entry, name);
         if (!ref) {
             throw_scan_failure_error(entry, name);

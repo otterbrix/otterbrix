@@ -5,9 +5,9 @@
 #include <components/catalog/catalog_oids.hpp>
 
 #include <algorithm>
-#include <span>
 #include <cstdio>
 #include <cstdlib>
+#include <span>
 #include <tuple>
 
 namespace concurrency {

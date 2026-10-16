@@ -31,9 +31,7 @@ namespace {
 
     template<typename D>
     bool seed(D* d, const std::string& index_clause = "") {
-        auto run = [&](const std::string& sql) {
-            return d->execute_sql(otterbrix::session_id_t(), sql)->is_success();
-        };
+        auto run = [&](const std::string& sql) { return d->execute_sql(otterbrix::session_id_t(), sql)->is_success(); };
         return run("CREATE DATABASE s;") && run("CREATE TABLE s.o (id BIGINT);") &&
                run("INSERT INTO s.o (id) VALUES (NULL), (1), (2);") && run("CREATE TABLE s.n (k BIGINT, v BIGINT);") &&
                run("INSERT INTO s.n (k, v) VALUES (NULL, 300), (1, 100), (2, 200);") &&
@@ -128,13 +126,12 @@ TEST_CASE("integration::cpp::index_scan_runtime_key::a_parameter_bound_to_null_s
     auto* d = space.dispatcher();
     REQUIRE(seed(d));
 
-    auto cur = d->execute_sql_with_params(
-        otterbrix::session_id_t(),
-        "SELECT v FROM s.n WHERE k = $1;",
-        {{1,
-          components::vector::make_null(
-              d->resource(),
-              components::types::complex_logical_type{components::types::logical_type::NA})}});
+    auto cur = d->execute_sql_with_params(otterbrix::session_id_t(),
+                                          "SELECT v FROM s.n WHERE k = $1;",
+                                          {{1,
+                                            components::vector::make_null(d->resource(),
+                                                                          components::types::complex_logical_type{
+                                                                              components::types::logical_type::NA})}});
     INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
     REQUIRE(cur->is_success());
     CHECK(cur->size() == 0);

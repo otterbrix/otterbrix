@@ -363,8 +363,9 @@ TEST_CASE("integration::cpp::select_rework::star expands in place among computed
     for (size_t column = 0; column < expected.size(); column++) {
         INFO("column " << column);
         const auto& data = chunk.data[column];
-        const int64_t got = data.type().type() == components::types::logical_type::BIGINT ? data.get_value<int64_t>(0)
-                                                                        : int64_t{data.get_value<int32_t>(0)};
+        const int64_t got = data.type().type() == components::types::logical_type::BIGINT
+                                ? data.get_value<int64_t>(0)
+                                : int64_t{data.get_value<int32_t>(0)};
         CHECK(got == expected[column]);
     }
     const std::vector<std::string> expected_names{"a", "b", "plus", "a", "b"};

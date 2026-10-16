@@ -46,9 +46,8 @@ namespace services::index::tests {
     [[nodiscard]] inline std::pmr::string key_bytes(std::pmr::memory_resource* resource,
                                                     const components::vector::vector_t& key) {
         std::pmr::string bytes(resource);
-        const auto error = for_each_key_bytes(key, 1, &bytes, [](size_t, std::string_view) {
-            return core::error_t::no_error();
-        });
+        const auto error =
+            for_each_key_bytes(key, 1, &bytes, [](size_t, std::string_view) { return core::error_t::no_error(); });
         REQUIRE_FALSE(error.contains_error());
         return bytes;
     }
@@ -78,9 +77,8 @@ namespace services::index::tests {
 
     inline void put(btree_index_disk_t& store, const components::vector::vector_t& key, int64_t row_id) {
         std::pmr::string record(store.resource());
-        const auto error = for_each_key_bytes(key, 1, &record, [](size_t, std::string_view) {
-            return core::error_t::no_error();
-        });
+        const auto error =
+            for_each_key_bytes(key, 1, &record, [](size_t, std::string_view) { return core::error_t::no_error(); });
         REQUIRE_FALSE(error.contains_error());
         record.append(reinterpret_cast<const char*>(&row_id), sizeof(row_id));
         store.insert_bulk_unchecked(
@@ -89,9 +87,8 @@ namespace services::index::tests {
 
     inline void take(btree_index_disk_t& store, const components::vector::vector_t& key, int64_t row_id) {
         std::pmr::string record(store.resource());
-        const auto error = for_each_key_bytes(key, 1, &record, [](size_t, std::string_view) {
-            return core::error_t::no_error();
-        });
+        const auto error =
+            for_each_key_bytes(key, 1, &record, [](size_t, std::string_view) { return core::error_t::no_error(); });
         REQUIRE_FALSE(error.contains_error());
         record.append(reinterpret_cast<const char*>(&row_id), sizeof(row_id));
         store.remove_bulk_unchecked(
@@ -105,7 +102,7 @@ namespace services::index::tests {
     };
 
     [[nodiscard]] inline tree_probe_t tree_probe(std::pmr::memory_resource* resource,
-                                                  const components::vector::vector_t& key) {
+                                                 const components::vector::vector_t& key) {
         tree_probe_t probe{std::pmr::string(resource), components::types::physical_value{}};
         const auto error = for_each_key_bytes(key, 1, &probe.encoded, [](size_t, std::string_view) {
             return core::error_t::no_error();
@@ -113,8 +110,7 @@ namespace services::index::tests {
         REQUIRE_FALSE(error.contains_error());
         size_t pos = 0;
         bool ok = true;
-        probe.value =
-            components::index::codec::read_tagged_value(probe.encoded.data(), probe.encoded.size(), pos, &ok);
+        probe.value = components::index::codec::read_tagged_value(probe.encoded.data(), probe.encoded.size(), pos, &ok);
         REQUIRE(ok);
         return probe;
     }

@@ -2,13 +2,13 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/tests/generaty.hpp>
 #include <core/pmr.hpp>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <services/wal/wal_binary.hpp>
 #include <services/wal/wal_page.hpp>
 #include <services/wal/wal_page_reader.hpp>
 #include <services/wal/wal_page_writer.hpp>
-#include <cstring>
 
 namespace {
 

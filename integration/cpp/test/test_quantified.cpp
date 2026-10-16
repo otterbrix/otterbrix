@@ -19,9 +19,8 @@ void run(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
 }
 
 // The ids `SELECT id FROM <table> WHERE <predicate>` answers, in order
-std::vector<int64_t> ids_where(otterbrix::wrapper_dispatcher_t* dispatcher,
-                               const std::string& predicate,
-                               const std::string& table = "q.t") {
+std::vector<int64_t>
+ids_where(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& predicate, const std::string& table = "q.t") {
     auto cur = exec(dispatcher, "SELECT id FROM " + table + " WHERE " + predicate + ";");
     INFO(predicate << (cur->is_error() ? std::string(": ") + cur->get_error().what.c_str() : std::string{}));
     REQUIRE(cur->is_success());
@@ -81,13 +80,9 @@ TEST_CASE("integration::cpp::quantified") {
         CHECK(ids_where(dispatcher, "3 = ANY(ARRAY[1,2])").empty());
     }
 
-    SECTION("cast probe") {
-        CHECK(ids_where(dispatcher, "x = ANY(ARRAY[1.0, 5.0])") == ids_t{1, 2});
-    }
+    SECTION("cast probe") { CHECK(ids_where(dispatcher, "x = ANY(ARRAY[1.0, 5.0])") == ids_t{1, 2}); }
 
-    SECTION("cast set") {
-        CHECK(ids_where(dispatcher, "x = ANY(m)") == ids_t{1, 2});
-    }
+    SECTION("cast set") { CHECK(ids_where(dispatcher, "x = ANY(m)") == ids_t{1, 2}); }
 
     SECTION("sub-query") {
         CHECK(ids_where(dispatcher, "x IN (SELECT v FROM q.s)") == ids_t{1, 2});

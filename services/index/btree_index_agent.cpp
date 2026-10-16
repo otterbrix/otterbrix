@@ -318,9 +318,11 @@ namespace services::index {
         components::types::physical_value probe;
         bool staged_ok = true;
         if (!null_test) {
-            if (auto encode_error = for_each_key_bytes(key, 1, &encoded_probe, [](size_t, std::string_view) {
-                    return core::error_t::no_error();
-                });
+            if (auto encode_error =
+                    for_each_key_bytes(key,
+                                       1,
+                                       &encoded_probe,
+                                       [](size_t, std::string_view) { return core::error_t::no_error(); });
                 encode_error.contains_error()) {
                 co_return encode_error;
             }

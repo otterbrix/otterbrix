@@ -52,9 +52,7 @@ namespace components::operators {
                 out.emplace_back(std::move(input));
             } else {
                 auto* res = resource_ ? resource_ : input.resource();
-                out.emplace_back(input.partial_copy(res,
-                                                    emit_start - chunk_start,
-                                                    emit_end - emit_start));
+                out.emplace_back(input.partial_copy(res, emit_start - chunk_start, emit_end - emit_start));
             }
             note_emitted();
         }

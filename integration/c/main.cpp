@@ -177,11 +177,10 @@ execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_param_t* pa
             const size_t id = static_cast<size_t>(p.index);
             switch (p.kind) {
                 case SQL_PARAM_NULL:
-                    bound.emplace_back(
-                        id,
-                        components::vector::make_null(
-                            resource,
-                            components::types::complex_logical_type{components::types::logical_type::NA}));
+                    bound.emplace_back(id,
+                                       components::vector::make_null(resource,
+                                                                     components::types::complex_logical_type{
+                                                                         components::types::logical_type::NA}));
                     break;
                 case SQL_PARAM_BOOL:
                     bound.emplace_back(id, components::vector::make_scalar(resource, p.bool_value != 0));

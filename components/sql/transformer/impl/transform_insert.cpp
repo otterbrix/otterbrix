@@ -60,13 +60,11 @@ namespace {
         std::optional<components::vector::vector_t> casted;
         const components::vector::vector_t* elems = &src_child;
         if (src_child.type().to_physical_type() != elem_type.to_physical_type()) {
-            auto casted_result =
-                components::vector::vector_ops::cast_vector(resource,
-                                                            components::vector::make_flat_copy(resource,
-                                                                                               src_child,
-                                                                                               num_rows * stride),
-                                                            elem_type,
-                                                            num_rows * stride);
+            auto casted_result = components::vector::vector_ops::cast_vector(
+                resource,
+                components::vector::make_flat_copy(resource, src_child, num_rows * stride),
+                elem_type,
+                num_rows * stride);
             if (casted_result.has_error()) {
                 return casted_result.error();
             }
@@ -97,16 +95,16 @@ namespace {
                  const components::vector::vector_t& source,
                  const components::types::complex_logical_type& target,
                  uint64_t count) {
-        auto casted = components::vector::vector_ops::cast_vector(
-            resource,
-            components::vector::make_flat_copy(resource, source, count),
-            target,
-            count);
+        auto casted =
+            components::vector::vector_ops::cast_vector(resource,
+                                                        components::vector::make_flat_copy(resource, source, count),
+                                                        target,
+                                                        count);
         if (casted.has_error() && components::types::is_arithmetic_numeric(source.type().type()) &&
             components::types::is_arithmetic_numeric(target.type())) {
-            return core::error_t(casted.error().type,
-                                 std::pmr::string{components::catalog::format_type_be(target, false) + " out of range",
-                                                  resource});
+            return core::error_t(
+                casted.error().type,
+                std::pmr::string{components::catalog::format_type_be(target, false) + " out of range", resource});
         }
         return casted;
     }
@@ -462,10 +460,10 @@ namespace components::sql::transform {
                                 if (column.is_null(row)) {
                                     continue;
                                 }
-                                auto* written = pg_ptr_cast<Node>(
-                                    std::next(pg_ptr_cast<List>(row_node->data)->lst.begin(),
-                                              static_cast<std::ptrdiff_t>(field_pos))
-                                        ->data);
+                                auto* written =
+                                    pg_ptr_cast<Node>(std::next(pg_ptr_cast<List>(row_node->data)->lst.begin(),
+                                                                static_cast<std::ptrdiff_t>(field_pos))
+                                                          ->data);
                                 if (nodeTag(written) == T_ParamRef) {
                                     // Bind writes this cell; its placeholder is not text to defer.
                                     continue;

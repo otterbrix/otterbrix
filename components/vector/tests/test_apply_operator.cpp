@@ -289,8 +289,8 @@ TEST_CASE("vector::operations::operands of different physical types are refused,
     auto right = column<double>(logical_type::DOUBLE, {2.5});
     auto output = slot(logical_type::DOUBLE);
 
-    REQUIRE(vector::operations::apply_binary(operator_code::multiply, left, right, &output, context(), 1)
-                .contains_error());
+    REQUIRE(
+        vector::operations::apply_binary(operator_code::multiply, left, right, &output, context(), 1).contains_error());
     REQUIRE(vector::operations::apply_binary(operator_code::add, left, right, &output, context(), 1).contains_error());
     auto flag = slot(logical_type::BOOLEAN);
     REQUIRE(vector::operations::apply_binary(operator_code::less, left, right, &flag, context(), 1).contains_error());
@@ -310,8 +310,8 @@ TEST_CASE("vector::operations::decimal operands of different scales are refused,
     left.data<int64_t>()[0] = 150;
     right.data<int64_t>()[0] = 1500;
 
-    REQUIRE(vector::operations::apply_binary(operator_code::multiply, left, right, &output, context(), 1)
-                .contains_error());
+    REQUIRE(
+        vector::operations::apply_binary(operator_code::multiply, left, right, &output, context(), 1).contains_error());
     REQUIRE(
         vector::operations::apply_binary(operator_code::divide, left, right, &output, context(), 1).contains_error());
 }
@@ -349,7 +349,8 @@ TEST_CASE("vector::operations::top-level STRUCT comparison has record semantics"
     };
     // 0: equal   1: differ in the last field   2: NULL = NULL   3: first field decides past a NULL
     // 4: NULL against a value (sorts last)   5: NULL first field   6: whole row NULL
-    auto left = rows({{1, 1}, {1, 1}, {1, std::nullopt}, {1, std::nullopt}, {1, std::nullopt}, {std::nullopt, 1}, {1, 1}});
+    auto left =
+        rows({{1, 1}, {1, 1}, {1, std::nullopt}, {1, std::nullopt}, {1, std::nullopt}, {std::nullopt, 1}, {1, 1}});
     auto right = rows({{1, 1}, {1, 2}, {1, std::nullopt}, {2, std::nullopt}, {1, 2}, {1, 1}, {1, 1}});
     right.set_null(6, true);
 

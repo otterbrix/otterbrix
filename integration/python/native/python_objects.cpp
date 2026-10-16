@@ -132,9 +132,9 @@ namespace otterbrix {
 
     template<class OP>
     vector_t PyDecimalCastSwitch(std::pmr::memory_resource* r,
-                                        py_decimal_t& decimal,
-                                        const complex_logical_type& type,
-                                        uint8_t scale) {
+                                 py_decimal_t& decimal,
+                                 const complex_logical_type& type,
+                                 uint8_t scale) {
         return OP::template Operation<int64_t>(r, decimal.signed_value, decimal.digits, type, scale);
     }
 

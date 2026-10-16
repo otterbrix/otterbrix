@@ -149,8 +149,7 @@ TEST_CASE("services::index::btree_index_agent_t buffers a transaction's own writ
     const auto val42 = make_scalar(&resource, int64_t{42});
 
     auto read = [&](uint64_t txn_id, compare_type compare) {
-        auto answer =
-            ask<&index_agent_contract::read_rows>(agent, session, compare, val42, txn_id);
+        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare, val42, txn_id);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };
@@ -253,8 +252,7 @@ TEST_CASE("services::index::btree_index_agent_t answers every predicate over sta
             .contains_error());
 
     auto probe = [&](compare_type compare, int64_t key) {
-        auto answer =
-            ask<&index_agent_contract::read_rows>(agent, session, compare, make_scalar(&resource, key), txn);
+        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare, make_scalar(&resource, key), txn);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };
@@ -292,11 +290,7 @@ TEST_CASE("services::index::bitcask_index_agent_t buffers a transaction's own wr
     const uint64_t txn2 = TRANSACTION_ID_START + 2;
 
     auto read = [&](uint64_t txn_id, const components::vector::vector_t& key) {
-        auto answer = ask<&index_agent_contract::read_rows>(agent,
-                                                            session,
-                                                            compare_type::eq,
-                                                            key,
-                                                            txn_id);
+        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare_type::eq, key, txn_id);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };
@@ -480,9 +474,7 @@ void a_null_key_matches_no_value_comparison(Agent& agent, std::pmr::memory_resou
                                                   entries(resource, {{9, 1}, {kNullKey, 2}, {21, 3}, {kNullKey, 4}}))
             .contains_error());
 
-    SECTION("staged NULL rows") {
-        expect_nothing(writer);
-    }
+    SECTION("staged NULL rows") { expect_nothing(writer); }
 
     SECTION("committed NULL rows") {
         REQUIRE_FALSE(
@@ -546,8 +538,7 @@ TEST_CASE("services::index::a NULL key is indexed properly") {
     REQUIRE_FALSE(ask<&index_agent_contract::commit_inserts>(agent, session, txn, commit_id_of(txn)).contains_error());
 
     const auto read = [&](compare_type compare, int64_t key) {
-        auto answer =
-            ask<&index_agent_contract::read_rows>(agent, session, compare, make_scalar(&resource, key), txn);
+        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare, make_scalar(&resource, key), txn);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };

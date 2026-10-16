@@ -61,9 +61,8 @@ namespace components::cursor {
 
         // A string_view result points into the cursor's chunk memory.
         template<typename T>
-        [[nodiscard]] core::result_wrapper_t<T> get(uint64_t col_idx,
-                                                    uint64_t row_idx,
-                                                    std::span<const std::size_t> path = {}) const;
+        [[nodiscard]] core::result_wrapper_t<T>
+        get(uint64_t col_idx, uint64_t row_idx, std::span<const std::size_t> path = {}) const;
         template<typename T>
         [[nodiscard]] core::result_wrapper_t<T>
         get(uint64_t col_idx, uint64_t row_idx, std::initializer_list<std::size_t> path) const {
@@ -172,8 +171,7 @@ namespace components::cursor {
             static_assert(std::is_same_v<T, std::string_view> || std::is_same_v<T, core::date::date_t> ||
                               std::is_same_v<T, core::date::time_t> || std::is_same_v<T, core::date::timetz_t> ||
                               std::is_same_v<T, core::date::timestamp_t> ||
-                              std::is_same_v<T, core::date::timestamptz_t> ||
-                              std::is_same_v<T, core::date::interval_t>,
+                              std::is_same_v<T, core::date::timestamptz_t> || std::is_same_v<T, core::date::interval_t>,
                           "cursor_t::get<T>: no cell type reads as T");
             if (vec.type().type() != types::to_logical_type<T>()) {
                 return make_error(core::error_code_t::conversion_failure,

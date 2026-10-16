@@ -3,9 +3,9 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <components/vector/arrow/arrow_appender.hpp>
-#include <components/vector/cell_equal.hpp>
 #include <components/vector/arrow/arrow_converter.hpp>
 #include <components/vector/arrow/scaner/arrow_conversion.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <core/date/date_types.hpp>
 
 using namespace components::vector::arrow;

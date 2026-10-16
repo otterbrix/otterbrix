@@ -3,8 +3,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
-#include <components/vector/vector_builders.hpp>
 #include <components/types/types.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/date/date_parse.hpp>
 #include <core/operations_helper.hpp>
 #include <cstring>
@@ -856,8 +856,7 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_mid_segmen
         REQUIRE_FALSE(cell22.has_error());
         auto cell23 = cur->get<std::string_view>(0, 1);
         REQUIRE_FALSE(cell23.has_error());
-        INFO("row0: '" << cell22.value() << "' row1: '"
-                       << cell23.value() << "'");
+        INFO("row0: '" << cell22.value() << "' row1: '" << cell23.value() << "'");
         auto cell24 = cur->get<std::string_view>(0, 0);
         REQUIRE_FALSE(cell24.has_error());
         REQUIRE(cell24.value() == "keep");
@@ -892,8 +891,7 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_mid_segmen
         REQUIRE_FALSE(cell26.has_error());
         auto cell27 = cur->get<std::string_view>(0, 1);
         REQUIRE_FALSE(cell27.has_error());
-        INFO("row0: '" << cell26.value() << "' row1: '"
-                       << cell27.value() << "'");
+        INFO("row0: '" << cell26.value() << "' row1: '" << cell27.value() << "'");
         auto cell28 = cur->get<std::string_view>(0, 0);
         REQUIRE_FALSE(cell28.has_error());
         REQUIRE(cell28.value() == "keep");
@@ -3144,17 +3142,13 @@ TEST_CASE("integration::cpp::correctness_bugs::interval_inside_list_not_equal") 
 TEST_CASE("integration::cpp::correctness_bugs::interval_inside_struct_inside_list_equal") {
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/iv_struct_eq"));
     test_spaces space(config);
-    check_single_bool(space.dispatcher(),
-                      "SELECT ARRAY[ROW(INTERVAL '1 day')] = ARRAY[ROW(INTERVAL '1 day')];",
-                      true);
+    check_single_bool(space.dispatcher(), "SELECT ARRAY[ROW(INTERVAL '1 day')] = ARRAY[ROW(INTERVAL '1 day')];", true);
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::timetz_inside_list_equal") {
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ttz_list_eq"));
     test_spaces space(config);
-    check_single_bool(space.dispatcher(),
-                      "SELECT ARRAY[TIMETZ '10:00:00+00'] = ARRAY[TIMETZ '10:00:00+00'];",
-                      true);
+    check_single_bool(space.dispatcher(), "SELECT ARRAY[TIMETZ '10:00:00+00'] = ARRAY[TIMETZ '10:00:00+00'];", true);
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::order_by_interval_array") {
@@ -3192,9 +3186,7 @@ TEST_CASE("integration::cpp::correctness_bugs::interval_day_equals_twenty_four_h
 TEST_CASE("integration::cpp::correctness_bugs::interval_inside_list_month_equals_thirty_days") {
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/iv_list_month_30d"));
     test_spaces space(config);
-    check_single_bool(space.dispatcher(),
-                      "SELECT ARRAY[INTERVAL '1 month'] = ARRAY[INTERVAL '30 days'];",
-                      true);
+    check_single_bool(space.dispatcher(), "SELECT ARRAY[INTERVAL '1 month'] = ARRAY[INTERVAL '30 days'];", true);
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::order_by_interval_array_follows_the_total") {
@@ -3300,9 +3292,7 @@ TEST_CASE("integration::cpp::correctness_bugs::timetz_same_instant_same_zone_is_
 TEST_CASE("integration::cpp::correctness_bugs::timetz_inside_list_other_zone_is_not_equal") {
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ttz_list_zone_ne"));
     test_spaces space(config);
-    check_single_bool(space.dispatcher(),
-                      "SELECT ARRAY[TIMETZ '10:00:00+00'] = ARRAY[TIMETZ '13:00:00+03'];",
-                      false);
+    check_single_bool(space.dispatcher(), "SELECT ARRAY[TIMETZ '10:00:00+00'] = ARRAY[TIMETZ '13:00:00+03'];", false);
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::order_by_timetz_instant_then_zone") {
@@ -3560,7 +3550,8 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.ev (id bigint, d date);")->is_success());
     {
-        auto ins = test_helpers::exec(dispatcher, "INSERT INTO db.ev (id, d) VALUES (1, DATE '2024-01-15'), (2, '2024-01-16');");
+        auto ins = test_helpers::exec(dispatcher,
+                                      "INSERT INTO db.ev (id, d) VALUES (1, DATE '2024-01-15'), (2, '2024-01-16');");
         INFO("error: " << (ins->is_error() ? ins->get_error().what : "none"));
         REQUIRE(ins->is_success());
     }
@@ -3589,7 +3580,8 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.ev (id bigint, d date);")->is_success());
     {
-        auto ins = test_helpers::exec(dispatcher, "INSERT INTO db.ev (id, d) VALUES (1, '2024-01-16'), (2, DATE '2024-01-15');");
+        auto ins = test_helpers::exec(dispatcher,
+                                      "INSERT INTO db.ev (id, d) VALUES (1, '2024-01-16'), (2, DATE '2024-01-15');");
         INFO("error: " << (ins->is_error() ? ins->get_error().what : "none"));
         REQUIRE(ins->is_success());
     }
@@ -3618,7 +3610,9 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.ev (id bigint, t timestamptz);")->is_success());
     {
-        auto ins = test_helpers::exec(dispatcher, "INSERT INTO db.ev (id, t) VALUES (1, TIMESTAMPTZ '2024-01-15 10:00:00+00'), (2, '2024-01-16 11:00:00+00');");
+        auto ins = test_helpers::exec(dispatcher,
+                                      "INSERT INTO db.ev (id, t) VALUES (1, TIMESTAMPTZ '2024-01-15 10:00:00+00'), (2, "
+                                      "'2024-01-16 11:00:00+00');");
         INFO("error: " << (ins->is_error() ? ins->get_error().what : "none"));
         REQUIRE(ins->is_success());
     }
@@ -3647,7 +3641,9 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.ev (id bigint, t timestamptz);")->is_success());
     {
-        auto ins = test_helpers::exec(dispatcher, "INSERT INTO db.ev (id, t) VALUES (1, '2024-01-16 11:00:00+00'), (2, TIMESTAMPTZ '2024-01-15 10:00:00+00');");
+        auto ins = test_helpers::exec(dispatcher,
+                                      "INSERT INTO db.ev (id, t) VALUES (1, '2024-01-16 11:00:00+00'), (2, TIMESTAMPTZ "
+                                      "'2024-01-15 10:00:00+00');");
         INFO("error: " << (ins->is_error() ? ins->get_error().what : "none"));
         REQUIRE(ins->is_success());
     }
@@ -3885,9 +3881,8 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_quoted_typed_text_i
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::insert_values_typed_text_into_integer_column_is_refused") {
-    auto error = insert_error("ev_text_int",
-                              "CREATE TABLE db.t (n integer);",
-                              "INSERT INTO db.t (n) VALUES ('5'::text), (6);");
+    auto error =
+        insert_error("ev_text_int", "CREATE TABLE db.t (n integer);", "INSERT INTO db.t (n) VALUES ('5'::text), (6);");
     INFO("error: " << error);
     CHECK(error.find("column \"n\" is of type integer but expression is of type text") != std::string::npos);
 }
@@ -3953,10 +3948,8 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_deferred_quoted_tex
 
 TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_into_dynamic_schema_table") {
     bool inserted = false;
-    auto error = insert_error("ev_dynamic",
-                              "CREATE TABLE db.g ();",
-                              "INSERT INTO db.g (s) VALUES ('c'), (5);",
-                              &inserted);
+    auto error =
+        insert_error("ev_dynamic", "CREATE TABLE db.g ();", "INSERT INTO db.g (s) VALUES ('c'), (5);", &inserted);
     INFO("inserted: " << inserted << " error: " << error);
     CHECK_FALSE(inserted);
     CHECK(error.find("differing types") != std::string::npos);
@@ -3989,10 +3982,10 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_chunk_types_differ_
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::insert_values_chunk_types_differ_into_text_is_refused") {
-    auto error = insert_error("ev_chunks_text",
-                              "CREATE TABLE db.t (s text);",
-                              "INSERT INTO db.t (s) VALUES (1), ('a'::text)" + repeated_rows(1022, "(3)") +
-                                  ", ('b'), ('c');");
+    auto error =
+        insert_error("ev_chunks_text",
+                     "CREATE TABLE db.t (s text);",
+                     "INSERT INTO db.t (s) VALUES (1), ('a'::text)" + repeated_rows(1022, "(3)") + ", ('b'), ('c');");
     INFO("error: " << error);
     CHECK(error.find("several chunks") != std::string::npos);
 }

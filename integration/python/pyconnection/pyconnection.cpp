@@ -211,7 +211,8 @@ namespace otterbrix {
         auto session = session_id_t();
         auto node = node_in;
         if (optimize) {
-            node = components::planner::optimize(node->resource(), node, nullptr, components::graph_execution_context{});
+            node =
+                components::planner::optimize(node->resource(), node, nullptr, components::graph_execution_context{});
         }
         return space->dispatcher()->execute_plan(
             session,

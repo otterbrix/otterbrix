@@ -1,8 +1,8 @@
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 
-#include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
+#include <catch2/catch_test_macros.hpp>
 
 // Companion coverage for the operand type guards: paths the bind/runtime checks in the
 // dispatcher and arithmetic evaluator do not reach.
@@ -215,9 +215,7 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::min_value_divided_by_minus_
         CHECK(std::string(cur->get_error().what).find(what) != std::string::npos);
     };
 
-    SECTION("literal BIGINT") {
-        expect_out_of_range("SELECT (-9223372036854775807 - 1) / -1;", "bigint out of range");
-    }
+    SECTION("literal BIGINT") { expect_out_of_range("SELECT (-9223372036854775807 - 1) / -1;", "bigint out of range"); }
     SECTION("literal BIGINT remainder") {
         auto rem = test_helpers::exec(dispatcher, "SELECT (-9223372036854775807 - 1) % -1;");
         REQUIRE(rem->is_success());
@@ -235,9 +233,7 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::min_value_divided_by_minus_
         REQUIRE_FALSE(cell7.has_error());
         CHECK(cell7.value() == 0);
     }
-    SECTION("BIGINT column") {
-        expect_out_of_range("SELECT x / -1 FROM db.big;", "bigint out of range");
-    }
+    SECTION("BIGINT column") { expect_out_of_range("SELECT x / -1 FROM db.big;", "bigint out of range"); }
     SECTION("BIGINT column remainder") {
         auto rem = test_helpers::exec(dispatcher, "SELECT x % -1 FROM db.big;");
         REQUIRE(rem->is_success());

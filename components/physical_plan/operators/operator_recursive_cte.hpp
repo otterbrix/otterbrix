@@ -3,8 +3,6 @@
 #include "operator.hpp"
 #include "operator_data.hpp"
 
-#include <components/casts/cast_function.hpp>
-
 namespace components::operators {
 
     // UNION-ALL recursive-CTE fixpoint driver.
@@ -41,13 +39,6 @@ namespace components::operators {
         // de-duplicate the working set and result against every row emitted so far (PostgreSQL
         // recursive-UNION semantics; also the termination guard for cyclic graphs).
         operator_recursive_cte_t(std::pmr::memory_resource* resource, log_t log, bool union_all);
-
-        // One cast per column applied to the recursive term's rows before they are de-duplicated and
-        // emitted, so every row carries the anchor's column types; an empty cast leaves the column as is.
-        void set_step_casts(std::pmr::vector<casts::cast_t> casts, std::pmr::vector<types::complex_logical_type> types) {
-            step_casts_ = std::move(casts);
-            step_types_ = std::move(types);
-        }
 
         // Sourceless async-finalize sink: see the class note. left()==nullptr (anchor_/
         // recursive_ are private members), so the executor admits this as a
@@ -91,8 +82,6 @@ namespace components::operators {
         operator_data_ptr working_set_;
         operator_ptr anchor_{nullptr};
         operator_ptr recursive_{nullptr};
-        std::pmr::vector<casts::cast_t> step_casts_;
-        std::pmr::vector<types::complex_logical_type> step_types_;
         const bool union_all_; // false => UNION (DISTINCT): de-duplicate against all emitted rows
 
         // Run the anchor + fixpoint loop through ctx->runner->run_subplan. Shared core

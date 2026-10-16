@@ -17,7 +17,6 @@ namespace services::planner::impl {
         auto op = boost::intrusive_ptr(new components::operators::operator_recursive_cte_t(context.resource,
                                                                                            context.log.clone(),
                                                                                            cte_node->all()));
-        op->set_step_casts(cte_node->step_casts(), cte_node->step_types());
 
         // Build anchor using the original context (no cte_working_sets entry needed).
         VALUE_OR_RETURN(auto anchor_op,

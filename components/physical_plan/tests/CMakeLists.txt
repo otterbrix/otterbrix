@@ -15,14 +15,12 @@ set(${PROJECT_NAME}_SOURCES
         test_operator_raw_data_resource.cpp
         test_nested_compare.cpp
         test_operator_group_merge.cpp
-        test_operator_recursive_cte_cast.cpp
         ../operators/sort/sort.cpp
         ../operators/operator.cpp
         ../operators/operator_match.cpp
         ../operators/operator_group_merge.cpp
         ../operators/operator_data.cpp
         ../operators/operator_raw_data.cpp
-        ../operators/operator_recursive_cte.cpp
         ../operators/operator_write_data.cpp
 )
 

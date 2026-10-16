@@ -218,19 +218,6 @@ namespace services::dispatcher {
             return combined;
         }
 
-        // DECIMAL, bare or as a LIST / ARRAY element at any depth: the types whose (p,s) PostgreSQL carries as a typmod.
-        [[nodiscard]] bool holds_decimal_typmod(const components::types::complex_logical_type& type) {
-            switch (type.type()) {
-                case components::types::logical_type::DECIMAL:
-                    return true;
-                case components::types::logical_type::LIST:
-                case components::types::logical_type::ARRAY:
-                    return holds_decimal_typmod(type.child_type());
-                default:
-                    return false;
-            }
-        }
-
         [[nodiscard]] core::result_wrapper_t<named_schema>
         validate_schema(const validation::validation_context_t& context,
                         function_expression_t* expr,
@@ -2676,58 +2663,26 @@ namespace services::dispatcher {
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"each UNION query must have the same number of columns", resource});
                 }
-                std::pmr::vector<components::casts::cast_t> step_casts(resource);
-                std::pmr::vector<components::types::complex_logical_type> step_types(resource);
-                bool any_cast = false;
-                step_casts.resize(anchor_cols.size());
-                for (const auto& anchor_col : anchor_cols) {
-                    step_types.push_back(anchor_col.type);
-                }
+                // The recursive term's rows join the anchor's as they are: every column must already be of the
+                // anchor's type, and a mismatch is the query's to cast.
                 for (size_t i = 0; i < anchor_cols.size(); ++i) {
                     const auto& anchor_type = anchor_cols[i].type;
                     const auto& step_type = step_cols[i].type;
                     if (anchor_type == step_type) {
                         continue;
                     }
-                    const bool step_is_null =
-                        step_type.type() == components::types::logical_type::NA || step_cols[i].from_null_literal;
-                    auto common = cast_registry->find_best_common_type(anchor_type, step_type);
-                    if (!common.has_value() && !step_is_null &&
-                        anchor_type.type() != components::types::logical_type::NA) {
-                        return core::error_t(core::error_code_t::sql_parse_error,
-                                             std::pmr::string{"UNION types " +
-                                                                  components::catalog::format_type_be(anchor_type) +
-                                                                  " and " +
-                                                                  components::catalog::format_type_be(step_type) +
-                                                                  " cannot be matched",
-                                                              resource});
-                    }
-                    // PostgreSQL compares type and typmod: an anchor holding DECIMAL, bare or as a LIST / ARRAY
-                    // element at any depth, takes only an identical step column.
-                    const bool typmod_differs = !step_is_null && impl::holds_decimal_typmod(anchor_type);
-                    if (!common.has_value() || common->type != anchor_type || typmod_differs) {
-                        const auto& overall = common.has_value() ? common->type : step_type;
-                        const std::string anchor_name = anchor_type.type() == components::types::logical_type::NA
-                                                            ? std::string{"text"}
-                                                            : components::catalog::format_type_be(anchor_type);
-                        return core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"recursive query \"" + cte_label + "\" column " + std::to_string(i + 1) +
-                                                 " has type " + anchor_name + " in non-recursive term but type " +
-                                                 components::catalog::format_type_be(overall, false) +
-                                                 " overall. Cast the output of the non-recursive term to the "
-                                                 "correct type.",
-                                             resource});
-                    }
-                    step_casts[i] = std::move(common->right_cast);
-                    any_cast = any_cast || static_cast<bool>(step_casts[i]);
+                    const std::string anchor_name = anchor_type.type() == components::types::logical_type::NA
+                                                        ? std::string{"text"}
+                                                        : components::catalog::format_type_be(anchor_type);
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"recursive query \"" + cte_label + "\" column " + std::to_string(i + 1) +
+                                             " has type " + anchor_name + " in non-recursive term but type " +
+                                             components::catalog::format_type_be(step_type, false) +
+                                             " overall. Cast the output of the non-recursive term to the "
+                                             "correct type.",
+                                         resource});
                 }
-                if (!any_cast) {
-                    step_casts.clear();
-                    step_types.clear();
-                }
-                static_cast<components::logical_plan::node_recursive_cte_t*>(node)->set_step_casts(
-                    std::move(step_casts), std::move(step_types));
 
                 if (!node->result_alias().empty()) {
                     for (auto& entry : anchor_res.value()) {

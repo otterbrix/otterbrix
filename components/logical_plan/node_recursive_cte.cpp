@@ -9,9 +9,7 @@ namespace components::logical_plan {
                                                node_ptr recursive)
         : node_t(resource, node_type::recursive_cte_t)
         , cte_name_(std::move(cte_name))
-        , all_(all)
-        , step_casts_(resource)
-        , step_types_(resource) {
+        , all_(all) {
         append_child(std::move(anchor));
         append_child(std::move(recursive));
     }

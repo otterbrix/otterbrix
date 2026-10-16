@@ -168,8 +168,9 @@ namespace components::execution_dag {
         bool reduces_{false};
         std::optional<compute::aggregate_state_arena_t> states_;
         core::span<const uint32_t> group_ids_;
-        // DISTINCT is per group: one seen-set per group, in an arena beside the accumulators. A set maps
-        // a row hash to the rows it has kept: chunk number in distinct_values_ and row inside it.
+        // DISTINCT is per group and over the whole argument list: one seen-set per group, in an arena beside the
+        // accumulators. A set maps a row hash to the rows it has kept: chunk number in distinct_values_ and row
+        // inside it.
         struct kept_row_t {
             uint64_t chunk;
             uint64_t row;
@@ -179,8 +180,9 @@ namespace components::execution_dag {
         // Rows of the current chunk that survived the DISTINCT filter, and their group ids.
         vector::indexing_vector_t distinct_rows_;
         std::pmr::vector<uint32_t> distinct_groups_;
-        // The first argument column of every call's kept rows, the values the seen-sets compare against.
-        std::pmr::vector<vector::vector_t> distinct_values_;
+        vector::vector_t distinct_hashes_;
+        // The arguments of every call's kept rows, the values the seen-sets compare against.
+        std::pmr::vector<vector::data_chunk_t> distinct_values_;
     };
 
     // [1, N] inputs, [1] output

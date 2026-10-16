@@ -109,10 +109,11 @@ namespace components::execution_dag {
         auto sets = distinct_states_->states();
         distinct_groups_.clear();
         distinct_groups_.reserve(count);
-        vector::vector_t hashes(resource(), types::logical_type::UBIGINT, count);
-        vector::vector_ops::hash(arguments.data.front(), hashes, count);
-        const auto* hash_data = hashes.data<uint64_t>();
-        const auto& column = arguments.data.front();
+        vector::vector_ops::hash(arguments.data.front(), distinct_hashes_, count);
+        for (size_t position = 1; position < arguments.column_count(); position++) {
+            vector::vector_ops::combine_hash(distinct_hashes_, arguments.data[position], count);
+        }
+        const auto* hash_data = distinct_hashes_.data<uint64_t>();
         // Rows kept by this call are not stored yet: they sit at distinct_values_.size() and are read
         // back from the arguments through distinct_rows_.
         const uint64_t pending_chunk = distinct_values_.size();
@@ -125,8 +126,8 @@ namespace components::execution_dag {
             for (auto it = range.first; it != range.second && !seen; ++it) {
                 const auto& ref = it->second;
                 seen = ref.chunk == pending_chunk
-                           ? vector::cells_equal(column, distinct_rows_.get_index(ref.row), column, row)
-                           : vector::cells_equal(distinct_values_[ref.chunk], ref.row, column, row);
+                           ? vector::rows_equal(arguments, distinct_rows_.get_index(ref.row), arguments, row)
+                           : vector::rows_equal(distinct_values_[ref.chunk], ref.row, arguments, row);
             }
             if (seen) {
                 continue;
@@ -487,6 +488,7 @@ namespace components::execution_dag {
         , reduces_(reduces)
         , distinct_rows_(resource, vector::DEFAULT_VECTOR_CAPACITY)
         , distinct_groups_(resource)
+        , distinct_hashes_(resource, types::logical_type::UBIGINT, distinct ? vector::DEFAULT_VECTOR_CAPACITY : 1)
         , distinct_values_(resource) {}
 
     core::error_t function_node_t::process(const graph_execution_context&, uint64_t count) {
@@ -516,10 +518,14 @@ namespace components::execution_dag {
             vector::data_chunk_t unique(resource(), arguments.types(), kept.value() > 0 ? kept.value() : 1);
             arguments.copy(unique, distinct_rows_, kept.value(), 0);
             unique.set_cardinality(kept.value());
-            if (kept.value() > 0) {
-                distinct_values_.emplace_back(unique.data.front());
+            if (auto error = executor_->update(unique, {distinct_groups_.data(), kept.value()}, states_->states());
+                error.contains_error()) {
+                return error;
             }
-            return executor_->update(unique, {distinct_groups_.data(), kept.value()}, states_->states());
+            if (kept.value() > 0) {
+                distinct_values_.push_back(std::move(unique));
+            }
+            return core::error_t::no_error();
         }
         auto result = executor_->execute(arguments);
         if (result.has_error()) {

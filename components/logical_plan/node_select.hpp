@@ -11,10 +11,9 @@ namespace components::logical_plan {
     public:
         explicit node_select_t(std::pmr::memory_resource* resource);
 
-        // Number of hidden aggregate expressions appended at the tail of expressions_
-        // (used for HAVING internal aggregates when there is no GROUP BY).
-        // Visible SELECT column count = expressions_.size() - internal_aggregate_count.
-        size_t internal_aggregate_count{0};
+        // Number of hidden expressions appended at the tail of expressions_.
+        // Visible SELECT column count = expressions_.size() - hidden_count.
+        size_t hidden_count{0};
 
     private:
         hash_t hash_impl() const override;

@@ -2485,6 +2485,22 @@ TEST_CASE("optimizer::eager_aggregation::min_is_pushed") {
     CHECK(as_key(final_agg->params()[0]).path()[0] == 2);
 }
 
+TEST_CASE("optimizer::eager_aggregation::partial_group_carries_the_partial_output_types") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto outer = eag::make_join_agg(&resource, "min");
+    components::planner::optimizer::eager_aggregation(&resource, outer);
+    auto* partial = eag::pushed_partial(outer);
+    REQUIRE(partial != nullptr);
+    const auto& pushed = static_cast<node_join_t*>(outer->children()[0].get())->children()[0];
+    REQUIRE(pushed->has_output_types());
+    REQUIRE(partial->has_output_types());
+    REQUIRE(partial->output_types().size() == pushed->output_types().size());
+    for (size_t i = 0; i < pushed->output_types().size(); ++i) {
+        CHECK(partial->output_types()[i] == pushed->output_types()[i]);
+        CHECK(partial->output_types()[i].alias() == pushed->output_types()[i].alias());
+    }
+}
+
 TEST_CASE("optimizer::eager_aggregation::max_is_pushed") {
     auto resource = core::pmr::otterbrix_resource();
     auto outer = eag::make_join_agg(&resource, "max");

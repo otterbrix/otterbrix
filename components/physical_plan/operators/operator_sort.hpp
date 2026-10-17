@@ -40,6 +40,7 @@ namespace components::operators {
 
         void set_expected_output_count(size_t n) { expected_output_count_ = n; }
         void set_cap(logical_plan::row_cap_t cap) { cap_ = cap; }
+        void set_keep_computed_keys(bool keep) { keep_computed_keys_ = keep; }
 
         // --- Push-based streaming pipeline (STEP 3 / phase C) ---
         // A sort is a blocking SINK: it must see the whole input before it can
@@ -68,6 +69,7 @@ namespace components::operators {
         // it; null until then.
         std::unique_ptr<execution_dag::execution_dag_t> computed_graph_;
         size_t expected_output_count_{0};
+        bool keep_computed_keys_{false};
         logical_plan::row_cap_t cap_;
         chunks_vector_t buffered_input_{resource_};
 

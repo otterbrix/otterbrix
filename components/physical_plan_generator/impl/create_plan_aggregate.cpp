@@ -149,8 +149,8 @@ namespace services::planner::impl {
             if (!out.active()) {
                 return false;
             }
-            if (agg_node->has_output_types()) {
-                out.output_types.assign(agg_node->output_types().begin(), agg_node->output_types().end());
+            if (group->has_output_types()) {
+                out.output_types.assign(group->output_types().begin(), group->output_types().end());
             }
             out.input_types.assign(group->input_types().begin(), group->input_types().end());
             return true;
@@ -322,6 +322,10 @@ namespace services::planner::impl {
                     }
                 }
                 if (push_sort_op) {
+                    if (!push_select_op && agg_node->output_width() > 0) {
+                        static_cast<components::operators::operator_sort_t*>(push_sort_op.get())
+                            ->set_expected_output_count(agg_node->output_width());
+                    }
                     push_sort_op->set_children(std::move(executor));
                     executor = std::move(push_sort_op);
                 }
@@ -455,13 +459,19 @@ namespace services::planner::impl {
             having_op->set_children(std::move(executor));
             executor = std::move(having_op);
         }
+        const bool distinct_on = agg_node->is_distinct() && !agg_node->distinct_on_keys().empty();
+        const size_t output_width = select_op ? 0 : agg_node->output_width();
         if (sort_op) {
+            if (output_width > 0 && !distinct_on) {
+                static_cast<components::operators::operator_sort_t*>(sort_op.get())
+                    ->set_expected_output_count(output_width);
+            }
             sort_op->set_children(std::move(executor));
             executor = std::move(sort_op);
         }
         // DISTINCT ON dedups on the ON-key subset BELOW the projection, so ON columns that don't survive it
         // are still present; keep-first over sorted input gives "first row per ON key in ORDER BY order".
-        if (agg_node->is_distinct() && !agg_node->distinct_on_keys().empty()) {
+        if (distinct_on) {
             auto distinct_op = boost::intrusive_ptr(
                 new components::operators::operator_distinct_t(context.resource, context.log.clone()));
             std::pmr::vector<size_t> on_cols(node->resource());
@@ -470,6 +480,8 @@ namespace services::planner::impl {
                 on_cols.push_back(key.path().front());
             }
             distinct_op->set_on_keys(std::move(on_cols));
+            distinct_op->set_expected_output_count(output_width);
+            distinct_op->set_cap(agg_node->distinct_on_read_cap());
             distinct_op->set_children(std::move(executor));
             executor = std::move(distinct_op);
         }

@@ -79,11 +79,15 @@ namespace components::operators {
             return;
         }
         auto types = schema->types();
+        decltype(types) out_types(types.begin(), types.end(), res);
+        if (expected_output_count_ > 0 && out_types.size() > expected_output_count_) {
+            out_types.erase(out_types.begin() + static_cast<ptrdiff_t>(expected_output_count_), out_types.end());
+        }
         if (shape_.empty()) {
-            shape_.assign(types.begin(), types.end());
+            shape_.assign(out_types.begin(), out_types.end());
         }
 
-        vector::data_chunk_t cur(res, types, vector::DEFAULT_VECTOR_CAPACITY);
+        vector::data_chunk_t cur(res, out_types, vector::DEFAULT_VECTOR_CAPACITY);
         uint64_t filled = 0;
         auto flush = [&]() {
             if (filled == 0) {
@@ -92,12 +96,12 @@ namespace components::operators {
             cur.set_cardinality(filled);
             out.emplace_back(std::move(cur));
             note_emitted();
-            cur = vector::data_chunk_t(res, types, vector::DEFAULT_VECTOR_CAPACITY);
+            cur = vector::data_chunk_t(res, out_types, vector::DEFAULT_VECTOR_CAPACITY);
             filled = 0;
         };
 
         for (const auto& chunk : chunks) {
-            if (chunk.size() == 0) {
+            if (chunk.size() == 0 || !cap_.admits(kept_rows_)) {
                 continue;
             }
             // Typed hash of the DISTINCT key. Plain DISTINCT hashes the whole row; DISTINCT ON
@@ -114,11 +118,12 @@ namespace components::operators {
             }
             const auto* hashes = hash_vec.data<uint64_t>();
 
-            for (size_t i = 0; i < chunk.size(); i++) {
+            for (size_t i = 0; i < chunk.size() && cap_.admits(kept_rows_); i++) {
                 const uint64_t h = hashes[i];
                 if (is_duplicate_(chunk, i, h)) {
                     continue;
                 }
+                ++kept_rows_;
                 // First occurrence: retain it (so later batches dedup against it) and
                 // emit it. retain_ registers the row in seen_ BEFORE the next row is
                 // examined, so an intra-batch duplicate is caught too.
@@ -128,7 +133,7 @@ namespace components::operators {
                 }
                 uint64_t at = i;
                 const vector::indexing_vector_t one_row(res, &at);
-                for (size_t j = 0; j < chunk.column_count(); j++) {
+                for (size_t j = 0; j < out_types.size(); j++) {
                     vector::vector_ops::copy(chunk.data[j], cur.data[j], one_row, 1, 0, filled);
                 }
                 ++filled;

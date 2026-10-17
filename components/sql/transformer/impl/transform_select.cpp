@@ -552,7 +552,6 @@ namespace components::sql::transform {
                                  std::pmr::string{"the WINDOW clause is not supported yet", resource_});
         }
         // A SETOP_* node has a null targetList, so the loop below would SIGSEGV without this bail-out.
-        // For a UNION, positional `ORDER BY <n>` resolves against the first arm's list (PostgreSQL).
         // The n-th (1-based) entry of a select list, or nullptr when `n` addresses nothing.
         auto positional_target = [](List* target_list, int64_t n) -> ResTarget* {
             int64_t count = 0;
@@ -565,25 +564,14 @@ namespace components::sql::transform {
             }
             return nullptr;
         };
-        auto positional_sort_field =
-            [&](List* target_list, int64_t n, const name_collection_t& nm, column_ref_t& out) -> core::error_t {
-            ResTarget* res = positional_target(target_list, n);
-            if (res == nullptr) {
+        auto positional_sort_key =
+            [&](int64_t n, sort_order order, sort_null_order null_order) -> core::result_wrapper_t<expression_ptr> {
+            if (n < 1) {
                 return core::error_t(
                     core::error_code_t::sql_parse_error,
                     std::pmr::string{"ORDER BY position is out of range of the select list", resource_});
             }
-            if (nodeTag(res->val) == T_ColumnRef) {
-                VALUE_OR_RETURN(out, columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(res->val), nm));
-                return core::error_t::no_error();
-            }
-            if (res->name) {
-                out.field = expressions::key_t{resource_, res->name};
-                return core::error_t::no_error();
-            }
-            return core::error_t(
-                core::error_code_t::unimplemented_yet,
-                std::pmr::string{"positional ORDER BY over a computed column requires an alias", resource_});
+            return expression_ptr{make_ordinal_sort_expression(resource_, static_cast<size_t>(n), order, null_order)};
         };
 
         if (node.op == SETOP_UNION) {
@@ -617,6 +605,7 @@ namespace components::sql::transform {
                 for (auto sort_it : node.sortClause->lst) {
                     auto sortby = pg_ptr_cast<SortBy>(sort_it.data);
                     bool is_desc = sortby->sortby_dir == SORTBY_DESC;
+                    const auto order = is_desc ? sort_order::desc : sort_order::asc;
                     column_ref_t field(resource_);
                     if (nodeTag(sortby->node) == T_ColumnRef) {
                         VALUE_OR_RETURN(
@@ -633,17 +622,20 @@ namespace components::sql::transform {
                             return core::error_t(core::error_code_t::sql_parse_error,
                                                  std::pmr::string{"non-integer constant in ORDER BY", resource_});
                         }
-                        List* out_list = node.larg ? node.larg->targetList : nullptr;
-                        RETURN_IF_ERROR(positional_sort_field(out_list, intVal(value), union_names, field));
+                        VALUE_OR_RETURN(
+                            auto positional,
+                            positional_sort_key(intVal(value), order, map_sortby_nulls(sortby->sortby_nulls)));
+                        sort_exprs.emplace_back(std::move(positional));
+                        continue;
                     } else {
-                        return core::error_t(
-                            core::error_code_t::unimplemented_yet,
-                            std::pmr::string{"ORDER BY over UNION supports only column references", resource_});
+                        return core::error_t(core::error_code_t::unimplemented_yet,
+                                             std::pmr::string{"invalid UNION/INTERSECT/EXCEPT ORDER BY clause: only "
+                                                              "result column names can be used, not expressions or "
+                                                              "functions",
+                                                              resource_});
                     }
-                    sort_exprs.emplace_back(make_sort_expression(resource_,
-                                                                 field.field,
-                                                                 is_desc ? sort_order::desc : sort_order::asc,
-                                                                 map_sortby_nulls(sortby->sortby_nulls)));
+                    sort_exprs.emplace_back(
+                        make_sort_expression(resource_, field.field, order, map_sortby_nulls(sortby->sortby_nulls)));
                 }
                 agg->append_child(logical_plan::make_node_sort(resource_, sort_exprs));
             }
@@ -1384,12 +1376,10 @@ namespace components::sql::transform {
                 }
                 const auto order = is_desc ? sort_order::desc : sort_order::asc;
                 if (nodeTag(sort_node) == T_A_Const && pg_ptr_cast<A_Const>(sort_node)->val.type == T_Integer) {
-                    column_ref_t field(resource_);
-                    RETURN_IF_ERROR(positional_sort_field(node.targetList,
-                                                          intVal(&pg_ptr_cast<A_Const>(sort_node)->val),
-                                                          names,
-                                                          field));
-                    sort_exprs.emplace_back(make_sort_expression(resource_, field.field, order, null_ord));
+                    VALUE_OR_RETURN(
+                        auto positional,
+                        positional_sort_key(intVal(&pg_ptr_cast<A_Const>(sort_node)->val), order, null_ord));
+                    sort_exprs.emplace_back(std::move(positional));
                     continue;
                 }
                 logical_plan::node_ptr sort_scope = group;
@@ -1425,7 +1415,7 @@ namespace components::sql::transform {
         // the group grew by is only settled here.
         const size_t hidden_group_count = group->expressions().size() - visible_group_count;
         if (hidden_group_count > 0) {
-            // Only the visible_group_count columns are re-added; internal_aggregate_count stays 0
+            // Only the visible_group_count columns are re-added; hidden_count stays 0
             // (>0 makes the validator drop the __having_* column the HAVING match resolves against).
             select_node->expressions().clear();
             size_t output_ordinal = 0;

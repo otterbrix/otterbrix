@@ -233,7 +233,7 @@ namespace components::planner::optimizer {
                                                       const std::set<std::string>& filter_cols,
                                                       const std::set<std::string>& input_cols) {
             const auto& exprs = sel.expressions();
-            const size_t hidden = sel.internal_aggregate_count;
+            const size_t hidden = sel.hidden_count;
             if (exprs.size() < hidden) {
                 return false;
             }
@@ -266,7 +266,7 @@ namespace components::planner::optimizer {
         // only when a column's body-output ordinal equals its base index (`SELECT a,b FROM t(a,b,c)`).
         bool select_prefix_identity_for(const node_select_t& sel, const std::set<std::string>& cols) {
             const auto& exprs = sel.expressions();
-            const size_t hidden = sel.internal_aggregate_count;
+            const size_t hidden = sel.hidden_count;
             if (exprs.size() < hidden) {
                 return false;
             }
@@ -351,7 +351,7 @@ namespace components::planner::optimizer {
             }
             const auto& types = data->data_chunk().types();
             const auto& exprs = sel.expressions();
-            const size_t hidden = sel.internal_aggregate_count;
+            const size_t hidden = sel.hidden_count;
             if (exprs.size() < hidden) {
                 return std::nullopt;
             }

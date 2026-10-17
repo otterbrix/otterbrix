@@ -69,7 +69,6 @@ namespace {
         return cur->chunks().front().data[col_of(cur, alias)].type().type();
     }
 
-    // Used where ORDER BY can't apply: otterbrix rejects an output alias as a sort key.
     std::set<int64_t> i64_set(const cursor_t_ptr& cur, const std::string& alias) {
         std::set<int64_t> s;
         REQUIRE(cur->is_success());

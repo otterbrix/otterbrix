@@ -132,6 +132,7 @@ namespace components::expressions {
                     const auto* left = static_cast<const sort_expression_t*>(lhs);
                     const auto* right = static_cast<const sort_expression_t*>(rhs);
                     return left->order() == right->order() && left->null_order() == right->null_order() &&
+                           left->ordinal() == right->ordinal() &&
                            same_param(left->operand(), right->operand(), parameters);
                 }
                 case expression_group::cast: {

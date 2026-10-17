@@ -328,6 +328,7 @@ namespace components::planner::optimizer {
                     t.set_alias(aggs[i]->key().as_string());
                     partial_types.push_back(std::move(t));
                 }
+                partial_group->set_output_types(partial_types);
                 pushed->set_output_types(std::move(partial_types));
             }
 

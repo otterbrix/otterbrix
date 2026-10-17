@@ -82,10 +82,12 @@ namespace components::expressions {
             }
             case expression_group::sort: {
                 const auto* src = static_cast<const sort_expression_t*>(expr.get());
-                copy = make_sort_expression(resource,
-                                            clone_param(resource, src->operand()),
-                                            src->order(),
-                                            src->null_order());
+                auto sort = make_sort_expression(resource,
+                                                 clone_param(resource, src->operand()),
+                                                 src->order(),
+                                                 src->null_order());
+                sort->set_ordinal(src->ordinal());
+                copy = std::move(sort);
                 copy->key() = src->key();
                 break;
             }

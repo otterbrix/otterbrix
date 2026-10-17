@@ -7,7 +7,9 @@ namespace components::expressions {
     template<class OStream>
     OStream& operator<<(OStream& stream, const sort_expression_t* sort) {
         // A column is spelled bare here, the way a sort key has always been rendered.
-        if (is_key(sort->operand())) {
+        if (sort->ordinal() != 0) {
+            stream << "#" << sort->ordinal();
+        } else if (is_key(sort->operand())) {
             stream << as_key(sort->operand());
         } else {
             stream << sort->operand();
@@ -45,6 +47,7 @@ namespace components::expressions {
         hash_t hash_{0};
         boost::hash_combine(hash_, order_);
         boost::hash_combine(hash_, null_order_);
+        boost::hash_combine(hash_, ordinal_);
         boost::hash_combine(hash_,
                             std::visit(
                                 [](const auto& value) -> std::size_t {
@@ -69,7 +72,8 @@ namespace components::expressions {
 
     bool sort_expression_t::equal_impl(const expression_i* rhs) const {
         auto* other = static_cast<const sort_expression_t*>(rhs);
-        return order_ == other->order_ && null_order_ == other->null_order_ && operand_ == other->operand_;
+        return order_ == other->order_ && null_order_ == other->null_order_ && ordinal_ == other->ordinal_ &&
+               operand_ == other->operand_;
     }
 
     sort_expression_ptr make_sort_expression(std::pmr::memory_resource* resource,
@@ -77,6 +81,15 @@ namespace components::expressions {
                                              sort_order order,
                                              sort_null_order null_order) {
         return new sort_expression_t(resource, operand, order, null_order);
+    }
+
+    sort_expression_ptr make_ordinal_sort_expression(std::pmr::memory_resource* resource,
+                                                     size_t ordinal,
+                                                     sort_order order,
+                                                     sort_null_order null_order) {
+        auto sort = make_sort_expression(resource, key_t{resource}, order, null_order);
+        sort->set_ordinal(ordinal);
+        return sort;
     }
 
     sort_order get_sort_order(const std::string& key) {

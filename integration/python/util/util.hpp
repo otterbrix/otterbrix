@@ -2,7 +2,8 @@
 
 #include <common/typedefs.hpp>
 #include <components/cursor/cursor.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/vector/vector.hpp>
+#include <core/result_wrapper.hpp>
 #include <pybind11/pybind_wrapper.hpp>
 
 #include <absl/numeric/int128.h>
@@ -10,7 +11,11 @@
 #include <string>
 
 namespace otterbrix { namespace util {
-    std::string logical_value_to_string(const components::types::logical_value_t& value);
+    // The one-row constant as the text of its value; a type with no such text is an error.
+    core::result_wrapper_t<std::string> vector_to_string(const components::vector::vector_t& value);
+
+    // Where a global result row lives; a row past the result is a RuntimeError at the python boundary.
+    components::cursor::cell_location_t locate_row(const components::cursor::cursor_t& cursor, uint64_t row);
 
     // DB-API rowcount: the rows an INSERT / UPDATE / DELETE wrote, else the rows of the result.
     int64_t rowcount_of(const components::cursor::cursor_t& cursor);

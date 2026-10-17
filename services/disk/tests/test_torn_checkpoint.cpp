@@ -84,8 +84,7 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                auto cell = chunk.value(0, i);
-                out.push_back(cell.value<int64_t>());
+                out.push_back(chunk.data[0].get_value<int64_t>(i));
             }
         }
         return out;

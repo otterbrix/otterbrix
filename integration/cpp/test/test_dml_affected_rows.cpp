@@ -78,7 +78,9 @@ TEST_CASE("integration::cpp::dml_affected_rows::returning") {
     auto updated = db.run("UPDATE ar.t SET v = 0 WHERE id = 2 RETURNING v;");
     CHECK_FALSE(updated->is_write());
     REQUIRE(updated->size() == 1);
-    CHECK(updated->value(0, 0).value<int64_t>() == 0);
+    auto cell0 = updated->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    CHECK(cell0.value() == 0);
 
     auto deleted = db.run("DELETE FROM ar.t WHERE id = 99 RETURNING id;");
     CHECK_FALSE(deleted->is_write());
@@ -107,7 +109,9 @@ TEST_CASE("integration::cpp::dml_affected_rows::writes_under_constraints") {
         CHECK_FALSE(deleted->is_write());
         REQUIRE(deleted->size() == 1);
         CHECK(deleted->column_count() == 1);
-        CHECK(deleted->value(0, 0).value<int64_t>() == 2);
+        auto cell1 = deleted->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        CHECK(cell1.value() == 2);
     }
 }
 

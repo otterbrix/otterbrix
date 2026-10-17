@@ -1,7 +1,5 @@
 #include "type_spec_codec.hpp"
 
-#include "logical_value.hpp"
-
 #include <cstring>
 #include <string>
 
@@ -246,9 +244,8 @@ namespace components::types {
                     const auto& entries = enm->entries();
                     put_pod<uint32_t>(out, static_cast<uint32_t>(entries.size()));
                     for (const auto& entry : entries) {
-                        const auto& entry_type = entry.type();
-                        put_str(out, entry_type.has_alias() ? entry_type.alias() : std::string{});
-                        put_pod<int32_t>(out, entry.value<int32_t>());
+                        put_str(out, entry.label);
+                        put_pod<int32_t>(out, entry.value);
                     }
                     return true;
                 }
@@ -422,7 +419,7 @@ namespace components::types {
                     if (entry_count > in.remaining() / 8) {
                         return corrupt(resource, "type spec decode: ENUM entry count exceeds buffer");
                     }
-                    std::vector<logical_value_t> entries;
+                    std::vector<enum_entry_t> entries;
                     entries.reserve(entry_count);
                     for (uint32_t i = 0; i < entry_count; ++i) {
                         auto label = in.str();
@@ -430,9 +427,7 @@ namespace components::types {
                         if (!in.ok) {
                             return corrupt(resource, "type spec decode: truncated ENUM entry");
                         }
-                        logical_value_t entry(resource, value);
-                        entry.set_alias(label);
-                        entries.push_back(std::move(entry));
+                        entries.push_back(enum_entry_t{std::move(label), value});
                     }
                     return complex_logical_type::create_enum(std::move(type_name),
                                                              std::move(entries),

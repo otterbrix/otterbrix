@@ -49,8 +49,9 @@ namespace {
     std::string plan_text(const components::cursor::cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            auto v = cur->value(0, r);
-            out += std::string(v.value<std::string_view>());
+            auto cell0 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            out += std::string(cell0.value());
             out += '\n';
         }
         return out;
@@ -89,8 +90,12 @@ namespace {
         REQUIRE(cur->is_success());
         std::map<int64_t, int64_t> key_to_id;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            const auto id = cur->value(0, r).value<int64_t>();
-            const auto k = cur->value(1, r).value<int64_t>();
+            auto cell1 = cur->get<int64_t>(0, r);
+            REQUIRE_FALSE(cell1.has_error());
+            const auto id = cell1.value();
+            auto cell2 = cur->get<int64_t>(1, r);
+            REQUIRE_FALSE(cell2.has_error());
+            const auto k = cell2.value();
             key_to_id.emplace(k, id);
         }
         return key_to_id;
@@ -130,7 +135,13 @@ namespace {
                 }
                 continue;
             }
-            if (cur->size() != 1 || cur->value(0, 0).value<int64_t>() != expected->second) {
+            if (cur->size() != 1) {
+                ++disagreements;
+                continue;
+            }
+            auto answer = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(answer.has_error());
+            if (answer.value() != expected->second) {
                 ++disagreements;
             }
         }

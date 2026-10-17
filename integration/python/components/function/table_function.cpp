@@ -1,10 +1,8 @@
 #include "table_function.hpp"
 #include <components/tableref/tableref.hpp>
 namespace components::function {
-    table_function_bind_input_t::table_function_bind_input_t(std::vector<types::logical_value_t>& inputs,
-                                                             tableref::table_ref_t& ref)
-        : inputs(inputs)
-        , ref(ref) {}
+    table_function_bind_input_t::table_function_bind_input_t(tableref::table_ref_t& ref)
+        : ref(ref) {}
 
     global_table_function_state_t::~global_table_function_state_t() = default;
 

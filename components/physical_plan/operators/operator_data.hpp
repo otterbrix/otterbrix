@@ -56,18 +56,17 @@ namespace components::operators {
 
     // Builds the 1-row columnar key carrier used to call manager_disk_t::read_chunks_by_key (and
     // mirrors the scan_by_keys columnar contract): one column per argument, cardinality 1, with each
-    // column's type derived from the argument's C++ type via the same to_logical_type<> mapping
-    // logical_value_t uses, and the cell written through the typed vector_t::set_value.
+    // column's type derived from the argument's C++ type via to_logical_type<>, and the cell written
+    // through the typed vector_t::set_value.
     //
     // The chunk carries no column NAMES: callers pass key column names separately (key_col_names), so
     // the arguments must be ordered POSITIONALLY to match key_col_names[] — the j-th argument is the
     // key for key_col_names[j]. The agent resolves names to storage column indices independently and
-    // reads keys.value(ki, 0) by the same positional index ki.
+    // reads keys by the same positional index ki.
     //
     // Pass string keys as std::string_view: a bare const char* maps to POINTER, not STRING_LITERAL.
     template<typename Val, typename... Vals>
-    requires(!std::is_same_v<std::remove_cvref_t<Val>, std::pmr::vector<types::logical_value_t>>) vector::data_chunk_t
-        make_key_chunk(std::pmr::memory_resource* resource, Val&& val, Vals&&... vals) {
+    vector::data_chunk_t make_key_chunk(std::pmr::memory_resource* resource, Val&& val, Vals&&... vals) {
         std::pmr::vector<types::complex_logical_type> col_types(resource);
         col_types.reserve(1 + sizeof...(Vals));
         col_types.emplace_back(types::to_logical_type<std::remove_cvref_t<Val>>());
@@ -85,8 +84,7 @@ namespace components::operators {
     // positional/no-column-names contract as make_key_chunk; an empty values[] yields a 1-capacity,
     // 0-row chunk (the read then returns an empty per-key result).
     template<typename T>
-    requires(!std::is_same_v<std::remove_cvref_t<T>, types::logical_value_t>) vector::data_chunk_t
-        make_keys_chunk(std::pmr::memory_resource* resource, const std::pmr::vector<T>& values) {
+    vector::data_chunk_t make_keys_chunk(std::pmr::memory_resource* resource, const std::pmr::vector<T>& values) {
         std::pmr::vector<types::complex_logical_type> col_types(resource);
         col_types.emplace_back(types::to_logical_type<std::remove_cvref_t<T>>());
         const std::size_t nrows = values.size();

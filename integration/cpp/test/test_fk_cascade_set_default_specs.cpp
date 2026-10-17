@@ -40,7 +40,7 @@ TEST_CASE("fk cascade: SET DEFAULT with fewer default specs than columns is refu
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("id");
     vector::data_chunk_t parent_rows(&resource, cols, 1);
-    parent_rows.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
+    parent_rows.set_value(0, 0, int64_t(1));
     parent_rows.set_cardinality(1);
 
     catalog::fk_info_t fk;

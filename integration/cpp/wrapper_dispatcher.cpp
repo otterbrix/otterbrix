@@ -3,7 +3,6 @@
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transform_result.hpp>
 #include <components/sql/transformer/utils.hpp>
-#include <components/types/logical_value.hpp>
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
 #include <services/dispatcher/dispatcher.hpp>
@@ -170,7 +169,7 @@ namespace otterbrix {
     cursor_t_ptr wrapper_dispatcher_t::execute_sql_with_params(
         const components::session::session_id_t& session,
         const std::string& query,
-        const std::vector<std::pair<size_t, components::types::logical_value_t>>& params,
+        const std::vector<std::pair<size_t, components::vector::vector_t>>& params,
         uint32_t render_id) {
         using namespace components::sql::transform;
 
@@ -209,14 +208,8 @@ namespace otterbrix {
         }
         transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
         auto binder = local_transformer.transform(pg_cell_to_node_cast(parse_result));
-        try {
-            for (const auto& [id, value] : params) {
-                binder.bind(id, value);
-            }
-        } catch (const std::exception& exception) {
-            return send_failed_plan(
-                session,
-                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{exception.what(), resource()}));
+        for (const auto& [id, value] : params) {
+            binder.bind(id, value);
         }
 
         auto finalized = binder.finalize();

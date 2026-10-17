@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -25,11 +26,16 @@ namespace {
 
     using components::cursor::cursor_t_ptr;
 
-    std::vector<int64_t> ids_of(const cursor_t_ptr& cur) {
+    // nullopt: a cell could not be read. Callable from reader threads, so no Catch assertions here.
+    std::optional<std::vector<int64_t>> ids_of(const cursor_t_ptr& cur) {
         std::vector<int64_t> out;
         out.reserve(cur->size());
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            out.push_back(cur->value(0, r).value<int64_t>());
+            auto cell0 = cur->get<int64_t>(0, r);
+            if (cell0.has_error()) {
+                return std::nullopt;
+            }
+            out.push_back(cell0.value());
         }
         std::sort(out.begin(), out.end());
         return out;
@@ -38,8 +44,9 @@ namespace {
     std::string plan_text(const cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            auto v = cur->value(0, r);
-            out += std::string(v.value<std::string_view>());
+            auto cell1 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell1.has_error());
+            out += std::string(cell1.value());
             out += '\n';
         }
         return out;
@@ -161,7 +168,12 @@ TEST_CASE("integration::cpp::index_concurrent_merge::readers_and_writers_share_o
                     read_failures.fetch_add(1, std::memory_order_relaxed);
                     continue;
                 }
-                if (ids_of(cur) != expected_anchor_ids) {
+                const auto ids = ids_of(cur);
+                if (!ids) {
+                    read_failures.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+                if (*ids != expected_anchor_ids) {
                     wrong_answers.fetch_add(1, std::memory_order_relaxed);
                 }
                 reads_done.fetch_add(1, std::memory_order_relaxed);

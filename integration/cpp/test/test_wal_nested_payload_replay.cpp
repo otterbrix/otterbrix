@@ -100,7 +100,9 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::array_payload_survi
 
         for (std::size_t i = 0; i < TOTAL_ROWS; ++i) {
             INFO("scalar column, row " << i);
-            REQUIRE(cur->value(0, i).value<int64_t>() == static_cast<int64_t>(i));
+            auto cell0 = cur->get<int64_t>(0, i);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == static_cast<int64_t>(i));
         }
 
         std::size_t mismatched_cells = 0;
@@ -112,18 +114,28 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::array_payload_survi
         std::size_t null_cells = 0;
 
         for (std::size_t i = 0; i < TOTAL_ROWS; ++i) {
-            auto cell = cur->value(1, i);
-            if (cell.children().size() != ARRAY_LENGTH) {
+            auto row_null = cur->is_null(1, i);
+            REQUIRE_FALSE(row_null.has_error());
+            if (row_null.value()) {
+                ++wrong_cardinality_rows;
+                continue;
+            }
+            auto length = cur->list_size(1, i);
+            REQUIRE_FALSE(length.has_error());
+            if (length.value() != ARRAY_LENGTH) {
                 ++wrong_cardinality_rows;
                 continue;
             }
             for (std::size_t j = 0; j < ARRAY_LENGTH; ++j) {
-                const auto& element = cell.children()[j];
-                if (element.is_null()) {
+                auto element_null = cur->is_null(1, i, {j});
+                REQUIRE_FALSE(element_null.has_error());
+                if (element_null.value()) {
                     ++null_cells;
                     continue;
                 }
-                const int64_t got = element.value<int64_t>();
+                auto element = cur->get<int64_t>(1, i, {j});
+                REQUIRE_FALSE(element.has_error());
+                const int64_t got = element.value();
                 const int64_t want = array_element(i, j);
                 if (got != want) {
                     ++mismatched_cells;
@@ -201,44 +213,74 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::list_and_struct_pay
 
         for (std::size_t i = 0; i < 5; ++i) {
             INFO("scalar column, row " << i);
-            REQUIRE(cur->value(0, i).value<int64_t>() == static_cast<int64_t>(i + 1));
+            auto cell1 = cur->get<int64_t>(0, i);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == static_cast<int64_t>(i + 1));
         }
 
         INFO("LIST, checkpointed row 1 — the durable path, the control");
         {
-            auto cell = cur->value(1, 0);
-            REQUIRE(cell.children().size() == 3);
-            CHECK(cell.children()[0].value<int64_t>() == 10);
-            CHECK(cell.children()[1].value<int64_t>() == 20);
-            CHECK(cell.children()[2].value<int64_t>() == 30);
+            auto cell6 = cur->list_size(1, 0);
+            REQUIRE_FALSE(cell6.has_error());
+            REQUIRE(cell6.value() == 3);
+            auto cell7 = cur->get<int64_t>(1, 0, {0});
+            REQUIRE_FALSE(cell7.has_error());
+            CHECK(cell7.value() == 10);
+            auto cell8 = cur->get<int64_t>(1, 0, {1});
+            REQUIRE_FALSE(cell8.has_error());
+            CHECK(cell8.value() == 20);
+            auto cell9 = cur->get<int64_t>(1, 0, {2});
+            REQUIRE_FALSE(cell9.has_error());
+            CHECK(cell9.value() == 30);
         }
 
         INFO("LIST, journal-only row 3 — five elements, longer than anything checkpointed");
         {
-            auto cell = cur->value(1, 2);
-            REQUIRE(cell.children().size() == 5);
-            CHECK(cell.children()[0].value<int64_t>() == 60);
-            CHECK(cell.children()[1].value<int64_t>() == 70);
-            CHECK(cell.children()[2].value<int64_t>() == 80);
-            CHECK(cell.children()[3].value<int64_t>() == 90);
-            CHECK(cell.children()[4].value<int64_t>() == 100);
+            auto cell10 = cur->list_size(1, 2);
+            REQUIRE_FALSE(cell10.has_error());
+            REQUIRE(cell10.value() == 5);
+            auto cell11 = cur->get<int64_t>(1, 2, {0});
+            REQUIRE_FALSE(cell11.has_error());
+            CHECK(cell11.value() == 60);
+            auto cell12 = cur->get<int64_t>(1, 2, {1});
+            REQUIRE_FALSE(cell12.has_error());
+            CHECK(cell12.value() == 70);
+            auto cell13 = cur->get<int64_t>(1, 2, {2});
+            REQUIRE_FALSE(cell13.has_error());
+            CHECK(cell13.value() == 80);
+            auto cell14 = cur->get<int64_t>(1, 2, {3});
+            REQUIRE_FALSE(cell14.has_error());
+            CHECK(cell14.value() == 90);
+            auto cell15 = cur->get<int64_t>(1, 2, {4});
+            REQUIRE_FALSE(cell15.has_error());
+            CHECK(cell15.value() == 100);
         }
 
         INFO("LIST, journal-only row 4 — content around an interior NULL");
         {
-            auto cell = cur->value(1, 3);
-            REQUIRE(cell.children().size() == 3);
-            CHECK(cell.children()[0].value<int64_t>() == 110);
-            CHECK(cell.children()[1].is_null());
-            CHECK(cell.children()[2].value<int64_t>() == 130);
+            auto cell16 = cur->list_size(1, 3);
+            REQUIRE_FALSE(cell16.has_error());
+            REQUIRE(cell16.value() == 3);
+            auto cell17 = cur->get<int64_t>(1, 3, {0});
+            REQUIRE_FALSE(cell17.has_error());
+            CHECK(cell17.value() == 110);
+            auto cell18 = cur->is_null(1, 3, {1});
+            REQUIRE_FALSE(cell18.has_error());
+            CHECK(cell18.value());
+            auto cell19 = cur->get<int64_t>(1, 3, {2});
+            REQUIRE_FALSE(cell19.has_error());
+            CHECK(cell19.value() == 130);
         }
 
         INFO("STRUCT, journal-only row 3 — both fields carry their values");
         {
-            auto cell = cur->value(2, 2);
-            REQUIRE(cell.children().size() == 2);
-            CHECK(cell.children()[0].value<int64_t>() == 31);
-            CHECK(cell.children()[1].value<int64_t>() == 32);
+            REQUIRE(cur->type_data()[2].child_types().size() == 2);
+            auto cell21 = cur->get<int64_t>(2, 2, {0});
+            REQUIRE_FALSE(cell21.has_error());
+            CHECK(cell21.value() == 31);
+            auto cell22 = cur->get<int64_t>(2, 2, {1});
+            REQUIRE_FALSE(cell22.has_error());
+            CHECK(cell22.value() == 32);
         }
 
         // Projects fields instead of reading the struct value: a NULL field would type the struct
@@ -249,8 +291,12 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::list_and_struct_pay
             INFO("error: " << (fields->is_error() ? fields->get_error().what : "none"));
             REQUIRE(fields->is_success());
             REQUIRE(fields->size() == 1);
-            CHECK(fields->value(0, 0).value<int64_t>() == 41);
-            CHECK(fields->value(1, 0).is_null());
+            auto cell2 = fields->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell2.has_error());
+            CHECK(cell2.value() == 41);
+            auto cell3 = fields->is_null(1, 0);
+            REQUIRE_FALSE(cell3.has_error());
+            CHECK(cell3.value());
         }
 
         INFO("the whole-cell NULLs of journal-only row 5 are still NULL");
@@ -258,13 +304,17 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::list_and_struct_pay
             auto null_list = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.n WHERE l IS NULL;");
             REQUIRE(null_list->is_success());
             REQUIRE(null_list->size() == 1);
-            CHECK(null_list->value(0, 0).value<int64_t>() == 5);
+            auto cell4 = null_list->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell4.has_error());
+            CHECK(cell4.value() == 5);
         }
         {
             auto null_struct = dispatcher->execute_sql(session, "SELECT id FROM TestDatabase.n WHERE p IS NULL;");
             REQUIRE(null_struct->is_success());
             REQUIRE(null_struct->size() == 1);
-            CHECK(null_struct->value(0, 0).value<int64_t>() == 5);
+            auto cell5 = null_struct->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell5.has_error());
+            CHECK(cell5.value() == 5);
         }
     }
 }

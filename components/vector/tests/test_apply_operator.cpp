@@ -3,6 +3,9 @@
 #include <components/vector/operations/apply_operator.hpp>
 #include <core/pmr.hpp>
 
+#include <optional>
+#include <vector>
+
 using namespace components;
 using components::operators::operator_code;
 using components::types::complex_logical_type;
@@ -278,5 +281,106 @@ TEST_CASE("vector::operations::comparison is length-aware for LIST") {
         REQUIRE_FALSE(out.get_value<bool>(0)); // [1,2,3] > [1,2]
         REQUIRE(out.get_value<bool>(1));       // [1,2]   < [1,2,3]
         REQUIRE_FALSE(out.get_value<bool>(2)); // equal
+    }
+}
+
+TEST_CASE("vector::operations::operands of different physical types are refused, not asserted") {
+    auto left = column<int64_t>(logical_type::BIGINT, {3});
+    auto right = column<double>(logical_type::DOUBLE, {2.5});
+    auto output = slot(logical_type::DOUBLE);
+
+    REQUIRE(
+        vector::operations::apply_binary(operator_code::multiply, left, right, &output, context(), 1).contains_error());
+    REQUIRE(vector::operations::apply_binary(operator_code::add, left, right, &output, context(), 1).contains_error());
+    auto flag = slot(logical_type::BOOLEAN);
+    REQUIRE(vector::operations::apply_binary(operator_code::less, left, right, &flag, context(), 1).contains_error());
+}
+
+TEST_CASE("vector::operations::decimal operands of different scales are refused, not asserted") {
+    auto decimal_type = [](uint8_t scale) {
+        auto type = complex_logical_type::create_decimal(resource(), 10, scale);
+        REQUIRE_FALSE(type.has_error());
+        return type.value();
+    };
+    vector_t left(resource(), decimal_type(2), capacity);
+    vector_t right(resource(), decimal_type(3), capacity);
+    vector_t output(resource(), decimal_type(2), capacity);
+    left.set_null(0, false);
+    right.set_null(0, false);
+    left.data<int64_t>()[0] = 150;
+    right.data<int64_t>()[0] = 1500;
+
+    REQUIRE(
+        vector::operations::apply_binary(operator_code::multiply, left, right, &output, context(), 1).contains_error());
+    REQUIRE(
+        vector::operations::apply_binary(operator_code::divide, left, right, &output, context(), 1).contains_error());
+}
+
+// A STRUCT value is a record (PostgreSQL 9.25.6): fields compare in order, two NULL fields are equal and a
+// NULL field sorts after every value; only a NULL row is UNKNOWN. Row constructors are rewritten by the transformer.
+TEST_CASE("vector::operations::top-level STRUCT comparison has record semantics") {
+    auto row_type = [] {
+        std::pmr::vector<complex_logical_type> children(resource());
+        for (char name : {'a', 'b'}) {
+            complex_logical_type child(logical_type::INTEGER);
+            child.set_alias(std::string(1, name));
+            children.push_back(std::move(child));
+        }
+        return complex_logical_type::create_struct("", children);
+    };
+    using cell = std::optional<int32_t>;
+    auto rows = [&](std::initializer_list<std::initializer_list<cell>> values) {
+        vector_t vec(resource(), row_type(), capacity);
+        uint64_t row = 0;
+        for (const auto& fields : values) {
+            size_t field = 0;
+            for (const auto& value : fields) {
+                auto& child = *vec.entries()[field++];
+                if (value.has_value()) {
+                    child.set_null(row, false);
+                    child.set_value(row, int32_t{*value});
+                } else {
+                    child.set_null(row, true);
+                }
+            }
+            row++;
+        }
+        return vec;
+    };
+    // 0: equal   1: differ in the last field   2: NULL = NULL   3: first field decides past a NULL
+    // 4: NULL against a value (sorts last)   5: NULL first field   6: whole row NULL
+    auto left =
+        rows({{1, 1}, {1, 1}, {1, std::nullopt}, {1, std::nullopt}, {1, std::nullopt}, {std::nullopt, 1}, {1, 1}});
+    auto right = rows({{1, 1}, {1, 2}, {1, std::nullopt}, {2, std::nullopt}, {1, 2}, {1, 1}, {1, 1}});
+    right.set_null(6, true);
+
+    auto run = [&](operator_code code) {
+        auto out = slot(logical_type::BOOLEAN);
+        REQUIRE_FALSE(vector::operations::apply_binary(code, left, right, &out, context(), 7).contains_error());
+        std::vector<std::optional<bool>> answer;
+        for (uint64_t row = 0; row < 7; row++) {
+            answer.push_back(out.is_null(row) ? std::nullopt : std::optional<bool>(out.get_value<bool>(row)));
+        }
+        return answer;
+    };
+    using answer = std::vector<std::optional<bool>>;
+    const std::optional<bool> unknown = std::nullopt;
+
+    REQUIRE(run(operator_code::equal) == answer{true, false, true, false, false, false, unknown});
+    REQUIRE(run(operator_code::not_equal) == answer{false, true, false, true, true, true, unknown});
+    REQUIRE(run(operator_code::less) == answer{false, true, false, true, false, false, unknown});
+    REQUIRE(run(operator_code::greater) == answer{false, false, false, false, true, true, unknown});
+    REQUIRE(run(operator_code::greater_equal) == answer{true, false, true, false, true, true, unknown});
+}
+
+TEST_CASE("vector::operations::two untyped NULLs compare to NULL instead of being read") {
+    vector_t left(resource(), complex_logical_type(logical_type::NA), capacity);
+    vector_t right(resource(), complex_logical_type(logical_type::NA), capacity);
+    left.set_null(0, true);
+    right.set_null(0, true);
+    for (auto code : {operator_code::equal, operator_code::less, operator_code::add}) {
+        auto out = slot(code == operator_code::add ? logical_type::BIGINT : logical_type::BOOLEAN);
+        REQUIRE_FALSE(vector::operations::apply_binary(code, left, right, &out, context(), 1).contains_error());
+        REQUIRE(out.is_null(0));
     }
 }

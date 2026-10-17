@@ -39,6 +39,18 @@ namespace services::index {
 
     void append_key_batch(key_batch_t* target, const key_batch_t& source, std::pmr::memory_resource* resource);
 
+    // A NULL constant in a value comparison cannot match any item (PostgreSQL 18: hashsearch.c,
+    // nbtpreprocesskeys.c); the null tests take a dummy key and never ask.
+    [[nodiscard]] inline bool key_is_null(const components::vector::vector_t& key) noexcept {
+        return key.type().type() == components::types::logical_type::NA || key.is_null(0);
+    }
+
+    // The inverse of for_each_key_bytes for ONE key: a one-row vector. Refuses, never asserts, on a tag byte
+    // for_each_key_bytes did not write for an indexable type, on a payload of the wrong length, and on
+    // trailing bytes.
+    [[nodiscard]] core::result_wrapper_t<components::vector::vector_t>
+    decode_key_bytes(std::pmr::memory_resource* resource, std::string_view bytes);
+
     // Calls `emit(row, key_bytes)` for every row of `keys`, NULL rows included.
     template<typename emit_t>
     [[nodiscard]] core::error_t for_each_key_bytes(const components::vector::vector_t& keys,

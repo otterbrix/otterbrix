@@ -42,11 +42,14 @@
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/vector/vector_builders.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <services/index/manager_index.hpp>
 
 #include <algorithm>
 #include <cassert>
 #include <limits>
+#include <optional>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -95,7 +98,7 @@ namespace services::dispatcher { namespace {
                 continue;
             }
             slots.push_back(bindings.size() + fill.size());
-            std::optional<components::types::logical_value_t> decoded;
+            std::optional<components::vector::vector_t> decoded;
             if (col.atthasdefault) {
                 if (auto ec = components::catalog::decode_default_spec(resource, col.type, col.attdefspec, decoded);
                     ec.contains_error()) {
@@ -106,10 +109,7 @@ namespace services::dispatcher { namespace {
                 i,
                 std::pmr::string{col.attname.c_str(), resource},
                 col.type,
-                decoded.has_value() ? std::move(*decoded)
-                                    : components::types::logical_value_t(resource,
-                                                                         components::types::complex_logical_type{
-                                                                             components::types::logical_type::NA})});
+                decoded.has_value() ? std::move(*decoded) : components::vector::make_null(resource, col.type)});
         }
         node->set_fill_list(std::move(fill));
         node->set_column_slots(std::move(slots));
@@ -210,7 +210,7 @@ namespace services::dispatcher { namespace {
                 static_cast<const components::types::decimal_logical_type_extension*>(target_type.extension());
             auto rebuilt_type = target_type;
             rebuilt_type.set_alias(std::string(chunks.front().data[column].type().alias()));
-            const bool narrow = rebuilt_type.to_physical_type() == components::types::physical_type::INT64;
+            const auto storage = rebuilt_type.to_physical_type();
             for (std::size_t ci = 0; ci < chunks.size(); ++ci) {
                 auto& chunk = chunks[ci];
                 components::vector::vector_t rebuilt(resource, rebuilt_type, chunk.capacity());
@@ -226,14 +226,20 @@ namespace services::dispatcher { namespace {
                     if (scaled.has_error()) {
                         return scaled.error();
                     }
-                    rebuilt.set_value(row,
-                                      narrow ? components::types::logical_value_t::create_decimal(
-                                                   resource,
-                                                   rebuilt_type,
-                                                   static_cast<int64_t>(scaled.value()))
-                                             : components::types::logical_value_t::create_decimal(resource,
-                                                                                                  rebuilt_type,
-                                                                                                  scaled.value()));
+                    switch (storage) {
+                        case components::types::physical_type::INT16:
+                            rebuilt.set_value(row, static_cast<int16_t>(scaled.value()));
+                            break;
+                        case components::types::physical_type::INT32:
+                            rebuilt.set_value(row, static_cast<int32_t>(scaled.value()));
+                            break;
+                        case components::types::physical_type::INT64:
+                            rebuilt.set_value(row, static_cast<int64_t>(scaled.value()));
+                            break;
+                        default:
+                            rebuilt.set_value(row, scaled.value());
+                            break;
+                    }
                 }
                 chunk.data[column] = std::move(rebuilt);
             }
@@ -242,6 +248,116 @@ namespace services::dispatcher { namespace {
                 auto declared = source->output_types();
                 if (column < declared.size()) {
                     declared[column] = rebuilt_type;
+                    source->set_output_types(std::move(declared));
+                }
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    // A cell that did not share its column's type is cast to the TABLE column's type here (validate stamped the
+    // cast), as PostgreSQL's transformInsertRow coerces every row. The column is rebuilt in that type for every
+    // chunk, so the binding's cast, resolved against the typed rows, no longer applies.
+    core::error_t spend_deferred_cells(components::logical_plan::node_insert_t* node,
+                                       core::date::timezone_offset_t session_tz) {
+        const auto& cells = node->deferred_cells();
+        if (cells.empty()) {
+            return core::error_t::no_error();
+        }
+        auto* resource = node->resource();
+        auto* source = node->children().empty() ? nullptr : node->children().front().get();
+        if (node->column_bindings().empty() || source == nullptr ||
+            source->type() != components::logical_plan::node_type::data_t) {
+            return core::error_t(core::error_code_t::schema_error,
+                                 std::pmr::string{"INSERT: VALUES cells of differing types cannot be resolved "
+                                                  "against the target columns",
+                                                  resource});
+        }
+        auto& chunks = static_cast<components::logical_plan::node_data_t*>(source)->chunks();
+        std::pmr::vector<uint64_t> chunk_start(chunks.size() + 1, 0, resource);
+        for (std::size_t i = 0; i < chunks.size(); ++i) {
+            chunk_start[i + 1] = chunk_start[i] + chunks[i].size();
+        }
+        const uint64_t total_rows = chunk_start.back();
+
+        using cell_ptrs = std::pmr::vector<const components::logical_plan::insert_deferred_cell_t*>;
+        std::pmr::unordered_map<uint64_t, cell_ptrs> by_column(resource);
+        for (const auto& cell : cells) {
+            if (cell.row >= total_rows || cell.column >= node->column_bindings().size()) {
+                return core::error_t(
+                    core::error_code_t::schema_error,
+                    std::pmr::string{"INSERT: a deferred VALUES cell points outside the VALUES list", resource});
+            }
+            auto found = by_column.find(cell.column);
+            if (found == by_column.end()) {
+                found = by_column.emplace(cell.column, cell_ptrs(resource)).first;
+            }
+            found->second.push_back(&cell);
+        }
+
+        const components::graph_execution_context settings{.timezone_offset = session_tz,
+                                                           .decimal_width = 0,
+                                                           .decimal_scale = 0};
+        for (const auto& [column, column_cells] : by_column) {
+            auto& binding = node->column_bindings()[column];
+            auto target_type = binding.target_type;
+            const auto first_chunk_type = chunks.front().data[column].type();
+            target_type.set_alias(std::string(first_chunk_type.alias()));
+            cell_ptrs by_row(total_rows, nullptr, resource);
+            for (const auto* cell : column_cells) {
+                by_row[cell->row] = cell;
+            }
+            for (std::size_t ci = 0; ci < chunks.size(); ++ci) {
+                auto& chunk = chunks[ci];
+                const auto& stored = chunk.data[column];
+                const uint64_t count = chunk.size();
+                if (stored.type() != first_chunk_type) {
+                    return core::error_t(core::error_code_t::schema_error,
+                                         std::pmr::string{"INSERT: a VALUES column of differing types spans several "
+                                                          "chunks",
+                                                          resource});
+                }
+                std::optional<components::vector::vector_t> casted;
+                if (binding.cast) {
+                    components::vector::vector_t converted(resource, target_type, count);
+                    if (auto error =
+                            binding.cast(components::casts::cast_kind::cast, stored, &converted, settings, count);
+                        error.contains_error()) {
+                        return error;
+                    }
+                    casted.emplace(std::move(converted));
+                }
+                components::vector::vector_t rebuilt(resource, target_type, chunk.capacity());
+                for (uint64_t row = 0; row < count; ++row) {
+                    const auto* cell = by_row[chunk_start[ci] + row];
+                    if (cell != nullptr) {
+                        if (cell->cast) {
+                            components::vector::vector_t cell_value(resource, target_type, 1);
+                            auto error = cell->cast(components::casts::cast_kind::cast,
+                                                    components::vector::make_flat_copy(resource, cell->value, 1),
+                                                    &cell_value,
+                                                    settings,
+                                                    1);
+                            if (error.contains_error()) {
+                                return error;
+                            }
+                            components::vector::vector_ops::copy(cell_value, rebuilt, 1, 0, row);
+                        } else {
+                            components::vector::vector_ops::copy(cell->value, rebuilt, 1, 0, row);
+                        }
+                    } else if (stored.is_null(row)) {
+                        rebuilt.set_null(row, true);
+                    } else {
+                        components::vector::vector_ops::copy(casted ? *casted : stored, rebuilt, row + 1, row, row);
+                    }
+                }
+                chunk.data[column] = std::move(rebuilt);
+            }
+            binding.cast = {};
+            if (source->has_output_types()) {
+                auto declared = source->output_types();
+                if (column < declared.size()) {
+                    declared[column] = target_type;
                     source->set_output_types(std::move(declared));
                 }
             }
@@ -391,6 +507,41 @@ namespace services::catalog_resolve {
             if (n->table_oid() == table_oid) {
                 n->set_table_has_indexes(has_indexes);
             }
+        });
+    }
+
+    // A DELETE's index mirror removes the old entries by value, so we have to read every key column.
+    void stamp_index_key_columns(components::logical_plan::node_t* root,
+                                 components::catalog::oid_t table_oid,
+                                 const std::pmr::vector<components::index::keys_base_storage_t>& indexes) {
+        using namespace components::logical_plan;
+        if (root == nullptr || table_oid == components::catalog::INVALID_OID || indexes.empty()) {
+            return;
+        }
+        for_each_node(root, [table_oid, &indexes](node_t* n) {
+            if (n->type() != node_type::delete_t || n->table_oid() != table_oid || n->table_metadata() == nullptr) {
+                return;
+            }
+            const auto& columns = n->table_metadata()->columns;
+            std::vector<size_t> key_columns;
+            for (const auto& keys : indexes) {
+                for (const auto& key : keys) {
+                    auto name = key.as_string();
+                    auto found = std::find_if(columns.begin(), columns.end(), [&name](const auto& column) {
+                        return column.attname == name;
+                    });
+                    if (found == columns.end()) {
+                        key_columns.clear();
+                        for (size_t column = 0; column < columns.size(); ++column) {
+                            key_columns.push_back(column);
+                        }
+                        static_cast<node_delete_t*>(n)->set_index_key_columns(std::move(key_columns));
+                        return;
+                    }
+                    key_columns.push_back(static_cast<size_t>(found - columns.begin()));
+                }
+            }
+            static_cast<node_delete_t*>(n)->set_index_key_columns(std::move(key_columns));
         });
     }
 
@@ -929,6 +1080,9 @@ namespace services::dispatcher { namespace {
                 if (auto ec = spend_literal_digits(node); ec.contains_error()) {
                     co_return ec;
                 }
+                if (auto ec = spend_deferred_cells(node, ctx.session_tz); ec.contains_error()) {
+                    co_return ec;
+                }
                 const auto* md = node->table_metadata();
                 if (md != nullptr) {
                     if (auto ec = build_insert_fill_list(node, *md); ec.contains_error()) {
@@ -1273,6 +1427,7 @@ namespace services::dispatcher {
             for (std::size_t i = 0; i < keys_futures.size(); ++i) {
                 auto keys = co_await std::move(keys_futures[i]);
                 catalog_resolve::stamp_table_has_indexes(root.get(), queried_oids[i], !keys.empty());
+                catalog_resolve::stamp_index_key_columns(root.get(), queried_oids[i], keys);
                 collections_ctx->index_info_slot(queried_oids[i]).keys = std::move(keys);
             }
             for (std::size_t i = 0; i < desc_futures.size(); ++i) {

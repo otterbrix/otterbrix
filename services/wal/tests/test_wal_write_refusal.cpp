@@ -306,3 +306,192 @@ TEST_CASE("wal::refusal::the_insert_payload_is_built_on_the_fixture_arena") {
     REQUIRE(batch.get_allocator().resource() == &env.resource_);
     REQUIRE(batch.front().resource() == &env.resource_);
 }
+
+// The reader refuses a record whose attoid count differs from a chunk's column count, and the engine then
+// cannot start: the writer must refuse that shape before anything reaches the journal.
+TEST_CASE("wal::refusal::an_insert_whose_attoids_do_not_match_its_columns_is_refused_at_write") {
+    const auto path = base_path() / "attoid_shape";
+    auto log = make_test_log();
+    core::pmr::otterbrix_resource resource;
+    configuration::config_wal config(path);
+
+    {
+        wal_env_t env(path);
+        auto good_fut = env.send_insert(/*txn_id=*/600, /*rows=*/3);
+        REQUIRE_FALSE(await_ready(good_fut).has_error());
+
+        auto batch = env.make_insert_batch(3);
+        auto attoids = wal_test::attoids_for(batch);
+        attoids.pop_back();
+        auto [ns, bad_fut] = actor_zeta::otterbrix::send(env.manager_->address(),
+                                                         &manager_wal_replicate_t::write_physical_insert,
+                                                         session_id_t::generate_uid(),
+                                                         kTestTableOid,
+                                                         std::move(attoids),
+                                                         std::move(batch),
+                                                         uint64_t{3},
+                                                         uint64_t{3},
+                                                         uint64_t{601},
+                                                         uint64_t{0},
+                                                         kMainDb);
+        auto bad_result = await_ready(bad_fut);
+        INFO("attoids narrower than the chunk are the record the reader cannot open");
+        REQUIRE(bad_result.has_error());
+        REQUIRE(bad_result.error().type == core::error_code_t::invalid_parameter);
+
+        auto commit_good = env.send_commit(/*txn_id=*/600, wal_sync_mode::FULL);
+        REQUIRE_FALSE(await_ready(commit_good).has_error());
+        auto commit_bad = env.send_commit(/*txn_id=*/601, wal_sync_mode::FULL);
+        REQUIRE_FALSE(await_ready(commit_bad).has_error());
+    }
+
+    wal_reader_t reader(&resource, config, log);
+    auto records = reader.read_committed_records();
+    REQUIRE_FALSE(records.has_error());
+    size_t inserts = 0;
+    for (const auto& record : records.value()) {
+        if (record.record_type == wal_record_type::PHYSICAL_INSERT) {
+            REQUIRE(record.transaction_id == 600);
+            inserts++;
+        }
+    }
+    REQUIRE(inserts == 1);
+}
+
+namespace {
+
+    size_t committed_records_of(const std::filesystem::path& path, wal_record_type type, uint64_t txn_id) {
+        auto log = make_test_log();
+        core::pmr::otterbrix_resource resource;
+        configuration::config_wal config(path);
+        wal_reader_t reader(&resource, config, log);
+        auto records = reader.read_committed_records();
+        REQUIRE_FALSE(records.has_error());
+        size_t found = 0;
+        for (const auto& record : records.value()) {
+            if (record.record_type == type && record.transaction_id == txn_id) {
+                found++;
+            }
+        }
+        return found;
+    }
+
+    std::unique_ptr<data_chunk_t> one_column_schema(std::pmr::memory_resource* arena) {
+        std::pmr::vector<components::types::complex_logical_type> types(arena);
+        types.emplace_back(components::types::logical_type::BIGINT);
+        auto chunk = std::make_unique<data_chunk_t>(arena, types, 1);
+        chunk->set_cardinality(1);
+        chunk->set_value(0, 0, int64_t{1});
+        return chunk;
+    }
+
+} // namespace
+
+// The ADD_COLUMN half of a grow is appended before the insert half is looked at, so a wrong insert shape must be
+// refused up front or the schema-growth record stays in the journal alone.
+TEST_CASE("wal::refusal::a_grow_whose_insert_shape_is_wrong_journals_nothing") {
+    const auto path = base_path() / "grow_shape";
+    {
+        wal_env_t env(path);
+        auto batch = env.make_insert_batch(3);
+        auto attoids = wal_test::attoids_for(batch);
+        attoids.pop_back();
+        auto [ns, fut] = actor_zeta::otterbrix::send(env.manager_->address(),
+                                                     &manager_wal_replicate_t::write_physical_grow,
+                                                     session_id_t::generate_uid(),
+                                                     kTestTableOid,
+                                                     one_column_schema(&env.resource_),
+                                                     uint64_t{0},
+                                                     std::move(attoids),
+                                                     std::move(batch),
+                                                     uint64_t{0},
+                                                     uint64_t{3},
+                                                     uint64_t{700},
+                                                     uint64_t{0},
+                                                     kMainDb);
+        auto result = await_ready(fut);
+        REQUIRE(result.has_error());
+        REQUIRE(result.error().type == core::error_code_t::invalid_parameter);
+        auto commit = env.send_commit(/*txn_id=*/700, wal_sync_mode::FULL);
+        REQUIRE_FALSE(await_ready(commit).has_error());
+    }
+    CHECK(committed_records_of(path, wal_record_type::PHYSICAL_ADD_COLUMN, 700) == 0);
+    CHECK(committed_records_of(path, wal_record_type::PHYSICAL_INSERT, 700) == 0);
+}
+
+// Without the guard the update is journaled with one attoid short of its chunk, the shape the reader refuses.
+TEST_CASE("wal::refusal::an_update_whose_attoids_do_not_match_its_columns_is_refused_at_write") {
+    const auto path = base_path() / "update_shape";
+    {
+        wal_env_t env(path);
+        auto send_update = [&](uint64_t txn_id, bool break_shape) {
+            auto batch = env.make_insert_batch(3);
+            auto attoids = wal_test::attoids_for(batch);
+            if (break_shape) {
+                attoids.pop_back();
+            }
+            std::pmr::vector<int64_t> row_ids({0, 1, 2}, &env.resource_);
+            auto [ns, fut] = actor_zeta::otterbrix::send(env.manager_->address(),
+                                                         &manager_wal_replicate_t::write_physical_update,
+                                                         session_id_t::generate_uid(),
+                                                         kTestTableOid,
+                                                         std::move(row_ids),
+                                                         std::move(attoids),
+                                                         std::move(batch),
+                                                         uint64_t{3},
+                                                         txn_id,
+                                                         uint64_t{0},
+                                                         kMainDb);
+            return std::move(fut);
+        };
+        auto good = send_update(800, false);
+        REQUIRE_FALSE(await_ready(good).has_error());
+        auto bad = send_update(801, true);
+        auto bad_result = await_ready(bad);
+        REQUIRE(bad_result.has_error());
+        REQUIRE(bad_result.error().type == core::error_code_t::invalid_parameter);
+        auto commit_good = env.send_commit(800, wal_sync_mode::FULL);
+        REQUIRE_FALSE(await_ready(commit_good).has_error());
+        auto commit_bad = env.send_commit(801, wal_sync_mode::FULL);
+        REQUIRE_FALSE(await_ready(commit_bad).has_error());
+    }
+    CHECK(committed_records_of(path, wal_record_type::PHYSICAL_UPDATE, 800) == 1);
+    CHECK(committed_records_of(path, wal_record_type::PHYSICAL_UPDATE, 801) == 0);
+}
+
+// Without the guard the record carries a 1-column schema chunk under 2 attoids, which the reader refuses.
+TEST_CASE("wal::refusal::an_add_column_whose_attoids_do_not_match_its_columns_is_refused_at_write") {
+    const auto path = base_path() / "add_column_shape";
+    {
+        wal_env_t env(path);
+        auto send_add_column = [&](uint64_t txn_id, size_t attoid_count) {
+            column_attoids_t attoids(&env.resource_);
+            for (size_t i = 0; i < attoid_count; i++) {
+                attoids.push_back(catalog::FIRST_USER_OID + 100 + static_cast<catalog::oid_t>(i));
+            }
+            auto [ns, fut] = actor_zeta::otterbrix::send(env.manager_->address(),
+                                                         &manager_wal_replicate_t::write_physical_add_column,
+                                                         session_id_t::generate_uid(),
+                                                         kTestTableOid,
+                                                         std::move(attoids),
+                                                         one_column_schema(&env.resource_),
+                                                         uint64_t{0},
+                                                         txn_id,
+                                                         uint64_t{0},
+                                                         kMainDb);
+            return std::move(fut);
+        };
+        auto good = send_add_column(900, 1);
+        REQUIRE_FALSE(await_ready(good).has_error());
+        auto bad = send_add_column(901, 2);
+        auto bad_result = await_ready(bad);
+        REQUIRE(bad_result.has_error());
+        REQUIRE(bad_result.error().type == core::error_code_t::invalid_parameter);
+        auto commit_good = env.send_commit(900, wal_sync_mode::FULL);
+        REQUIRE_FALSE(await_ready(commit_good).has_error());
+        auto commit_bad = env.send_commit(901, wal_sync_mode::FULL);
+        REQUIRE_FALSE(await_ready(commit_bad).has_error());
+    }
+    CHECK(committed_records_of(path, wal_record_type::PHYSICAL_ADD_COLUMN, 900) == 1);
+    CHECK(committed_records_of(path, wal_record_type::PHYSICAL_ADD_COLUMN, 901) == 0);
+}

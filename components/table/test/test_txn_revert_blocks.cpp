@@ -144,9 +144,8 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                const auto k = chunk.value(0, i).value<int64_t>();
-                const auto cell = chunk.value(1, i);
-                const std::string v{cell.value<std::string_view>()};
+                const auto k = chunk.data[0].get_value<int64_t>(i);
+                const std::string v{chunk.data[1].get_value<std::string_view>(i)};
                 INFO("row #" << rows << ": k=" << k << " v=" << v.substr(0, 32));
                 REQUIRE(k == static_cast<int64_t>(rows));
                 REQUIRE(v == payload_of(rows, width));

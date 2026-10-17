@@ -21,9 +21,6 @@ namespace components::vector {
     inline constexpr bool is_tuple_v<std::tuple<Ts...>> = true;
 
     template<typename T>
-    concept non_logical_value_arg = !std::is_same_v<std::remove_cvref_t<T>, types::logical_value_t>;
-
-    template<typename T>
     T sequence_entry(int64_t value);
 
     template<typename T>

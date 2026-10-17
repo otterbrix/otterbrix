@@ -129,7 +129,6 @@ namespace components::table {
                              const vector::vector_t& row_identifiers,
                              uint64_t fetch_count,
                              column_fetch_state& state,
-                             const std::vector<size_t>& projected_cols,
                              const transaction_data& txn,
                              fetch_visibility_t visibility) {
         auto row_ids = row_identifiers.data<int64_t>();
@@ -160,7 +159,7 @@ namespace components::table {
 #ifdef DEV_MODE
             note_gather_row_fetched();
 #endif
-            row_group->fetch_row(state, column_ids, row_id, result, count, projected_cols);
+            row_group->fetch_row(state, column_ids, row_id, result, count);
             produced_ids[count] = row_id;
             stamped++;
             count++;

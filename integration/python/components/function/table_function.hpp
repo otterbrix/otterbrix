@@ -54,8 +54,7 @@ namespace components::function {
     };
 
     struct table_function_bind_input_t {
-        table_function_bind_input_t(std::vector<types::logical_value_t>& inputs, tableref::table_ref_t& ref);
-        std::vector<types::logical_value_t>& inputs;
+        explicit table_function_bind_input_t(tableref::table_ref_t& ref);
         tableref::table_ref_t& ref;
     };
 

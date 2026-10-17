@@ -36,7 +36,7 @@ namespace {
             }
             case logical_plan::node_type::aggregate_t: {
                 const auto* agg = static_cast<const logical_plan::node_aggregate_t*>(node.get());
-                shape.read_cap |= agg->read_cap().limit() != logical_plan::limit_t::unlimit().limit();
+                shape.read_cap |= agg->read_cap().is_capped();
                 shape.projected_cols |= !agg->projected_cols().empty();
                 break;
             }

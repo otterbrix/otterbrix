@@ -70,10 +70,18 @@ TEST_CASE("integration::cpp::test_join") {
             REQUIRE(cur->size() == 26);
 
             for (size_t num = 0; num < 26; ++num) {
-                REQUIRE(cur->value(1, num).value<int64_t>() == (static_cast<int64_t>(num) + 25) * 2);
-                REQUIRE(cur->value(4, num).value<int64_t>() == (static_cast<int64_t>(num) + 25) * 2);
-                REQUIRE(cur->value(3, num).value<int64_t>() == (static_cast<int64_t>(num) + 25) * 2 * 10);
-                REQUIRE(cur->value(0, num).value<std::string_view>() == "Name " + std::to_string((num + 25) * 2));
+                auto cell0 = cur->get<int64_t>(1, num);
+                REQUIRE_FALSE(cell0.has_error());
+                REQUIRE(cell0.value() == (static_cast<int64_t>(num) + 25) * 2);
+                auto cell1 = cur->get<int64_t>(4, num);
+                REQUIRE_FALSE(cell1.has_error());
+                REQUIRE(cell1.value() == (static_cast<int64_t>(num) + 25) * 2);
+                auto cell2 = cur->get<int64_t>(3, num);
+                REQUIRE_FALSE(cell2.has_error());
+                REQUIRE(cell2.value() == (static_cast<int64_t>(num) + 25) * 2 * 10);
+                auto cell3 = cur->get<std::string_view>(0, num);
+                REQUIRE_FALSE(cell3.has_error());
+                REQUIRE(cell3.value() == "Name " + std::to_string((num + 25) * 2));
             }
         }
     }
@@ -94,28 +102,60 @@ TEST_CASE("integration::cpp::test_join") {
             REQUIRE(cur->size() == 101);
 
             for (size_t num = 0; num < 50; ++num) {
-                REQUIRE(cur->value(1, num).value<int64_t>() == static_cast<int64_t>(num));
-                REQUIRE(cur->value(4, num).is_null());
-                REQUIRE(cur->value(3, num).is_null());
-                REQUIRE(cur->value(0, num).value<std::string_view>() == "Name " + std::to_string(num));
+                auto cell4 = cur->get<int64_t>(1, num);
+                REQUIRE_FALSE(cell4.has_error());
+                REQUIRE(cell4.value() == static_cast<int64_t>(num));
+                auto cell5 = cur->is_null(4, num);
+                REQUIRE_FALSE(cell5.has_error());
+                REQUIRE(cell5.value());
+                auto cell6 = cur->is_null(3, num);
+                REQUIRE_FALSE(cell6.has_error());
+                REQUIRE(cell6.value());
+                auto cell7 = cur->get<std::string_view>(0, num);
+                REQUIRE_FALSE(cell7.has_error());
+                REQUIRE(cell7.value() == "Name " + std::to_string(num));
             }
             size_t row = 50;
             for (int num = 0; num < 50; num += 2) {
-                REQUIRE(cur->value(1, row).value<int64_t>() == num + 50);
-                REQUIRE(cur->value(4, row).value<int64_t>() == num + 50);
-                REQUIRE(cur->value(3, row).value<int64_t>() == (num + 50) * 10);
-                REQUIRE(cur->value(0, row).value<std::string_view>() == "Name " + std::to_string(num + 50));
+                auto cell8 = cur->get<int64_t>(1, row);
+                REQUIRE_FALSE(cell8.has_error());
+                REQUIRE(cell8.value() == num + 50);
+                auto cell9 = cur->get<int64_t>(4, row);
+                REQUIRE_FALSE(cell9.has_error());
+                REQUIRE(cell9.value() == num + 50);
+                auto cell10 = cur->get<int64_t>(3, row);
+                REQUIRE_FALSE(cell10.has_error());
+                REQUIRE(cell10.value() == (num + 50) * 10);
+                auto cell11 = cur->get<std::string_view>(0, row);
+                REQUIRE_FALSE(cell11.has_error());
+                REQUIRE(cell11.value() == "Name " + std::to_string(num + 50));
                 ++row;
-                REQUIRE(cur->value(1, row).value<int64_t>() == num + 51);
-                REQUIRE(cur->value(4, row).is_null());
-                REQUIRE(cur->value(3, row).is_null());
-                REQUIRE(cur->value(0, row).value<std::string_view>() == "Name " + std::to_string(num + 51));
+                auto cell12 = cur->get<int64_t>(1, row);
+                REQUIRE_FALSE(cell12.has_error());
+                REQUIRE(cell12.value() == num + 51);
+                auto cell13 = cur->is_null(4, row);
+                REQUIRE_FALSE(cell13.has_error());
+                REQUIRE(cell13.value());
+                auto cell14 = cur->is_null(3, row);
+                REQUIRE_FALSE(cell14.has_error());
+                REQUIRE(cell14.value());
+                auto cell15 = cur->get<std::string_view>(0, row);
+                REQUIRE_FALSE(cell15.has_error());
+                REQUIRE(cell15.value() == "Name " + std::to_string(num + 51));
                 ++row;
             }
-            REQUIRE(cur->value(1, 100).value<int64_t>() == 100);
-            REQUIRE(cur->value(4, 100).value<int64_t>() == 100);
-            REQUIRE(cur->value(3, 100).value<int64_t>() == 1000);
-            REQUIRE(cur->value(0, 100).value<std::string_view>() == "Name 100");
+            auto cell16 = cur->get<int64_t>(1, 100);
+            REQUIRE_FALSE(cell16.has_error());
+            REQUIRE(cell16.value() == 100);
+            auto cell17 = cur->get<int64_t>(4, 100);
+            REQUIRE_FALSE(cell17.has_error());
+            REQUIRE(cell17.value() == 100);
+            auto cell18 = cur->get<int64_t>(3, 100);
+            REQUIRE_FALSE(cell18.has_error());
+            REQUIRE(cell18.value() == 1000);
+            auto cell19 = cur->get<std::string_view>(0, 100);
+            REQUIRE_FALSE(cell19.has_error());
+            REQUIRE(cell19.value() == "Name 100");
         }
     }
 
@@ -135,17 +175,33 @@ TEST_CASE("integration::cpp::test_join") {
             REQUIRE(cur->size() == 100);
 
             for (size_t num = 0; num < 26; ++num) {
-                REQUIRE(cur->value(1, num).value<int64_t>() == static_cast<int64_t>(num) * 2 + 50);
-                REQUIRE(cur->value(4, num).value<int64_t>() == static_cast<int64_t>(num) * 2 + 50);
-                REQUIRE(cur->value(3, num).value<int64_t>() == (static_cast<int64_t>(num) * 2 + 50) * 10);
-                REQUIRE(cur->value(0, num).value<std::string_view>() == "Name " + std::to_string(num * 2 + 50));
+                auto cell20 = cur->get<int64_t>(1, num);
+                REQUIRE_FALSE(cell20.has_error());
+                REQUIRE(cell20.value() == static_cast<int64_t>(num) * 2 + 50);
+                auto cell21 = cur->get<int64_t>(4, num);
+                REQUIRE_FALSE(cell21.has_error());
+                REQUIRE(cell21.value() == static_cast<int64_t>(num) * 2 + 50);
+                auto cell22 = cur->get<int64_t>(3, num);
+                REQUIRE_FALSE(cell22.has_error());
+                REQUIRE(cell22.value() == (static_cast<int64_t>(num) * 2 + 50) * 10);
+                auto cell23 = cur->get<std::string_view>(0, num);
+                REQUIRE_FALSE(cell23.has_error());
+                REQUIRE(cell23.value() == "Name " + std::to_string(num * 2 + 50));
             }
             for (size_t num = 0; num < 74; ++num) {
                 size_t row = 26 + num;
-                REQUIRE(cur->value(1, row).is_null());
-                REQUIRE(cur->value(4, row).value<int64_t>() == static_cast<int64_t>(num) * 2 + 102);
-                REQUIRE(cur->value(3, row).value<int64_t>() == (static_cast<int64_t>(num) * 2 + 102) * 10);
-                REQUIRE(cur->value(0, row).is_null());
+                auto cell24 = cur->is_null(1, row);
+                REQUIRE_FALSE(cell24.has_error());
+                REQUIRE(cell24.value());
+                auto cell25 = cur->get<int64_t>(4, row);
+                REQUIRE_FALSE(cell25.has_error());
+                REQUIRE(cell25.value() == static_cast<int64_t>(num) * 2 + 102);
+                auto cell26 = cur->get<int64_t>(3, row);
+                REQUIRE_FALSE(cell26.has_error());
+                REQUIRE(cell26.value() == (static_cast<int64_t>(num) * 2 + 102) * 10);
+                auto cell27 = cur->is_null(0, row);
+                REQUIRE_FALSE(cell27.has_error());
+                REQUIRE(cell27.value());
             }
         }
     }
@@ -166,34 +222,74 @@ TEST_CASE("integration::cpp::test_join") {
             REQUIRE(cur->size() == 175);
 
             for (size_t num = 0; num < 50; ++num) {
-                REQUIRE(cur->value(1, num).value<int64_t>() == static_cast<int64_t>(num));
-                REQUIRE(cur->value(4, num).is_null());
-                REQUIRE(cur->value(3, num).is_null());
-                REQUIRE(cur->value(0, num).value<std::string_view>() == "Name " + std::to_string(num));
+                auto cell28 = cur->get<int64_t>(1, num);
+                REQUIRE_FALSE(cell28.has_error());
+                REQUIRE(cell28.value() == static_cast<int64_t>(num));
+                auto cell29 = cur->is_null(4, num);
+                REQUIRE_FALSE(cell29.has_error());
+                REQUIRE(cell29.value());
+                auto cell30 = cur->is_null(3, num);
+                REQUIRE_FALSE(cell30.has_error());
+                REQUIRE(cell30.value());
+                auto cell31 = cur->get<std::string_view>(0, num);
+                REQUIRE_FALSE(cell31.has_error());
+                REQUIRE(cell31.value() == "Name " + std::to_string(num));
             }
             size_t row = 50;
             for (int num = 0; num < 50; num += 2) {
-                REQUIRE(cur->value(1, row).value<int64_t>() == num + 50);
-                REQUIRE(cur->value(4, row).value<int64_t>() == num + 50);
-                REQUIRE(cur->value(3, row).value<int64_t>() == (num + 50) * 10);
-                REQUIRE(cur->value(0, row).value<std::string_view>() == "Name " + std::to_string(num + 50));
+                auto cell32 = cur->get<int64_t>(1, row);
+                REQUIRE_FALSE(cell32.has_error());
+                REQUIRE(cell32.value() == num + 50);
+                auto cell33 = cur->get<int64_t>(4, row);
+                REQUIRE_FALSE(cell33.has_error());
+                REQUIRE(cell33.value() == num + 50);
+                auto cell34 = cur->get<int64_t>(3, row);
+                REQUIRE_FALSE(cell34.has_error());
+                REQUIRE(cell34.value() == (num + 50) * 10);
+                auto cell35 = cur->get<std::string_view>(0, row);
+                REQUIRE_FALSE(cell35.has_error());
+                REQUIRE(cell35.value() == "Name " + std::to_string(num + 50));
                 ++row;
-                REQUIRE(cur->value(1, row).value<int64_t>() == num + 51);
-                REQUIRE(cur->value(4, row).is_null());
-                REQUIRE(cur->value(3, row).is_null());
-                REQUIRE(cur->value(0, row).value<std::string_view>() == "Name " + std::to_string(num + 51));
+                auto cell36 = cur->get<int64_t>(1, row);
+                REQUIRE_FALSE(cell36.has_error());
+                REQUIRE(cell36.value() == num + 51);
+                auto cell37 = cur->is_null(4, row);
+                REQUIRE_FALSE(cell37.has_error());
+                REQUIRE(cell37.value());
+                auto cell38 = cur->is_null(3, row);
+                REQUIRE_FALSE(cell38.has_error());
+                REQUIRE(cell38.value());
+                auto cell39 = cur->get<std::string_view>(0, row);
+                REQUIRE_FALSE(cell39.has_error());
+                REQUIRE(cell39.value() == "Name " + std::to_string(num + 51));
                 ++row;
             }
-            REQUIRE(cur->value(1, 100).value<int64_t>() == 100);
-            REQUIRE(cur->value(4, 100).value<int64_t>() == 100);
-            REQUIRE(cur->value(3, 100).value<int64_t>() == 1000);
-            REQUIRE(cur->value(0, 100).value<std::string_view>() == "Name 100");
+            auto cell40 = cur->get<int64_t>(1, 100);
+            REQUIRE_FALSE(cell40.has_error());
+            REQUIRE(cell40.value() == 100);
+            auto cell41 = cur->get<int64_t>(4, 100);
+            REQUIRE_FALSE(cell41.has_error());
+            REQUIRE(cell41.value() == 100);
+            auto cell42 = cur->get<int64_t>(3, 100);
+            REQUIRE_FALSE(cell42.has_error());
+            REQUIRE(cell42.value() == 1000);
+            auto cell43 = cur->get<std::string_view>(0, 100);
+            REQUIRE_FALSE(cell43.has_error());
+            REQUIRE(cell43.value() == "Name 100");
             for (size_t num = 0; num < 74; ++num) {
                 row = 101 + num;
-                REQUIRE(cur->value(1, row).is_null());
-                REQUIRE(cur->value(4, row).value<int64_t>() == static_cast<int64_t>(num) * 2 + 102);
-                REQUIRE(cur->value(3, row).value<int64_t>() == (static_cast<int64_t>(num) * 2 + 102) * 10);
-                REQUIRE(cur->value(0, row).is_null());
+                auto cell44 = cur->is_null(1, row);
+                REQUIRE_FALSE(cell44.has_error());
+                REQUIRE(cell44.value());
+                auto cell45 = cur->get<int64_t>(4, row);
+                REQUIRE_FALSE(cell45.has_error());
+                REQUIRE(cell45.value() == static_cast<int64_t>(num) * 2 + 102);
+                auto cell46 = cur->get<int64_t>(3, row);
+                REQUIRE_FALSE(cell46.has_error());
+                REQUIRE(cell46.value() == (static_cast<int64_t>(num) * 2 + 102) * 10);
+                auto cell47 = cur->is_null(0, row);
+                REQUIRE_FALSE(cell47.has_error());
+                REQUIRE(cell47.value());
             }
         }
     }

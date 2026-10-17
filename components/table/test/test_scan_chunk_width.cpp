@@ -4,7 +4,9 @@
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/vector/cell_equal.hpp>
+#include <components/vector/vector_builders.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <core/file/local_file_system.hpp>
 
 #include <cerrno>
@@ -45,12 +47,12 @@ namespace {
         return t;
     }
 
-    logical_value_t list_of(env_t& env, uint64_t length) {
-        std::vector<logical_value_t> values;
+    vector_t list_of(env_t& env, uint64_t length) {
+        std::vector<vector_t> values;
         for (uint64_t j = 0; j < length; j++) {
-            values.emplace_back(&env.resource, std::string_view{"e"});
+            values.push_back(make_scalar(&env.resource, std::string_view{"e"}));
         }
-        return logical_value_t::create_list_from_type(&env.resource, list_type(), values);
+        return make_list(&env.resource, list_type().child_type(), values);
     }
 
     // (k BIGINT, v LIST<STRING>), three committed rows, row i's list has i + 1 elements; nullptr on any error.
@@ -65,7 +67,7 @@ namespace {
         chunk.set_cardinality(3);
         for (uint64_t i = 0; i < 3; i++) {
             chunk.set_value(0, i, static_cast<int64_t>(10 + i));
-            chunk.set_value(1, i, list_of(env, i + 1));
+            vector_ops::copy(list_of(env, i + 1), chunk.data[1], 1, 0, i);
         }
         table_append_state state(&env.resource);
         if (table->append_lock(state).has_error() || table->initialize_append(state).has_error() ||
@@ -84,8 +86,8 @@ namespace {
 #ifndef NDEBUG
     constexpr int setup_failed = 3;
 
-    // Scans ordinal 1 into a one-column chunk.
-    [[noreturn]] void scan_into_a_narrow_chunk(const std::string& path) {
+    // Scans ordinal 1 alone into a chunk as wide as the table.
+    [[noreturn]] void scan_into_a_wide_chunk(const std::string& path) {
         env_t env;
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         if (bm.create_new_database().has_error()) {
@@ -97,10 +99,8 @@ namespace {
         }
         table_scan_state state(&env.resource);
         table->initialize_scan(state, only_v(), transaction_data::committed(), nullptr);
-        std::pmr::vector<complex_logical_type> one_type(&env.resource);
-        one_type.push_back(list_type());
-        data_chunk_t narrow(&env.resource, one_type, DEFAULT_VECTOR_CAPACITY);
-        table->scan(narrow, state);
+        data_chunk_t wide(&env.resource, table->copy_types(), DEFAULT_VECTOR_CAPACITY);
+        table->scan(wide, state);
         std::_Exit(0);
     }
 
@@ -122,7 +122,7 @@ namespace {
             ::dup2(fds[1], STDERR_FILENO);
             ::close(fds[1]);
             ::signal(SIGABRT, SIG_DFL);
-            scan_into_a_narrow_chunk(path);
+            scan_into_a_wide_chunk(path);
         }
         ::close(fds[1]);
         child_outcome_t outcome{0, {}};
@@ -151,24 +151,7 @@ namespace {
 
 } // namespace
 
-TEST_CASE("scan_chunk_width: a chunk narrower than the scanned ordinal stops the scan on an assert",
-          "[scan_chunk_width]") {
-#ifdef NDEBUG
-    SKIP("an NDEBUG build has no assert to stop it");
-#else
-    const std::string path = db_path("narrow");
-    std::remove(path.c_str());
-    const auto outcome = run_in_child(path);
-    std::remove(path.c_str());
-    INFO("child status " << outcome.status << ", stderr:\n" << outcome.err);
-    CHECK(aborted(outcome));
-    CHECK(says(outcome, "a scan chunk narrower than its scanned ordinals"));
-    CHECK_FALSE(says(outcome, "AddressSanitizer"));
-#endif
-}
-
-TEST_CASE("scan_chunk_width: the projected chunk with a placeholder in the unscanned slot reads the list",
-          "[scan_chunk_width]") {
+TEST_CASE("scan_chunk_width: scan only required columns") {
     const std::string path = db_path("projected");
     std::remove(path.c_str());
     {
@@ -180,15 +163,14 @@ TEST_CASE("scan_chunk_width: the projected chunk with a placeholder in the unsca
 
         table_scan_state state(&env.resource);
         table->initialize_scan(state, only_v(), transaction_data::committed(), nullptr);
-        auto types = table->copy_types();
-        const std::vector<size_t> projected{1};
-        data_chunk_t chunk(&env.resource, types, projected, DEFAULT_VECTOR_CAPACITY);
+        std::pmr::vector<complex_logical_type> one_type(&env.resource);
+        one_type.push_back(list_type());
+        data_chunk_t chunk(&env.resource, one_type, DEFAULT_VECTOR_CAPACITY);
         table->scan(chunk, state);
         REQUIRE_FALSE(state.table_state.has_error());
         REQUIRE(chunk.size() == 3);
         for (uint64_t i = 0; i < 3; i++) {
-            const auto cell = chunk.value(1, i);
-            CHECK(cell.children().size() == i + 1);
+            CHECK(sequence_of(chunk.data[0], i).length == i + 1);
         }
     }
     std::remove(path.c_str());

@@ -68,14 +68,18 @@ namespace components::expressions {
     }
     const compute::function* compare_expression_t::function() const noexcept { return function_.get(); }
 
-    core::parameter_id_t compare_expression_t::regex_flags_param() const noexcept { return regex_flags_param_; }
+    std::optional<core::parameter_id_t> compare_expression_t::regex_flags_param() const noexcept {
+        return regex_flags_param_;
+    }
     void compare_expression_t::set_regex_flags(core::parameter_id_t flags) noexcept { regex_flags_param_ = flags; }
 
     hash_t compare_expression_t::hash_impl() const {
         hash_t hash_{0};
         boost::hash_combine(hash_, type_);
         boost::hash_combine(hash_, inner_op_);
-        boost::hash_combine(hash_, regex_flags_param_.t);
+        if (regex_flags_param_.has_value()) {
+            boost::hash_combine(hash_, regex_flags_param_->t);
+        }
         boost::hash_combine(hash_, std::hash<param_storage>()(left_));
         boost::hash_combine(hash_, std::hash<param_storage>()(right_));
         for (const auto& child : children_) {

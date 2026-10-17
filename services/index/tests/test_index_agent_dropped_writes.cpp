@@ -11,7 +11,6 @@
 
 #include <components/log/log.hpp>
 #include <components/session/session.hpp>
-#include <components/types/logical_value.hpp>
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
@@ -30,7 +29,6 @@
 #include <components/log/test/test_log.hpp>
 
 using components::session::session_id_t;
-using components::types::logical_value_t;
 using services::index::bitcask_index_agent_t;
 using services::index::btree_index_agent_t;
 using services::index::index_agent_contract;

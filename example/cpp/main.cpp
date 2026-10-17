@@ -52,7 +52,7 @@ TEST_CASE("example::sql::base") {
             query << "('Name " << num << "', " << num << ")" << (num == 99 ? ";" : ", ");
         }
         auto c = execute_sql(otterbrix, query.str());
-        REQUIRE(c->size() == 100);
+        REQUIRE(c->affected_rows() == 100);
     }
 
     INFO("select");
@@ -72,31 +72,61 @@ TEST_CASE("example::sql::base") {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection ORDER BY count;");
             REQUIRE(c->size() == 100);
             auto col = column_of(c, "count");
-            REQUIRE(c->value(col, 0).value<int64_t>() == 0);
-            REQUIRE(c->value(col, 1).value<int64_t>() == 1);
-            REQUIRE(c->value(col, 2).value<int64_t>() == 2);
-            REQUIRE(c->value(col, 3).value<int64_t>() == 3);
-            REQUIRE(c->value(col, 4).value<int64_t>() == 4);
+            auto cell1 = c->get<int64_t>(col, 0);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == 0);
+            auto cell2 = c->get<int64_t>(col, 1);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == 1);
+            auto cell3 = c->get<int64_t>(col, 2);
+            REQUIRE_FALSE(cell3.has_error());
+            REQUIRE(cell3.value() == 2);
+            auto cell4 = c->get<int64_t>(col, 3);
+            REQUIRE_FALSE(cell4.has_error());
+            REQUIRE(cell4.value() == 3);
+            auto cell5 = c->get<int64_t>(col, 4);
+            REQUIRE_FALSE(cell5.has_error());
+            REQUIRE(cell5.value() == 4);
         }
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection ORDER BY count DESC;");
             REQUIRE(c->size() == 100);
             auto col = column_of(c, "count");
-            REQUIRE(c->value(col, 0).value<int64_t>() == 99);
-            REQUIRE(c->value(col, 1).value<int64_t>() == 98);
-            REQUIRE(c->value(col, 2).value<int64_t>() == 97);
-            REQUIRE(c->value(col, 3).value<int64_t>() == 96);
-            REQUIRE(c->value(col, 4).value<int64_t>() == 95);
+            auto cell6 = c->get<int64_t>(col, 0);
+            REQUIRE_FALSE(cell6.has_error());
+            REQUIRE(cell6.value() == 99);
+            auto cell7 = c->get<int64_t>(col, 1);
+            REQUIRE_FALSE(cell7.has_error());
+            REQUIRE(cell7.value() == 98);
+            auto cell8 = c->get<int64_t>(col, 2);
+            REQUIRE_FALSE(cell8.has_error());
+            REQUIRE(cell8.value() == 97);
+            auto cell9 = c->get<int64_t>(col, 3);
+            REQUIRE_FALSE(cell9.has_error());
+            REQUIRE(cell9.value() == 96);
+            auto cell10 = c->get<int64_t>(col, 4);
+            REQUIRE_FALSE(cell10.has_error());
+            REQUIRE(cell10.value() == 95);
         }
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection ORDER BY name;");
             REQUIRE(c->size() == 100);
             auto col = column_of(c, "count");
-            REQUIRE(c->value(col, 0).value<int64_t>() == 0);
-            REQUIRE(c->value(col, 1).value<int64_t>() == 1);
-            REQUIRE(c->value(col, 2).value<int64_t>() == 10);
-            REQUIRE(c->value(col, 3).value<int64_t>() == 11);
-            REQUIRE(c->value(col, 4).value<int64_t>() == 12);
+            auto cell11 = c->get<int64_t>(col, 0);
+            REQUIRE_FALSE(cell11.has_error());
+            REQUIRE(cell11.value() == 0);
+            auto cell12 = c->get<int64_t>(col, 1);
+            REQUIRE_FALSE(cell12.has_error());
+            REQUIRE(cell12.value() == 1);
+            auto cell13 = c->get<int64_t>(col, 2);
+            REQUIRE_FALSE(cell13.has_error());
+            REQUIRE(cell13.value() == 10);
+            auto cell14 = c->get<int64_t>(col, 3);
+            REQUIRE_FALSE(cell14.has_error());
+            REQUIRE(cell14.value() == 11);
+            auto cell15 = c->get<int64_t>(col, 4);
+            REQUIRE_FALSE(cell15.has_error());
+            REQUIRE(cell15.value() == 12);
         }
     }
 
@@ -108,7 +138,7 @@ TEST_CASE("example::sql::base") {
         }
         {
             auto c = execute_sql(otterbrix, "DELETE FROM TestDatabase.TestCollection WHERE count > 90;");
-            REQUIRE(c->size() == 9);
+            REQUIRE(c->affected_rows() == 9);
         }
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection WHERE count > 90;");
@@ -124,7 +154,7 @@ TEST_CASE("example::sql::base") {
         }
         {
             auto c = execute_sql(otterbrix, "UPDATE TestDatabase.TestCollection SET count = 1000 WHERE count < 20;");
-            REQUIRE(c->size() == 20);
+            REQUIRE(c->affected_rows() == 20);
         }
         {
             auto c = execute_sql(otterbrix, "SELECT * FROM TestDatabase.TestCollection WHERE count < 20;");
@@ -169,16 +199,26 @@ TEST_CASE("example::sql::group_by") {
                              R"_(GROUP BY name;)_");
         REQUIRE(c->size() == 10);
         for (size_t number = 0; number < c->size(); ++number) {
-            auto name = std::string(c->value(column_of(c, "name"), number).value<std::string_view>());
-            REQUIRE(name == "Name " + std::to_string(number));
-            REQUIRE(c->value(column_of(c, "count_"), number).value<uint64_t>() == 10);
-            REQUIRE(c->value(column_of(c, "sum_"), number).value<int64_t>() ==
+            auto name = c->get<std::string_view>(column_of(c, "name"), number);
+            REQUIRE_FALSE(name.has_error());
+            REQUIRE(name.value() == "Name " + std::to_string(number));
+            auto count = c->get<uint64_t>(column_of(c, "count_"), number);
+            REQUIRE_FALSE(count.has_error());
+            REQUIRE(count.value() == 10);
+            auto sum = c->get<int64_t>(column_of(c, "sum_"), number);
+            REQUIRE_FALSE(sum.has_error());
+            REQUIRE(sum.value() ==
                     5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
-            REQUIRE(static_cast<int64_t>(c->value(column_of(c, "avg_"), number).value<double>()) ==
+            auto avg = c->get<double>(column_of(c, "avg_"), number);
+            REQUIRE_FALSE(avg.has_error());
+            REQUIRE(static_cast<int64_t>(avg.value()) ==
                     (static_cast<int64_t>(number) % 20 + (static_cast<int64_t>(number) + 10) % 20) / 2);
-            REQUIRE(c->value(column_of(c, "min_"), number).value<int64_t>() == static_cast<int64_t>(number) % 20);
-            REQUIRE(c->value(column_of(c, "max_"), number).value<int64_t>() ==
-                    (static_cast<int64_t>(number) + 10) % 20);
+            auto min = c->get<int64_t>(column_of(c, "min_"), number);
+            REQUIRE_FALSE(min.has_error());
+            REQUIRE(min.value() == static_cast<int64_t>(number) % 20);
+            auto max = c->get<int64_t>(column_of(c, "max_"), number);
+            REQUIRE_FALSE(max.has_error());
+            REQUIRE(max.value() == (static_cast<int64_t>(number) + 10) % 20);
         }
     }
 
@@ -194,14 +234,24 @@ TEST_CASE("example::sql::group_by") {
         REQUIRE(c->size() == 10);
         for (size_t i = 0; i < c->size(); ++i) {
             int number = 9 - static_cast<int>(i);
-            auto name = std::string(c->value(column_of(c, "name"), i).value<std::string_view>());
-            REQUIRE(name == "Name " + std::to_string(number));
-            REQUIRE(c->value(column_of(c, "count_"), i).value<uint64_t>() == 10);
-            REQUIRE(c->value(column_of(c, "sum_"), i).value<int64_t>() == 5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(static_cast<int64_t>(c->value(column_of(c, "avg_"), i).value<double>()) ==
-                    (number % 20 + (number + 10) % 20) / 2);
-            REQUIRE(c->value(column_of(c, "min_"), i).value<int64_t>() == number % 20);
-            REQUIRE(c->value(column_of(c, "max_"), i).value<int64_t>() == (number + 10) % 20);
+            auto name = c->get<std::string_view>(column_of(c, "name"), i);
+            REQUIRE_FALSE(name.has_error());
+            REQUIRE(name.value() == "Name " + std::to_string(number));
+            auto count = c->get<uint64_t>(column_of(c, "count_"), i);
+            REQUIRE_FALSE(count.has_error());
+            REQUIRE(count.value() == 10);
+            auto sum = c->get<int64_t>(column_of(c, "sum_"), i);
+            REQUIRE_FALSE(sum.has_error());
+            REQUIRE(sum.value() == 5 * (number % 20) + 5 * ((number + 10) % 20));
+            auto avg = c->get<double>(column_of(c, "avg_"), i);
+            REQUIRE_FALSE(avg.has_error());
+            REQUIRE(static_cast<int64_t>(avg.value()) == (number % 20 + (number + 10) % 20) / 2);
+            auto min = c->get<int64_t>(column_of(c, "min_"), i);
+            REQUIRE_FALSE(min.has_error());
+            REQUIRE(min.value() == number % 20);
+            auto max = c->get<int64_t>(column_of(c, "max_"), i);
+            REQUIRE_FALSE(max.has_error());
+            REQUIRE(max.value() == (number + 10) % 20);
         }
     }
 }

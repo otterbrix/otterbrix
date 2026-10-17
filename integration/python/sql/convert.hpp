@@ -6,11 +6,11 @@
 
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/param_storage.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/vector/vector.hpp>
 
 namespace py = pybind11;
 
-components::types::logical_value_t to_value(std::pmr::memory_resource* resource, const py::handle& obj);
+components::vector::vector_t to_value(std::pmr::memory_resource* resource, const py::handle& obj);
 
 auto to_pylist(const std::pmr::vector<std::string>& src) -> py::list;
 

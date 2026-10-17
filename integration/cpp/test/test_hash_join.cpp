@@ -14,7 +14,6 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/planner/optimizer/rules/hash_join.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/collection/context_storage.hpp>
@@ -87,7 +86,7 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
         join->append_expression(cond);
         auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
         auto plan_planned =
-            services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::unlimit(), nullptr);
+            services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::all(), nullptr);
         REQUIRE_FALSE(plan_planned.has_error());
         auto plan = plan_planned.value();
         REQUIRE(plan);
@@ -137,7 +136,7 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
         join->append_expression(cond);
         auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
         auto plan_planned =
-            services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::unlimit(), nullptr);
+            services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::all(), nullptr);
         REQUIRE_FALSE(plan_planned.has_error());
         auto plan = plan_planned.value();
         REQUIRE(plan);
@@ -256,11 +255,19 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == static_cast<size_t>(matched));
         for (size_t row = 0; row < static_cast<size_t>(matched); ++row) {
-            const int64_t k = static_cast<int64_t>(row) + shift;     // 1250, 1251, ...
-            REQUIRE(cur->value(0, row).value<int64_t>() == k);       // mbl.k
-            REQUIRE(cur->value(1, row).value<int64_t>() == k * 100); // mbl.lv
-            REQUIRE(cur->value(2, row).value<int64_t>() == k);       // mbr.k
-            REQUIRE(cur->value(3, row).value<int64_t>() == k * 7);   // mbr.rv
+            const int64_t k = static_cast<int64_t>(row) + shift; // 1250, 1251, ...
+            auto cell0 = cur->get<int64_t>(0, row);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == k); // mbl.k
+            auto cell1 = cur->get<int64_t>(1, row);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == k * 100); // mbl.lv
+            auto cell2 = cur->get<int64_t>(2, row);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == k); // mbr.k
+            auto cell3 = cur->get<int64_t>(3, row);
+            REQUIRE_FALSE(cell3.has_error());
+            REQUIRE(cell3.value() == k * 7); // mbr.rv
         }
     }
 
@@ -272,15 +279,27 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == static_cast<size_t>(n)); // every left row once
         for (size_t row = 0; row < static_cast<size_t>(n); ++row) {
-            const int64_t k = static_cast<int64_t>(row);             // 0, 1, ... (sorted probe key)
-            REQUIRE(cur->value(0, row).value<int64_t>() == k);       // mbl.k
-            REQUIRE(cur->value(1, row).value<int64_t>() == k * 100); // mbl.lv
+            const int64_t k = static_cast<int64_t>(row); // 0, 1, ... (sorted probe key)
+            auto cell4 = cur->get<int64_t>(0, row);
+            REQUIRE_FALSE(cell4.has_error());
+            REQUIRE(cell4.value() == k); // mbl.k
+            auto cell5 = cur->get<int64_t>(1, row);
+            REQUIRE_FALSE(cell5.has_error());
+            REQUIRE(cell5.value() == k * 100); // mbl.lv
             if (k < shift) {
-                REQUIRE(cur->value(2, row).is_null());
-                REQUIRE(cur->value(3, row).is_null());
+                auto cell6 = cur->is_null(2, row);
+                REQUIRE_FALSE(cell6.has_error());
+                REQUIRE(cell6.value());
+                auto cell7 = cur->is_null(3, row);
+                REQUIRE_FALSE(cell7.has_error());
+                REQUIRE(cell7.value());
             } else {
-                REQUIRE(cur->value(2, row).value<int64_t>() == k);     // mbr.k
-                REQUIRE(cur->value(3, row).value<int64_t>() == k * 7); // mbr.rv
+                auto cell8 = cur->get<int64_t>(2, row);
+                REQUIRE_FALSE(cell8.has_error());
+                REQUIRE(cell8.value() == k); // mbr.k
+                auto cell9 = cur->get<int64_t>(3, row);
+                REQUIRE_FALSE(cell9.has_error());
+                REQUIRE(cell9.value() == k * 7); // mbr.rv
             }
         }
     }
@@ -326,7 +345,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_selection") {
 
         auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
         auto plan_planned =
-            services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::unlimit(), nullptr);
+            services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::all(), nullptr);
         REQUIRE_FALSE(plan_planned.has_error());
         auto plan = plan_planned.value();
         REQUIRE(plan);
@@ -386,11 +405,19 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         for (size_t row = 0; row < 3; ++row) {
-            const int64_t k = static_cast<int64_t>(row) + 1;         // 1, 2, 3
-            REQUIRE(cur->value(0, row).value<int64_t>() == k);       // small.k
-            REQUIRE(cur->value(1, row).value<int64_t>() == k * 100); // small.sv
-            REQUIRE(cur->value(2, row).value<int64_t>() == k);       // large.k
-            REQUIRE(cur->value(3, row).value<int64_t>() == k);       // large.lv
+            const int64_t k = static_cast<int64_t>(row) + 1; // 1, 2, 3
+            auto cell10 = cur->get<int64_t>(0, row);
+            REQUIRE_FALSE(cell10.has_error());
+            REQUIRE(cell10.value() == k); // small.k
+            auto cell11 = cur->get<int64_t>(1, row);
+            REQUIRE_FALSE(cell11.has_error());
+            REQUIRE(cell11.value() == k * 100); // small.sv
+            auto cell12 = cur->get<int64_t>(2, row);
+            REQUIRE_FALSE(cell12.has_error());
+            REQUIRE(cell12.value() == k); // large.k
+            auto cell13 = cur->get<int64_t>(3, row);
+            REQUIRE_FALSE(cell13.has_error());
+            REQUIRE(cell13.value() == k); // large.lv
         }
     }
 
@@ -403,8 +430,12 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
                                                sdb + ".large l ON s.k = l.k;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 600);
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 6);
+        auto cell14 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell14.has_error());
+        REQUIRE(cell14.value() == 600);
+        auto cell15 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell15.has_error());
+        REQUIRE(cell15.value() == 6);
     }
 
     // A filter matching nothing on the build side must yield zero build chunks treated as "no build", not a crash
@@ -464,9 +495,19 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
         REQUIRE(cur->size() == 4);
         int64_t rev_sum = 0;
         for (size_t row = 0; row < cur->size(); ++row) {
-            REQUIRE(cur->value(0, row).value<int64_t>() == cur->value(3, row).value<int64_t>()); // l_pk == p_pk
-            REQUIRE(cur->value(1, row).value<int64_t>() == cur->value(5, row).value<int64_t>()); // l_sk == s_sk
-            rev_sum += cur->value(2, row).value<int64_t>();                                      // l_rev
+            auto cell16 = cur->get<int64_t>(0, row);
+            REQUIRE_FALSE(cell16.has_error());
+            auto cell17 = cur->get<int64_t>(3, row);
+            REQUIRE_FALSE(cell17.has_error());
+            REQUIRE(cell16.value() == cell17.value()); // l_pk == p_pk
+            auto cell18 = cur->get<int64_t>(1, row);
+            REQUIRE_FALSE(cell18.has_error());
+            auto cell19 = cur->get<int64_t>(5, row);
+            REQUIRE_FALSE(cell19.has_error());
+            REQUIRE(cell18.value() == cell19.value()); // l_sk == s_sk
+            auto cell20 = cur->get<int64_t>(2, row);
+            REQUIRE_FALSE(cell20.has_error());
+            rev_sum += cell20.value(); // l_rev
         }
         CHECK(rev_sum == 1000); // 100 + 200 + 300 + 400 (the l_sk=30 / rev=500 row is unmatched)
     }
@@ -479,7 +520,9 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
         REQUIRE(cur->size() == 2);
         int64_t rev_sum = 0;
         for (size_t row = 0; row < cur->size(); ++row) {
-            rev_sum += cur->value(2, row).value<int64_t>();
+            auto cell21 = cur->get<int64_t>(2, row);
+            REQUIRE_FALSE(cell21.has_error());
+            rev_sum += cell21.value();
         }
         CHECK(rev_sum == 300); // 100 + 200
     }
@@ -531,7 +574,7 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
         join->set_equi_columns(0, 0); // post-rewrite_hash_joins state: algo -> hash
 
         auto plan_planned =
-            services::planner::create_plan(context, registry, join, logical_plan::limit_t::unlimit(), nullptr);
+            services::planner::create_plan(context, registry, join, logical_plan::limit_t::all(), nullptr);
         REQUIRE_FALSE(plan_planned.has_error());
         auto plan = plan_planned.value();
         REQUIRE(plan);
@@ -579,7 +622,9 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
         REQUIRE(c->is_success());
         std::string t;
         for (size_t r = 0; r < c->size(); ++r) {
-            t += std::string(c->value(0, r).value<std::string_view>());
+            auto cell22 = c->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell22.has_error());
+            t += std::string(cell22.value());
             t += '\n';
         }
         return t;
@@ -605,14 +650,30 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
         REQUIRE(cur->is_success());
         // SELECT * column order = [filt.k, filt.x, pln.k, pln.y].
         REQUIRE(cur->size() == 2);
-        CHECK(cur->value(0, 0).value<int64_t>() == 1);  // filt.k
-        CHECK(cur->value(1, 0).value<int64_t>() == 5);  // filt.x
-        CHECK(cur->value(2, 0).value<int64_t>() == 1);  // pln.k
-        CHECK(cur->value(3, 0).value<int64_t>() == 10); // pln.y
-        CHECK(cur->value(0, 1).value<int64_t>() == 3);  // filt.k
-        CHECK(cur->value(1, 1).value<int64_t>() == 5);  // filt.x
-        CHECK(cur->value(2, 1).value<int64_t>() == 3);  // pln.k
-        CHECK(cur->value(3, 1).value<int64_t>() == 30); // pln.y
+        auto cell23 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell23.has_error());
+        CHECK(cell23.value() == 1); // filt.k
+        auto cell24 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell24.has_error());
+        CHECK(cell24.value() == 5); // filt.x
+        auto cell25 = cur->get<int64_t>(2, 0);
+        REQUIRE_FALSE(cell25.has_error());
+        CHECK(cell25.value() == 1); // pln.k
+        auto cell26 = cur->get<int64_t>(3, 0);
+        REQUIRE_FALSE(cell26.has_error());
+        CHECK(cell26.value() == 10); // pln.y
+        auto cell27 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell27.has_error());
+        CHECK(cell27.value() == 3); // filt.k
+        auto cell28 = cur->get<int64_t>(1, 1);
+        REQUIRE_FALSE(cell28.has_error());
+        CHECK(cell28.value() == 5); // filt.x
+        auto cell29 = cur->get<int64_t>(2, 1);
+        REQUIRE_FALSE(cell29.has_error());
+        CHECK(cell29.value() == 3); // pln.k
+        auto cell30 = cur->get<int64_t>(3, 1);
+        REQUIRE_FALSE(cell30.has_error());
+        CHECK(cell30.value() == 30); // pln.y
     }
 }
 
@@ -642,7 +703,9 @@ TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrap
         REQUIRE(c->is_success());
         std::string t;
         for (size_t r = 0; r < c->size(); ++r) {
-            t += std::string(c->value(0, r).value<std::string_view>());
+            auto cell31 = c->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell31.has_error());
+            t += std::string(cell31.value());
             t += '\n';
         }
         return t;
@@ -668,13 +731,29 @@ TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrap
         REQUIRE(cur->is_success());
         // SELECT * column order = [big.k, big.x, tiny.k, tiny.y].
         REQUIRE(cur->size() == 2);
-        CHECK(cur->value(0, 0).value<int64_t>() == 1);  // big.k
-        CHECK(cur->value(1, 0).value<int64_t>() == 1);  // big.x
-        CHECK(cur->value(2, 0).value<int64_t>() == 1);  // tiny.k
-        CHECK(cur->value(3, 0).value<int64_t>() == 10); // tiny.y
-        CHECK(cur->value(0, 1).value<int64_t>() == 2);  // big.k
-        CHECK(cur->value(1, 1).value<int64_t>() == 2);  // big.x
-        CHECK(cur->value(2, 1).value<int64_t>() == 2);  // tiny.k
-        CHECK(cur->value(3, 1).value<int64_t>() == 20); // tiny.y
+        auto cell32 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell32.has_error());
+        CHECK(cell32.value() == 1); // big.k
+        auto cell33 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell33.has_error());
+        CHECK(cell33.value() == 1); // big.x
+        auto cell34 = cur->get<int64_t>(2, 0);
+        REQUIRE_FALSE(cell34.has_error());
+        CHECK(cell34.value() == 1); // tiny.k
+        auto cell35 = cur->get<int64_t>(3, 0);
+        REQUIRE_FALSE(cell35.has_error());
+        CHECK(cell35.value() == 10); // tiny.y
+        auto cell36 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell36.has_error());
+        CHECK(cell36.value() == 2); // big.k
+        auto cell37 = cur->get<int64_t>(1, 1);
+        REQUIRE_FALSE(cell37.has_error());
+        CHECK(cell37.value() == 2); // big.x
+        auto cell38 = cur->get<int64_t>(2, 1);
+        REQUIRE_FALSE(cell38.has_error());
+        CHECK(cell38.value() == 2); // tiny.k
+        auto cell39 = cur->get<int64_t>(3, 1);
+        REQUIRE_FALSE(cell39.has_error());
+        CHECK(cell39.value() == 20); // tiny.y
     }
 }

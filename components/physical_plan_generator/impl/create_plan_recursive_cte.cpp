@@ -23,7 +23,7 @@ namespace services::planner::impl {
                         create_plan(context,
                                     function_registry,
                                     cte_node->children()[0],
-                                    components::logical_plan::limit_t::unlimit(),
+                                    components::logical_plan::limit_t::all(),
                                     params));
 
         // Build the recursive member with the working-set slot injected into context.
@@ -34,7 +34,7 @@ namespace services::planner::impl {
                         create_plan(recursive_context,
                                     function_registry,
                                     cte_node->children()[1],
-                                    components::logical_plan::limit_t::unlimit(),
+                                    components::logical_plan::limit_t::all(),
                                     params));
 
         // The anchor + recursive term are NOT left_/right_ children: operator_recursive_cte_t

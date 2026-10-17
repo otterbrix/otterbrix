@@ -4,8 +4,8 @@
 
 #include <pyutil.hpp>
 
-#include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
+#include <components/vector/vector_builders.hpp>
 
 #include <common/typedefs.hpp>
 #include <core/result_wrapper.hpp>
@@ -64,11 +64,11 @@ namespace otterbrix {
             template<typename T, typename = std::enable_if<std::numeric_limits<T>::is_integer, T>>
             // Takes the already-built decimal type: this function has no error channel to
             // report an out-of-window (width, scale), so the caller builds it via create_decimal.
-            static components::types::logical_value_t Operation(std::pmr::memory_resource* r,
-                                                                bool signed_value,
-                                                                std::vector<uint8_t>& digits,
-                                                                const components::types::complex_logical_type& type,
-                                                                uint8_t /*scale*/) {
+            static components::vector::vector_t Operation(std::pmr::memory_resource* r,
+                                                          bool signed_value,
+                                                          std::vector<uint8_t>& digits,
+                                                          const components::types::complex_logical_type& type,
+                                                          uint8_t /*scale*/) {
                 T value = 0;
                 for (auto it = digits.begin(); it != digits.end(); it++) {
                     value = value * 10 + *it;
@@ -76,7 +76,7 @@ namespace otterbrix {
                 if (signed_value) {
                     value = -value;
                 }
-                return components::types::logical_value_t::create_decimal(r, type, value);
+                return components::vector::make_decimal(r, type, value);
             }
         };
 
@@ -96,11 +96,11 @@ namespace otterbrix {
 
         public:
             template<typename T, typename = std::enable_if<std::numeric_limits<T>::is_integer, T>>
-            static components::types::logical_value_t Operation(std::pmr::memory_resource* r,
-                                                                bool signed_value,
-                                                                std::vector<uint8_t>& digits,
-                                                                const components::types::complex_logical_type& type,
-                                                                uint8_t scale) {
+            static components::vector::vector_t Operation(std::pmr::memory_resource* r,
+                                                          bool signed_value,
+                                                          std::vector<uint8_t>& digits,
+                                                          const components::types::complex_logical_type& type,
+                                                          uint8_t scale) {
                 T value = 0;
                 for (auto& digit : digits) {
                     value = value * 10 + digit;
@@ -117,7 +117,7 @@ namespace otterbrix {
                 if (signed_value) {
                     value = -value;
                 }
-                return components::types::logical_value_t::create_decimal(r, type, value);
+                return components::vector::make_decimal(r, type, value);
             }
         };
 
@@ -129,14 +129,14 @@ namespace otterbrix {
         py_decimal_exponent_type_t exponent_type;
         int32_t exponent_value;
         //! false when the python Decimal's exponent could not be recognized during construction;
-        //! consumers (try_get_type / to_logical_value) surface this without throwing.
+        //! consumers (try_get_type / to_vector) surface this without throwing.
         bool exponent_recognized = true;
 
     public:
         //! `resource` carries only the refusal message create_decimal may build: the (width,
         //! scale) come from the python Decimal, so an out-of-window pair is DATA and reachable.
         bool try_get_type(std::pmr::memory_resource* resource, components::types::complex_logical_type& type);
-        core::result_wrapper_t<components::types::logical_value_t> to_logical_value(std::pmr::memory_resource* r);
+        core::result_wrapper_t<components::vector::vector_t> to_vector(std::pmr::memory_resource* r);
 
     private:
         void set_exponent(py::handle& exponent);
@@ -145,13 +145,9 @@ namespace otterbrix {
 
     struct python_object_t {
         static void initialize();
-        static core::result_wrapper_t<py::object> from_struct(std::pmr::memory_resource* r,
-                                                              const components::types::logical_value_t& value,
-                                                              const components::types::complex_logical_type& id);
-        static core::result_wrapper_t<py::object> from_value(std::pmr::memory_resource* r,
-                                                             const components::types::logical_value_t& value,
-                                                             const components::types::complex_logical_type& id);
     };
+
+    bool key_is_hashable(const components::types::complex_logical_type& type);
 
     template<class T>
     class py_optional_t : public py::object {

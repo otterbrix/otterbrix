@@ -20,8 +20,9 @@ namespace {
     std::string plan_text(const cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            auto v = cur->value(0, r);
-            out += std::string(v.value<std::string_view>());
+            auto cell0 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            out += std::string(cell0.value());
             out += '\n';
         }
         return out;
@@ -134,7 +135,9 @@ TEST_CASE("integration::cpp::test_explain::sql") {
             auto s = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(s, "SELECT COUNT(*) FROM TestDatabase.orders;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
+            auto cell1 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == 3);
         }
     }
 
@@ -150,7 +153,9 @@ TEST_CASE("integration::cpp::test_explain::sql") {
             auto s = otterbrix::session_id_t();
             auto cur = dispatcher->execute_sql(s, "SELECT COUNT(*) FROM TestDatabase.orders;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 4);
+            auto cell2 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == 4);
         }
     }
 
@@ -165,7 +170,9 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT COUNT(*) FROM TestDatabase.orders;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 4);
+        auto cell3 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == 4);
     }
 
     INFO("EXPLAIN (ANALYZE true) DOES execute the inner DML (positive control)");
@@ -181,7 +188,9 @@ TEST_CASE("integration::cpp::test_explain::sql") {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "SELECT COUNT(*) FROM TestDatabase.orders;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 5);
+        auto cell4 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == 5);
     }
 
     INFO("plan-only EXPLAIN does NOT execute an uncorrelated sub-query");
@@ -756,10 +765,18 @@ TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
         auto cur = dispatcher->execute_sql(s, q + ";");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 5);
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 1);
-        REQUIRE(cur->value(2, 0).value<int64_t>() == 7);
-        REQUIRE(cur->value(3, 0).value<int64_t>() == 1);
+        auto cell5 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == 5);
+        auto cell6 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == 1);
+        auto cell7 = cur->get<int64_t>(2, 0);
+        REQUIRE_FALSE(cell7.has_error());
+        REQUIRE(cell7.value() == 7);
+        auto cell8 = cur->get<int64_t>(3, 0);
+        REQUIRE_FALSE(cell8.has_error());
+        REQUIRE(cell8.value() == 1);
     }
 
     INFO("EXPLAIN: both per-side filters ride the Seq Scans; no residual Filter remains");
@@ -810,14 +827,30 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
         auto cur = dispatcher->execute_sql(s, inner + ";");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 10);
-        REQUIRE(cur->value(0, 1).value<int64_t>() == 1);
-        REQUIRE(cur->value(1, 1).value<int64_t>() == 11);
-        REQUIRE(cur->value(0, 2).value<int64_t>() == 2);
-        REQUIRE(cur->value(1, 2).value<int64_t>() == 10);
-        REQUIRE(cur->value(0, 3).value<int64_t>() == 2);
-        REQUIRE(cur->value(1, 3).value<int64_t>() == 11);
+        auto cell9 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell9.has_error());
+        REQUIRE(cell9.value() == 1);
+        auto cell10 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell10.has_error());
+        REQUIRE(cell10.value() == 10);
+        auto cell11 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell11.has_error());
+        REQUIRE(cell11.value() == 1);
+        auto cell12 = cur->get<int64_t>(1, 1);
+        REQUIRE_FALSE(cell12.has_error());
+        REQUIRE(cell12.value() == 11);
+        auto cell13 = cur->get<int64_t>(0, 2);
+        REQUIRE_FALSE(cell13.has_error());
+        REQUIRE(cell13.value() == 2);
+        auto cell14 = cur->get<int64_t>(1, 2);
+        REQUIRE_FALSE(cell14.has_error());
+        REQUIRE(cell14.value() == 10);
+        auto cell15 = cur->get<int64_t>(0, 3);
+        REQUIRE_FALSE(cell15.has_error());
+        REQUIRE(cell15.value() == 2);
+        auto cell16 = cur->get<int64_t>(1, 3);
+        REQUIRE_FALSE(cell16.has_error());
+        REQUIRE(cell16.value() == 11);
     }
 
     INFO("parity: writing the partner predicate explicitly yields the IDENTICAL result");
@@ -829,8 +862,12 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
         auto cur = dispatcher->execute_sql(s, with_partner + ";");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->value(1, 3).value<int64_t>() == 11);
+        auto cell17 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell17.has_error());
+        REQUIRE(cell17.value() == 1);
+        auto cell18 = cur->get<int64_t>(1, 3);
+        REQUIRE_FALSE(cell18.has_error());
+        REQUIRE(cell18.value() == 11);
     }
 
     INFO("EXPLAIN (inner): a Filter rides BOTH scans — the derived predicate reached t2");

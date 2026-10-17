@@ -1,5 +1,6 @@
 #include "column_definition.hpp"
 #include "table_state.hpp"
+#include <components/vector/vector_builders.hpp>
 #include <cstdio>
 
 #include <cassert>
@@ -24,6 +25,13 @@ namespace components::table {
             }
             return type;
         }
+
+        std::optional<vector::vector_t> copy_default(const std::optional<vector::vector_t>& source) {
+            if (!source.has_value()) {
+                return std::nullopt;
+            }
+            return vector::make_constant_copy(source->resource(), *source);
+        }
     } // namespace
 
     column_definition_t::column_definition_t(std::string name, types::complex_logical_type type)
@@ -32,7 +40,7 @@ namespace components::table {
 
     column_definition_t::column_definition_t(std::string name,
                                              types::complex_logical_type type,
-                                             std::optional<types::logical_value_t> default_value)
+                                             std::optional<vector::vector_t>&& default_value)
         : name_(std::move(name))
         , type_(with_name_alias(std::move(type), name_))
         , default_value_(std::move(default_value)) {}
@@ -45,24 +53,43 @@ namespace components::table {
     column_definition_t::column_definition_t(std::string name,
                                              types::complex_logical_type type,
                                              bool not_null,
-                                             std::optional<types::logical_value_t> default_value)
+                                             std::optional<vector::vector_t>&& default_value)
         : name_(std::move(name))
         , type_(with_name_alias(std::move(type), name_))
         , not_null_(not_null)
         , default_value_(std::move(default_value)) {}
 
-    const types::logical_value_t& column_definition_t::default_value() const {
+    column_definition_t::column_definition_t(const column_definition_t& other)
+        : name_(other.name_)
+        , type_(other.type_)
+        , storage_oid_(other.storage_oid_)
+        , oid_(other.oid_)
+        , attoid_(other.attoid_)
+        , atttypid_(other.atttypid_)
+        , added_at_(other.added_at_)
+        , dropped_at_(other.dropped_at_)
+        , not_null_(other.not_null_)
+        , default_value_(copy_default(other.default_value_))
+        , tags_(other.tags_) {}
+
+    column_definition_t& column_definition_t::operator=(const column_definition_t& other) {
+        if (this != &other) {
+            column_definition_t copy(other);
+            *this = std::move(copy);
+        }
+        return *this;
+    }
+
+    const vector::vector_t& column_definition_t::default_value() const {
         assert(has_default_value() && "default_value() called on a column without a default value");
         return *default_value_;
     }
 
-    const std::optional<types::logical_value_t>& column_definition_t::default_value_opt() const {
-        return default_value_;
-    }
+    const std::optional<vector::vector_t>& column_definition_t::default_value_opt() const { return default_value_; }
 
     bool column_definition_t::has_default_value() const { return default_value_.has_value(); }
 
-    void column_definition_t::set_default_value(std::optional<types::logical_value_t> default_value) {
+    void column_definition_t::set_default_value(std::optional<vector::vector_t>&& default_value) {
         default_value_ = std::move(default_value);
     }
 

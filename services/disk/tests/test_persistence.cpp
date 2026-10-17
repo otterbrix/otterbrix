@@ -389,30 +389,24 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
         constexpr oid_t pg_seq = well_known_oid::pg_sequence_table;
         std::pmr::vector<std::uint64_t> sk1{&fd.resource};
         sk1.emplace_back(components::catalog::pg_sequence_col::seqrelid);
-        std::pmr::vector<components::types::logical_value_t> sv1{&fd.resource};
-        sv1.emplace_back(components::types::logical_value_t(&fd.resource, seq_oid));
-        auto seq_batches =
-            disk_test_helpers::read_ok(fd.invoke(&manager_disk_t::read_chunks_by_key,
-                                                 fd.ctx(),
-                                                 pg_seq,
-                                                 std::move(sk1),
-                                                 test_probe::build_key_chunk(&fd.resource, std::move(sv1)),
-                                                 std::pmr::vector<std::uint64_t>{&fd.resource}));
+        auto seq_batches = disk_test_helpers::read_ok(fd.invoke(&manager_disk_t::read_chunks_by_key,
+                                                                fd.ctx(),
+                                                                pg_seq,
+                                                                std::move(sk1),
+                                                                test_probe::test_key_chunk(&fd.resource, seq_oid),
+                                                                std::pmr::vector<std::uint64_t>{&fd.resource}));
         uint64_t seq_total = 0;
         for (auto& c : seq_batches) seq_total += c.size();
         REQUIRE(seq_total == 1);
         test_drop_sequence(fd, seq_oid);
         std::pmr::vector<std::uint64_t> sk2{&fd.resource};
         sk2.emplace_back(components::catalog::pg_sequence_col::seqrelid);
-        std::pmr::vector<components::types::logical_value_t> sv2{&fd.resource};
-        sv2.emplace_back(components::types::logical_value_t(&fd.resource, seq_oid));
-        auto seq_batches_after =
-            disk_test_helpers::read_ok(fd.invoke(&manager_disk_t::read_chunks_by_key,
-                                                 fd.ctx(),
-                                                 pg_seq,
-                                                 std::move(sk2),
-                                                 test_probe::build_key_chunk(&fd.resource, std::move(sv2)),
-                                                 std::pmr::vector<std::uint64_t>{&fd.resource}));
+        auto seq_batches_after = disk_test_helpers::read_ok(fd.invoke(&manager_disk_t::read_chunks_by_key,
+                                                                      fd.ctx(),
+                                                                      pg_seq,
+                                                                      std::move(sk2),
+                                                                      test_probe::test_key_chunk(&fd.resource, seq_oid),
+                                                                      std::pmr::vector<std::uint64_t>{&fd.resource}));
         uint64_t seq_total_after = 0;
         for (auto& c : seq_batches_after) seq_total_after += c.size();
         REQUIRE(seq_total_after == 0);
@@ -430,15 +424,12 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
         constexpr oid_t pg_seq2 = well_known_oid::pg_sequence_table;
         std::pmr::vector<std::uint64_t> sk3{&fd2.resource};
         sk3.emplace_back(components::catalog::pg_sequence_col::seqrelid);
-        std::pmr::vector<components::types::logical_value_t> sv3{&fd2.resource};
-        sv3.emplace_back(components::types::logical_value_t(&fd2.resource, seq_oid));
-        auto seq_batches2 =
-            disk_test_helpers::read_ok(fd2.invoke(&manager_disk_t::read_chunks_by_key,
-                                                  fd2.ctx(),
-                                                  pg_seq2,
-                                                  std::move(sk3),
-                                                  test_probe::build_key_chunk(&fd2.resource, std::move(sv3)),
-                                                  std::pmr::vector<std::uint64_t>{&fd2.resource}));
+        auto seq_batches2 = disk_test_helpers::read_ok(fd2.invoke(&manager_disk_t::read_chunks_by_key,
+                                                                  fd2.ctx(),
+                                                                  pg_seq2,
+                                                                  std::move(sk3),
+                                                                  test_probe::test_key_chunk(&fd2.resource, seq_oid),
+                                                                  std::pmr::vector<std::uint64_t>{&fd2.resource}));
         uint64_t seq_total2 = 0;
         for (auto& c : seq_batches2) seq_total2 += c.size();
         REQUIRE(seq_total2 == 1);
@@ -462,29 +453,24 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
         constexpr oid_t pg_rewrite_tbl = well_known_oid::pg_rewrite_table;
         std::pmr::vector<std::uint64_t> rk1{&fd.resource};
         rk1.emplace_back(components::catalog::pg_rewrite_col::ev_class);
-        std::pmr::vector<components::types::logical_value_t> rv1{&fd.resource};
-        rv1.emplace_back(components::types::logical_value_t(&fd.resource, view_oid));
-        auto rewrite_batches =
-            disk_test_helpers::read_ok(fd.invoke(&manager_disk_t::read_chunks_by_key,
-                                                 fd.ctx(),
-                                                 pg_rewrite_tbl,
-                                                 std::move(rk1),
-                                                 test_probe::build_key_chunk(&fd.resource, std::move(rv1)),
-                                                 std::pmr::vector<std::uint64_t>{&fd.resource}));
+        auto rewrite_batches = disk_test_helpers::read_ok(fd.invoke(&manager_disk_t::read_chunks_by_key,
+                                                                    fd.ctx(),
+                                                                    pg_rewrite_tbl,
+                                                                    std::move(rk1),
+                                                                    test_probe::test_key_chunk(&fd.resource, view_oid),
+                                                                    std::pmr::vector<std::uint64_t>{&fd.resource}));
         uint64_t rewrite_total = 0;
         for (auto& c : rewrite_batches) rewrite_total += c.size();
         REQUIRE(rewrite_total == 1);
         test_drop_view(fd, view_oid);
         std::pmr::vector<std::uint64_t> rk2{&fd.resource};
         rk2.emplace_back(components::catalog::pg_rewrite_col::ev_class);
-        std::pmr::vector<components::types::logical_value_t> rv2{&fd.resource};
-        rv2.emplace_back(components::types::logical_value_t(&fd.resource, view_oid));
         auto rewrite_batches_after =
             disk_test_helpers::read_ok(fd.invoke(&manager_disk_t::read_chunks_by_key,
                                                  fd.ctx(),
                                                  pg_rewrite_tbl,
                                                  std::move(rk2),
-                                                 test_probe::build_key_chunk(&fd.resource, std::move(rv2)),
+                                                 test_probe::test_key_chunk(&fd.resource, view_oid),
                                                  std::pmr::vector<std::uint64_t>{&fd.resource}));
         uint64_t rewrite_total_after = 0;
         for (auto& c : rewrite_batches_after) rewrite_total_after += c.size();
@@ -503,14 +489,12 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
         constexpr oid_t pg_rewrite_tbl2 = well_known_oid::pg_rewrite_table;
         std::pmr::vector<std::uint64_t> rk3{&fd2.resource};
         rk3.emplace_back(components::catalog::pg_rewrite_col::ev_class);
-        std::pmr::vector<components::types::logical_value_t> rv3{&fd2.resource};
-        rv3.emplace_back(components::types::logical_value_t(&fd2.resource, view_oid));
         auto rewrite_batches2 =
             disk_test_helpers::read_ok(fd2.invoke(&manager_disk_t::read_chunks_by_key,
                                                   fd2.ctx(),
                                                   pg_rewrite_tbl2,
                                                   std::move(rk3),
-                                                  test_probe::build_key_chunk(&fd2.resource, std::move(rv3)),
+                                                  test_probe::test_key_chunk(&fd2.resource, view_oid),
                                                   std::pmr::vector<std::uint64_t>{&fd2.resource}));
         uint64_t rewrite_total2 = 0;
         for (auto& c : rewrite_batches2) rewrite_total2 += c.size();
@@ -535,14 +519,12 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
         constexpr oid_t pg_rewrite_m = well_known_oid::pg_rewrite_table;
         std::pmr::vector<std::uint64_t> mk1{&fd.resource};
         mk1.emplace_back(components::catalog::pg_rewrite_col::ev_class);
-        std::pmr::vector<components::types::logical_value_t> mv1{&fd.resource};
-        mv1.emplace_back(components::types::logical_value_t(&fd.resource, macro_oid));
         auto rewrite_batches_m =
             disk_test_helpers::read_ok(fd.invoke(&manager_disk_t::read_chunks_by_key,
                                                  fd.ctx(),
                                                  pg_rewrite_m,
                                                  std::move(mk1),
-                                                 test_probe::build_key_chunk(&fd.resource, std::move(mv1)),
+                                                 test_probe::test_key_chunk(&fd.resource, macro_oid),
                                                  std::pmr::vector<std::uint64_t>{&fd.resource}));
         uint64_t rewrite_total_m = 0;
         for (auto& c : rewrite_batches_m) rewrite_total_m += c.size();
@@ -560,14 +542,12 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
         constexpr oid_t pg_rewrite_m2 = well_known_oid::pg_rewrite_table;
         std::pmr::vector<std::uint64_t> mk2{&fd2.resource};
         mk2.emplace_back(components::catalog::pg_rewrite_col::ev_class);
-        std::pmr::vector<components::types::logical_value_t> mv2{&fd2.resource};
-        mv2.emplace_back(components::types::logical_value_t(&fd2.resource, macro_oid));
         auto rewrite_batches_m2 =
             disk_test_helpers::read_ok(fd2.invoke(&manager_disk_t::read_chunks_by_key,
                                                   fd2.ctx(),
                                                   pg_rewrite_m2,
                                                   std::move(mk2),
-                                                  test_probe::build_key_chunk(&fd2.resource, std::move(mv2)),
+                                                  test_probe::test_key_chunk(&fd2.resource, macro_oid),
                                                   std::pmr::vector<std::uint64_t>{&fd2.resource}));
         uint64_t rewrite_total_m2 = 0;
         for (auto& c : rewrite_batches_m2) rewrite_total_m2 += c.size();
@@ -680,15 +660,12 @@ TEST_CASE("services::disk::persistence::test_check_constraint_persistence") {
         constexpr oid_t pg_constr = well_known_oid::pg_constraint_table;
         std::pmr::vector<std::uint64_t> ck{&fd2.resource};
         ck.emplace_back(components::catalog::pg_constraint_col::conrelid);
-        std::pmr::vector<components::types::logical_value_t> cv{&fd2.resource};
-        cv.emplace_back(components::types::logical_value_t(&fd2.resource, table_oid));
-        auto check_batches =
-            disk_test_helpers::read_ok(fd2.invoke(&manager_disk_t::read_chunks_by_key,
-                                                  fd2.ctx(),
-                                                  pg_constr,
-                                                  std::move(ck),
-                                                  test_probe::build_key_chunk(&fd2.resource, std::move(cv)),
-                                                  std::pmr::vector<std::uint64_t>{&fd2.resource}));
+        auto check_batches = disk_test_helpers::read_ok(fd2.invoke(&manager_disk_t::read_chunks_by_key,
+                                                                   fd2.ctx(),
+                                                                   pg_constr,
+                                                                   std::move(ck),
+                                                                   test_probe::test_key_chunk(&fd2.resource, table_oid),
+                                                                   std::pmr::vector<std::uint64_t>{&fd2.resource}));
         uint64_t check_total = 0;
         for (auto& c : check_batches) check_total += c.size();
         REQUIRE(check_total == 1);

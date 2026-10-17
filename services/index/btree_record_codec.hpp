@@ -1,6 +1,6 @@
 #pragma once
 
-#include <components/index/logical_value_binary_codec.hpp>
+#include <components/index/binary_codec.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 
 namespace services::index {
@@ -11,13 +11,13 @@ namespace services::index {
     inline auto item_key_getter =
         [](const core::b_plus_tree::btree_t::item_data& item) -> core::b_plus_tree::btree_t::index_t {
         size_t pos = 0;
-        return components::index::codec::read_logical_value_as_view(item.data, item.size, pos);
+        return components::index::codec::read_tagged_value(item.data, item.size, pos);
     };
 
     // `ok` matters: a decode failure otherwise returns 0, indistinguishable from an actual row 0.
     inline int64_t id_of(const core::b_plus_tree::btree_t::item_data& item, bool& ok) {
         size_t pos = 0;
-        components::index::codec::skip_logical_value(item.data, item.size, pos, &ok);
+        components::index::codec::skip_tagged_value(item.data, item.size, pos, &ok);
         return components::index::codec::read_le_raw<int64_t>(item.data, item.size, pos, &ok);
     }
 

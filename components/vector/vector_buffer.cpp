@@ -12,13 +12,12 @@ namespace components::vector {
         , data_(new (resource->allocate(data_size, alignof(std::byte))) std::byte[data_size],
                 core::pmr::array_deleter_t(resource, data_size, alignof(std::byte))) {}
 
-    vector_buffer_t::vector_buffer_t(std::pmr::memory_resource* resource, vector_buffer_type type, size_t capacity)
+    vector_buffer_t::vector_buffer_t(std::pmr::memory_resource* resource, vector_buffer_type type)
         : type_(type)
-        , data_(new (resource->allocate(capacity, alignof(std::byte))) std::byte[capacity],
-                core::pmr::array_deleter_t(resource, capacity, alignof(std::byte))) {}
+        , data_(nullptr, core::pmr::array_deleter_t(resource, 0, alignof(std::byte))) {}
 
     vector_buffer_t::vector_buffer_t(std::pmr::memory_resource* resource,
-                                     types::complex_logical_type type,
+                                     const types::complex_logical_type& type,
                                      size_t capacity)
         : type_(vector_buffer_type::STANDARD)
         , data_(type.size() == 0 ? nullptr
@@ -63,12 +62,12 @@ namespace components::vector {
         , nested_data_(resource) {}
 
     struct_vector_buffer_t::struct_vector_buffer_t(std::pmr::memory_resource* resource,
-                                                   types::complex_logical_type struct_type,
+                                                   const types::complex_logical_type& struct_type,
                                                    uint64_t capacity)
         : vector_buffer_t(resource, vector_buffer_type::STRUCT)
         , nested_data_(resource) {
-        auto& child_types = struct_type.child_types();
-        for (auto& child_type : child_types) {
+        const auto& child_types = struct_type.child_types();
+        for (const auto& child_type : child_types) {
             auto vector = std::make_unique<vector_t>(resource, child_type, capacity);
             nested_data_.push_back(std::move(vector));
         }
@@ -119,16 +118,8 @@ namespace components::vector {
         size_ += size - offset;
     }
 
-    void list_vector_buffer_t::push_back(types::logical_value_t&& node) {
-        while (size_ + 1 > capacity_) {
-            nested_data_->resize(capacity_, capacity_ * 2);
-            capacity_ *= 2;
-        }
-        nested_data_->set_value(size_++, node);
-    }
-
     array_vector_buffer_t::array_vector_buffer_t(std::unique_ptr<vector_t> vector, uint64_t size, uint64_t capacity)
-        : vector_buffer_t(vector->resource(), vector_buffer_type::ARRAY, capacity * size)
+        : vector_buffer_t(vector->resource(), vector_buffer_type::ARRAY)
         , nested_data_(std::move(vector))
         , underlying_size_(size)
         , size_(capacity) {}
@@ -136,10 +127,7 @@ namespace components::vector {
     array_vector_buffer_t::array_vector_buffer_t(std::pmr::memory_resource* resource,
                                                  const types::complex_logical_type& array_type,
                                                  uint64_t capacity)
-        : vector_buffer_t(resource,
-                          vector_buffer_type::ARRAY,
-                          capacity *
-                              static_cast<const types::array_logical_type_extension*>(array_type.extension())->size())
+        : vector_buffer_t(resource, vector_buffer_type::ARRAY)
         , nested_data_(std::make_unique<vector_t>(
               resource,
               array_type.child_type(),

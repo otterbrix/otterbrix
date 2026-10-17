@@ -60,7 +60,6 @@ namespace components::operators {
             build_chunk_offsets_.clear();
             indices_left_.clear();
             indices_right_.clear();
-            active_indices_.clear();
             builder_.reset();
         }
 
@@ -81,9 +80,7 @@ namespace components::operators {
         // NULL-padded on the left at finalize() / emit_unmatched_build_().
         std::pmr::vector<uint8_t> build_matched_{resource_};
         std::pmr::vector<uint64_t> build_chunk_offsets_{resource_};
-        // Output slots that need a real buffer
-        std::vector<size_t> active_indices_;
-        join_detail::join_builder builder_{resource_, res_types_, indices_left_, indices_right_, active_indices_};
+        join_detail::join_builder builder_{resource_, res_types_, indices_left_, indices_right_};
 
         // Derive the output layout + condition graph + (right/full) the matched marker once,
         // lazily, from the materialized build (right) side and a probe schema chunk. A condition

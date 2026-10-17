@@ -46,15 +46,9 @@ namespace components::sql::transform {
 
         // True when a compacted sub-query result is INDEPENDENT of the order of its rows:
         // EXISTS (bool), a scalar (single value — or a >1-row error either way), and IN / ANY /
-        // ALL membership (array). Array-EQUALITY (`col = ARRAY(SELECT ...)`) is order-SENSITIVE
-        // (element-wise compare against a positional array) and is deliberately excluded.
-        bool order_insensitive_compaction(const logical_plan::id_result_mapping& m) {
-            if (m.compacter == &components::vector::compact_to_bool_value ||
-                m.compacter == &components::vector::compact_to_single_value) {
-                return true;
-            }
-            return m.compacter == &components::vector::compact_to_array_value && !m.array_equality;
-        }
+        // ALL membership (list). ARRAY(SELECT ...) is ordered (its elements compare by position)
+        // and is deliberately excluded.
+        bool order_insensitive_compaction(const logical_plan::id_result_mapping& m) { return !m.ordered; }
 
         // Post-transform pass: for every flattened sub-query whose result is compacted through
         // an order-insensitive path, strip its bare (limit-less) ORDER BY. sub_query_results[i]

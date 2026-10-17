@@ -26,21 +26,22 @@ namespace components::operators {
                    log_t log,
                    components::catalog::oid_t table_oid,
                    const expressions::key_t& key,
-                   const types::logical_value_t& value,
+                   // Read when the scan opens, not now: a sub-query result or a LATERAL outer cell has no
+                   // value at plan time.
+                   core::parameter_id_t key_parameter,
                    expressions::compare_type compare_type,
                    components::logical_plan::index_type preferred_index_type,
-                   logical_plan::limit_t limit,
+                   logical_plan::row_cap_t cap,
                    std::vector<size_t> projected_cols,
-                   // Position of the indexed column in a fetched chunk, or -1 when plan-gen could
-                   // not resolve it. Feeds the recheck below; -1 leaves the answer on the epoch
-                   // gate alone.
+                   // Position of the indexed column in a fetched chunk (one projected_cols holds), or -1
+                   // when plan-gen could not resolve it. Feeds the recheck below; -1 leaves the answer on
+                   // the epoch gate alone.
                    int64_t key_chunk_col);
 
         const expressions::key_t& key() const { return key_; }
-        const types::logical_value_t& value() const { return value_; }
         expressions::compare_type compare_type() const { return compare_type_; }
         components::logical_plan::index_type preferred_index_type() const { return preferred_index_type_; }
-        const logical_plan::limit_t& limit() const { return limit_; }
+        const logical_plan::row_cap_t& cap() const { return cap_; }
 
         // A chunk can be shorter than the window: LIMIT rides on storage_fetch's post-visibility
         // limit, not id trimming.
@@ -76,6 +77,8 @@ namespace components::operators {
 
         // Returns an error only when the search could not be answered; distinct from an answered "no rows".
         actor_zeta::unique_future<core::error_t> open_index_window(pipeline::context_t* ctx);
+        // col OP NULL selects nothing (full_scan's rule): no hold and no search are needed for it.
+        [[nodiscard]] bool key_selects_nothing_(const pipeline::context_t* ctx) const;
 
         // ONE storage_fetch for the whole window [pos_, end_); each chunk is stamped with its absolute row_ids.
         actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<vector::data_chunk_t>>>
@@ -88,21 +91,19 @@ namespace components::operators {
         // re-applies the very comparison the index answered. A row that fails it REFUSES the statement
         // -- it is never filtered out: a silent filter would turn a stale index into a quietly short
         // answer, and correctness here is worth an error the caller can retry.
-        [[nodiscard]] core::error_t recheck_answered_rows_() const;
+        [[nodiscard]] core::error_t recheck_answered_rows_(const pipeline::context_t* ctx,
+                                                           const vector::vector_t& key) const;
 
         components::catalog::oid_t table_oid_;
         const expressions::key_t key_;
-        const types::logical_value_t value_;
+        const core::parameter_id_t key_parameter_;
         const expressions::compare_type compare_type_;
         const components::logical_plan::index_type preferred_index_type_;
-        const logical_plan::limit_t limit_;
+        const logical_plan::row_cap_t cap_;
         // Empty means every column; without it, point-fetch pays a heap-copy per matched row
         // for unnamed text columns too.
         const std::vector<size_t> projected_cols_;
         const int64_t key_chunk_col_;
-        // projected_cols_ widened by key_chunk_col_ so the recheck has the cell to read. Built once:
-        // a per-fetch copy would allocate on the point-lookup path.
-        std::vector<size_t> fetch_cols_;
 
         // If the scan drains having produced zero rows, it emits one schema'd 0-row guard chunk
         // (scalar aggregate COUNT=0 / OUTER-join NULL-pad) before it ends the stream.

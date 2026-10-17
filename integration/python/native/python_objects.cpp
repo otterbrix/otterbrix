@@ -2,7 +2,6 @@
 
 #include <connection_environment/connection_environment.hpp>
 
-#include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 
 #include <ctime>
@@ -13,7 +12,7 @@
 
 using components::types::complex_logical_type;
 using components::types::logical_type;
-using components::types::logical_value_t;
+using components::vector::vector_t;
 
 namespace otterbrix {
 
@@ -120,7 +119,7 @@ namespace otterbrix {
         }
         // LCOV_EXCL_START
         // Failed to convert decimal.Decimal value, exponent type is unknown.
-        // Recorded here without throwing; surfaced by try_get_type / to_logical_value.
+        // Recorded here without throwing; surfaced by try_get_type / to_vector.
         exponent_recognized = false;
         // LCOV_EXCL_STOP
     }
@@ -132,19 +131,19 @@ namespace otterbrix {
     }
 
     template<class OP>
-    logical_value_t PyDecimalCastSwitch(std::pmr::memory_resource* r,
-                                        py_decimal_t& decimal,
-                                        const complex_logical_type& type,
-                                        uint8_t scale) {
+    vector_t PyDecimalCastSwitch(std::pmr::memory_resource* r,
+                                 py_decimal_t& decimal,
+                                 const complex_logical_type& type,
+                                 uint8_t scale) {
         return OP::template Operation<int64_t>(r, decimal.signed_value, decimal.digits, type, scale);
     }
 
     // Won't fit in a DECIMAL, fall back to DOUBLE
-    static logical_value_t cast_to_double(std::pmr::memory_resource* r, py::handle& obj) {
-        return logical_value_t(r, py::cast<double>(obj));
+    static vector_t cast_to_double(std::pmr::memory_resource* r, py::handle& obj) {
+        return components::vector::make_scalar(r, py::cast<double>(obj));
     }
 
-    core::result_wrapper_t<logical_value_t> py_decimal_t::to_logical_value(std::pmr::memory_resource* r) {
+    core::result_wrapper_t<vector_t> py_decimal_t::to_vector(std::pmr::memory_resource* r) {
         if (!exponent_recognized) {
             return make_error(r, "Failed to convert decimal.Decimal value, exponent type is unknown");
         }
@@ -178,10 +177,10 @@ namespace otterbrix {
                 return PyDecimalCastSwitch<py_decimal_power_converter_t>(r, *this, power_type, scale);
             }
             case py_decimal_exponent_type_t::EXPONENT_NAN: {
-                return logical_value_t(r, NAN);
+                return components::vector::make_scalar(r, NAN);
             }
             case py_decimal_exponent_type_t::EXPONENT_INFINITY: {
-                return logical_value_t(r, INFINITY);
+                return components::vector::make_scalar(r, INFINITY);
             }
             // LCOV_EXCL_START
             default: {
@@ -190,61 +189,7 @@ namespace otterbrix {
         }
     }
 
-    enum class infinity_type_t : uint8_t
-    {
-        NONE,
-        POSITIVE,
-        NEGATIVE
-    };
-
-    // OtterBrix timestamp
-    using timestamp_t = int64_t;
-
-    infinity_type_t get_timestamp_infinity_type(timestamp_t& timestamp) {
-        // constans for Unix timestamp
-        if (timestamp == std::numeric_limits<timestamp_t>::max()) {
-            return infinity_type_t::POSITIVE;
-        }
-        if (timestamp == std::numeric_limits<timestamp_t>::min()) {
-            return infinity_type_t::NEGATIVE;
-        }
-        return infinity_type_t::NONE;
-    }
-
-    core::result_wrapper_t<py::object> python_object_t::from_struct(std::pmr::memory_resource* r,
-                                                                    const logical_value_t& val,
-                                                                    const complex_logical_type& type) {
-        auto& struct_values = val.children();
-
-        auto& child_types = type.child_types();
-        // unnamed struct
-        if (child_types.empty() || child_types[0].alias().empty()) {
-            py::tuple py_tuple(struct_values.size());
-            for (idx_t i = 0; i < struct_values.size(); i++) {
-                auto& child_type = child_types[i];
-                assert(child_type.alias().empty());
-                auto field = from_value(r, struct_values[i], child_type);
-                if (field.has_error()) {
-                    return field.error();
-                }
-                py_tuple[i] = field.value();
-            }
-            return py::object(std::move(py_tuple));
-        } else {
-            py::dict py_struct;
-            for (idx_t i = 0; i < struct_values.size(); i++) {
-                auto& child_type = child_types[i];
-                auto field = from_value(r, struct_values[i], child_type);
-                if (field.has_error()) {
-                    return field.error();
-                }
-                py_struct[child_type.alias().c_str()] = field.value();
-            }
-            return py::object(std::move(py_struct));
-        }
-    }
-
-    static bool key_is_hashable(const complex_logical_type& type) {
+    bool key_is_hashable(const complex_logical_type& type) {
         switch (type.type()) {
             case logical_type::BOOLEAN:
             case logical_type::TINYINT:
@@ -285,168 +230,8 @@ namespace otterbrix {
                 return false;
             default:
                 // Unsupported key types are treated as non-hashable here; the genuine "unsupported type"
-                // error is surfaced when from_value recurses into the key/value below.
+                // error is surfaced when the key/value is converted.
                 return false;
-        }
-    }
-
-    core::result_wrapper_t<py::object> python_object_t::from_value(std::pmr::memory_resource* r,
-                                                                   const logical_value_t& val,
-                                                                   const complex_logical_type& type) {
-        auto& import_cache = connection_environment_t::import_cache();
-        if (val.is_null()) {
-            return py::object(py::none());
-        }
-        switch (type.type()) {
-            case logical_type::BOOLEAN:
-                return py::object(py::cast(val.value<bool>()));
-            case logical_type::TINYINT:
-                return py::object(py::cast(val.value<int8_t>()));
-            case logical_type::SMALLINT:
-                return py::object(py::cast(val.value<int16_t>()));
-            case logical_type::INTEGER:
-                return py::object(py::cast(val.value<int32_t>()));
-            case logical_type::BIGINT:
-                return py::object(py::cast(val.value<int64_t>()));
-            case logical_type::UTINYINT:
-                return py::object(py::cast(val.value<uint8_t>()));
-            case logical_type::USMALLINT:
-                return py::object(py::cast(val.value<uint16_t>()));
-            case logical_type::UINTEGER:
-                return py::object(py::cast(val.value<uint32_t>()));
-            case logical_type::UBIGINT:
-                return py::object(py::cast(val.value<uint64_t>()));
-            case logical_type::HUGEINT: {
-                return make_error(r, "OtterBrix doen\'t support hugeint conversation to python object");
-            }
-            case logical_type::UHUGEINT: {
-                return make_error(r, "OtterBrix doen\'t support uhugeint conversation to python object");
-            }
-            case logical_type::FLOAT:
-                return py::object(py::cast(val.value<float>()));
-            case logical_type::DOUBLE:
-                return py::object(py::cast(val.value<double>()));
-            case logical_type::DECIMAL: {
-                int64_t value = val.value<int64_t>();
-                auto* extension =
-                    static_cast<components::types::decimal_logical_type_extension*>(val.type().extension());
-                auto scale = extension->scale();
-                std::string digits = std::to_string(value);
-                auto pydigits = import_cache.decimal.Decimal()(digits);
-                return py::object(pydigits.attr("__truediv__")(py::cast<int>(scale)));
-            }
-            case logical_type::ENUM: {
-                return make_error(r, "OtterBrix doen\'t support enum type");
-            }
-            case logical_type::UNION: {
-                return make_error(r, "OtterBrix doen\'t support union type");
-            }
-            case logical_type::STRING_LITERAL:
-                return py::object(py::str(val.value<const std::string&>()));
-            case logical_type::BLOB:
-                return py::object(py::bytes(val.value<std::string_view>()));
-            case logical_type::BIT:
-                return py::object(py::cast(val.value<bool>() ? "1" : "0"));
-            case logical_type::TIMESTAMP: {
-                auto timestamp = val.value<timestamp_t>();
-
-                infinity_type_t infinity = get_timestamp_infinity_type(timestamp);
-                if (infinity == infinity_type_t::POSITIVE) {
-                    return py::reinterpret_borrow<py::object>(import_cache.datetime.datetime.max());
-                }
-                if (infinity == infinity_type_t::NEGATIVE) {
-                    return py::reinterpret_borrow<py::object>(import_cache.datetime.datetime.min());
-                }
-                return py::object(py::cast(timestamp));
-            }
-            case logical_type::LIST: {
-                auto& list_values = val.children();
-
-                py::list list;
-                for (auto& list_elem : list_values) {
-                    auto elem = from_value(r, list_elem, type.child_type());
-                    if (elem.has_error()) {
-                        return elem.error();
-                    }
-                    list.append(elem.value());
-                }
-                return py::object(std::move(list));
-            }
-            case logical_type::ARRAY: {
-                auto& array_values = val.children();
-                auto* extension = static_cast<components::types::array_logical_type_extension*>(type.extension());
-                auto array_size = extension->size();
-                auto& child_type = type.child_type();
-
-                // do not remove the static cast here, it's required for building
-                // otterbrix-python with Emscripten.
-                //
-                // without this cast, a static_assert fails in pybind11
-                // because the return type of array_type::get_size is idx_t,
-                // which is typedef'd to uint64_t and ssize_t is 4 bytes with Emscripten
-                // and pybind11 requires that the input be castable to ssize_t
-                py::tuple arr(static_cast<py::ssize_t>(array_size));
-
-                for (idx_t elem_idx = 0; elem_idx < array_size; elem_idx++) {
-                    auto elem = from_value(r, array_values[elem_idx], child_type);
-                    if (elem.has_error()) {
-                        return elem.error();
-                    }
-                    arr[elem_idx] = elem.value();
-                }
-                return py::object(std::move(arr));
-            }
-            case logical_type::MAP: {
-                auto& list_values = val.children();
-
-                auto* map_extension = static_cast<components::types::map_logical_type_extension*>(type.extension());
-                auto& key_type = map_extension->key();
-                auto& val_type = map_extension->value();
-
-                py::dict py_struct;
-                if (key_is_hashable(key_type)) {
-                    for (auto& list_elem : list_values) {
-                        auto& struct_children = list_elem.children();
-                        auto key = python_object_t::from_value(r, struct_children[0], key_type);
-                        if (key.has_error()) {
-                            return key.error();
-                        }
-                        auto value = python_object_t::from_value(r, struct_children[1], val_type);
-                        if (value.has_error()) {
-                            return value.error();
-                        }
-                        py_struct[key.value()] = value.value();
-                    }
-                } else {
-                    py::list keys;
-                    py::list values;
-                    for (auto& list_elem : list_values) {
-                        auto& struct_children = list_elem.children();
-                        auto key = python_object_t::from_value(r, struct_children[0], key_type);
-                        if (key.has_error()) {
-                            return key.error();
-                        }
-                        auto value = python_object_t::from_value(r, struct_children[1], val_type);
-                        if (value.has_error()) {
-                            return value.error();
-                        }
-                        keys.append(key.value());
-                        values.append(value.value());
-                    }
-                    py_struct["key"] = std::move(keys);
-                    py_struct["value"] = std::move(values);
-                }
-                return py::object(std::move(py_struct));
-            }
-            case logical_type::STRUCT: {
-                return from_struct(r, val, type);
-            }
-            case logical_type::UUID: {
-                return make_error(r, "OtterBrix doen\'t support uhugeint conversation to python object");
-            }
-
-            default:
-                return make_error(r, "Unsupported type: ");
         }
     }
 

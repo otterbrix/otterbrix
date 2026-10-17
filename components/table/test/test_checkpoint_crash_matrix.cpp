@@ -227,10 +227,8 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                auto id_cell = chunk.value(0, i);
-                auto name_cell = chunk.value(1, i);
-                const auto id = id_cell.value<int64_t>();
-                const auto name = name_cell.value<std::string_view>();
+                const auto id = chunk.data[0].get_value<int64_t>(i);
+                const auto name = chunk.data[1].get_value<std::string_view>(i);
                 if (id < 0 || name != row_name(static_cast<uint64_t>(id)) ||
                     !ids.insert(static_cast<uint64_t>(id)).second) {
                     clean = false;

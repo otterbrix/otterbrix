@@ -128,11 +128,21 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 0);
-            REQUIRE(cur->value(1, 1).value<int64_t>() == 1);
-            REQUIRE(cur->value(1, 2).value<int64_t>() == 2);
-            REQUIRE(cur->value(1, 3).value<int64_t>() == 3);
-            REQUIRE(cur->value(1, 4).value<int64_t>() == 4);
+            auto cell0 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == 0);
+            auto cell1 = cur->get<int64_t>(1, 1);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == 1);
+            auto cell2 = cur->get<int64_t>(1, 2);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == 2);
+            auto cell3 = cur->get<int64_t>(1, 3);
+            REQUIRE_FALSE(cell3.has_error());
+            REQUIRE(cell3.value() == 3);
+            auto cell4 = cur->get<int64_t>(1, 4);
+            REQUIRE_FALSE(cell4.has_error());
+            REQUIRE(cell4.value() == 4);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -141,11 +151,21 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count DESC;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 99);
-            REQUIRE(cur->value(1, 1).value<int64_t>() == 98);
-            REQUIRE(cur->value(1, 2).value<int64_t>() == 97);
-            REQUIRE(cur->value(1, 3).value<int64_t>() == 96);
-            REQUIRE(cur->value(1, 4).value<int64_t>() == 95);
+            auto cell5 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell5.has_error());
+            REQUIRE(cell5.value() == 99);
+            auto cell6 = cur->get<int64_t>(1, 1);
+            REQUIRE_FALSE(cell6.has_error());
+            REQUIRE(cell6.value() == 98);
+            auto cell7 = cur->get<int64_t>(1, 2);
+            REQUIRE_FALSE(cell7.has_error());
+            REQUIRE(cell7.value() == 97);
+            auto cell8 = cur->get<int64_t>(1, 3);
+            REQUIRE_FALSE(cell8.has_error());
+            REQUIRE(cell8.value() == 96);
+            auto cell9 = cur->get<int64_t>(1, 4);
+            REQUIRE_FALSE(cell9.has_error());
+            REQUIRE(cell9.value() == 95);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -154,11 +174,21 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY name;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 0);
-            REQUIRE(cur->value(1, 1).value<int64_t>() == 1);
-            REQUIRE(cur->value(1, 2).value<int64_t>() == 10);
-            REQUIRE(cur->value(1, 3).value<int64_t>() == 11);
-            REQUIRE(cur->value(1, 4).value<int64_t>() == 12);
+            auto cell10 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell10.has_error());
+            REQUIRE(cell10.value() == 0);
+            auto cell11 = cur->get<int64_t>(1, 1);
+            REQUIRE_FALSE(cell11.has_error());
+            REQUIRE(cell11.value() == 1);
+            auto cell12 = cur->get<int64_t>(1, 2);
+            REQUIRE_FALSE(cell12.has_error());
+            REQUIRE(cell12.value() == 10);
+            auto cell13 = cur->get<int64_t>(1, 3);
+            REQUIRE_FALSE(cell13.has_error());
+            REQUIRE(cell13.value() == 11);
+            auto cell14 = cur->get<int64_t>(1, 4);
+            REQUIRE_FALSE(cell14.has_error());
+            REQUIRE(cell14.value() == 12);
         }
     }
 
@@ -197,7 +227,9 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(count) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<uint64_t>() == 100);
+            auto cell15 = cur->get<uint64_t>(0, 0);
+            REQUIRE_FALSE(cell15.has_error());
+            REQUIRE(cell15.value() == 100);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -205,7 +237,9 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                 dispatcher->execute_sql(session, "SELECT MIN(count) AS min_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 0);
+            auto cell16 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell16.has_error());
+            REQUIRE(cell16.value() == 0);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -213,7 +247,9 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                 dispatcher->execute_sql(session, "SELECT MAX(count) AS max_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 99);
+            auto cell17 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell17.has_error());
+            REQUIRE(cell17.value() == 99);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -221,7 +257,9 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                 dispatcher->execute_sql(session, "SELECT SUM(count) AS sum_val FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 4950);
+            auto cell18 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell18.has_error());
+            REQUIRE(cell18.value() == 4950);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -230,7 +268,9 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             // AVG over an integer column answers DOUBLE: 4950 / 100
-            REQUIRE(cur->value(0, 0).value<double>() == Catch::Approx(49.5));
+            auto cell19 = cur->get<double>(0, 0);
+            REQUIRE_FALSE(cell19.has_error());
+            REQUIRE(cell19.value() == Catch::Approx(49.5));
         }
     }
 
@@ -243,7 +283,9 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count <= 10;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<uint64_t>() == 11);
+            auto cell20 = cur->get<uint64_t>(0, 0);
+            REQUIRE_FALSE(cell20.has_error());
+            REQUIRE(cell20.value() == 11);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -252,7 +294,9 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count > 80;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 81);
+            auto cell21 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell21.has_error());
+            REQUIRE(cell21.value() == 81);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -261,7 +305,9 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count < 20;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 19);
+            auto cell22 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell22.has_error());
+            REQUIRE(cell22.value() == 19);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -270,7 +316,9 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count < 10;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 45);
+            auto cell23 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell23.has_error());
+            REQUIRE(cell23.value() == 45);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -279,7 +327,9 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "WHERE count < 10;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<double>() == Catch::Approx(4.5));
+            auto cell24 = cur->get<double>(0, 0);
+            REQUIRE_FALSE(cell24.has_error());
+            REQUIRE(cell24.value() == Catch::Approx(4.5));
         }
     }
 
@@ -313,8 +363,12 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count LIMIT 5 OFFSET 0;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 5);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 0);
-            REQUIRE(cur->value(1, 4).value<int64_t>() == 4);
+            auto cell25 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell25.has_error());
+            REQUIRE(cell25.value() == 0);
+            auto cell26 = cur->get<int64_t>(1, 4);
+            REQUIRE_FALSE(cell26.has_error());
+            REQUIRE(cell26.value() == 4);
         }
         {
             // Skip first 5 rows, take next 5: count values 5..9
@@ -324,8 +378,12 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count LIMIT 5 OFFSET 5;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 5);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 5);
-            REQUIRE(cur->value(1, 4).value<int64_t>() == 9);
+            auto cell27 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell27.has_error());
+            REQUIRE(cell27.value() == 5);
+            auto cell28 = cur->get<int64_t>(1, 4);
+            REQUIRE_FALSE(cell28.has_error());
+            REQUIRE(cell28.value() == 9);
         }
         {
             // Last 5 rows: count values 95..99
@@ -335,8 +393,12 @@ TEST_CASE("integration::cpp::test_collection::sql::base") {
                                                "ORDER BY count LIMIT 5 OFFSET 95;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 5);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 95);
-            REQUIRE(cur->value(1, 4).value<int64_t>() == 99);
+            auto cell29 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell29.has_error());
+            REQUIRE(cell29.value() == 95);
+            auto cell30 = cur->get<int64_t>(1, 4);
+            REQUIRE_FALSE(cell30.has_error());
+            REQUIRE(cell30.value() == 99);
         }
         {
             // Offset past end of result set
@@ -454,14 +516,25 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
         for (size_t number = 0; number < 10; ++number) {
-            REQUIRE(cur->value(0, number).value<std::string_view>() == "Name " + std::to_string(number));
-            REQUIRE(cur->value(1, number).value<uint64_t>() == 10);
-            REQUIRE(cur->value(2, number).value<int64_t>() ==
+            auto cell31 = cur->get<std::string_view>(0, number);
+            REQUIRE_FALSE(cell31.has_error());
+            REQUIRE(cell31.value() == "Name " + std::to_string(number));
+            auto cell32 = cur->get<uint64_t>(1, number);
+            REQUIRE_FALSE(cell32.has_error());
+            REQUIRE(cell32.value() == 10);
+            auto cell33 = cur->get<int64_t>(2, number);
+            REQUIRE_FALSE(cell33.has_error());
+            REQUIRE(cell33.value() ==
                     5 * (static_cast<int64_t>(number) % 20) + 5 * ((static_cast<int64_t>(number) + 10) % 20));
-            REQUIRE(cur->value(3, number).value<double>() ==
-                    Catch::Approx(static_cast<double>(number % 20 + (number + 10) % 20) / 2));
-            REQUIRE(cur->value(4, number).value<int64_t>() == static_cast<int64_t>(number) % 20);
-            REQUIRE(cur->value(5, number).value<int64_t>() == (static_cast<int64_t>(number) + 10) % 20);
+            auto cell34 = cur->get<double>(3, number);
+            REQUIRE_FALSE(cell34.has_error());
+            REQUIRE(cell34.value() == Catch::Approx(static_cast<double>(number % 20 + (number + 10) % 20) / 2));
+            auto cell35 = cur->get<int64_t>(4, number);
+            REQUIRE_FALSE(cell35.has_error());
+            REQUIRE(cell35.value() == static_cast<int64_t>(number) % 20);
+            auto cell36 = cur->get<int64_t>(5, number);
+            REQUIRE_FALSE(cell36.has_error());
+            REQUIRE(cell36.value() == (static_cast<int64_t>(number) + 10) % 20);
         }
     }
 
@@ -479,13 +552,24 @@ TEST_CASE("integration::cpp::test_collection::sql::group_by") {
         REQUIRE(cur->size() == 10);
         for (size_t row = 0; row < 10; ++row) {
             int number = 9 - static_cast<int>(row);
-            REQUIRE(cur->value(0, row).value<std::string_view>() == "Name " + std::to_string(number));
-            REQUIRE(cur->value(1, row).value<uint64_t>() == 10);
-            REQUIRE(cur->value(2, row).value<int64_t>() == 5 * (number % 20) + 5 * ((number + 10) % 20));
-            REQUIRE(cur->value(3, row).value<double>() ==
-                    Catch::Approx(static_cast<double>(number % 20 + (number + 10) % 20) / 2));
-            REQUIRE(cur->value(4, row).value<int64_t>() == number % 20);
-            REQUIRE(cur->value(5, row).value<int64_t>() == (number + 10) % 20);
+            auto cell37 = cur->get<std::string_view>(0, row);
+            REQUIRE_FALSE(cell37.has_error());
+            REQUIRE(cell37.value() == "Name " + std::to_string(number));
+            auto cell38 = cur->get<uint64_t>(1, row);
+            REQUIRE_FALSE(cell38.has_error());
+            REQUIRE(cell38.value() == 10);
+            auto cell39 = cur->get<int64_t>(2, row);
+            REQUIRE_FALSE(cell39.has_error());
+            REQUIRE(cell39.value() == 5 * (number % 20) + 5 * ((number + 10) % 20));
+            auto cell40 = cur->get<double>(3, row);
+            REQUIRE_FALSE(cell40.has_error());
+            REQUIRE(cell40.value() == Catch::Approx(static_cast<double>(number % 20 + (number + 10) % 20) / 2));
+            auto cell41 = cur->get<int64_t>(4, row);
+            REQUIRE_FALSE(cell41.has_error());
+            REQUIRE(cell41.value() == number % 20);
+            auto cell42 = cur->get<int64_t>(5, row);
+            REQUIRE_FALSE(cell42.has_error());
+            REQUIRE(cell42.value() == (number + 10) % 20);
         }
     }
 
@@ -646,8 +730,12 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
                                                "WHERE count > 90 ORDER BY count LIMIT 3 OFFSET 2;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 3);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 93);
-            REQUIRE(cur->value(1, 2).value<int64_t>() == 95);
+            auto cell43 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell43.has_error());
+            REQUIRE(cell43.value() == 93);
+            auto cell44 = cur->get<int64_t>(1, 2);
+            REQUIRE_FALSE(cell44.has_error());
+            REQUIRE(cell44.value() == 95);
         }
         {
             // count > 90 → 9 rows (91..99); skip 8 (91..98), take 5 → only 1 remaining (99)
@@ -657,7 +745,9 @@ TEST_CASE("integration::cpp::test_collection::sql::index") {
                                                "WHERE count > 90 ORDER BY count LIMIT 5 OFFSET 8;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 99);
+            auto cell45 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell45.has_error());
+            REQUIRE(cell45.value() == 99);
         }
     }
 
@@ -787,8 +877,10 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
             for (size_t i = 0; i < 100; ++i) {
-                REQUIRE(cur->value(0, i).children()[0] ==
-                        types::logical_value_t{dispatcher->resource(), static_cast<int32_t>(99 - i)});
+                REQUIRE(cur->type_data()[0].child_types()[0].type() == types::logical_type::INTEGER);
+                auto cell47 = cur->get<int32_t>(0, i, {0});
+                REQUIRE_FALSE(cell47.has_error());
+                REQUIRE(cell47.value() == static_cast<int32_t>(99 - i));
             }
         }
         {
@@ -799,8 +891,10 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 100);
             for (size_t i = 0; i < 100; ++i) {
-                REQUIRE(cur->value(0, i).children()[0] ==
-                        types::logical_value_t{dispatcher->resource(), static_cast<int32_t>(i)});
+                REQUIRE(cur->type_data()[0].child_types()[0].type() == types::logical_type::INTEGER);
+                auto cell48 = cur->get<int32_t>(0, i, {0});
+                REQUIRE_FALSE(cell48.has_error());
+                REQUIRE(cell48.value() == static_cast<int32_t>(i));
             }
         }
     }
@@ -821,7 +915,10 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 9);
             REQUIRE(cur->column_count() == 2);
-            REQUIRE(cur->value(0, 0).children()[0] == types::logical_value_t{dispatcher->resource(), 91});
+            REQUIRE(cur->type_data()[0].child_types()[0].type() == types::logical_type::INTEGER);
+            auto cell49 = cur->get<int32_t>(0, 0, {0});
+            REQUIRE_FALSE(cell49.has_error());
+            REQUIRE(cell49.value() == 91);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -834,7 +931,10 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->chunks().front().data[0].type().alias() == "f1");
             REQUIRE(cur->chunks().front().data[1].type().alias() == "f2");
             REQUIRE(cur->chunks().front().data[2].type().alias() == "f3");
-            REQUIRE(cur->value(0, 0) == types::logical_value_t{dispatcher->resource(), 91});
+            REQUIRE(cur->type_data()[0].type() == types::logical_type::INTEGER);
+            auto cell50 = cur->get<int32_t>(0, 0);
+            REQUIRE_FALSE(cell50.has_error());
+            REQUIRE(cell50.value() == 91);
         }
         {
             auto session = otterbrix::session_id_t();
@@ -847,7 +947,10 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->chunks().front().data[0].type().alias() == "f1");
             REQUIRE(cur->chunks().front().data[1].type().alias() == "f2");
             REQUIRE(cur->chunks().front().data[2].type().alias() == "f3");
-            REQUIRE(cur->value(2, 0).children()[1] == types::logical_value_t{dispatcher->resource(), 92});
+            REQUIRE(cur->type_data()[2].child_types()[1].type() == types::logical_type::INTEGER);
+            auto cell51 = cur->get<int32_t>(2, 0, {1});
+            REQUIRE_FALSE(cell51.has_error());
+            REQUIRE(cell51.value() == 92);
         }
     }
     INFO("update");
@@ -868,7 +971,9 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
             REQUIRE(cur->size() == 100);
             REQUIRE(cur->column_count() == 1);
             for (size_t num = 0; num < 100; ++num) {
-                REQUIRE(core::is_equals(cur->value(0, num).value<float>(), (static_cast<float>(num) + 0.5f) * 3.0f));
+                auto cell46 = cur->get<float>(0, num);
+                REQUIRE_FALSE(cell46.has_error());
+                REQUIRE(core::is_equals(cell46.value(), (static_cast<float>(num) + 0.5f) * 3.0f));
             }
         }
     }

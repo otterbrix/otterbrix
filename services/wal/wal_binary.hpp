@@ -25,6 +25,11 @@ namespace services::wal {
     // strings.
     // -----------------------------------------------------------------------
 
+    // The shape every physical record must have: one attoid per column of every chunk. The reader refuses a
+    // record that breaks it, so the writers refuse it first.
+    bool attoids_match_chunks(const column_attoids_t& attoids,
+                              const std::pmr::vector<components::vector::data_chunk_t>& chunks);
+
     // The whole chunk batch is written into ONE record (count-prefixed, each chunk
     // length-prefixed) so a torn write can never leave a partially-applied batch.
     crc32_t encode_insert(buffer_t& buffer,

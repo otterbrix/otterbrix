@@ -23,8 +23,9 @@ namespace {
     std::string plan_text(const cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            auto v = cur->value(0, r);
-            out += std::string(v.value<std::string_view>());
+            auto cell0 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            out += std::string(cell0.value());
             out += '\n';
         }
         return out;
@@ -36,7 +37,9 @@ namespace {
         std::vector<int64_t> out;
         out.reserve(cur->size());
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            out.push_back(cur->value(0, r).value<int64_t>());
+            auto cell1 = cur->get<int64_t>(0, r);
+            REQUIRE_FALSE(cell1.has_error());
+            out.push_back(cell1.value());
         }
         std::sort(out.begin(), out.end());
         return out;

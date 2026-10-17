@@ -20,7 +20,9 @@
 #include <components/table/storage/metadata_writer.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/vector/cell_equal.hpp>
+#include <components/vector/vector_builders.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <core/file/local_file_system.hpp>
 
 #include <cstdio>
@@ -140,7 +142,7 @@ namespace {
 
     struct row_t {
         int64_t k;
-        logical_value_t v;
+        vector_t v;
     };
 
     // Returns the rows seen; the scan's error (if any) lands in *error.
@@ -165,7 +167,8 @@ namespace {
             }
             if (cells) {
                 for (uint64_t i = 0; i < chunk.size(); i++) {
-                    cells->push_back(row_t{chunk.value(0, i).value<int64_t>(), chunk.value(1, i)});
+                    cells->push_back(row_t{chunk.data[0].get_value<int64_t>(i),
+                                           make_constant_copy(&env.resource, chunk.data[1], i)});
                 }
             }
             seen += chunk.size();
@@ -189,22 +192,21 @@ namespace {
         return std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "list_revert_pin");
     }
 
-    data_chunk_t one_row(env_t& env, data_table_t& table, int64_t k, const logical_value_t& v) {
+    data_chunk_t one_row(env_t& env, data_table_t& table, int64_t k, const vector_t& v) {
         auto types = table.copy_types();
         data_chunk_t chunk(&env.resource, types, 1);
         chunk.set_cardinality(1);
         chunk.set_value(0, 0, k);
-        chunk.set_value(1, 0, v);
+        vector_ops::copy(v, chunk.data[1], 1, 0, 0);
         return chunk;
     }
 
-    logical_value_t
-    list_of(env_t& env, const complex_logical_type& list_type, const std::vector<std::string>& elements) {
-        std::vector<logical_value_t> values;
+    vector_t list_of(env_t& env, const complex_logical_type& list_type, const std::vector<std::string>& elements) {
+        std::vector<vector_t> values;
         for (const auto& e : elements) {
-            values.emplace_back(&env.resource, std::string_view{e});
+            values.push_back(make_scalar(&env.resource, std::string_view{e}));
         }
-        return logical_value_t::create_list_from_type(&env.resource, list_type, values);
+        return make_list(&env.resource, list_type.child_type(), values);
     }
 
     void committed_append(data_table_t& table, data_chunk_t& chunk, env_t& env) {
@@ -307,10 +309,11 @@ namespace {
         std::remove(path.c_str());
     }
 
-    void check_list_ok(const logical_value_t& cell) {
-        INFO("the ok row has " << cell.children().size() << " element(s)");
-        REQUIRE(cell.children().size() == 1);
-        CHECK(*cell.children()[0].value<std::string*>() == "ok");
+    void check_list_ok(const vector_t& cell) {
+        const auto seq = sequence_of(cell, 0);
+        INFO("the ok row has " << seq.length << " element(s)");
+        REQUIRE(seq.length == 1);
+        CHECK(seq.child->get_value<std::string_view>(seq.offset) == "ok");
     }
 
 } // namespace
@@ -339,13 +342,16 @@ TEST_CASE("list_revert_pin: R2 LIST<LIST<STRING>> reloaded, refused append under
         "r2",
         outer_type,
         [&](env_t& env, const std::string& payload, uint64_t repeat) {
-            std::vector<logical_value_t> inner{list_of(env, inner_type, std::vector<std::string>(repeat, payload))};
-            return logical_value_t::create_list_from_type(&env.resource, outer_type, inner);
+            std::vector<vector_t> inner;
+            inner.push_back(list_of(env, inner_type, std::vector<std::string>(repeat, payload)));
+            return make_list(&env.resource, inner_type, inner);
         },
         40,
-        [](const logical_value_t& cell) {
-            REQUIRE(cell.children().size() == 1);
-            check_list_ok(cell.children()[0]);
+        [](const vector_t& cell) {
+            const auto seq = sequence_of(cell, 0);
+            REQUIRE(seq.length == 1);
+            const auto inner = make_constant_copy(cell.resource(), *seq.child, seq.offset);
+            check_list_ok(inner);
         });
 }
 
@@ -364,13 +370,15 @@ TEST_CASE("list_revert_pin: C1 STRUCT<STRING> reloaded, refused append under poo
             for (uint64_t i = 0; i < repeat; i++) {
                 big += payload;
             }
-            std::vector<logical_value_t> fields{logical_value_t(&env.resource, std::string_view{big})};
-            return logical_value_t::create_struct(&env.resource, struct_type, fields);
+            std::vector<vector_t> fields;
+            fields.push_back(make_scalar(&env.resource, std::string_view{big}));
+            return make_struct(&env.resource, struct_type, fields);
         },
         5,
-        [](const logical_value_t& cell) {
-            REQUIRE(cell.children().size() == 1);
-            CHECK(cell.children()[0].value<std::string_view>() == "ok");
+        [](const vector_t& cell) {
+            const auto field = resolve_cell(cell, 0);
+            REQUIRE(field.vec->entries().size() == 1);
+            CHECK(field.vec->entries()[0]->get_value<std::string_view>(field.index) == "ok");
         });
 }
 
@@ -386,13 +394,15 @@ TEST_CASE("list_revert_pin: C2 ARRAY<STRING> reloaded, refused append under pool
             for (uint64_t i = 0; i < repeat; i++) {
                 big += payload;
             }
-            std::vector<logical_value_t> values{logical_value_t(&env.resource, std::string_view{big})};
-            return logical_value_t::create_array(&env.resource, logical_type::STRING_LITERAL, values);
+            std::vector<vector_t> values;
+            values.push_back(make_scalar(&env.resource, std::string_view{big}));
+            return make_array(&env.resource, complex_logical_type{logical_type::STRING_LITERAL}, values);
         },
         5,
-        [](const logical_value_t& cell) {
-            REQUIRE(cell.children().size() == 1);
-            CHECK(cell.children()[0].value<std::string_view>() == "ok");
+        [](const vector_t& cell) {
+            const auto seq = sequence_of(cell, 0);
+            REQUIRE(seq.length == 1);
+            CHECK(seq.child->get_value<std::string_view>(seq.offset) == "ok");
         });
 }
 
@@ -531,13 +541,13 @@ TEST_CASE("list_revert_pin: R5 STRING transaction revert inside a spilled transi
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.create_new_database().has_error());
         auto table = make_table(env, bm, complex_logical_type{logical_type::STRING_LITERAL});
-        auto seed = one_row(env, *table, 1, logical_value_t(&env.resource, std::string_view{"seed"}));
+        auto seed = one_row(env, *table, 1, make_scalar(&env.resource, std::string_view{"seed"}));
         committed_append(*table, seed, env);
-        auto pending = one_row(env, *table, 7, logical_value_t(&env.resource, std::string_view{"rolled-back"}));
+        auto pending = one_row(env, *table, 7, make_scalar(&env.resource, std::string_view{"rolled-back"}));
         transaction_append(*table, pending, env, 5);
         // A NULL row too: its cleared validity bit must be valid again before the row is reused.
         auto pending_null =
-            one_row(env, *table, 7, logical_value_t(&env.resource, complex_logical_type{logical_type::STRING_LITERAL}));
+            one_row(env, *table, 7, make_null(&env.resource, complex_logical_type{logical_type::STRING_LITERAL}));
         transaction_append(*table, pending_null, env, 5);
         REQUIRE(column_of(*table, 1).count() == 3);
 
@@ -549,7 +559,7 @@ TEST_CASE("list_revert_pin: R5 STRING transaction revert inside a spilled transi
         held.release();
 
         CHECK(column_of(*table, 1).count() == 1);
-        auto good = one_row(env, *table, 8, logical_value_t(&env.resource, std::string_view{"ok"}));
+        auto good = one_row(env, *table, 8, make_scalar(&env.resource, std::string_view{"ok"}));
         committed_append(*table, good, env);
         std::vector<row_t> cells;
         core::error_t err = core::error_t::no_error();
@@ -557,8 +567,8 @@ TEST_CASE("list_revert_pin: R5 STRING transaction revert inside a spilled transi
         INFO("scan error: " << err.what);
         REQUIRE_FALSE(err.contains_error());
         CHECK(cells[1].k == 8);
-        REQUIRE_FALSE(cells[1].v.is_null());
-        const auto seen = std::string{cells[1].v.value<std::string_view>()};
+        REQUIRE_FALSE(cells[1].v.is_null(0));
+        const auto seen = std::string{cells[1].v.get_value<std::string_view>(0)};
         CHECK(seen == "ok");
 
         auto cp = checkpoint_production(bm, *table);
@@ -574,7 +584,7 @@ TEST_CASE("list_revert_pin: R5 STRING transaction revert inside a spilled transi
         core::error_t err = core::error_t::no_error();
         REQUIRE(scan_rows(*loaded.value(), env, &cells, &err) == 2);
         REQUIRE_FALSE(err.contains_error());
-        CHECK(cells[1].v.value<std::string_view>() == "ok");
+        CHECK(cells[1].v.get_value<std::string_view>(0) == "ok");
     }
     std::remove(path.c_str());
 }
@@ -598,7 +608,7 @@ TEST_CASE("list_revert_pin: a revert from inside an append session is refused", 
         chunk.set_cardinality(4);
         for (uint64_t i = 0; i < 4; i++) {
             chunk.set_value(0, i, static_cast<int64_t>(10 + i));
-            chunk.set_value(1, i, list_of(env, list_type, {"a", "b"}));
+            vector_ops::copy(list_of(env, list_type, {"a", "b"}), chunk.data[1], 1, 0, i);
         }
         transaction_append(*table, chunk, env, 5);
         REQUIRE(column_of(*table, 1).count() == 5);
@@ -636,7 +646,7 @@ namespace {
         chunk.set_cardinality(4);
         for (uint64_t i = 0; i < 4; i++) {
             chunk.set_value(0, i, static_cast<int64_t>(10 + i));
-            chunk.set_value(1, i, list_of(env, list_type, {"a", "b"}));
+            vector_ops::copy(list_of(env, list_type, {"a", "b"}), chunk.data[1], 1, 0, i);
         }
         transaction_append(*table, chunk, env, 5);
         REQUIRE(column_of(*table, 1).count() == 5);
@@ -662,7 +672,7 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                sizes.push_back(chunk.value(column, i).children().size());
+                sizes.push_back(chunk.is_null(column, i) ? 0 : sequence_of(chunk.data[column], i).length);
             }
         }
         return sizes;
@@ -695,8 +705,8 @@ TEST_CASE("list_revert_pin: a session begun before ADD COLUMN reverts after it",
         data_chunk_t good(&env.resource, types, 1);
         good.set_cardinality(1);
         good.set_value(0, 0, int64_t{8});
-        good.set_value(1, 0, list_of(env, list_type, {"ok"}));
-        good.set_value(2, 0, list_of(env, list_type, {"x", "y", "z"}));
+        vector_ops::copy(list_of(env, list_type, {"ok"}), good.data[1], 1, 0, 0);
+        vector_ops::copy(list_of(env, list_type, {"x", "y", "z"}), good.data[2], 1, 0, 0);
         committed_append(*extended, good, env);
         CHECK(list_sizes(*extended, env, 1) == std::vector<uint64_t>{1, 1});
         CHECK(list_sizes(*extended, env, 2) == std::vector<uint64_t>{0, 3});
@@ -725,7 +735,7 @@ TEST_CASE("list_revert_pin: a session begun before DROP COLUMN reverts after it"
         auto types = reduced->copy_types();
         data_chunk_t good(&env.resource, types, 1);
         good.set_cardinality(1);
-        good.set_value(0, 0, list_of(env, list_type, {"ok"}));
+        vector_ops::copy(list_of(env, list_type, {"ok"}), good.data[0], 1, 0, 0);
         committed_append(*reduced, good, env);
         CHECK(list_sizes(*reduced, env, 0) == std::vector<uint64_t>{1, 1});
     }

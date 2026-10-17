@@ -44,7 +44,9 @@ namespace {
     std::string plan_text(const components::cursor::cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            out += std::string(cur->value(0, r).value<std::string_view>());
+            auto cell0 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            out += std::string(cell0.value());
             out += '\n';
         }
         return out;
@@ -121,7 +123,9 @@ TEST_CASE("integration::cpp::create_index_catchup_refusal::the_build_does_not_re
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM CatchupDb.t WHERE grp = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount / kGroups));
+        auto cell1 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == static_cast<uint64_t>(kRowCount / kGroups));
     }
 
     REQUIRE(exec(dispatcher, "INSERT INTO CatchupDb.t (id, grp, val) VALUES (1000, 0, 10000);")->is_success());

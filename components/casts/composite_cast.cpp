@@ -1,6 +1,7 @@
 #include <components/casts/composite_cast.hpp>
 
 #include <components/casts/cast_registry.hpp>
+#include <components/vector/vector_operations.hpp>
 
 #include <algorithm>
 #include <cstring>
@@ -28,13 +29,14 @@ namespace components::casts {
                              vector::vector_t* result,
                              const graph_execution_context&,
                              uint64_t count) -> core::error_t {
-                for (uint64_t row = 0; row < count; ++row) {
-                    if (source.is_null(row)) {
-                        result->set_null(row, true);
-                    } else {
-                        result->set_value(row, source.value(row));
-                    }
+                // same_cast_type is looser than ==: any two ENUMs pass it, and their codes mean different labels.
+                if (source.type() != result->type()) {
+                    return core::error_t{core::error_code_t::unimplemented_yet,
+                                         std::pmr::string{"cannot cast type " + source.type().type_name() + " to " +
+                                                              result->type().type_name(),
+                                                          result->resource()}};
                 }
+                vector::vector_ops::copy(source, *result, count, 0, 0);
                 return core::error_t::no_error();
             }};
         }
@@ -76,20 +78,16 @@ namespace components::casts {
 
         void fill_array_row(const vector::vector_t& staged,
                             vector::vector_t* target_child,
-                            const graph_execution_context& context,
                             uint64_t row,
                             types::list_entry_t source_span,
                             uint64_t target_stride) {
             const uint64_t copy_length = std::min<uint64_t>(source_span.length, target_stride);
-            for (uint64_t index = 0; index < copy_length; ++index) {
-                target_child->set_value(row * target_stride + index, staged.value(source_span.offset + index));
+            if (copy_length > 0) {
+                const vector::indexing_vector_t window(target_child->resource(), source_span.offset, copy_length);
+                vector::vector_ops::copy(staged, *target_child, window, copy_length, 0, row * target_stride);
             }
             for (uint64_t index = copy_length; index < target_stride; ++index) {
-                if (context.fill_value != nullptr) {
-                    target_child->set_value(row * target_stride + index, *context.fill_value);
-                } else {
-                    target_child->set_null(row * target_stride + index, true);
-                }
+                target_child->set_null(row * target_stride + index, true);
             }
         }
 
@@ -123,7 +121,6 @@ namespace components::casts {
                 for (uint64_t row = 0; row < count; ++row) {
                     fill_array_row(staged,
                                    &target_child,
-                                   context,
                                    row,
                                    types::list_entry_t{row * source_stride, source_stride},
                                    target_stride);
@@ -216,7 +213,7 @@ namespace components::casts {
                 }
                 vector::vector_t& target_child = result->entry();
                 for (uint64_t row = 0; row < count; ++row) {
-                    fill_array_row(staged, &target_child, context, row, spans[row], stride);
+                    fill_array_row(staged, &target_child, row, spans[row], stride);
                 }
                 propagate_row_validity(source, result, count);
                 return core::error_t::no_error();

@@ -25,43 +25,46 @@ namespace otterbrix {
         // Resolve the projected column positions by alias, falling back to the
         // SELECT order in kListTablesQuery if the cursor carries no aliases.
         const auto& types = cursor->type_data();
-        components::cursor::index_t oid_col = 0;
-        components::cursor::index_t relname_col = 1;
-        components::cursor::index_t relkind_col = 2;
+        uint64_t oid_col = 0;
+        uint64_t relname_col = 1;
+        uint64_t relkind_col = 2;
         for (std::size_t i = 0; i < types.size(); ++i) {
             if (!types[i].has_alias()) {
                 continue;
             }
             const auto& alias = types[i].alias();
             if (alias == "oid") {
-                oid_col = static_cast<components::cursor::index_t>(i);
+                oid_col = i;
             } else if (alias == "relname") {
-                relname_col = static_cast<components::cursor::index_t>(i);
+                relname_col = i;
             } else if (alias == "relkind") {
-                relkind_col = static_cast<components::cursor::index_t>(i);
+                relkind_col = i;
             }
         }
 
-        while (cursor->has_next()) {
-            cursor->advance();
-            auto oid_cell = cursor->value(static_cast<uint64_t>(oid_col));
-            if (oid_cell.is_null() || oid_cell.value<std::uint32_t>() < components::catalog::FIRST_USER_OID) {
+        // Rows by index: the caller's cursor position stays where it was.
+        for (uint64_t row = 0; row < cursor->size(); ++row) {
+            VALUE_OR_RETURN(const bool oid_is_null, cursor->is_null(oid_col, row));
+            if (oid_is_null) {
+                continue; // system catalog object
+            }
+            VALUE_OR_RETURN(const auto oid_value, cursor->get<std::uint32_t>(oid_col, row));
+            if (oid_value < components::catalog::FIRST_USER_OID) {
                 continue; // system catalog object
             }
             // relname and relkind are NOT NULL in the schema (system_table_schemas.cpp): a
             // NULL/empty value here is a corrupt row, not one to filter. Unchecked, a NULL
             // relkind reads as a regular table and a NULL relname silently drops a real one.
             // A catalog that cannot be trusted refuses.
-            const auto oid_value = oid_cell.value<std::uint32_t>();
-            auto relkind_cell = cursor->value(static_cast<uint64_t>(relkind_col));
-            if (relkind_cell.is_null()) {
+            VALUE_OR_RETURN(const bool relkind_is_null, cursor->is_null(relkind_col, row));
+            if (relkind_is_null) {
                 return core::error_t{core::error_code_t::schema_error,
                                      std::pmr::string{"listTables: pg_class row oid=" + std::to_string(oid_value) +
                                                           " has NULL relkind (declared NOT NULL) — the catalog "
                                                           "cannot be trusted",
                                                       resource}};
             }
-            auto relkind = relkind_cell.value<std::string_view>();
+            VALUE_OR_RETURN(const auto relkind, cursor->get<std::string_view>(relkind_col, row));
             if (relkind.empty()) {
                 return core::error_t{core::error_code_t::schema_error,
                                      std::pmr::string{"listTables: pg_class row oid=" + std::to_string(oid_value) +
@@ -72,15 +75,15 @@ namespace otterbrix {
             if (relkind.front() != components::catalog::relkind::regular) {
                 continue; // not a regular table (view / matview / sequence / index / ...)
             }
-            auto relname_cell = cursor->value(static_cast<uint64_t>(relname_col));
-            if (relname_cell.is_null()) {
+            VALUE_OR_RETURN(const bool relname_is_null, cursor->is_null(relname_col, row));
+            if (relname_is_null) {
                 return core::error_t{core::error_code_t::schema_error,
                                      std::pmr::string{"listTables: pg_class row oid=" + std::to_string(oid_value) +
                                                           " has NULL relname (declared NOT NULL) — the catalog "
                                                           "cannot be trusted",
                                                       resource}};
             }
-            auto relname = relname_cell.value<std::string_view>();
+            VALUE_OR_RETURN(const auto relname, cursor->get<std::string_view>(relname_col, row));
             names.emplace_back(relname.data(), relname.size());
         }
         return names;

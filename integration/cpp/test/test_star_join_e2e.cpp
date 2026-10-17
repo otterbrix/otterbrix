@@ -1,6 +1,7 @@
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <components/vector/vector_builders.hpp>
 
 #include <components/casts/default_casts.hpp>
 #include <components/expressions/aggregate_expression.hpp>
@@ -113,13 +114,25 @@ TEST_CASE("integration::cpp::star_join_e2e::rows_correct") {
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
 
-    REQUIRE(cur->value(0, 0).value<int64_t>() == 1997);
-    REQUIRE(cur->value(1, 0).value<std::string_view>() == "BRAZIL");
-    REQUIRE(cur->value(2, 0).value<int64_t>() == 170);
+    auto cell0 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    REQUIRE(cell0.value() == 1997);
+    auto cell1 = cur->get<std::string_view>(1, 0);
+    REQUIRE_FALSE(cell1.has_error());
+    REQUIRE(cell1.value() == "BRAZIL");
+    auto cell2 = cur->get<int64_t>(2, 0);
+    REQUIRE_FALSE(cell2.has_error());
+    REQUIRE(cell2.value() == 170);
 
-    REQUIRE(cur->value(0, 1).value<int64_t>() == 1998);
-    REQUIRE(cur->value(1, 1).value<std::string_view>() == "CANADA");
-    REQUIRE(cur->value(2, 1).value<int64_t>() == 550);
+    auto cell3 = cur->get<int64_t>(0, 1);
+    REQUIRE_FALSE(cell3.has_error());
+    REQUIRE(cell3.value() == 1998);
+    auto cell4 = cur->get<std::string_view>(1, 1);
+    REQUIRE_FALSE(cell4.has_error());
+    REQUIRE(cell4.value() == "CANADA");
+    auto cell5 = cur->get<int64_t>(2, 1);
+    REQUIRE_FALSE(cell5.has_error());
+    REQUIRE(cell5.value() == 550);
 }
 
 // Part B rebuilds the identical star as a hand plan and runs promote_cross_joins +
@@ -219,10 +232,14 @@ TEST_CASE("integration::cpp::star_join_e2e::optimized_plan_all_hash_no_cross") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
     auto params = make_parameter_node(res);
-    auto p_creg = params->add_parameter(int64_t(1));
-    auto p_sreg = params->add_parameter(int64_t(1));
-    auto p_m1 = params->add_parameter(int64_t(1));
-    auto p_m2 = params->add_parameter(int64_t(2));
+    auto p_creg = params->add_parameter(components::vector::make_scalar(res, int64_t(1)),
+                                        components::vector::parameter_kind::literal);
+    auto p_sreg = params->add_parameter(components::vector::make_scalar(res, int64_t(1)),
+                                        components::vector::parameter_kind::literal);
+    auto p_m1 = params->add_parameter(components::vector::make_scalar(res, int64_t(1)),
+                                      components::vector::parameter_kind::literal);
+    auto p_m2 = params->add_parameter(components::vector::make_scalar(res, int64_t(2)),
+                                      components::vector::parameter_kind::literal);
 
     auto dd = make_scan(res, {"d_key", "d_year"});
     auto cust = make_scan(res, {"c_key", "c_nation", "c_region"});
@@ -332,7 +349,9 @@ TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
         REQUIRE(c->is_success());
         std::string t;
         for (size_t r = 0; r < c->size(); ++r) {
-            t += std::string(c->value(0, r).value<std::string_view>());
+            auto cell6 = c->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell6.has_error());
+            t += std::string(cell6.value());
             t += '\n';
         }
         return t;
@@ -359,22 +378,38 @@ TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
     auto mn = run(min_sql);
     REQUIRE(mn->is_success());
     REQUIRE(mn->size() == 2);
-    CHECK(mn->value(0, 0).value<int64_t>() == 1);
-    CHECK(mn->value(1, 0).value<int64_t>() == 1);
-    CHECK(mn->value(0, 1).value<int64_t>() == 2);
-    CHECK(mn->value(1, 1).value<int64_t>() == 10);
+    auto cell7 = mn->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell7.has_error());
+    CHECK(cell7.value() == 1);
+    auto cell8 = mn->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell8.has_error());
+    CHECK(cell8.value() == 1);
+    auto cell9 = mn->get<int64_t>(0, 1);
+    REQUIRE_FALSE(cell9.has_error());
+    CHECK(cell9.value() == 2);
+    auto cell10 = mn->get<int64_t>(1, 1);
+    REQUIRE_FALSE(cell10.has_error());
+    CHECK(cell10.value() == 10);
 
     auto mx = run(max_sql);
     REQUIRE(mx->is_success());
     REQUIRE(mx->size() == 2);
-    CHECK(mx->value(1, 0).value<int64_t>() == 5);
-    CHECK(mx->value(1, 1).value<int64_t>() == 20);
+    auto cell11 = mx->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell11.has_error());
+    CHECK(cell11.value() == 5);
+    auto cell12 = mx->get<int64_t>(1, 1);
+    REQUIRE_FALSE(cell12.has_error());
+    CHECK(cell12.value() == 20);
 
     auto sm = run(sum_sql);
     REQUIRE(sm->is_success());
     REQUIRE(sm->size() == 2);
-    CHECK(sm->value(1, 0).value<int64_t>() == 15);
-    CHECK(sm->value(1, 1).value<int64_t>() == 30);
+    auto cell13 = sm->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell13.has_error());
+    CHECK(cell13.value() == 15);
+    auto cell14 = sm->get<int64_t>(1, 1);
+    REQUIRE_FALSE(cell14.has_error());
+    CHECK(cell14.value() == 30);
 }
 
 // The crux of the MIN/MAX-only envelope: when `b` has a repeated join key, the inner join
@@ -404,7 +439,9 @@ TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_sa
         REQUIRE(c->is_success());
         std::string t;
         for (size_t r = 0; r < c->size(); ++r) {
-            t += std::string(c->value(0, r).value<std::string_view>());
+            auto cell15 = c->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell15.has_error());
+            t += std::string(cell15.value());
             t += '\n';
         }
         return t;
@@ -425,18 +462,30 @@ TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_sa
     auto mn = run(min_sql);
     REQUIRE(mn->is_success());
     REQUIRE(mn->size() == 2);
-    CHECK(mn->value(1, 0).value<int64_t>() == 1);
-    CHECK(mn->value(1, 1).value<int64_t>() == 10);
+    auto cell16 = mn->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell16.has_error());
+    CHECK(cell16.value() == 1);
+    auto cell17 = mn->get<int64_t>(1, 1);
+    REQUIRE_FALSE(cell17.has_error());
+    CHECK(cell17.value() == 10);
 
     auto mx = run(max_sql);
     REQUIRE(mx->is_success());
     REQUIRE(mx->size() == 2);
-    CHECK(mx->value(1, 0).value<int64_t>() == 3);
-    CHECK(mx->value(1, 1).value<int64_t>() == 20);
+    auto cell18 = mx->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell18.has_error());
+    CHECK(cell18.value() == 3);
+    auto cell19 = mx->get<int64_t>(1, 1);
+    REQUIRE_FALSE(cell19.has_error());
+    CHECK(cell19.value() == 20);
 
     auto sm = run(sum_sql);
     REQUIRE(sm->is_success());
     REQUIRE(sm->size() == 2);
-    CHECK(sm->value(1, 0).value<int64_t>() == 12);
-    CHECK(sm->value(1, 1).value<int64_t>() == 30);
+    auto cell20 = sm->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell20.has_error());
+    CHECK(cell20.value() == 12);
+    auto cell21 = sm->get<int64_t>(1, 1);
+    REQUIRE_FALSE(cell21.has_error());
+    CHECK(cell21.value() == 30);
 }

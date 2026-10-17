@@ -16,13 +16,13 @@ namespace services::planner::impl {
                         create_plan(context,
                                     function_registry,
                                     node->children()[0],
-                                    components::logical_plan::limit_t::unlimit(),
+                                    components::logical_plan::limit_t::all(),
                                     params));
         VALUE_OR_RETURN(auto right_op,
                         create_plan(context,
                                     function_registry,
                                     node->children()[1],
-                                    components::logical_plan::limit_t::unlimit(),
+                                    components::logical_plan::limit_t::all(),
                                     params));
 
         auto op = boost::intrusive_ptr(

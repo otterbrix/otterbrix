@@ -1,7 +1,5 @@
 #include "schema.hpp"
 
-#include <components/catalog/system_table_schemas.hpp>
-
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
@@ -33,29 +31,6 @@ namespace services::dispatcher::validation {
         }
 
     } // namespace
-
-    std::string describe_type(const complex_logical_type& type) {
-        switch (type.type()) {
-            case logical_type::ENUM:
-            case logical_type::STRUCT:
-            case logical_type::UNKNOWN:
-                if (type.extension() != nullptr && !type.type_name().empty()) {
-                    return type.type_name();
-                }
-                if (type.type() == logical_type::UNKNOWN) {
-                    return "unknown";
-                }
-                break;
-            case logical_type::NA:
-                return "unknown";
-            case logical_type::LIST:
-            case logical_type::ARRAY:
-                return describe_type(type.child_type()) + "[]";
-            default:
-                break;
-        }
-        return std::string{components::catalog::logical_type_to_pg_name(type.type())};
-    }
 
     named_schema merge_schemas(std::pmr::memory_resource* resource, named_schema lhs, named_schema rhs) {
         named_schema merged(resource);

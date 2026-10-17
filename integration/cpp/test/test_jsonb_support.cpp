@@ -58,11 +58,11 @@ namespace {
     }
 
     std::string str(const cursor_t_ptr& cur, const std::string& alias, size_t row) {
-        return cur->chunks().front().value(col_of(cur, alias), row).value<const std::string&>();
+        return std::string{cur->chunks().front().get_value<std::string_view>(col_of(cur, alias), row)};
     }
 
     bool is_null(const cursor_t_ptr& cur, const std::string& alias, size_t row) {
-        return cur->chunks().front().value(col_of(cur, alias), row).is_null();
+        return cur->chunks().front().is_null(col_of(cur, alias), row);
     }
 
     components::types::logical_type type_of(const cursor_t_ptr& cur, const std::string& alias) {
@@ -77,7 +77,7 @@ namespace {
             const auto& chunk = cur->chunks().front();
             const auto col = col_of(cur, alias);
             for (size_t r = 0; r < chunk.size(); ++r) {
-                if (!chunk.value(col, r).is_null()) {
+                if (!chunk.is_null(col, r)) {
                     s.insert(chunk.get_value<int64_t>(col, r));
                 }
             }

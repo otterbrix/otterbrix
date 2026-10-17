@@ -42,7 +42,9 @@ namespace {
             return false;
         }
         for (std::size_t row = 0; row < count; ++row) {
-            if (cursor->value(0, row).value<int64_t>() != static_cast<int64_t>(row)) {
+            auto cell0 = cursor->get<int64_t>(0, row);
+            REQUIRE_FALSE(cell0.has_error());
+            if (cell0.value() != static_cast<int64_t>(row)) {
                 return false;
             }
         }

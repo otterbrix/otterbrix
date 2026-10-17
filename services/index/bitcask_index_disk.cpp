@@ -3,7 +3,7 @@
 #include <core/file/list_dir.hpp>
 
 #include "absl/crc/crc32c.h"
-#include <components/index/logical_value_binary_codec.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <components/vector/vector_operations.hpp>
 
 #include <algorithm>
@@ -620,29 +620,34 @@ namespace services::index {
         return core::error_t::no_error();
     }
 
-    bitcask_index_disk_t::owned_key_t bitcask_index_disk_t::encode_key(const value_t& key) const {
-        // ugly hack to use the same vector function, and per lookup it is fast enough
-        owned_key_t encoded{0, std::pmr::string(resource())};
-        components::index::codec::append_logical_value(encoded.bytes, key);
-        components::vector::vector_t keys(resource(), key, 1);
-        components::vector::vector_t hashes(resource(), components::types::logical_type::UINTEGER, 1);
-        components::vector::vector_ops::hash32(keys, hashes, 1, hash_index_->hash_seed());
+    core::result_wrapper_t<bitcask_key_t>
+    key_of(std::pmr::memory_resource* resource, const components::vector::vector_t& key, uint32_t seed) {
+        bitcask_key_t encoded{0, std::pmr::string(resource)};
+        RETURN_IF_ERROR(for_each_key_bytes(key, 1, &encoded.bytes, [](size_t, std::string_view) {
+            return core::error_t::no_error();
+        }));
+        components::vector::vector_t hashed(key);
+        components::vector::vector_t hashes(resource, components::types::logical_type::UINTEGER, 1);
+        components::vector::vector_ops::hash32(hashed, hashes, 1, seed);
+        encoded.hash = hashes.data<uint32_t>()[0];
+        return encoded;
+    }
+
+    bitcask_key_t null_key(std::pmr::memory_resource* resource, uint32_t seed) {
+        using components::types::logical_type;
+        bitcask_key_t encoded{0, std::pmr::string(1, static_cast<char>(logical_type::NA), resource)};
+        auto null_row =
+            components::vector::make_null(resource, components::types::complex_logical_type{logical_type::NA});
+        components::vector::vector_t hashes(resource, components::types::logical_type::UINTEGER, 1);
+        components::vector::vector_ops::hash32(null_row, hashes, 1, seed);
         encoded.hash = hashes.data<uint32_t>()[0];
         return encoded;
     }
 
     core::result_wrapper_t<uint32_t> bitcask_index_disk_t::hash_key_bytes(std::string_view key_bytes) const {
-        // ugly hack to use the same vector function, but for loading it work for now
-        const std::pmr::string encoded(key_bytes, resource());
-        size_t pos = 0;
-        bool decoded = true;
-        const auto key = components::index::codec::read_logical_value(resource(), encoded, pos, &decoded);
-        if (!decoded || pos != encoded.size()) {
-            return io_failure("bitcask: a stored key could not be decoded");
-        }
-        components::vector::vector_t keys(resource(), key, 1);
+        VALUE_OR_RETURN(auto key, decode_key_bytes(resource(), key_bytes));
         components::vector::vector_t hashes(resource(), components::types::logical_type::UINTEGER, 1);
-        components::vector::vector_ops::hash32(keys, hashes, 1, hash_index_->hash_seed());
+        components::vector::vector_ops::hash32(key, hashes, 1, hash_index_->hash_seed());
         return hashes.data<uint32_t>()[0];
     }
 
@@ -1478,71 +1483,6 @@ namespace services::index {
             });
     }
 
-    void bitcask_index_disk_t::insert(const value_t& key, int64_t row_id) {
-        const auto encoded = encode_key(key);
-        auto rows = current_rows(encoded.hash, encoded.bytes);
-        if (rows.has_error()) {
-            note_write_error(rows.error());
-            return;
-        }
-        auto& row_ids = rows.value();
-        if (std::find(row_ids.begin(), row_ids.end(), row_id) != row_ids.end()) {
-            return;
-        }
-        row_ids.emplace_back(row_id);
-        note_write_error(append_snapshot(encoded.hash, encoded.bytes, row_ids));
-        mark_operation_dirty();
-        flush_if_needed();
-    }
-
-    void bitcask_index_disk_t::insert_bulk_unchecked(const value_t& key, int64_t row_id) {
-        // Must not short-circuit to a snapshot holding only `row_id`: append_snapshot replaces the whole row list.
-        insert(key, row_id);
-    }
-
-    void bitcask_index_disk_t::remove(const value_t& key) {
-        auto encoded = encode_key(key);
-        auto ref = hash_index_->get(encoded.hash, encoded.bytes, key_loader());
-        if (ref.has_error()) {
-            note_write_error(ref.error());
-            return;
-        }
-        if (!ref.value().has_value()) {
-            return;
-        }
-        note_write_error(append_tombstone(encoded.hash, encoded.bytes));
-        mark_operation_dirty();
-        flush_if_needed();
-    }
-
-    void bitcask_index_disk_t::remove(const value_t& key, int64_t row_id) {
-        auto encoded = encode_key(key);
-        auto read = current_rows(encoded.hash, encoded.bytes);
-        if (read.has_error()) {
-            note_write_error(read.error());
-            return;
-        }
-        auto& rows = read.value();
-        if (rows.empty()) {
-            return;
-        }
-        const auto original_size = rows.size();
-        rows.erase(std::remove(rows.begin(), rows.end(), row_id), rows.end());
-        if (rows.size() == original_size) {
-            return;
-        }
-
-        if (rows.empty()) {
-            note_write_error(append_tombstone(encoded.hash, encoded.bytes));
-        } else {
-            note_write_error(append_snapshot(encoded.hash, encoded.bytes, rows));
-        }
-        mark_operation_dirty();
-        flush_if_needed();
-    }
-
-    void bitcask_index_disk_t::remove_bulk_unchecked(const value_t& key, int64_t row_id) { remove(key, row_id); }
-
     void bitcask_index_disk_t::flush_if_needed() {
         if (bulk_mode_) {
             return;
@@ -1623,9 +1563,8 @@ namespace services::index {
         return read_error;
     }
 
-    core::error_t bitcask_index_disk_t::find(const value_t& value, result& res) const {
-        auto encoded = encode_key(value);
-        VALUE_OR_RETURN(auto ref, hash_index_->get(encoded.hash, encoded.bytes, key_loader()));
+    core::error_t bitcask_index_disk_t::find(uint32_t key_hash, std::string_view key_bytes, result& res) const {
+        VALUE_OR_RETURN(auto ref, hash_index_->get(key_hash, key_bytes, key_loader()));
         if (!ref.has_value()) {
             return core::error_t::no_error();
         }
@@ -1640,13 +1579,12 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::find_not_null(result& res) const {
-        auto null_key = encode_key(
-            value_t(resource(), components::types::complex_logical_type{components::types::logical_type::NA}));
+        const std::string_view null_bytes("\0", 1);
         entries_t entries(resource());
         RETURN_IF_ERROR(load_entries(entries));
         res.reserve(res.size() + entries.size());
         for (const auto& [key_bytes, row_id] : entries) {
-            if (key_bytes != null_key.bytes) {
+            if (key_bytes != null_bytes) {
                 res.push_back(row_id);
             }
         }

@@ -1,8 +1,7 @@
 // Integration tests for the column projection optimization.
 //
-// The optimizer's post_validate_optimize() pass populates node_aggregate_t's
-// projected_cols field, and scan/match/join operators cooperate to produce
-// correct results even when some chunks carry placeholder columns.
+// The optimizer's column_pruning pass populates node_aggregate_t's projected_cols
+// field and rebases every key onto the narrowed row; scans emit only those columns.
 //
 // These tests focus on end-to-end correctness across the cases the optimization
 // is expected to handle:
@@ -25,8 +24,7 @@ using namespace test_helpers;
 
 // Disk-backed end-to-end coverage: the column_pruning optimizer rule
 // populates node_aggregate_t::projected_cols, so the owning disk agent's
-// storage_fetch_next_batch reads ONLY the projected storage columns (a WIDE chunk
-// whose non-projected slots are placeholders, indexed by original storage position).
+// storage_fetch_next_batch reads ONLY the projected storage columns, in projection order.
 // Wrong projection here would return garbage / crash, so pinning concrete values
 // validates the on-disk projection path end to end — the path the in-memory tests
 // below do NOT exercise.
@@ -50,8 +48,12 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_projection") {
         auto cur = exec(dispatcher, "SELECT a FROM db.wide ORDER BY a ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->value(0, 3).value<int64_t>() == 4);
+        auto cell0 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == 1);
+        auto cell1 = cur->get<int64_t>(0, 3);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == 4);
     }
 
     INFO("SELECT a middle column (projection must land at the right storage index)");
@@ -59,8 +61,12 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_projection") {
         auto cur = exec(dispatcher, "SELECT c FROM db.wide ORDER BY c ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 100);
-        REQUIRE(cur->value(0, 3).value<int64_t>() == 400);
+        auto cell2 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == 100);
+        auto cell3 = cur->get<int64_t>(0, 3);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == 400);
     }
 
     INFO("WHERE on a NON-selected column — it must still be read");
@@ -68,8 +74,12 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_projection") {
         auto cur = exec(dispatcher, "SELECT a FROM db.wide WHERE e > 20000 ORDER BY a ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
-        REQUIRE(cur->value(0, 1).value<int64_t>() == 4);
+        auto cell4 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == 3);
+        auto cell5 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == 4);
     }
 
     INFO("ORDER BY on a NON-selected column — it must still be read");
@@ -77,8 +87,12 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_projection") {
         auto cur = exec(dispatcher, "SELECT a FROM db.wide ORDER BY b DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 4);
-        REQUIRE(cur->value(0, 3).value<int64_t>() == 1);
+        auto cell6 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == 4);
+        auto cell7 = cur->get<int64_t>(0, 3);
+        REQUIRE_FALSE(cell7.has_error());
+        REQUIRE(cell7.value() == 1);
     }
 
     INFO("SELECT * still returns every column");
@@ -87,7 +101,9 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_projection") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
         REQUIRE(cur->column_count() == 5);
-        REQUIRE(cur->value(4, 3).value<int64_t>() == 40000);
+        auto cell8 = cur->get<int64_t>(4, 3);
+        REQUIRE_FALSE(cell8.has_error());
+        REQUIRE(cell8.value() == 40000);
     }
 
     INFO("Projecting a non-first column over an EMPTY table (drained scan)");
@@ -126,8 +142,12 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_join_and_group") {
                         "INNER JOIN db.customers c ON o.cid = c.cid ORDER BY o.oid ASC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 100);
-        REQUIRE(cur->value(1, 4).value<int64_t>() == 500);
+        auto cell9 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell9.has_error());
+        REQUIRE(cell9.value() == 100);
+        auto cell10 = cur->get<int64_t>(1, 4);
+        REQUIRE_FALSE(cell10.has_error());
+        REQUIRE(cell10.value() == 500);
     }
 
     INFO("JOIN + GROUP BY with WHERE on a non-selected column");
@@ -139,9 +159,15 @@ TEST_CASE("integration::cpp::column_projection::disk_backed_join_and_group") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
         // Alice: 100+200+500 = 800, Bob: 300, Carol: 400
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 800);
-        REQUIRE(cur->value(1, 1).value<int64_t>() == 300);
-        REQUIRE(cur->value(1, 2).value<int64_t>() == 400);
+        auto cell11 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell11.has_error());
+        REQUIRE(cell11.value() == 800);
+        auto cell12 = cur->get<int64_t>(1, 1);
+        REQUIRE_FALSE(cell12.has_error());
+        REQUIRE(cell12.value() == 300);
+        auto cell13 = cur->get<int64_t>(1, 2);
+        REQUIRE_FALSE(cell13.has_error());
+        REQUIRE(cell13.value() == 400);
     }
 }
 
@@ -631,14 +657,11 @@ TEST_CASE("integration::cpp::column_projection::limit_does_not_break_projection"
 }
 
 // The schema'd 0-row empty-guard a drained scan emits (so a scalar aggregate still
-// produces its COUNT=0 row, and an OUTER join can NULL-pad) must obey the same
-// contract as real pruned batches (PR #477): FULL table width, with buffer-less
-// placeholders in the non-projected slots, so operators above keep indexing by
-// table ordinal (e.g. the COUNT(e) arg path is e's storage ordinal). A guard
-// narrowed to the projected types makes those ordinal reads out-of-bounds — silent
-// in a regular build, a heap-buffer-overflow under ASAN. These queries pass
-// pre-fix in non-ASAN builds; their job is to lock the guard-chunk shape and act
-// as the ASAN tripwire.
+// produces its COUNT=0 row, and an OUTER join can NULL-pad) must have the same
+// shape as real pruned batches: the projected columns, in projection order, which
+// the operators above address by their rebased positions. A guard of any other
+// shape makes those reads out-of-bounds — silent in a regular build, a
+// heap-buffer-overflow under ASAN; these queries are the ASAN tripwire.
 TEST_CASE("integration::cpp::column_projection::empty_input_scalar_aggregate_guard") {
     auto config = make_test_config(integration_fixture_path("col_proj/empty_guard"));
     test_spaces space(config);
@@ -654,12 +677,14 @@ TEST_CASE("integration::cpp::column_projection::empty_input_scalar_aggregate_gua
 
     INFO("pruned filtered scan (full_scan) + WHERE filtering everything + scalar aggregate");
     {
-        // projected_cols = {c, e}; the COUNT arg resolves at e's table ordinal inside
-        // the 0-row guard chunk the drained scan emits.
+        // projected_cols = {c, e}; the COUNT arg reads e at position 1 of the 0-row guard
+        // chunk the drained scan emits.
         auto cur = exec(dispatcher, "SELECT COUNT(e) AS cnt FROM db.wide WHERE c > 999999;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
+        auto cell14 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell14.has_error());
+        REQUIRE(cell14.value() == 0);
     }
 
     INFO("same shape + HAVING keeps the empty-input scalar row");
@@ -686,6 +711,8 @@ TEST_CASE("integration::cpp::column_projection::empty_input_scalar_aggregate_gua
         auto plain = exec(dispatcher, "SELECT COUNT(c) AS cnt FROM db.empty3;");
         REQUIRE(plain->is_success());
         REQUIRE(plain->size() == 1);
-        REQUIRE(plain->value(0, 0).value<uint64_t>() == 0);
+        auto cell15 = plain->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell15.has_error());
+        REQUIRE(cell15.value() == 0);
     }
 }

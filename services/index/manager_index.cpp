@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cassert>
 #include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/executor.hpp>
 #include <core/file/local_file_system.hpp>
 #include <cstdint>
@@ -16,8 +17,6 @@
 #include <string>
 
 namespace {
-    using value_t = components::types::logical_value_t;
-
     // chunk.row_ids must be physical ids, not positions: rebuild scans compact positions but not ids.
     [[nodiscard]] core::error_t
     check_rebuild_chunks_have_row_ids(const std::pmr::vector<components::vector::data_chunk_t>& chunks,
@@ -1402,7 +1401,7 @@ namespace services::index {
     manager_index_t::search_with_preferred_type(session_id_t session,
                                                 components::catalog::oid_t table_oid,
                                                 components::index::keys_base_storage_t keys,
-                                                components::types::logical_value_t value,
+                                                components::vector::vector_t key,
                                                 components::expressions::compare_type compare,
                                                 components::logical_plan::index_type preferred_type,
                                                 // Unused; kept because it's part of index_contract::search.
@@ -1447,7 +1446,7 @@ namespace services::index {
             agent_addr,
             session,
             compare,
-            components::types::logical_value_t(resource_, value),
+            components::vector::make_constant_copy(resource_, key),
             txn_id);
         schedule_agent(agent_addr, needs_sched);
         auto agent_result = co_await std::move(agent_future);
@@ -1462,7 +1461,7 @@ namespace services::index {
     manager_index_t::search(session_id_t session,
                             components::catalog::oid_t table_oid,
                             components::index::keys_base_storage_t keys,
-                            components::types::logical_value_t value,
+                            components::vector::vector_t key,
                             components::expressions::compare_type compare,
                             uint64_t start_time,
                             uint64_t txn_id,
@@ -1470,7 +1469,7 @@ namespace services::index {
         co_return co_await search_with_preferred_type(session,
                                                       table_oid,
                                                       std::move(keys),
-                                                      std::move(value),
+                                                      std::move(key),
                                                       compare,
                                                       components::logical_plan::index_type::no_valid,
                                                       start_time,

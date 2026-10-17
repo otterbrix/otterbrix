@@ -4,6 +4,7 @@
 #include <components/vector/arrow/appender/scalar_data.hpp>
 #include <components/vector/arrow/arrow_string_view.hpp>
 #include <components/vector/vector.hpp>
+#include <cstring>
 
 namespace components::vector::arrow::appender {
 

@@ -204,8 +204,12 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::check_over_two_columns
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         INFO("a refused UPDATE leaves the stored row alone");
-        CHECK(cur->value(column_of(cur, "lo"), 0).value<int64_t>() == 2);
-        CHECK(cur->value(column_of(cur, "hi"), 0).value<int64_t>() == 9);
+        auto cell0 = cur->get<int64_t>(column_of(cur, "lo"), 0);
+        REQUIRE_FALSE(cell0.has_error());
+        CHECK(cell0.value() == 2);
+        auto cell1 = cur->get<int64_t>(column_of(cur, "hi"), 0);
+        REQUIRE_FALSE(cell1.has_error());
+        CHECK(cell1.value() == 9);
     }
 }
 
@@ -312,7 +316,9 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::insert_spanning_chunks
 
     auto cur = run(d, "SELECT COUNT(id) AS c FROM c.t;");
     REQUIRE(cur->is_success());
-    CHECK(cur->value(0, 0).value<uint64_t>() == 1u);
+    auto cell2 = cur->get<uint64_t>(0, 0);
+    REQUIRE_FALSE(cell2.has_error());
+    CHECK(cell2.value() == 1u);
 }
 
 TEST_CASE("integration::cpp::test_constraint_write_paths::update_spanning_chunks_leaves_nothing", "[writepaths]") {
@@ -340,17 +346,23 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::update_spanning_chunks
     {
         auto cur = run(d, "SELECT COUNT(id) AS c FROM c.t;");
         REQUIRE(cur->is_success());
-        CHECK(cur->value(0, 0).value<uint64_t>() == kSpanningRows);
+        auto cell3 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        CHECK(cell3.value() == kSpanningRows);
     }
     {
         auto cur = run(d, "SELECT COUNT(id) AS c FROM c.t WHERE n = 10;");
         REQUIRE(cur->is_success());
-        CHECK(cur->value(0, 0).value<uint64_t>() == kSpanningRows - 1);
+        auto cell4 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        CHECK(cell4.value() == kSpanningRows - 1);
     }
     {
         auto cur = run(d, "SELECT n FROM c.t WHERE id = 0;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        CHECK(cur->value(0, 0).value<int64_t>() == 10);
+        auto cell5 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        CHECK(cell5.value() == 10);
     }
 }

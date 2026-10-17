@@ -68,7 +68,7 @@ namespace components::operators {
             auto merged = merged_view(resource, chunk_left, chunk_right, count);
             if (!graph_) {
                 auto built = expressions::build_condition_graph(resource,
-                                                                pipeline_context->parameters.parameters,
+                                                                pipeline_context->parameters,
                                                                 expr_.get(),
                                                                 merged.types(),
                                                                 paired_left_types_.size());
@@ -78,7 +78,7 @@ namespace components::operators {
                 graph_ = std::move(built.value());
             }
             auto decided = expressions::run_graph(graph_.get(),
-                                                  pipeline_context->parameters.parameters,
+                                                  pipeline_context->parameters,
                                                   merged,
                                                   pipeline_context->execution_context);
             if (decided.has_error()) {
@@ -142,7 +142,7 @@ namespace components::operators {
                                      std::pmr::vector<expressions::expression_ptr> updates,
                                      std::pmr::vector<projected_column_t> returning,
                                      expressions::expression_ptr expr,
-                                     std::int64_t affected_bound)
+                                     logical_plan::row_cap_t affected_bound)
         : read_write_operator_t(resource, log, operator_type::update)
         , table_oid_(table_oid)
         , updates_(std::move(updates))
@@ -321,7 +321,7 @@ namespace components::operators {
                 values.push_back(update.get());
             }
             auto built = expressions::build_update_graph(resource_,
-                                                         pipeline_context->parameters.parameters,
+                                                         pipeline_context->parameters,
                                                          values,
                                                          input.types(),
                                                          right_offset);
@@ -332,7 +332,7 @@ namespace components::operators {
         }
 
         auto computed = expressions::run_graph(updates_graph_.get(),
-                                               pipeline_context->parameters.parameters,
+                                               pipeline_context->parameters,
                                                input,
                                                pipeline_context->execution_context);
         if (computed.has_error()) {
@@ -374,17 +374,15 @@ namespace components::operators {
         std::optional<vector::data_chunk_t> produced;
         if (condition_ == expressions::condition_kind::computed) {
             if (!graph_) {
-                auto built = expressions::build_condition_graph(resource,
-                                                                pipeline_context->parameters.parameters,
-                                                                expr_.get(),
-                                                                types);
+                auto built =
+                    expressions::build_condition_graph(resource, pipeline_context->parameters, expr_.get(), types);
                 if (built.has_error()) {
                     return built.error();
                 }
                 graph_ = std::move(built.value());
             }
             auto decided = expressions::run_graph(graph_.get(),
-                                                  pipeline_context->parameters.parameters,
+                                                  pipeline_context->parameters,
                                                   chunk,
                                                   pipeline_context->execution_context);
             if (decided.has_error()) {
@@ -461,7 +459,7 @@ namespace components::operators {
                 merged_types.insert(merged_types.end(), types_left.begin(), types_left.end());
                 merged_types.insert(merged_types.end(), types_right.begin(), types_right.end());
                 auto built = expressions::build_condition_graph(resource,
-                                                                pipeline_context->parameters.parameters,
+                                                                pipeline_context->parameters,
                                                                 expr_.get(),
                                                                 merged_types,
                                                                 types_left.size());
@@ -483,8 +481,8 @@ namespace components::operators {
         vector::indexing_vector_t left_indexing(resource, chunk_left.size());
         size_t index = 0;
         for (size_t i = 0; i < chunk_left.size(); ++i) {
-            // Stops once matched_total_ + this batch's index reaches affected_bound_; -1 = unbounded.
-            if (affected_bound_ >= 0 && matched_total_ + index >= static_cast<uint64_t>(affected_bound_)) {
+            // Stops once matched_total_ + this batch's index reaches affected_bound_.
+            if (!affected_bound_.admits(matched_total_ + index)) {
                 break;
             }
             bool row_matched = false;
@@ -497,7 +495,7 @@ namespace components::operators {
                 if (graph_) {
                     join_detail::point_at_probe_row(resource, merged[ci], chunk_left, i);
                     auto decided = expressions::run_graph(graph_.get(),
-                                                          pipeline_context->parameters.parameters,
+                                                          pipeline_context->parameters,
                                                           merged[ci],
                                                           pipeline_context->execution_context);
                     if (decided.has_error()) {

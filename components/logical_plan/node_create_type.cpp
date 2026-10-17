@@ -1,5 +1,4 @@
 #include "node_create_type.hpp"
-#include <components/types/logical_value.hpp>
 
 namespace components::logical_plan {
 
@@ -19,7 +18,7 @@ namespace components::logical_plan {
         if (type_.type() == types::logical_type::ENUM) {
             const auto& entries = static_cast<const types::enum_logical_type_extension*>(type_.extension())->entries();
             for (const auto& entry : entries) {
-                stream << entry.type().alias() << '=' << entry.value<int>() << ' ';
+                stream << entry.label << '=' << entry.value << ' ';
             }
         } else {
             for (const auto& entry : type_.child_types()) {

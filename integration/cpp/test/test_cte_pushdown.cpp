@@ -37,8 +37,9 @@ namespace {
     std::string plan_text(const cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            auto v = cur->value(0, r);
-            out += std::string(v.value<std::string_view>());
+            auto cell0 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            out += std::string(cell0.value());
             out += '\n';
         }
         return out;
@@ -319,7 +320,11 @@ TEST_CASE("integration::cte_pushdown::recursive_untouched") {
                                            "SELECT id FROM h WHERE id > 2 ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3); // {3,4,5}
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
-        REQUIRE(cur->value(0, 2).value<int64_t>() == 5);
+        auto cell1 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == 3);
+        auto cell2 = cur->get<int64_t>(0, 2);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == 5);
     }
 }

@@ -5,6 +5,7 @@
 #include <components/context/context.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/counting_resource.hpp>
 #include <core/pmr.hpp>
 
@@ -86,10 +87,12 @@ TEST_CASE("components::pipeline::context_t::the parameter map keeps the arena th
     core::pmr::otterbrix_resource arena;
 
     lp::storage_parameters params{&arena};
-    lp::add_parameter(params, core::parameter_id_t(1), std::string(long_value));
-    lp::add_parameter(params, core::parameter_id_t(2), std::int64_t(42));
+    const auto text_id = params.add(components::vector::make_scalar(&arena, std::string(long_value)),
+                                    components::vector::parameter_kind::literal);
+    const auto int_id = params.add(components::vector::make_scalar(&arena, std::int64_t(42)),
+                                   components::vector::parameter_kind::literal);
     REQUIRE(params.resource() == &arena);
-    REQUIRE(params.parameters.size() == 2);
+    REQUIRE(params.size() == 2);
 
     auto& probe = process_default_probe();
     probe.reset();
@@ -114,18 +117,18 @@ TEST_CASE("components::pipeline::context_t::the parameter map keeps the arena th
 
     REQUIRE(ctx.has_value());
     CHECK(ctx->parameters.resource() == &arena);
-    CHECK(ctx->parameters.parameters.get_allocator().resource() == &arena);
-    REQUIRE(ctx->parameters.parameters.size() == 2);
+    CHECK(ctx->parameters.at(text_id).resource() == &arena);
+    REQUIRE(ctx->parameters.size() == 2);
 
     REQUIRE(executor_ctx.has_value());
     CHECK(executor_ctx->parameters.resource() == &arena);
-    CHECK(executor_ctx->parameters.parameters.get_allocator().resource() == &arena);
-    REQUIRE(executor_ctx->parameters.parameters.size() == 2);
+    CHECK(executor_ctx->parameters.at(text_id).resource() == &arena);
+    REQUIRE(executor_ctx->parameters.size() == 2);
 
-    const auto& copied = lp::get_parameter(&ctx->parameters, core::parameter_id_t(1));
-    CHECK(copied.value<std::string_view>() == std::string_view(long_value));
-    const auto& copied_int = lp::get_parameter(&ctx->parameters, core::parameter_id_t(2));
-    CHECK(copied_int.value<std::int64_t>() == 42);
+    const auto& copied = ctx->parameters.at(text_id);
+    CHECK(copied.get_value<std::string_view>(0) == std::string_view(long_value));
+    const auto& copied_int = ctx->parameters.at(int_id);
+    CHECK(copied_int.get_value<std::int64_t>(0) == 42);
 
     INFO("allocations taken from the process-global default resource while building a context_t: "
          << probe.allocations() << " (" << probe.allocated_bytes() << " bytes)");

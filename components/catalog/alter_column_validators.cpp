@@ -21,13 +21,13 @@ namespace components::catalog::alter_column_validators {
 
     core::error_t validate_default_value_type(std::pmr::memory_resource* resource,
                                               const components::types::complex_logical_type& column_type,
-                                              const std::optional<components::types::logical_value_t>& default_value) {
+                                              const std::optional<components::vector::vector_t>& default_value) {
         if (!default_value.has_value()) {
             return core::error_t::no_error();
         }
         // NULL default is compatible with any nullable column; the NOT-NULL check
         // is a separate constraint validation owned by the operator layer.
-        if (default_value->is_null()) {
+        if (default_value->is_null(0)) {
             return core::error_t::no_error();
         }
         if (default_value->type() != column_type) {
@@ -39,7 +39,7 @@ namespace components::catalog::alter_column_validators {
     }
 
     core::error_t encode_default_spec_ec(std::pmr::memory_resource* resource,
-                                         const std::optional<components::types::logical_value_t>& default_value,
+                                         const std::optional<components::vector::vector_t>& default_value,
                                          std::pmr::string& out_spec) {
         out_spec.clear();
         if (!default_value.has_value()) {

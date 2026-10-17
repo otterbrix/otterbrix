@@ -126,7 +126,7 @@ find_package(fmt 11.1.3 REQUIRED)
 find_package(spdlog 1.15.1 REQUIRED)
 find_package(Catch2 3 REQUIRED)
 find_package(benchmark 1.6.1 REQUIRED)
-find_package(actor-zeta REQUIRED)
+find_package(actor-zeta 2.0.0 REQUIRED)
 
 if(BUILD_PYTHON)
     set(PYBIND11_FINDPYTHON ON)

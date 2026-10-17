@@ -1,26 +1,37 @@
 // Write-path profiling driver: measures INSERT / UPDATE / DELETE throughput and
 // per-statement latency across the variable grid (interface, index, primary key,
 // table width, catalog size, log level).
-// Talks to the engine ONLY through base_otterbrix_t::dispatcher() — execute_sql for
-// the SQL path and execute_plan for the logical_plan path. All chunks and plans are
-// built on dispatcher()->resource().
+// Opens the engine the way base_otterbrix_t::open does, but with a counting resource between the
+// engine and its pool, and talks to it ONLY through that host's wrapper_dispatcher_t — execute_sql
+// for the SQL path and execute_plan for the logical_plan path. All chunks and plans are built on
+// dispatcher()->resource(), i.e. on the counting resource.
 
 #include <components/configuration/configuration.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <integration/cpp/otterbrix.hpp>
+#include <core/counting_resource.hpp>
+#include <core/pmr.hpp>
+#include <integration/cpp/wrapper_dispatcher.hpp>
+#include <services/engine/engine.hpp>
+
+#include <actor-zeta.hpp>
+#include <actor-zeta/spawn.hpp>
 
 #include <sys/resource.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <memory>
+#include <new>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -28,6 +39,10 @@
 namespace {
 
     using clock_t_ = std::chrono::steady_clock;
+
+    // Global heap traffic, counted by the operator new/delete replacements below.
+    std::atomic<std::uint64_t> heap_allocations{0};
+    std::atomic<std::uint64_t> heap_bytes{0};
 
     struct options_t {
         std::string workload{"bulk"}; // single | bulk | update | delete | mixed
@@ -149,7 +164,7 @@ namespace {
     }
 
     // Column types mirror column_list(): all BIGINT, so the plan path writes cells
-    // through typed accessors and never materializes a logical_value_t.
+    // through typed accessors.
     std::pmr::vector<components::types::complex_logical_type> column_types(const options_t& o,
                                                                           std::pmr::memory_resource* resource) {
         std::pmr::vector<components::types::complex_logical_type> types{resource};
@@ -261,7 +276,72 @@ namespace {
         return true;
     }
 
-    std::uintmax_t directory_bytes(const std::filesystem::path& dir) {
+    struct alloc_snapshot_t {
+        std::uint64_t allocations{0};
+        std::uint64_t bytes{0};
+        std::uint64_t deallocations{0};
+        std::uint64_t heap_allocations{0};
+        std::uint64_t heap_bytes{0};
+    };
+
+    alloc_snapshot_t alloc_now(const core::pmr::counting_resource_t& counter) {
+        return {counter.allocations(),
+                counter.allocated_bytes(),
+                counter.deallocations(),
+                heap_allocations.load(std::memory_order_relaxed),
+                heap_bytes.load(std::memory_order_relaxed)};
+    }
+
+    // Mirrors base_otterbrix_t::open (integration/cpp/base_spaces.cpp), with the counter between
+    // the engine and the pool. Member order is the destruction order: wrapper, engine, pools.
+    struct host_t final {
+        core::pmr::otterbrix_resource pool;
+        core::pmr::counting_resource_t counter{&pool};
+        log_t log;
+        actor_zeta::scheduler_ptr scheduler_general{new actor_zeta::shared_work(3, 1000)};
+        actor_zeta::scheduler_ptr scheduler_exec{new actor_zeta::shared_work(3, 1000)};
+        actor_zeta::scheduler_ptr scheduler_disk{new actor_zeta::shared_work(3, 1000)};
+        std::optional<services::engine::engine_t> engine;
+        std::unique_ptr<otterbrix::wrapper_dispatcher_t, actor_zeta::pmr::deleter_t> wrapper{
+            nullptr,
+            actor_zeta::pmr::deleter_t(&counter)};
+    };
+
+    bool open_host(host_t& host, const configuration::config& config) {
+        auto log = make_log("otterbrix", config.log.path);
+        if (log.has_error()) {
+            std::cerr << "make_log failed: " << log.error().what << '\n';
+            return false;
+        }
+        host.log = std::move(log.value());
+        host.log.set_level(config.log.level);
+        auto engine = services::engine::open_engine(&host.counter,
+                                                    services::engine::schedulers_t{host.scheduler_general.get(),
+                                                                                   host.scheduler_exec.get(),
+                                                                                   host.scheduler_disk.get()},
+                                                    config,
+                                                    host.log,
+                                                    components::planner::primitives_t{});
+        if (engine.has_error()) {
+            std::cerr << "otterbrix refused to start: " << engine.error().what << '\n';
+            return false;
+        }
+        host.engine.emplace(std::move(engine.value()));
+        host.wrapper = actor_zeta::spawn<otterbrix::wrapper_dispatcher_t>(&host.counter,
+                                                                          host.engine->dispatcher_address(),
+                                                                          host.log);
+        return true;
+    }
+
+    // The WAL segments and the table tree share one directory (config_disk keeps `<base>/wal`), so the
+    // two figures are told apart by the segment file name, not by the directory.
+    enum class store_t
+    {
+        wal,
+        disk
+    };
+
+    std::uintmax_t directory_bytes(const std::filesystem::path& dir, store_t store) {
         std::error_code ec;
         if (!std::filesystem::exists(dir, ec)) {
             return 0;
@@ -269,6 +349,10 @@ namespace {
         std::uintmax_t total = 0;
         for (const auto& entry : std::filesystem::recursive_directory_iterator(dir, ec)) {
             if (entry.is_regular_file(ec)) {
+                const bool is_wal_segment = starts_with(entry.path().filename().string(), "wal_");
+                if (is_wal_segment != (store == store_t::wal)) {
+                    continue;
+                }
                 const auto size = std::filesystem::file_size(entry.path(), ec);
                 if (!ec) {
                     total += size;
@@ -310,14 +394,80 @@ namespace {
 
 } // namespace
 
+// Replacements of the global allocation functions. They live in this translation unit only, so they
+// reach this benchmark binary and nothing else. Failure aborts: the project allows no exceptions.
+namespace {
+
+    void* counted_alloc(std::size_t size) noexcept {
+        heap_allocations.fetch_add(1, std::memory_order_relaxed);
+        heap_bytes.fetch_add(size, std::memory_order_relaxed);
+        return std::malloc(size != 0 ? size : 1);
+    }
+
+    void* counted_alloc_aligned(std::size_t size, std::size_t alignment) noexcept {
+        heap_allocations.fetch_add(1, std::memory_order_relaxed);
+        heap_bytes.fetch_add(size, std::memory_order_relaxed);
+        void* p = nullptr;
+        if (alignment < sizeof(void*)) {
+            alignment = sizeof(void*);
+        }
+        if (posix_memalign(&p, alignment, size != 0 ? size : 1) != 0) {
+            return nullptr;
+        }
+        return p;
+    }
+
+    void* must(void* p) noexcept {
+        if (p == nullptr) {
+            std::abort();
+        }
+        return p;
+    }
+
+} // namespace
+
+void* operator new(std::size_t size) { return must(counted_alloc(size)); }
+void* operator new[](std::size_t size) { return must(counted_alloc(size)); }
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept { return counted_alloc(size); }
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept { return counted_alloc(size); }
+void* operator new(std::size_t size, std::align_val_t alignment) {
+    return must(counted_alloc_aligned(size, static_cast<std::size_t>(alignment)));
+}
+void* operator new[](std::size_t size, std::align_val_t alignment) {
+    return must(counted_alloc_aligned(size, static_cast<std::size_t>(alignment)));
+}
+void* operator new(std::size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept {
+    return counted_alloc_aligned(size, static_cast<std::size_t>(alignment));
+}
+void* operator new[](std::size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept {
+    return counted_alloc_aligned(size, static_cast<std::size_t>(alignment));
+}
+
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+void operator delete(void* p, std::align_val_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::align_val_t) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t, std::align_val_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t, std::align_val_t) noexcept { std::free(p); }
+void operator delete(void* p, std::align_val_t, const std::nothrow_t&) noexcept { std::free(p); }
+void operator delete[](void* p, std::align_val_t, const std::nothrow_t&) noexcept { std::free(p); }
+
 int main(int argc, char** argv) {
     options_t options;
     if (!parse_options(argc, argv, options)) {
         return 2;
     }
 
-    auto space = otterbrix::make_otterbrix_or_exit(make_config(options));
-    auto* dispatcher = space->dispatcher();
+    const auto config = make_config(options);
+    host_t host;
+    if (!open_host(host, config)) {
+        return 1;
+    }
+    auto* dispatcher = host.wrapper.get();
 
     if (!create_schema(dispatcher, options)) {
         return 1;
@@ -329,6 +479,7 @@ int main(int argc, char** argv) {
     // the clock starts after it, so wall_ms covers only the statements under test.
     auto measured_start = clock_t_::now();
     auto cpu_start = cpu_now();
+    auto alloc_start = alloc_now(host.counter);
     std::uint64_t measured_statements = 0;
     std::uint64_t measured_rows = 0;
 
@@ -348,6 +499,7 @@ int main(int argc, char** argv) {
         }
         measured_start = clock_t_::now();
         cpu_start = cpu_now();
+        alloc_start = alloc_now(host.counter);
         // Touch roughly a quarter of the table in one statement.
         const std::uint64_t hi = options.rows / 4;
         const std::string predicate = " WHERE id < " + std::to_string(hi) + ";";
@@ -372,6 +524,7 @@ int main(int argc, char** argv) {
         }
         measured_start = clock_t_::now();
         cpu_start = cpu_now();
+        alloc_start = alloc_now(host.counter);
         const std::uint64_t cycles = options.rows / 4;
         for (std::uint64_t i = 0; i < cycles; ++i) {
             const std::uint64_t id = options.rows + i;
@@ -396,13 +549,19 @@ int main(int argc, char** argv) {
 
     const auto measured_end = clock_t_::now();
     const auto cpu_end = cpu_now();
+    const auto alloc_end = alloc_now(host.counter);
+    const std::uint64_t allocs = alloc_end.allocations - alloc_start.allocations;
+    const std::uint64_t alloc_bytes = alloc_end.bytes - alloc_start.bytes;
+    const std::uint64_t deallocs = alloc_end.deallocations - alloc_start.deallocations;
+    const std::uint64_t heap_allocs = alloc_end.heap_allocations - alloc_start.heap_allocations;
+    const std::uint64_t heap_alloc_bytes = alloc_end.heap_bytes - alloc_start.heap_bytes;
     const double cpu_user_ms = cpu_end.user_ms - cpu_start.user_ms;
     const double cpu_sys_ms = cpu_end.sys_ms - cpu_start.sys_ms;
     const double wall_ms = std::chrono::duration<double, std::milli>(measured_end - measured_start).count();
     const double wall_s = wall_ms / 1000.0;
 
-    const auto wal_bytes = directory_bytes(std::filesystem::current_path() / "wal");
-    const auto disk_bytes = directory_bytes(std::filesystem::current_path() / "disk");
+    const auto wal_bytes = directory_bytes(config.wal.path, store_t::wal);
+    const auto disk_bytes = directory_bytes(config.disk.path, store_t::disk);
 
     if (options.csv) {
         std::cout << options.workload << ',' << options.iface << ',' << (options.index ? 1 : 0) << ','
@@ -414,7 +573,8 @@ int main(int argc, char** argv) {
                   << measured.percentile(0.50) << ',' << measured.percentile(0.90) << ','
                   << measured.percentile(0.99) << ',' << measured.percentile(1.0) << ',' << cpu_user_ms << ','
                   << cpu_sys_ms << ',' << peak_rss_kb() << ','
-                  << wal_bytes << ',' << disk_bytes << '\n';
+                  << wal_bytes << ',' << disk_bytes << ',' << allocs << ',' << alloc_bytes << ',' << deallocs << ','
+                  << heap_allocs << ',' << heap_alloc_bytes << '\n';
     } else {
         std::cout << "workload=" << options.workload << " iface=" << options.iface
                   << " storage=disk wal=on"
@@ -427,7 +587,9 @@ int main(int argc, char** argv) {
                   << " p99=" << measured.percentile(0.99) << " max=" << measured.percentile(1.0) << '\n'
                   << "  cpu_user_ms=" << cpu_user_ms << " cpu_sys_ms=" << cpu_sys_ms << '\n'
                   << "  peak_rss_kb=" << peak_rss_kb() << " wal_bytes=" << wal_bytes
-                  << " disk_bytes=" << disk_bytes << '\n';
+                  << " disk_bytes=" << disk_bytes << '\n'
+                  << "  allocs=" << allocs << " alloc_bytes=" << alloc_bytes << " deallocs=" << deallocs << '\n'
+                  << "  heap_allocs=" << heap_allocs << " heap_bytes=" << heap_alloc_bytes << '\n';
     }
     return 0;
 }

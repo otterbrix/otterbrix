@@ -25,8 +25,9 @@ namespace {
     std::string plan_text(const components::cursor::cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            auto v = cur->value(0, r);
-            out += std::string(v.value<std::string_view>());
+            auto cell0 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            out += std::string(cell0.value());
             out += '\n';
         }
         return out;
@@ -89,7 +90,9 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_snapshot::a_commit_after_the_sta
         auto pin = d->execute_sql(session_a, "SELECT COUNT(id) AS c FROM sdb.t;");
         REQUIRE(pin->is_success());
         REQUIRE(pin->size() == 1);
-        REQUIRE(pin->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRows));
+        auto cell1 = pin->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == static_cast<uint64_t>(kRows));
     }
 
     REQUIRE(exec_fresh("INSERT INTO sdb.t (id, k) VALUES (" + std::to_string(kNewId) + ", " + std::to_string(kNewKey) +
@@ -121,7 +124,9 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_snapshot::a_commit_after_the_sta
         auto cur = exec_fresh(control);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        CHECK(cur->value(0, 0).value<int64_t>() == kNewKey);
+        auto cell2 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        CHECK(cell2.value() == kNewKey);
     }
 
     INFO("the indexed route must still be an Index Scan after the round");
@@ -138,6 +143,8 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_snapshot::a_commit_after_the_sta
         auto cur = exec_fresh(indexed);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        CHECK(cur->value(0, 0).value<int64_t>() == kNewId);
+        auto cell3 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        CHECK(cell3.value() == kNewId);
     }
 }

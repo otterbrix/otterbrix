@@ -5,6 +5,7 @@
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <core/file/local_file_system.hpp>
 #include <cstdio>
 #include <filesystem>
@@ -86,9 +87,8 @@ TEST_CASE("components::table::column") {
                 column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::UBIGINT);
-                REQUIRE(value.value<uint64_t>() == i);
+                REQUIRE(v.type().type() == logical_type::UBIGINT);
+                REQUIRE(v.get_value<uint64_t>(i) == i);
             }
         }
         {
@@ -98,9 +98,8 @@ TEST_CASE("components::table::column") {
             column->initialize_scan(state);
             column->scan(0, state, v);
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::UBIGINT);
-                REQUIRE(value.value<uint64_t>() == i);
+                REQUIRE(v.type().type() == logical_type::UBIGINT);
+                REQUIRE(v.get_value<uint64_t>(i) == i);
             }
         }
     }
@@ -134,9 +133,8 @@ TEST_CASE("components::table::column") {
                 column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::STRING_LITERAL);
-                std::string result = *(value.value<std::string*>());
+                REQUIRE(v.type().type() == logical_type::STRING_LITERAL);
+                std::string result{v.get_value<std::string_view>(i)};
                 REQUIRE(result == generate_string(i));
             }
         }
@@ -147,9 +145,8 @@ TEST_CASE("components::table::column") {
             column->initialize_scan(state);
             column->scan(0, state, v);
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::STRING_LITERAL);
-                std::string result = *(value.value<std::string*>());
+                REQUIRE(v.type().type() == logical_type::STRING_LITERAL);
+                std::string result{v.get_value<std::string_view>(i)};
                 REQUIRE(result == generate_string(i));
             }
         }
@@ -193,11 +190,11 @@ TEST_CASE("components::table::column") {
                 column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::ARRAY);
+                const auto seq = sequence_of(v, i);
+                REQUIRE(v.type().type() == logical_type::ARRAY);
                 for (size_t j = 0; j < array_size; j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::UBIGINT);
-                    REQUIRE(value.children()[j].value<uint64_t>() == i * array_size + j);
+                    REQUIRE(seq.child->type().type() == logical_type::UBIGINT);
+                    REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == i * array_size + j);
                 }
             }
         }
@@ -209,11 +206,11 @@ TEST_CASE("components::table::column") {
             column->initialize_scan(state);
             column->scan(0, state, v);
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::ARRAY);
+                const auto seq = sequence_of(v, i);
+                REQUIRE(v.type().type() == logical_type::ARRAY);
                 for (size_t j = 0; j < array_size; j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::UBIGINT);
-                    REQUIRE(value.children()[j].value<uint64_t>() == i * array_size + j);
+                    REQUIRE(seq.child->type().type() == logical_type::UBIGINT);
+                    REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == i * array_size + j);
                 }
             }
         }
@@ -266,11 +263,11 @@ TEST_CASE("components::table::column") {
                 column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::ARRAY);
+                const auto seq = sequence_of(v, i);
+                REQUIRE(v.type().type() == logical_type::ARRAY);
                 for (size_t j = 0; j < array_size; j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
+                    REQUIRE(seq.child->type().type() == logical_type::STRING_LITERAL);
+                    std::string result = std::string{seq.child->get_value<std::string_view>(seq.offset + j)};
                     REQUIRE(result == generate_string(i * array_size + j));
                 }
             }
@@ -285,11 +282,11 @@ TEST_CASE("components::table::column") {
             column->initialize_scan(state);
             column->scan(0, state, v);
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::ARRAY);
+                const auto seq = sequence_of(v, i);
+                REQUIRE(v.type().type() == logical_type::ARRAY);
                 for (size_t j = 0; j < array_size; j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
+                    REQUIRE(seq.child->type().type() == logical_type::STRING_LITERAL);
+                    std::string result = std::string{seq.child->get_value<std::string_view>(seq.offset + j)};
                     REQUIRE(result == generate_string(i * array_size + j));
                 }
             }
@@ -333,11 +330,11 @@ TEST_CASE("components::table::column") {
                 column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::LIST);
+                const auto seq = sequence_of(v, i);
+                REQUIRE(v.type().type() == logical_type::LIST);
                 for (size_t j = 0; j < list_length(i); j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::UBIGINT);
-                    REQUIRE(value.children()[j].value<uint64_t>() == i * list_length(i) + j);
+                    REQUIRE(seq.child->type().type() == logical_type::UBIGINT);
+                    REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == i * list_length(i) + j);
                 }
             }
         }
@@ -349,11 +346,11 @@ TEST_CASE("components::table::column") {
             column->initialize_scan(state);
             column->scan(0, state, v);
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::LIST);
+                const auto seq = sequence_of(v, i);
+                REQUIRE(v.type().type() == logical_type::LIST);
                 for (size_t j = 0; j < list_length(i); j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::UBIGINT);
-                    REQUIRE(value.children()[j].value<uint64_t>() == i * list_length(i) + j);
+                    REQUIRE(seq.child->type().type() == logical_type::UBIGINT);
+                    REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == i * list_length(i) + j);
                 }
             }
         }
@@ -402,11 +399,11 @@ TEST_CASE("components::table::column") {
                 column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::LIST);
+                const auto seq = sequence_of(v, i);
+                REQUIRE(v.type().type() == logical_type::LIST);
                 for (size_t j = 0; j < list_length(i); j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
+                    REQUIRE(seq.child->type().type() == logical_type::STRING_LITERAL);
+                    std::string result = std::string{seq.child->get_value<std::string_view>(seq.offset + j)};
                     REQUIRE(result == generate_string(i * list_length(i) + j));
                 }
             }
@@ -419,11 +416,11 @@ TEST_CASE("components::table::column") {
             column->initialize_scan(state);
             column->scan(0, state, v);
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::LIST);
+                const auto seq = sequence_of(v, i);
+                REQUIRE(v.type().type() == logical_type::LIST);
                 for (size_t j = 0; j < list_length(i); j++) {
-                    REQUIRE(value.children()[j].type().type() == logical_type::STRING_LITERAL);
-                    std::string result = *(value.children()[j].value<std::string*>());
+                    REQUIRE(seq.child->type().type() == logical_type::STRING_LITERAL);
+                    std::string result = std::string{seq.child->get_value<std::string_view>(seq.offset + j)};
                     REQUIRE(result == generate_string(i * list_length(i) + j));
                 }
             }
@@ -458,18 +455,16 @@ TEST_CASE("components::table::column") {
             vector_t v(&resource, struct_type, test_size);
 
             for (size_t i = 0; i < test_size; i++) {
-                std::vector<logical_value_t> arr;
+                const std::string name = generate_string(i);
+                std::vector<uint16_t> arr;
                 arr.reserve(i);
                 for (size_t j = 0; j < i; j++) {
-                    arr.emplace_back(&resource, uint16_t(j));
+                    arr.emplace_back(static_cast<uint16_t>(j));
                 }
-                std::vector<logical_value_t> value_fiels;
-                value_fiels.emplace_back(&resource, i % 2 != 0);
-                value_fiels.emplace_back(&resource, int32_t(i));
-                value_fiels.emplace_back(v.resource(), generate_string(i));
-                value_fiels.emplace_back(logical_value_t::create_list(v.resource(), logical_type::USMALLINT, arr));
-                logical_value_t value = logical_value_t::create_struct(v.resource(), struct_type, value_fiels);
-                v.set_value(i, value);
+                v.entries()[0]->set_value(i, i % 2 != 0);
+                v.entries()[1]->set_value(i, int32_t(i));
+                v.entries()[2]->set_value(i, std::string_view{name});
+                v.entries()[3]->set_value(i, arr);
             }
 
             auto state_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(block_manager);
@@ -486,27 +481,24 @@ TEST_CASE("components::table::column") {
                 column->fetch_row(state, static_cast<int64_t>(i), v, i);
             }
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::STRUCT);
-                REQUIRE(value.type().alias() == "test_struct");
-                REQUIRE(value.type().child_types()[0].type() == logical_type::BOOLEAN);
-                REQUIRE(value.type().child_types()[0].alias() == "flag");
-                REQUIRE(value.type().child_types()[1].type() == logical_type::INTEGER);
-                REQUIRE(value.type().child_types()[1].alias() == "number");
-                REQUIRE(value.type().child_types()[2].type() == logical_type::STRING_LITERAL);
-                REQUIRE(value.type().child_types()[2].alias() == "name");
-                REQUIRE(value.type().child_types()[3].type() == logical_type::LIST);
-                REQUIRE(value.type().child_types()[3].child_type().type() == logical_type::USMALLINT);
-                REQUIRE(value.type().child_types()[3].alias() == "array");
+                REQUIRE(v.type().type() == logical_type::STRUCT);
+                REQUIRE(v.type().alias() == "test_struct");
+                REQUIRE(v.type().child_types()[0].type() == logical_type::BOOLEAN);
+                REQUIRE(v.type().child_types()[0].alias() == "flag");
+                REQUIRE(v.type().child_types()[1].type() == logical_type::INTEGER);
+                REQUIRE(v.type().child_types()[1].alias() == "number");
+                REQUIRE(v.type().child_types()[2].type() == logical_type::STRING_LITERAL);
+                REQUIRE(v.type().child_types()[2].alias() == "name");
+                REQUIRE(v.type().child_types()[3].type() == logical_type::LIST);
+                REQUIRE(v.type().child_types()[3].child_type().type() == logical_type::USMALLINT);
+                REQUIRE(v.type().child_types()[3].alias() == "array");
 
-                REQUIRE(value.children()[0].value<bool>() == test_data[i].flag);
-                REQUIRE(value.children()[1].value<int32_t>() == test_data[i].number);
-                REQUIRE(*value.children()[2].value<std::string*>() == test_data[i].name);
-                std::vector arr(value.children()[3].children());
-                REQUIRE(arr.size() == test_data[i].array.size());
-                for (size_t j = 0; j < arr.size(); j++) {
-                    REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
-                }
+                const auto cell = resolve_cell(v, i);
+                REQUIRE(cell.vec->entries()[0]->get_value<bool>(cell.index) == test_data[i].flag);
+                REQUIRE(cell.vec->entries()[1]->get_value<int32_t>(cell.index) == test_data[i].number);
+                REQUIRE(cell.vec->entries()[2]->get_value<std::string_view>(cell.index) == test_data[i].name);
+                const auto arr = cell.vec->entries()[3]->get_value<std::vector<uint16_t>>(cell.index);
+                REQUIRE(arr == test_data[i].array);
             }
         }
         {
@@ -525,27 +517,24 @@ TEST_CASE("components::table::column") {
             column->initialize_scan(state);
             column->scan(0, state, v);
             for (size_t i = 0; i < test_size; i++) {
-                logical_value_t value = v.value(i);
-                REQUIRE(value.type().type() == logical_type::STRUCT);
-                REQUIRE(value.type().alias() == "test_struct");
-                REQUIRE(value.type().child_types()[0].type() == logical_type::BOOLEAN);
-                REQUIRE(value.type().child_types()[0].alias() == "flag");
-                REQUIRE(value.type().child_types()[1].type() == logical_type::INTEGER);
-                REQUIRE(value.type().child_types()[1].alias() == "number");
-                REQUIRE(value.type().child_types()[2].type() == logical_type::STRING_LITERAL);
-                REQUIRE(value.type().child_types()[2].alias() == "name");
-                REQUIRE(value.type().child_types()[3].type() == logical_type::LIST);
-                REQUIRE(value.type().child_types()[3].child_type().type() == logical_type::USMALLINT);
-                REQUIRE(value.type().child_types()[3].alias() == "array");
+                REQUIRE(v.type().type() == logical_type::STRUCT);
+                REQUIRE(v.type().alias() == "test_struct");
+                REQUIRE(v.type().child_types()[0].type() == logical_type::BOOLEAN);
+                REQUIRE(v.type().child_types()[0].alias() == "flag");
+                REQUIRE(v.type().child_types()[1].type() == logical_type::INTEGER);
+                REQUIRE(v.type().child_types()[1].alias() == "number");
+                REQUIRE(v.type().child_types()[2].type() == logical_type::STRING_LITERAL);
+                REQUIRE(v.type().child_types()[2].alias() == "name");
+                REQUIRE(v.type().child_types()[3].type() == logical_type::LIST);
+                REQUIRE(v.type().child_types()[3].child_type().type() == logical_type::USMALLINT);
+                REQUIRE(v.type().child_types()[3].alias() == "array");
 
-                REQUIRE(value.children()[0].value<bool>() == test_data[i].flag);
-                REQUIRE(value.children()[1].value<int32_t>() == test_data[i].number);
-                REQUIRE(*value.children()[2].value<std::string*>() == test_data[i].name);
-                std::vector arr(value.children()[3].children());
-                REQUIRE(arr.size() == test_data[i].array.size());
-                for (size_t j = 0; j < arr.size(); j++) {
-                    REQUIRE(arr[j].value<uint16_t>() == test_data[i].array[j]);
-                }
+                const auto cell = resolve_cell(v, i);
+                REQUIRE(cell.vec->entries()[0]->get_value<bool>(cell.index) == test_data[i].flag);
+                REQUIRE(cell.vec->entries()[1]->get_value<int32_t>(cell.index) == test_data[i].number);
+                REQUIRE(cell.vec->entries()[2]->get_value<std::string_view>(cell.index) == test_data[i].name);
+                const auto arr = cell.vec->entries()[3]->get_value<std::vector<uint16_t>>(cell.index);
+                REQUIRE(arr == test_data[i].array);
             }
         }
         /*

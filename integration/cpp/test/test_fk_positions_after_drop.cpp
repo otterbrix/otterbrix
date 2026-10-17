@@ -25,7 +25,9 @@ namespace {
         auto cur = exec(sql);                                                                                          \
         REQUIRE(cur->is_success());                                                                                    \
         REQUIRE(cur->size() == 1);                                                                                     \
-        return cur->value(0, 0).value<std::uint64_t>();                                                                \
+        auto count = cur->get<std::uint64_t>(0, 0);                                                                    \
+        REQUIRE_FALSE(count.has_error());                                                                              \
+        return count.value();                                                                                          \
     };                                                                                                                 \
     REQUIRE(exec("CREATE DATABASE f;")->is_success());                                                                 \
     REQUIRE(exec("CREATE TABLE f.parent (gone bigint, id bigint, alt bigint);")->is_success());                        \

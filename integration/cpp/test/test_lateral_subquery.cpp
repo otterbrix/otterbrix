@@ -1,7 +1,6 @@
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
-#include <components/types/logical_value.hpp>
 
 #include <array>
 #include <optional>
@@ -28,11 +27,14 @@ namespace {
         std::multiset<row3_t> rows;
         for (uint64_t r = 0; r < cur.size(); ++r) {
             auto read = [&](int col) -> std::optional<int64_t> {
-                auto cell = cur.value(static_cast<uint64_t>(col), r);
-                if (cell.is_null()) {
+                auto cell0 = cur.is_null(static_cast<uint64_t>(col), r);
+                REQUIRE_FALSE(cell0.has_error());
+                if (cell0.value()) {
                     return std::nullopt;
                 }
-                return std::optional<int64_t>{cell.value<int64_t>()};
+                auto cell1 = cur.get<int64_t>(static_cast<uint64_t>(col), r);
+                REQUIRE_FALSE(cell1.has_error());
+                return std::optional<int64_t>{cell1.value()};
             };
             rows.insert(row3_t{read(c0), read(c1), read(c2)});
         }
@@ -100,8 +102,12 @@ TEST_CASE("integration::cpp::lateral_subquery::order_by_in_correlated_body") {
     std::optional<int64_t> current_id;
     std::optional<int64_t> previous_value;
     for (uint64_t row = 0; row < cur->size(); ++row) {
-        const int64_t id = cur->value(static_cast<uint64_t>(id_index), row).value<int64_t>();
-        const int64_t value = cur->value(static_cast<uint64_t>(v_index), row).value<int64_t>();
+        auto cell2 = cur->get<int64_t>(static_cast<uint64_t>(id_index), row);
+        REQUIRE_FALSE(cell2.has_error());
+        const int64_t id = cell2.value();
+        auto cell3 = cur->get<int64_t>(static_cast<uint64_t>(v_index), row);
+        REQUIRE_FALSE(cell3.has_error());
+        const int64_t value = cell3.value();
         if (current_id != id) {
             current_id = id;
             previous_value = std::nullopt;
@@ -159,12 +165,18 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_where_multichunk") {
     REQUIRE(v_i >= 0);
     std::set<int64_t> seen_ids;
     for (uint64_t r = 0; r < cur->size(); ++r) {
-        auto id_cell = cur->value(static_cast<uint64_t>(id_i), r);
-        auto v_cell = cur->value(static_cast<uint64_t>(v_i), r);
-        REQUIRE_FALSE(id_cell.is_null());
-        REQUIRE_FALSE(v_cell.is_null());
-        const int64_t id = id_cell.value<int64_t>();
-        const int64_t v = v_cell.value<int64_t>();
+        auto cell4 = cur->is_null(static_cast<uint64_t>(id_i), r);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE_FALSE(cell4.value());
+        auto cell5 = cur->is_null(static_cast<uint64_t>(v_i), r);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE_FALSE(cell5.value());
+        auto cell6 = cur->get<int64_t>(static_cast<uint64_t>(id_i), r);
+        REQUIRE_FALSE(cell6.has_error());
+        const int64_t id = cell6.value();
+        auto cell7 = cur->get<int64_t>(static_cast<uint64_t>(v_i), r);
+        REQUIRE_FALSE(cell7.has_error());
+        const int64_t v = cell7.value();
         REQUIRE(v == id + 100000);
         seen_ids.insert(id);
     }
@@ -324,8 +336,11 @@ TEST_CASE("integration::cpp::lateral_subquery::correlated_function_argument") {
     REQUIRE(v_i >= 0);
     std::multiset<std::pair<int64_t, int64_t>> got;
     for (uint64_t r = 0; r < cur->size(); ++r) {
-        got.emplace(cur->value(static_cast<uint64_t>(id_i), r).value<int64_t>(),
-                    cur->value(static_cast<uint64_t>(v_i), r).value<int64_t>());
+        auto cell8 = cur->get<int64_t>(static_cast<uint64_t>(id_i), r);
+        REQUIRE_FALSE(cell8.has_error());
+        auto cell9 = cur->get<int64_t>(static_cast<uint64_t>(v_i), r);
+        REQUIRE_FALSE(cell9.has_error());
+        got.emplace(cell8.value(), cell9.value());
     }
     std::multiset<std::pair<int64_t, int64_t>> expected{{1, 100}, {1, 101}, {2, 200}};
     REQUIRE(got == expected);
@@ -403,7 +418,9 @@ TEST_CASE("integration::cpp::dml_lateral::delete_using_lateral_generate_series")
     REQUIRE(check->size() == 4);
     std::multiset<int64_t> survivors;
     for (uint64_t r = 0; r < check->size(); ++r) {
-        survivors.insert(check->value(0, r).value<int64_t>());
+        auto cell10 = check->get<int64_t>(0, r);
+        REQUIRE_FALSE(cell10.has_error());
+        survivors.insert(cell10.value());
     }
     REQUIRE(survivors == std::multiset<int64_t>{4, 5, 9, 10});
 }
@@ -436,7 +453,11 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_correlated_subquer
     REQUIRE(check->size() == 3);
     std::multiset<std::array<int64_t, 2>> rows;
     for (uint64_t r = 0; r < check->size(); ++r) {
-        rows.insert(std::array<int64_t, 2>{check->value(0, r).value<int64_t>(), check->value(1, r).value<int64_t>()});
+        auto cell11 = check->get<int64_t>(0, r);
+        REQUIRE_FALSE(cell11.has_error());
+        auto cell12 = check->get<int64_t>(1, r);
+        REQUIRE_FALSE(cell12.has_error());
+        rows.insert(std::array<int64_t, 2>{cell11.value(), cell12.value()});
     }
     REQUIRE(rows == std::multiset<std::array<int64_t, 2>>{{{1, 111}}, {{2, 222}}, {{3, 0}}});
 }
@@ -542,7 +563,9 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_empty_join_no_chan
     auto check = dispatcher->execute_sql(session, "SELECT id, val FROM s.tgt;");
     REQUIRE(check->size() == 3);
     for (uint64_t r = 0; r < check->size(); ++r) {
-        REQUIRE(check->value(1, r).value<int64_t>() == 0);
+        auto cell13 = check->get<int64_t>(1, r);
+        REQUIRE_FALSE(cell13.has_error());
+        REQUIRE(cell13.value() == 0);
     }
 }
 
@@ -573,7 +596,11 @@ TEST_CASE("integration::cpp::dml_lateral::update_from_lateral_duplicate_matches_
     REQUIRE(check->size() == 3);
     std::multiset<std::array<int64_t, 2>> rows;
     for (uint64_t r = 0; r < check->size(); ++r) {
-        rows.insert(std::array<int64_t, 2>{check->value(0, r).value<int64_t>(), check->value(1, r).value<int64_t>()});
+        auto cell14 = check->get<int64_t>(0, r);
+        REQUIRE_FALSE(cell14.has_error());
+        auto cell15 = check->get<int64_t>(1, r);
+        REQUIRE_FALSE(cell15.has_error());
+        rows.insert(std::array<int64_t, 2>{cell14.value(), cell15.value()});
     }
     REQUIRE(rows == std::multiset<std::array<int64_t, 2>>{{{1, 111}}, {{2, 222}}, {{3, 0}}});
 }

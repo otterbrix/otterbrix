@@ -220,7 +220,9 @@ TEST_CASE("integration::cpp::test_stacked_constraints::check_is_not_null_with_de
         auto sel = exec(dispatcher, "SELECT height FROM TestDatabase.walls WHERE id = 1;");
         REQUIRE(sel->is_success());
         REQUIRE(sel->size() == 1);
-        REQUIRE(sel->value(0, 0).value<int64_t>() == 5);
+        auto cell0 = sel->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == 5);
     }
 
     INFO("an explicit NULL still violates the check");

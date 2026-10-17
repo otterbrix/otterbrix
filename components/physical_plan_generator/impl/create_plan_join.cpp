@@ -51,7 +51,7 @@ namespace services::planner::impl {
 
         auto lower_input = [&](const components::logical_plan::node_ptr& input) -> plan_result_t {
             assert(input && "a join has both inputs");
-            return create_plan(context, function_registry, input, components::logical_plan::limit_t::unlimit(), params);
+            return create_plan(context, function_registry, input, components::logical_plan::limit_t::all(), params);
         };
 
         if (join_node->is_lateral()) {

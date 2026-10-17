@@ -47,14 +47,18 @@ TEST_CASE("integration::cpp::dml_without_columns::delete_rows_whose_columns_are_
 
     auto counted = f.ok("SELECT count(*) AS c FROM zdb.t;");
     REQUIRE(counted->size() == 1);
-    CHECK(counted->value(0, 0).value<int64_t>() == 3);
+    auto cell0 = counted->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    CHECK(cell0.value() == 3);
 
     auto deleted = f.ok("DELETE FROM zdb.t;");
     CHECK(deleted->affected_rows() == std::optional<std::uint64_t>{3});
 
     auto left = f.ok("SELECT count(*) AS c FROM zdb.t;");
     REQUIRE(left->size() == 1);
-    CHECK(left->value(0, 0).value<int64_t>() == 0);
+    auto cell1 = left->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell1.has_error());
+    CHECK(cell1.value() == 0);
 }
 
 // A table created without columns has no rows before its first INSERT: DELETE removes nothing, and UPDATE has no

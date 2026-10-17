@@ -145,7 +145,9 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_duplicat
         auto sel = exec(dispatcher, "SELECT code FROM TestDatabase.tickets WHERE id = 1;");
         REQUIRE(sel->is_success());
         REQUIRE(sel->size() == 1);
-        REQUIRE(sel->value(0, 0).value<int64_t>() == 5);
+        auto cell0 = sel->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == 5);
     }
 
     INFO("second insert omitting the column collides with the stored default");
@@ -226,7 +228,9 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_rejects_nul
         auto cur = exec(dispatcher, "SELECT COUNT(label) AS c FROM TestDatabase.parts;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 1);
+        auto cell1 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == 1);
     }
 }
 
@@ -272,10 +276,14 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::multi_chunk_straddle_ac
 
         auto all = exec(dispatcher, "SELECT COUNT(name) AS c FROM TestDatabase.big;");
         REQUIRE(all->is_success());
-        REQUIRE(all->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRows));
+        auto cell2 = all->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == static_cast<uint64_t>(kRows));
         auto keyed = exec(dispatcher, "SELECT COUNT(id) AS c FROM TestDatabase.big;");
         REQUIRE(keyed->is_success());
-        REQUIRE(keyed->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(expected_non_null));
+        auto cell3 = keyed->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == static_cast<uint64_t>(expected_non_null));
     }
 
     INFO("a duplicate of a HIGH existing key (beyond the first packed chunk) is rejected");
@@ -323,7 +331,9 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_off_key_skips_ex
     {
         auto cur = exec(dispatcher, "SELECT payload FROM TestDatabase.t WHERE id = 5;");
         REQUIRE(cur->is_success());
-        CHECK(cur->value(0, 0).value<int64_t>() == 6);
+        auto cell4 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        CHECK(cell4.value() == 6);
     }
 }
 

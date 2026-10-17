@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "../otterbrix.h"
 
@@ -517,4 +518,108 @@ TEST_CASE("c-api: a cursor and a value outlive otterbrix_destroy", "[c-api][life
     t.ptr = otterbrix_create(cfg, &none);
     CHECK(t.ptr != nullptr);
     CHECK(none.message == nullptr);
+}
+
+namespace {
+    // Reads (row 0, column col) of `query` and hands the value to check; the cursor and value are released after it.
+    template<typename Check>
+    void with_value(otterbrix_ptr db, const std::string& query, int32_t col, Check check) {
+        cursor_ptr cur = execute_sql(db, sv(query));
+        REQUIRE(cur != nullptr);
+        REQUIRE(cursor_is_success(cur));
+        REQUIRE(cursor_size(cur) == 1);
+        value_ptr val = cursor_get_value(cur, 0, col);
+        REQUIRE(val != nullptr);
+        check(val);
+        release_value(val);
+        release_cursor(cur);
+    }
+
+    bool no_kind(value_ptr val) {
+        return !value_is_null(val) && !value_is_bool(val) && !value_is_int(val) && !value_is_uint(val) &&
+               !value_is_double(val) && !value_is_string(val);
+    }
+} // namespace
+
+TEST_CASE("c-api: value kinds of every scalar column type", "[c-api][value]") {
+    test_db_t t("value_kinds");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr,
+           "CREATE TABLE db.t (b boolean, i bigint, u ubigint, d double, s string, dt date, dec decimal(10,2), "
+           "l bigint[], n bigint);");
+    run_ok(t.ptr,
+           "INSERT INTO db.t (b, i, u, d, s, dt, dec, l, n) VALUES "
+           "(true, -5, 7, 2.5, 'txt', DATE '2024-01-01', 1.50, ARRAY[1, 2], NULL);");
+    const std::string q = "SELECT b, i, u, d, s, dt, dec, l, n FROM db.t;";
+
+    with_value(t.ptr, q, 0, [](value_ptr v) {
+        CHECK(value_is_bool(v));
+        CHECK_FALSE(value_is_null(v));
+        CHECK(value_get_bool(v));
+    });
+    with_value(t.ptr, q, 1, [](value_ptr v) {
+        CHECK(value_is_int(v));
+        CHECK(value_get_int(v) == -5);
+    });
+    with_value(t.ptr, q, 2, [](value_ptr v) {
+        CHECK(value_is_uint(v));
+        CHECK_FALSE(value_is_int(v));
+        CHECK(value_get_uint(v) == 7);
+    });
+    with_value(t.ptr, q, 3, [](value_ptr v) {
+        CHECK(value_is_double(v));
+        CHECK_THAT(value_get_double(v), Catch::Matchers::WithinULP(2.5, 0));
+    });
+    with_value(t.ptr, q, 4, [](value_ptr v) {
+        CHECK(value_is_string(v));
+        char* text = value_get_string(v);
+        REQUIRE(text != nullptr);
+        CHECK(std::string(text) == "txt");
+        otterbrix_free_string(text);
+    });
+    // DATE is the engine's day count (2024-01-01 is 8766 days after 2000-01-01), not the Unix one
+    with_value(t.ptr, q, 5, [](value_ptr v) {
+        CHECK(value_is_int(v));
+        CHECK(value_get_int(v) == 8766);
+    });
+    // DECIMAL(10,2) is the unscaled integer
+    with_value(t.ptr, q, 6, [](value_ptr v) {
+        CHECK(value_is_int(v));
+        CHECK(value_get_int(v) == 150);
+    });
+    with_value(t.ptr, q, 7, [](value_ptr v) { CHECK(no_kind(v)); });
+    with_value(t.ptr, q, 8, [](value_ptr v) {
+        CHECK(value_is_null(v));
+        CHECK_FALSE(value_is_int(v));
+        CHECK_FALSE(value_is_string(v));
+    });
+}
+
+TEST_CASE("c-api: a 128-bit and a NULL UUID cell", "[c-api][value]") {
+    test_db_t t("value_wide");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE TABLE db.t (h hugeint, u uuid);");
+    run_ok(t.ptr, "INSERT INTO db.t (h, u) VALUES (5, NULL);");
+
+    // No SQL reaches a non-NULL UUID, so the C API has no way to read one.
+    with_value(t.ptr, "SELECT h, u FROM db.t;", 0, [](value_ptr v) { CHECK(no_kind(v)); });
+    with_value(t.ptr, "SELECT h, u FROM db.t;", 1, [](value_ptr v) { CHECK(value_is_null(v)); });
+}
+
+TEST_CASE("c-api: SELECT NULL answers a null value", "[c-api][value]") {
+    test_db_t t("value_select_null");
+    REQUIRE(t.ptr != nullptr);
+
+    with_value(t.ptr, "SELECT NULL;", 0, [](value_ptr v) {
+        CHECK(value_is_null(v));
+        CHECK_FALSE(value_is_bool(v));
+        CHECK_FALSE(value_is_int(v));
+        CHECK_FALSE(value_is_uint(v));
+        CHECK_FALSE(value_is_double(v));
+        CHECK_FALSE(value_is_string(v));
+    });
 }

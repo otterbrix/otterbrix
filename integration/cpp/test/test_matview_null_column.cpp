@@ -56,8 +56,12 @@ TEST_CASE("integration::cpp::matview_null_column::a_NULL_only_column_is_text_and
         run_ok(d, "REFRESH MATERIALIZED VIEW d.mv;");
         auto filled = run_ok(d, "SELECT a, n FROM d.mv;");
         REQUIRE(filled->size() == 2);
-        CHECK(filled->value(1, 0).is_null());
-        CHECK(filled->value(1, 1).is_null());
+        auto cell0 = filled->is_null(1, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        CHECK(cell0.value());
+        auto cell1 = filled->is_null(1, 1);
+        REQUIRE_FALSE(cell1.has_error());
+        CHECK(cell1.value());
         run_ok(d, "CHECKPOINT;");
     }
     {
@@ -67,7 +71,9 @@ TEST_CASE("integration::cpp::matview_null_column::a_NULL_only_column_is_text_and
         otterbrix::otterbrix_ptr engine{new otterbrix::otterbrix_t(std::move(host.value()))};
         auto again = run_ok(engine->dispatcher(), "SELECT a, n FROM d.mv;");
         REQUIRE(again->size() == 2);
-        CHECK(again->value(1, 0).is_null());
+        auto cell2 = again->is_null(1, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        CHECK(cell2.value());
     }
 }
 
@@ -78,7 +84,9 @@ TEST_CASE("integration::cpp::matview_null_column::a_view_over_SELECT_NULL_record
     run_ok(d, "CREATE VIEW d.v AS SELECT NULL AS x;");
     auto read = run_ok(d, "SELECT * FROM d.v;");
     REQUIRE(read->size() == 1);
-    CHECK(read->value(0, 0).is_null());
+    auto cell3 = read->is_null(0, 0);
+    REQUIRE_FALSE(cell3.has_error());
+    CHECK(cell3.value());
 }
 
 TEST_CASE("integration::cpp::matview_null_column::a_matview_over_an_array_of_NULL_is_text_array_and_holds_rows") {
@@ -96,8 +104,12 @@ TEST_CASE("integration::cpp::matview_null_column::a_matview_over_an_array_of_NUL
         const auto x = filled->chunks().front().types()[1];
         REQUIRE(x.type() == types::logical_type::ARRAY);
         CHECK(x.child_type().type() == types::logical_type::STRING_LITERAL);
-        REQUIRE(filled->value(1, 0).children().size() == 1);
-        CHECK(filled->value(1, 0).children()[0].is_null());
+        auto cell4 = filled->list_size(1, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == 1);
+        auto cell5 = filled->is_null(1, 0, {0});
+        REQUIRE_FALSE(cell5.has_error());
+        CHECK(cell5.value());
         run_ok(d, "CHECKPOINT;");
     }
     {
@@ -107,8 +119,12 @@ TEST_CASE("integration::cpp::matview_null_column::a_matview_over_an_array_of_NUL
         otterbrix::otterbrix_ptr engine{new otterbrix::otterbrix_t(std::move(host.value()))};
         auto again = run_ok(engine->dispatcher(), "SELECT a, x FROM d.mv;");
         REQUIRE(again->size() == 2);
-        REQUIRE(again->value(1, 1).children().size() == 1);
-        CHECK(again->value(1, 1).children()[0].is_null());
+        auto cell6 = again->list_size(1, 1);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == 1);
+        auto cell7 = again->is_null(1, 1, {0});
+        REQUIRE_FALSE(cell7.has_error());
+        CHECK(cell7.value());
     }
 }
 

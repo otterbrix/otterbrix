@@ -2,6 +2,9 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <vector>
+
 // TODO: edge case with connecting query and it's subquery
 /*
 SELECT ... FROM A WHERE EXISTS ( SELECT ... FROM B WHERE A.id = B.id););
@@ -63,8 +66,9 @@ namespace {
     std::string plan_text(const components::cursor::cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            auto v = cur->value(0, r);
-            out += std::string(v.value<std::string_view>());
+            auto cell0 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            out += std::string(cell0.value());
             out += '\n';
         }
         return out;
@@ -91,7 +95,9 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
                                            "WHERE salary = (SELECT MAX(salary) FROM TestDatabase.Employees);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice");
+        auto cell1 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == "Alice");
     }
 
     INFO("scalar subquery in WHERE with greater-than");
@@ -149,7 +155,9 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
                                            "  SELECT id FROM TestDatabase.Departments WHERE 1 = 0"
                                            ");");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
+        auto cell2 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == 0);
     }
 
     INFO("NOT IN empty subquery matches everything (PostgreSQL: NOT IN () -> all rows)");
@@ -161,7 +169,9 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
                                            "  SELECT id FROM TestDatabase.Departments WHERE 1 = 0"
                                            ");");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 10);
+        auto cell3 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == 10);
     }
 
     INFO("EXISTS non-correlated subquery — rows found");
@@ -209,7 +219,9 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
             ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
+        auto sub1 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(sub1.has_error());
+        REQUIRE(sub1.value() == "Engineering");
     }
 
     INFO("NOT EXISTS correlated subquery");
@@ -223,7 +235,9 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
             ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "HR");
+        auto sub2 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(sub2.has_error());
+        REQUIRE(sub2.value() == "HR");
     }
 
     INFO("correlated subquery comparing to own-department average");
@@ -258,7 +272,9 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
                                            "WHERE budget > ALL (SELECT salary FROM TestDatabase.Employees);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
+        auto cell4 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == "Engineering");
     }
 
     INFO("scalar subquery returning NULL (empty result)");
@@ -296,7 +312,9 @@ TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
                                            ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
+        auto cell5 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == "Engineering");
     }
 
     INFO("correlated NOT EXISTS -> anti-join: departments with no >50000 earner");
@@ -310,7 +328,9 @@ TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
                                            ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "HR");
+        auto cell6 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == "HR");
     }
 
     INFO("correlated EXISTS -> semi-join: every dept has employees (all rows)");
@@ -390,8 +410,12 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
             "WHERE e.dept_id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->value(1, 0).value<std::string_view>() == "Engineering");
-        REQUIRE(cur->value(1, 1).value<std::string_view>() == "Engineering");
+        auto sub3 = cur->get<std::string_view>(1, 0);
+        REQUIRE_FALSE(sub3.has_error());
+        REQUIRE(sub3.value() == "Engineering");
+        auto sub4 = cur->get<std::string_view>(1, 1);
+        REQUIRE_FALSE(sub4.has_error());
+        REQUIRE(sub4.value() == "Engineering");
     }
 
     INFO("aggregate correlated subquery in SELECT list");
@@ -405,7 +429,9 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         for (size_t row = 0; row < 5; ++row) {
-            REQUIRE(cur->value(1, row).value<int64_t>() == 2);
+            auto sub5 = cur->get<int64_t>(1, row);
+            REQUIRE_FALSE(sub5.has_error());
+            REQUIRE(sub5.value() == 2);
         }
     }
 
@@ -420,8 +446,12 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
             "ORDER BY e.salary DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 90000);
-        REQUIRE(cur->value(1, 1).value<int64_t>() == 90000);
+        auto sub6 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(sub6.has_error());
+        REQUIRE(sub6.value() == 90000);
+        auto sub7 = cur->get<int64_t>(1, 1);
+        REQUIRE_FALSE(sub7.has_error());
+        REQUIRE(sub7.value() == 90000);
     }
     */
 
@@ -629,7 +659,9 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
             ");");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Grace");
+        auto sub8 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(sub8.has_error());
+        REQUIRE(sub8.value() == "Grace");
     }
 
     INFO("4-level nested: top earner in each of the best departments");
@@ -791,7 +823,9 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(*) AS cnt FROM TestDatabase.Employees;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 8);
+            auto cell7 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell7.has_error());
+            REQUIRE(cell7.value() == 8);
         }
     }
 
@@ -826,7 +860,9 @@ TEST_CASE("integration::cpp::test_subqueries::dml") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(*) AS cnt FROM TestDatabase.Employees;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+            auto cell8 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell8.has_error());
+            REQUIRE(cell8.value() == 2);
         }
     }
 }
@@ -852,7 +888,9 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
                                            "SELECT name FROM above_avg ORDER BY salary DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice");
+        auto cell9 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell9.has_error());
+        REQUIRE(cell9.value() == "Alice");
     }
 
     INFO("CTE joined with base table");
@@ -870,7 +908,9 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
                                            "ORDER BY ds.avg_sal DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
+        auto cell10 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell10.has_error());
+        REQUIRE(cell10.value() == "Engineering");
     }
 
     INFO("multiple CTEs chained");
@@ -907,7 +947,9 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
                                            "WHERE dt.top_sal = (SELECT MAX(top_sal) FROM dept_tops);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineering");
+        auto cell11 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell11.has_error());
+        REQUIRE(cell11.value() == "Engineering");
     }
 
     INFO("CTE with subquery in its own WHERE clause");
@@ -926,7 +968,9 @@ TEST_CASE("integration::cpp::test_subqueries::cte") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
         for (size_t row = 0; row < 5; ++row) {
-            REQUIRE(cur->value(1, row).value<int64_t>() == 2);
+            auto cell12 = cur->get<int64_t>(1, row);
+            REQUIRE_FALSE(cell12.has_error());
+            REQUIRE(cell12.value() == 2);
         }
     }
 }
@@ -950,7 +994,9 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
         for (size_t row = 0; row < 4; ++row) {
-            REQUIRE(cur->value(0, row).value<int64_t>() == 1);
+            auto cell13 = cur->get<int64_t>(0, row);
+            REQUIRE_FALSE(cell13.has_error());
+            REQUIRE(cell13.value() == 1);
         }
     }
 
@@ -985,7 +1031,9 @@ TEST_CASE("integration::cpp::test_subqueries::union") {
                                            "SELECT dept_id FROM TestDatabase.Employees WHERE dept_id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        auto cell14 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell14.has_error());
+        REQUIRE(cell14.value() == 1);
     }
 
     INFO("UNION ALL three operands");
@@ -1032,8 +1080,12 @@ TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
                                            "OFFSET 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
-        REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
+        auto cell15 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell15.has_error());
+        REQUIRE(cell15.value() == 2);
+        auto cell16 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell16.has_error());
+        REQUIRE(cell16.value() == 2);
     }
 
     INFO("UNION ALL LIMIT+OFFSET (no ORDER BY) windows the concatenation once");
@@ -1069,7 +1121,9 @@ TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         for (size_t row = 0; row < cur->size(); ++row) {
-            REQUIRE(cur->value(1, row).value<uint64_t>() == 2);
+            auto cell17 = cur->get<uint64_t>(1, row);
+            REQUIRE_FALSE(cell17.has_error());
+            REQUIRE(cell17.value() == 2);
         }
     }
 
@@ -1082,7 +1136,9 @@ TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         for (size_t row = 0; row < cur->size(); ++row) {
-            REQUIRE(cur->value(1, row).value<uint64_t>() == 2);
+            auto cell18 = cur->get<uint64_t>(1, row);
+            REQUIRE_FALSE(cell18.has_error());
+            REQUIRE(cell18.value() == 2);
         }
     }
 
@@ -1096,8 +1152,12 @@ TEST_CASE("integration::cpp::test_subqueries::union_group_limit_offset") {
                                            "ORDER BY dept_id LIMIT 2 OFFSET 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
-        REQUIRE(cur->value(0, 1).value<int64_t>() == 3);
+        auto cell19 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell19.has_error());
+        REQUIRE(cell19.value() == 2);
+        auto cell20 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell20.has_error());
+        REQUIRE(cell20.value() == 3);
     }
 }
 
@@ -1249,9 +1309,15 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
                                            "SELECT name FROM hierarchy ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "CEO");
-        REQUIRE(cur->value(0, 1).value<std::string_view>() == "VP Eng");
-        REQUIRE(cur->value(0, 4).value<std::string_view>() == "Designer");
+        auto cell21 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell21.has_error());
+        REQUIRE(cell21.value() == "CEO");
+        auto cell22 = cur->get<std::string_view>(0, 1);
+        REQUIRE_FALSE(cell22.has_error());
+        REQUIRE(cell22.value() == "VP Eng");
+        auto cell23 = cur->get<std::string_view>(0, 4);
+        REQUIRE_FALSE(cell23.has_error());
+        REQUIRE(cell23.value() == "Designer");
     }
 
     INFO("subtree rooted at VP Eng");
@@ -1268,8 +1334,12 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
                                            "SELECT name FROM subtree ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "VP Eng");
-        REQUIRE(cur->value(0, 1).value<std::string_view>() == "Engineer");
+        auto cell24 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell24.has_error());
+        REQUIRE(cell24.value() == "VP Eng");
+        auto cell25 = cur->get<std::string_view>(0, 1);
+        REQUIRE_FALSE(cell25.has_error());
+        REQUIRE(cell25.value() == "Engineer");
     }
 
     INFO("hierarchy with depth");
@@ -1287,9 +1357,15 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
                                     "SELECT name, depth FROM hierarchy ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 0);
-        REQUIRE(cur->value(1, 1).value<int64_t>() == 1);
-        REQUIRE(cur->value(1, 3).value<int64_t>() == 2);
+        auto cell26 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell26.has_error());
+        REQUIRE(cell26.value() == 0);
+        auto cell27 = cur->get<int64_t>(1, 1);
+        REQUIRE_FALSE(cell27.has_error());
+        REQUIRE(cell27.value() == 1);
+        auto cell28 = cur->get<int64_t>(1, 3);
+        REQUIRE_FALSE(cell28.has_error());
+        REQUIRE(cell28.value() == 2);
     }
 
     INFO("filter by depth in outer query");
@@ -1307,8 +1383,12 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte") {
                                     "SELECT name FROM hierarchy WHERE depth = 2 ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Engineer");
-        REQUIRE(cur->value(0, 1).value<std::string_view>() == "Designer");
+        auto cell29 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell29.has_error());
+        REQUIRE(cell29.value() == "Engineer");
+        auto cell30 = cur->get<std::string_view>(0, 1);
+        REQUIRE_FALSE(cell30.has_error());
+        REQUIRE(cell30.value() == "Designer");
     }
 }
 
@@ -1471,12 +1551,16 @@ TEST_CASE("integration::cpp::test_subqueries::bool_numeric_coercion") {
     {
         auto cur = exec("SELECT CAST(1 AS boolean) AS b;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<bool>() == true);
+        auto cell31 = cur->get<bool>(0, 0);
+        REQUIRE_FALSE(cell31.has_error());
+        REQUIRE(cell31.value() == true);
     }
     {
         auto cur = exec("SELECT CAST(0 AS boolean) AS b;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<bool>() == false);
+        auto cell32 = cur->get<bool>(0, 0);
+        REQUIRE_FALSE(cell32.has_error());
+        REQUIRE(cell32.value() == false);
     }
 
     INFO("implicit boolean = numeric is rejected cleanly (operator does not exist), not an abort");
@@ -1492,7 +1576,9 @@ TEST_CASE("integration::cpp::test_subqueries::bool_numeric_coercion") {
         auto cur = exec("SELECT id FROM TestDatabase.flags WHERE ok = true;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        auto cell33 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell33.has_error());
+        REQUIRE(cell33.value() == 1);
     }
 }
 
@@ -1517,8 +1603,12 @@ TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
                                            "ORDER BY id DESC LIMIT 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 4);
-        REQUIRE(cur->value(0, 1).value<int64_t>() == 3);
+        auto cell34 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell34.has_error());
+        REQUIRE(cell34.value() == 4);
+        auto cell35 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell35.has_error());
+        REQUIRE(cell35.value() == 3);
     }
 
     INFO("UNION ALL with ORDER BY ASC + LIMIT + OFFSET skips correctly");
@@ -1531,8 +1621,12 @@ TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
                                            "ORDER BY id LIMIT 2 OFFSET 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
-        REQUIRE(cur->value(0, 1).value<int64_t>() == 3);
+        auto cell36 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell36.has_error());
+        REQUIRE(cell36.value() == 2);
+        auto cell37 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell37.has_error());
+        REQUIRE(cell37.value() == 3);
     }
 
     INFO("bare UNION ALL (no tail clauses) still returns all rows");
@@ -1557,8 +1651,12 @@ TEST_CASE("integration::cpp::test_subqueries::union_order_by_limit") {
                                            "ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->value(0, 3).value<int64_t>() == 4);
+        auto cell38 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell38.has_error());
+        REQUIRE(cell38.value() == 1);
+        auto cell39 = cur->get<int64_t>(0, 3);
+        REQUIRE_FALSE(cell39.has_error());
+        REQUIRE(cell39.value() == 4);
     }
 }
 
@@ -1583,8 +1681,12 @@ TEST_CASE("integration::cpp::test_subqueries::positional_order_by") {
         auto cur = exec("SELECT dept_id, name FROM TestDatabase.Employees ORDER BY 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->value(0, 9).value<int64_t>() == 5);
+        auto cell40 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell40.has_error());
+        REQUIRE(cell40.value() == 1);
+        auto cell41 = cur->get<int64_t>(0, 9);
+        REQUIRE_FALSE(cell41.has_error());
+        REQUIRE(cell41.value() == 5);
     }
 
     INFO("plain SELECT: ORDER BY 1 DESC orders by the first output column descending");
@@ -1592,7 +1694,9 @@ TEST_CASE("integration::cpp::test_subqueries::positional_order_by") {
         auto cur = exec("SELECT dept_id, name FROM TestDatabase.Employees ORDER BY 1 DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 5);
+        auto cell42 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell42.has_error());
+        REQUIRE(cell42.value() == 5);
     }
 
     INFO("plain SELECT: ORDER BY 2 orders by the second output column");
@@ -1600,8 +1704,12 @@ TEST_CASE("integration::cpp::test_subqueries::positional_order_by") {
         auto cur = exec("SELECT name, salary FROM TestDatabase.Employees ORDER BY 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
-        REQUIRE(cur->value(1, 0).value<int64_t>() == 40000);
-        REQUIRE(cur->value(1, 9).value<int64_t>() == 90000);
+        auto cell43 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell43.has_error());
+        REQUIRE(cell43.value() == 40000);
+        auto cell44 = cur->get<int64_t>(1, 9);
+        REQUIRE_FALSE(cell44.has_error());
+        REQUIRE(cell44.value() == 90000);
     }
 
     INFO("UNION: positional ORDER BY 1 orders the deduped output by its first column");
@@ -1610,8 +1718,12 @@ TEST_CASE("integration::cpp::test_subqueries::positional_order_by") {
                         "UNION SELECT dept_id FROM TestDatabase.Employees ORDER BY 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->value(0, 4).value<int64_t>() == 5);
+        auto cell45 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell45.has_error());
+        REQUIRE(cell45.value() == 1);
+        auto cell46 = cur->get<int64_t>(0, 4);
+        REQUIRE_FALSE(cell46.has_error());
+        REQUIRE(cell46.value() == 5);
     }
 
     INFO("positional ORDER BY out of range is a clean error, not a crash");
@@ -1661,7 +1773,9 @@ TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
             s,
             "SELECT COUNT(*) FROM TestDatabase.probe WHERE v IN (SELECT id FROM TestDatabase.big);");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        auto cell47 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell47.has_error());
+        REQUIRE(cell47.value() == 1);
     }
 
     INFO("scalar sub-query with 2 rows split across chunks still errors (not chunk-0's value)");
@@ -1766,7 +1880,9 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_dedup_fidelity") {
                         "  SELECT e.dst FROM TestDatabase.fedges e JOIN reach r ON e.src = r.node"
                         ") SELECT count(*) AS c FROM reach;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 4);
+        auto cell48 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell48.has_error());
+        REQUIRE(cell48.value() == 4);
     }
 }
 
@@ -1796,8 +1912,12 @@ TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
         auto cur = exec("SELECT id FROM TestDatabase.t ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
-        REQUIRE(cur->value(0, 1).value<int64_t>() == 4);
+        auto cell49 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell49.has_error());
+        REQUIRE(cell49.value() == 2);
+        auto cell50 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell50.has_error());
+        REQUIRE(cell50.value() == 4);
     }
 
     INFO("WITH before INSERT ... SELECT: the CTE feeds the inserted rows");
@@ -1808,7 +1928,9 @@ TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
                     ->is_success());
         auto cur = exec("SELECT COUNT(*) FROM TestDatabase.dst;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        auto cell51 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell51.has_error());
+        REQUIRE(cell51.value() == 2);
     }
 
     INFO("WITH before UPDATE: the CTE feeds the UPDATE predicate");
@@ -1820,7 +1942,9 @@ TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
                     ->is_success());
         auto cur = exec("SELECT COUNT(*) FROM TestDatabase.u WHERE id = 99;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        auto cell52 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell52.has_error());
+        REQUIRE(cell52.value() == 2);
     }
 
     INFO("a data-modifying CTE (WITH x AS (DELETE ...)) is rejected cleanly, not a bad cast");
@@ -1867,9 +1991,15 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_limit_offset") {
                                            "ORDER BY dept_id LIMIT 3;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-        REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
-        REQUIRE(cur->value(0, 2).value<int64_t>() == 3);
+        auto cell53 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell53.has_error());
+        REQUIRE(cell53.value() == 1);
+        auto cell54 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell54.has_error());
+        REQUIRE(cell54.value() == 2);
+        auto cell55 = cur->get<int64_t>(0, 2);
+        REQUIRE_FALSE(cell55.has_error());
+        REQUIRE(cell55.value() == 3);
     }
 
     INFO("SELECT DISTINCT dept_id LIMIT 0 returns 0 rows");
@@ -1966,7 +2096,9 @@ TEST_CASE("integration::cpp::test_subqueries::limit_unification_regressions") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
         for (size_t row = 0; row < cur->size(); ++row) {
-            REQUIRE(cur->value(1, row).value<uint64_t>() == 2);
+            auto cell56 = cur->get<uint64_t>(1, row);
+            REQUIRE_FALSE(cell56.has_error());
+            REQUIRE(cell56.value() == 2);
         }
     }
 
@@ -2010,7 +2142,9 @@ TEST_CASE("integration::cpp::test_subqueries::values_top_level_limit") {
         auto cur = exec("VALUES (1),(2),(3) LIMIT 1 OFFSET 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        auto cell57 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell57.has_error());
+        REQUIRE(cell57.value() == 2);
     }
 }
 
@@ -2035,14 +2169,18 @@ TEST_CASE("integration::cpp::test_subqueries::exists_operand") {
         auto cur = run("SELECT x FROM db.t WHERE flag = EXISTS (SELECT x FROM db.t WHERE x > 0);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        auto cell58 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell58.has_error());
+        REQUIRE(cell58.value() == 1);
     }
     INFO("EXISTS is FALSE (sub-query empty) → matches the flag=false row");
     {
         auto cur = run("SELECT x FROM db.t WHERE flag = EXISTS (SELECT x FROM db.t WHERE x > 100);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        auto cell59 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell59.has_error());
+        REQUIRE(cell59.value() == 2);
     }
 }
 
@@ -2070,7 +2208,9 @@ TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
         auto cur = run("SELECT (SELECT count(*) FROM db.t) FROM db.one;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
+        auto cell60 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell60.has_error());
+        REQUIRE(cell60.value() == 3);
     }
     INFO("M4b: scalar sub-query as an arithmetic operand (per outer row)");
     {
@@ -2083,14 +2223,18 @@ TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
         auto cur = run("SELECT sum(x) + (SELECT count(*) FROM db.t) FROM db.t;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 63);
+        auto cell61 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell61.has_error());
+        REQUIRE(cell61.value() == 63);
     }
     INFO("M4-NULL: a 0-row scalar sub-query projects a typed NULL row");
     {
         auto cur = run("SELECT (SELECT max(y) FROM db.empty) FROM db.one;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).is_null());
+        auto cell62 = cur->is_null(0, 0);
+        REQUIRE_FALSE(cell62.has_error());
+        REQUIRE(cell62.value());
     }
 }
 
@@ -2115,21 +2259,27 @@ TEST_CASE("integration::cpp::test_subqueries::null_literal_typing") {
         auto cur = run("SELECT NULL FROM db.one;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).is_null());
+        auto cell63 = cur->is_null(0, 0);
+        REQUIRE_FALSE(cell63.has_error());
+        REQUIRE(cell63.value());
     }
     INFO("NULL::int is a proper NULL, not a garbage non-null value");
     {
         auto cur = run("SELECT NULL::int FROM db.one;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).is_null());
+        auto cell64 = cur->is_null(0, 0);
+        REQUIRE_FALSE(cell64.has_error());
+        REQUIRE(cell64.value());
     }
     INFO("SELECT (SELECT NULL ...) — scalar sub-query yielding NULL projects a typed NULL row");
     {
         auto cur = run("SELECT (SELECT NULL FROM db.one) FROM db.one;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).is_null());
+        auto cell65 = cur->is_null(0, 0);
+        REQUIRE_FALSE(cell65.has_error());
+        REQUIRE(cell65.value());
     }
 }
 
@@ -2174,7 +2324,9 @@ TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
         auto cur = run("SELECT id FROM db.t WHERE s ILIKE 'banana';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        auto cell66 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell66.has_error());
+        REQUIRE(cell66.value() == 2);
     }
     INFO("scalar NOT ILIKE");
     {
@@ -2202,7 +2354,7 @@ TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
     REQUIRE(run("CREATE TABLE db.keys (k bigint);")->is_success());
     REQUIRE(run("INSERT INTO db.keys (k) VALUES (20), (40);")->is_success());
 
-    INFO("= ANY (SELECT ...) -> disk conjunction_or of eq filters");
+    INFO("= ANY (SELECT ...) is pushed to the disk scan as one membership filter");
     {
         auto cur = run("SELECT id FROM db.t WHERE v = ANY (SELECT k FROM db.keys);");
         REQUIRE(cur->is_success());
@@ -2214,7 +2366,7 @@ TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
     }
-    INFO("> ALL (SELECT ...) -> disk conjunction_and of gt filters");
+    INFO("> ALL (SELECT ...) is pushed to the disk scan as one membership filter");
     {
         auto cur = run("SELECT id FROM db.t WHERE v > ALL (SELECT k FROM db.keys);");
         REQUIRE(cur->is_success());
@@ -2401,7 +2553,9 @@ TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
                        "                ORDER BY salary DESC LIMIT 1);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice");
+        auto cell67 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell67.has_error());
+        REQUIRE(cell67.value() == "Alice");
 
         auto ex = run("EXPLAIN ANALYZE SELECT name FROM TestDatabase.Employees "
                       "WHERE salary = (SELECT salary FROM TestDatabase.Employees "
@@ -2415,7 +2569,9 @@ TEST_CASE("integration::cpp::test_subqueries::sort_elimination") {
         auto cur = run("SELECT name FROM TestDatabase.Employees ORDER BY salary DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 10);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "Alice");
+        auto cell68 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell68.has_error());
+        REQUIRE(cell68.value() == "Alice");
 
         auto ex = run("EXPLAIN SELECT name FROM TestDatabase.Employees ORDER BY salary DESC;");
         REQUIRE(ex->is_success());
@@ -2473,7 +2629,9 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
         auto cur = run("SELECT id FROM nulldb.outer WHERE x NOT IN (SELECT v FROM nulldb.pure);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        auto cell69 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell69.has_error());
+        REQUIRE(cell69.value() == 2);
     }
 
     INFO("IN over an EMPTY sub-query is FALSE for all -> zero rows");
@@ -2527,7 +2685,9 @@ TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_sub
                        "WHERE salary > (SELECT AVG(budget) FROM TestDatabase.Departments);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 387010);
+        auto cell70 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell70.has_error());
+        REQUIRE(cell70.value() == 387010);
     }
 
     INFO("EXISTS sub-query in WHERE (speculative semi/anti probe + flatten path)");
@@ -2536,7 +2696,9 @@ TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_sub
                        "WHERE EXISTS (SELECT id FROM TestDatabase.Departments WHERE budget > 60000);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 652010);
+        auto cell71 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell71.has_error());
+        REQUIRE(cell71.value() == 652010);
     }
 
     INFO("ANY sub-query in WHERE");
@@ -2545,7 +2707,9 @@ TEST_CASE("integration::cpp::test_subqueries::outer_aggregate_survives_where_sub
                        "WHERE dept_id = ANY (SELECT id FROM TestDatabase.Departments WHERE budget > 60000);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 452010);
+        auto cell72 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell72.has_error());
+        REQUIRE(cell72.value() == 452010);
     }
 }
 
@@ -2577,8 +2741,12 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_on_subquery_sort_kept") {
                        "(SELECT DISTINCT ON (k) v FROM db.events ORDER BY k, ts DESC);");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        const auto a = cur->value(0, 0).value<int64_t>();
-        const auto b = cur->value(0, 1).value<int64_t>();
+        auto cell73 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell73.has_error());
+        const auto a = cell73.value();
+        auto cell74 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell74.has_error());
+        const auto b = cell74.value();
         const bool latest_pair = (a == 200 && b == 400) || (a == 400 && b == 200);
         REQUIRE(latest_pair);
     }
@@ -2591,5 +2759,547 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_on_subquery_sort_kept") {
         const auto t = plan_text(ex);
         REQUIRE(contains(t, "InitPlan"));
         REQUIRE(contains(t, "Sort"));
+    }
+}
+
+// A NULL probe value against an empty set / a NULL-only set, and a result larger than one chunk with a NULL element.
+TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_probe_and_null_only_set") {
+    auto config = test_create_config(integration_fixture_path("test_subqueries/in_not_in_null_probe"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE pdb;")->is_success());
+    REQUIRE(run("CREATE TABLE pdb.probe (id bigint, x bigint);")->is_success());
+    REQUIRE(run("INSERT INTO pdb.probe (id, x) VALUES (1, 10), (2, NULL), (3, 1500);")->is_success());
+    REQUIRE(run("CREATE TABLE pdb.big (v bigint);")->is_success());
+    {
+        std::string ins = "INSERT INTO pdb.big (v) VALUES (NULL)";
+        for (int i = 1; i <= 1100; ++i) {
+            ins += ", (" + std::to_string(i) + ")";
+        }
+        REQUIRE(run(ins + ";")->is_success());
+    }
+
+    INFO("x = ANY (empty): FALSE for every x, NULL probe included -> zero rows");
+    {
+        auto cur = run("SELECT id FROM pdb.probe WHERE x = ANY (SELECT v FROM pdb.big WHERE v > 100000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("x > ALL (empty): TRUE for every x, NULL probe included -> all three rows");
+    {
+        auto cur = run("SELECT id FROM pdb.probe WHERE x > ALL (SELECT v FROM pdb.big WHERE v > 100000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("x IN (empty): FALSE for every x, NULL probe included -> zero rows");
+    {
+        auto cur = run("SELECT id FROM pdb.probe WHERE x IN (SELECT v FROM pdb.big WHERE v > 100000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+
+    INFO("x NOT IN (empty): TRUE for every x, NULL probe included -> all three rows");
+    {
+        auto cur = run("SELECT id FROM pdb.probe WHERE x NOT IN (SELECT v FROM pdb.big WHERE v > 100000);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+    }
+
+    INFO("1101-element set with a NULL element: member found beyond the first chunk, non-member UNKNOWN");
+    {
+        auto cur = run("SELECT id FROM pdb.probe WHERE x IN (SELECT v FROM pdb.big);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        auto cell75 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell75.has_error());
+        REQUIRE(cell75.value() == 1);
+    }
+
+    INFO("NOT IN over the 1101-element set with a NULL element: zero rows");
+    {
+        auto cur = run("SELECT id FROM pdb.probe WHERE x NOT IN (SELECT v FROM pdb.big);");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+}
+
+// PostgreSQL resolves an untyped NULL column of a sub-select as text (resolveTargetListUnknowns), so the
+// membership test is `bigint = text`, which has no operator; text and typed NULLs compare fine and are never TRUE.
+TEST_CASE("integration::cpp::test_subqueries::in_not_in_select_null") {
+    auto config = test_create_config(integration_fixture_path("test_subqueries/in_not_in_select_null"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    auto error_of = [](const components::cursor::cursor_t_ptr& cur) {
+        return cur->is_error() ? std::string(cur->get_error().what) : std::string("none");
+    };
+
+    REQUIRE(run("CREATE DATABASE pdb;")->is_success());
+    REQUIRE(run("CREATE TABLE pdb.probe (id bigint, x bigint, s string);")->is_success());
+    REQUIRE(
+        run("INSERT INTO pdb.probe (id, x, s) VALUES (1, 10, 'a'), (2, NULL, NULL), (3, 1500, 'b');")->is_success());
+    REQUIRE(run("CREATE TABLE pdb.empty_set (k bigint);")->is_success());
+
+    INFO("bigint IN (SELECT NULL): the NULL column is text, so the test is `bigint = text`");
+    {
+        auto cur = run("SELECT id FROM pdb.probe WHERE x IN (SELECT NULL);");
+        REQUIRE(cur->is_error());
+        INFO("error: " << error_of(cur));
+        REQUIRE(error_of(cur).find("operator does not exist: bigint = text") != std::string::npos);
+    }
+    INFO("bigint NOT IN (SELECT NULL): the same error, spelled with the operator NOT IN is lowered to (<> ALL)");
+    {
+        auto cur = run("SELECT id FROM pdb.probe WHERE x NOT IN (SELECT NULL);");
+        REQUIRE(cur->is_error());
+        INFO("error: " << error_of(cur));
+        REQUIRE(error_of(cur).find("operator does not exist: bigint <> text") != std::string::npos);
+    }
+    INFO("bigint < ANY (SELECT NULL) names its own operator");
+    {
+        auto cur = run("SELECT id FROM pdb.probe WHERE x < ANY (SELECT NULL);");
+        REQUIRE(cur->is_error());
+        INFO("error: " << error_of(cur));
+        REQUIRE(error_of(cur).find("operator does not exist: bigint < text") != std::string::npos);
+    }
+    INFO("text IN (SELECT NULL): text = text, never TRUE");
+    {
+        auto cur = run("SELECT id FROM pdb.probe WHERE s IN (SELECT NULL);");
+        INFO("error: " << error_of(cur));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("text NOT IN (SELECT NULL): never TRUE");
+    {
+        auto cur = run("SELECT id FROM pdb.probe WHERE s NOT IN (SELECT NULL);");
+        INFO("error: " << error_of(cur));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("bigint IN (SELECT NULL::bigint): typed, never TRUE");
+    {
+        auto cur = run("SELECT id FROM pdb.probe WHERE x IN (SELECT CAST(NULL AS bigint));");
+        INFO("error: " << error_of(cur));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("bigint NOT IN (SELECT NULL::bigint): never TRUE");
+    {
+        auto cur = run("SELECT id FROM pdb.probe WHERE x NOT IN (SELECT CAST(NULL AS bigint));");
+        INFO("error: " << error_of(cur));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 0);
+    }
+    INFO("contrast, empty set: IN matches nothing, NOT IN matches every row, a NULL probe included");
+    {
+        auto in_cur = run("SELECT id FROM pdb.probe WHERE x IN (SELECT k FROM pdb.empty_set);");
+        REQUIRE(in_cur->is_success());
+        REQUIRE(in_cur->size() == 0);
+        auto not_in_cur = run("SELECT id FROM pdb.probe WHERE x NOT IN (SELECT k FROM pdb.empty_set);");
+        REQUIRE(not_in_cur->is_success());
+        REQUIRE(not_in_cur->size() == 3);
+    }
+}
+
+namespace {
+
+    // Column 0 of every row, ascending
+    std::vector<int64_t> ids_of(const components::cursor::cursor_t_ptr& cur) {
+        std::vector<int64_t> ids;
+        for (std::size_t row = 0; row < cur->size(); ++row) {
+            auto cell76 = cur->get<int64_t>(0, row);
+            REQUIRE_FALSE(cell76.has_error());
+            ids.push_back(cell76.value());
+        }
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    }
+
+    using ids_t = std::vector<int64_t>;
+
+} // namespace
+
+// The probe and the set come from different integer widths: the test is done in the wider one, the probe is cast
+// per chunk and the set once.
+TEST_CASE("integration::cpp::test_subqueries::in_any_all_mixed_integer_widths") {
+    auto config = test_create_config(integration_fixture_path("test_subqueries/in_any_all_mixed_integer_widths"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    auto ids = [&](const std::string& sql) {
+        auto cur = run(sql);
+        INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        return ids_of(cur);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.probe (id bigint, x bigint, i integer);")->is_success());
+    REQUIRE(run("INSERT INTO db.probe (id, x, i) VALUES (1, 10, 10), (2, NULL, NULL), (3, 1500, 1500), (4, 30, 30);")
+                ->is_success());
+    REQUIRE(run("CREATE TABLE db.small_set (k integer);")->is_success());
+    REQUIRE(run("INSERT INTO db.small_set (k) VALUES (10), (30);")->is_success());
+    REQUIRE(run("CREATE TABLE db.wide_set (k bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.wide_set (k) VALUES (10), (1500), (5000000000);")->is_success());
+
+    INFO("bigint IN (SELECT integer)");
+    CHECK(ids("SELECT id FROM db.probe WHERE x IN (SELECT k FROM db.small_set);") == ids_t{1, 4});
+    INFO("bigint NOT IN (SELECT integer): a NULL probe is never TRUE");
+    CHECK(ids("SELECT id FROM db.probe WHERE x NOT IN (SELECT k FROM db.small_set);") == ids_t{3});
+    INFO("integer IN (SELECT bigint): the set holds a value no integer can");
+    CHECK(ids("SELECT id FROM db.probe WHERE i IN (SELECT k FROM db.wide_set);") == ids_t{1, 3});
+    INFO("integer NOT IN (SELECT bigint)");
+    CHECK(ids("SELECT id FROM db.probe WHERE i NOT IN (SELECT k FROM db.wide_set);") == ids_t{4});
+    INFO("bigint = ANY (SELECT integer)");
+    CHECK(ids("SELECT id FROM db.probe WHERE x = ANY (SELECT k FROM db.small_set);") == ids_t{1, 4});
+    INFO("bigint < ANY (SELECT integer): below the largest");
+    CHECK(ids("SELECT id FROM db.probe WHERE x < ANY (SELECT k FROM db.small_set);") == ids_t{1});
+    INFO("bigint > ALL (SELECT integer): above the largest");
+    CHECK(ids("SELECT id FROM db.probe WHERE x > ALL (SELECT k FROM db.small_set);") == ids_t{3});
+    INFO("integer >= ALL (SELECT bigint)");
+    CHECK(ids("SELECT id FROM db.probe WHERE i >= ALL (SELECT k FROM db.small_set);") == ids_t{3, 4});
+    INFO("integer <= ANY (SELECT bigint)");
+    CHECK(ids("SELECT id FROM db.probe WHERE i <= ANY (SELECT k FROM db.wide_set);") == ids_t{1, 3, 4});
+    INFO("bigint <> ALL (SELECT integer) == NOT IN");
+    CHECK(ids("SELECT id FROM db.probe WHERE x <> ALL (SELECT k FROM db.small_set);") == ids_t{3});
+    INFO("bigint <> ANY (SELECT integer)");
+    CHECK(ids("SELECT id FROM db.probe WHERE x <> ANY (SELECT k FROM db.small_set);") == ids_t{1, 3, 4});
+    INFO("bigint = ALL (SELECT integer) over a one-valued set");
+    CHECK(ids("SELECT id FROM db.probe WHERE x = ALL (SELECT k FROM db.small_set WHERE k = 30);") == ids_t{4});
+}
+
+// Three-valued logic of the membership test, row by row
+TEST_CASE("integration::cpp::test_subqueries::in_any_all_null_and_empty_sets") {
+    auto config = test_create_config(integration_fixture_path("test_subqueries/in_any_all_null_and_empty_sets"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    auto ids = [&](const std::string& sql) {
+        auto cur = run(sql);
+        INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        return ids_of(cur);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.probe (id bigint, x bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.probe (id, x) VALUES (1, 5), (2, 10), (3, 20), (4, NULL);")->is_success());
+    // with a NULL element
+    REQUIRE(run("CREATE TABLE db.with_null (k bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.with_null (k) VALUES (10), (NULL);")->is_success());
+    // all elements NULL
+    REQUIRE(run("CREATE TABLE db.only_null (k bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.only_null (k) VALUES (NULL), (NULL);")->is_success());
+    REQUIRE(run("CREATE TABLE db.empty_set (k bigint);")->is_success());
+    REQUIRE(run("CREATE TABLE db.plain (k bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.plain (k) VALUES (10), (30);")->is_success());
+
+    INFO("IN over {10, NULL}: TRUE for 10, UNKNOWN for the rest");
+    CHECK(ids("SELECT id FROM db.probe WHERE x IN (SELECT k FROM db.with_null);") == ids_t{2});
+    INFO("... which is why NOT IN over a set holding a NULL is never TRUE");
+    CHECK(ids("SELECT id FROM db.probe WHERE x NOT IN (SELECT k FROM db.with_null);").empty());
+    CHECK(ids("SELECT id FROM db.probe WHERE x <> ALL (SELECT k FROM db.with_null);").empty());
+    CHECK(ids("SELECT id FROM db.probe WHERE NOT (x IN (SELECT k FROM db.with_null));").empty());
+
+    INFO("< ANY over {10, NULL}: TRUE when below 10, otherwise UNKNOWN");
+    CHECK(ids("SELECT id FROM db.probe WHERE x < ANY (SELECT k FROM db.with_null);") == ids_t{1});
+    INFO("> ALL over {10, NULL}: FALSE when not above 10, otherwise UNKNOWN: never TRUE");
+    CHECK(ids("SELECT id FROM db.probe WHERE x > ALL (SELECT k FROM db.with_null);").empty());
+    INFO("... and its complement is TRUE only where a witness exists: 20 and the NULL probe are UNKNOWN");
+    CHECK(ids("SELECT id FROM db.probe WHERE NOT (x > ALL (SELECT k FROM db.with_null));") == ids_t{1, 2});
+    INFO(">= ALL over {10, NULL}");
+    CHECK(ids("SELECT id FROM db.probe WHERE x >= ALL (SELECT k FROM db.with_null);").empty());
+    INFO("<= ANY over {10, NULL}");
+    CHECK(ids("SELECT id FROM db.probe WHERE x <= ANY (SELECT k FROM db.with_null);") == ids_t{1, 2});
+    INFO("<> ANY over {10, NULL}: a witness needs a non-NULL element that differs");
+    CHECK(ids("SELECT id FROM db.probe WHERE x <> ANY (SELECT k FROM db.with_null);") == ids_t{1, 3});
+    INFO("= ALL over {10, NULL}: a counterexample decides FALSE, otherwise UNKNOWN");
+    CHECK(ids("SELECT id FROM db.probe WHERE x = ALL (SELECT k FROM db.with_null);").empty());
+
+    INFO("a set of NULLs only: nothing is TRUE, nothing is FALSE");
+    CHECK(ids("SELECT id FROM db.probe WHERE x IN (SELECT k FROM db.only_null);").empty());
+    CHECK(ids("SELECT id FROM db.probe WHERE x NOT IN (SELECT k FROM db.only_null);").empty());
+
+    INFO("empty set: ANY is FALSE and ALL is TRUE for every probe, a NULL one included");
+    CHECK(ids("SELECT id FROM db.probe WHERE x IN (SELECT k FROM db.empty_set);").empty());
+    CHECK(ids("SELECT id FROM db.probe WHERE x NOT IN (SELECT k FROM db.empty_set);") == ids_t{1, 2, 3, 4});
+    CHECK(ids("SELECT id FROM db.probe WHERE x < ANY (SELECT k FROM db.empty_set);").empty());
+    CHECK(ids("SELECT id FROM db.probe WHERE x > ALL (SELECT k FROM db.empty_set);") == ids_t{1, 2, 3, 4});
+    CHECK(ids("SELECT id FROM db.probe WHERE x = ALL (SELECT k FROM db.empty_set);") == ids_t{1, 2, 3, 4});
+    CHECK(ids("SELECT id FROM db.probe WHERE x <> ANY (SELECT k FROM db.empty_set);").empty());
+
+    INFO("a NULL probe against a non-empty set is UNKNOWN");
+    CHECK(ids("SELECT id FROM db.probe WHERE x IN (SELECT k FROM db.plain);") == ids_t{2});
+    CHECK(ids("SELECT id FROM db.probe WHERE x NOT IN (SELECT k FROM db.plain);") == ids_t{1, 3});
+}
+
+// One membership test per value family the vector hash and cells_equal have to agree on
+TEST_CASE("integration::cpp::test_subqueries::in_any_all_value_types") {
+    auto config = test_create_config(integration_fixture_path("test_subqueries/in_any_all_value_types"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    auto ids = [&](const std::string& sql) {
+        auto cur = run(sql);
+        INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        return ids_of(cur);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');")->is_success());
+    REQUIRE(run("CREATE TABLE db.probe (id bigint, s string, d decimal(10,2), m mood, f double);")->is_success());
+    REQUIRE(run("INSERT INTO db.probe (id, s, d, m, f) VALUES "
+                "(1, 'apple', 1.50, 'sad', 0.5), (2, 'pear', 2.25, 'ok', 0.0), (3, 'fig', 3.00, 'happy', 2.5), "
+                "(4, NULL, NULL, NULL, NULL);")
+                ->is_success());
+    REQUIRE(run("CREATE TABLE db.sets (s string, d decimal(10,2), m mood, f double);")->is_success());
+    REQUIRE(run("INSERT INTO db.sets (s, d, m, f) VALUES ('pear', 2.25, 'ok', -0.0), ('fig', 3.00, 'happy', 0.5);")
+                ->is_success());
+
+    INFO("string");
+    CHECK(ids("SELECT id FROM db.probe WHERE s IN (SELECT s FROM db.sets);") == ids_t{2, 3});
+    CHECK(ids("SELECT id FROM db.probe WHERE s NOT IN (SELECT s FROM db.sets);") == ids_t{1});
+    CHECK(ids("SELECT id FROM db.probe WHERE s < ANY (SELECT s FROM db.sets);") == ids_t{1, 3});
+    INFO("decimal(10,2)");
+    CHECK(ids("SELECT id FROM db.probe WHERE d IN (SELECT d FROM db.sets);") == ids_t{2, 3});
+    CHECK(ids("SELECT id FROM db.probe WHERE d NOT IN (SELECT d FROM db.sets);") == ids_t{1});
+    CHECK(ids("SELECT id FROM db.probe WHERE d >= ALL (SELECT d FROM db.sets);") == ids_t{3});
+    INFO("enum");
+    CHECK(ids("SELECT id FROM db.probe WHERE m IN (SELECT m FROM db.sets);") == ids_t{2, 3});
+    CHECK(ids("SELECT id FROM db.probe WHERE m NOT IN (SELECT m FROM db.sets);") == ids_t{1});
+    INFO("date, timestamp, interval");
+    REQUIRE(run("CREATE TABLE db.moments (id bigint, d date, ts timestamp, iv interval);")->is_success());
+    REQUIRE(run("INSERT INTO db.moments (id, d, ts, iv) VALUES "
+                "(1, '2024-01-01', '2024-01-01 10:00:00', INTERVAL '1 day'), "
+                "(2, '2024-02-02', '2024-02-02 11:30:00', INTERVAL '2 hours'), "
+                "(3, '2024-03-03', '2024-03-03 12:00:00', INTERVAL '3 months');")
+                ->is_success());
+    REQUIRE(run("CREATE TABLE db.moment_set (d date, ts timestamp, iv interval);")->is_success());
+    REQUIRE(run("INSERT INTO db.moment_set (d, ts, iv) VALUES "
+                "('2024-02-02', '2024-03-03 12:00:00', INTERVAL '2 hours'), "
+                "('2024-03-03', '2024-01-01 10:00:00', INTERVAL '1 day');")
+                ->is_success());
+    CHECK(ids("SELECT id FROM db.moments WHERE d IN (SELECT d FROM db.moment_set);") == ids_t{2, 3});
+    CHECK(ids("SELECT id FROM db.moments WHERE ts IN (SELECT ts FROM db.moment_set);") == ids_t{1, 3});
+    CHECK(ids("SELECT id FROM db.moments WHERE iv IN (SELECT iv FROM db.moment_set);") == ids_t{1, 2});
+    CHECK(ids("SELECT id FROM db.moments WHERE ts < ANY (SELECT ts FROM db.moment_set);") == ids_t{1, 2});
+    INFO("double: 0.0 and -0.0 are the same value");
+    CHECK(ids("SELECT id FROM db.probe WHERE f IN (SELECT f FROM db.sets);") == ids_t{1, 2});
+    CHECK(ids("SELECT id FROM db.probe WHERE f NOT IN (SELECT f FROM db.sets);") == ids_t{3});
+}
+
+// Sets past one vector (1024) and a lot of them
+TEST_CASE("integration::cpp::test_subqueries::in_any_all_large_set") {
+    auto config = test_create_config(integration_fixture_path("test_subqueries/in_any_all_large_set"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.big (k bigint);")->is_success());
+    for (int first = 1; first <= 100000; first += 1000) {
+        std::string insert = "INSERT INTO db.big (k) VALUES ";
+        for (int k = first; k < first + 1000; ++k) {
+            insert += "(" + std::to_string(k * 2) + (k + 1 < first + 1000 ? ")," : ");");
+        }
+        REQUIRE(run(insert)->is_success());
+    }
+    REQUIRE(run("CREATE TABLE db.probe (id bigint, x bigint);")->is_success());
+    // even numbers up to 200000 are in the set
+    REQUIRE(run("INSERT INTO db.probe (id, x) VALUES (1, 2), (2, 3), (3, 99999), (4, 100000), (5, 200000), "
+                "(6, 200001), (7, 1000), (8, NULL);")
+                ->is_success());
+
+    auto ids = [&](const std::string& sql) {
+        auto cur = run(sql);
+        INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        return ids_of(cur);
+    };
+    CHECK(ids("SELECT id FROM db.probe WHERE x IN (SELECT k FROM db.big);") == ids_t{1, 4, 5, 7});
+    CHECK(ids("SELECT id FROM db.probe WHERE x NOT IN (SELECT k FROM db.big);") == ids_t{2, 3, 6});
+    CHECK(ids("SELECT id FROM db.probe WHERE x < ANY (SELECT k FROM db.big);") == ids_t{1, 2, 3, 4, 7});
+    CHECK(ids("SELECT id FROM db.probe WHERE x > ALL (SELECT k FROM db.big);") == ids_t{6});
+}
+
+// LATERAL re-binds the parameters for every outer row; the membership test has to follow the new correlation values
+// while the set stays the same
+TEST_CASE("integration::cpp::test_subqueries::in_any_all_lateral_reread_parameters") {
+    auto config = test_create_config(integration_fixture_path("test_subqueries/in_any_all_lateral_reread_parameters"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    { setup_subquery_db(dispatcher); }
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    auto counts = [&](const std::string& sql) {
+        auto cur = run(sql);
+        INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        std::vector<std::pair<int64_t, int64_t>> rows;
+        for (std::size_t row = 0; row < cur->size(); ++row) {
+            auto cell77 = cur->get<int64_t>(0, row);
+            REQUIRE_FALSE(cell77.has_error());
+            auto cell78 = cur->get<int64_t>(1, row);
+            REQUIRE_FALSE(cell78.has_error());
+            rows.emplace_back(cell77.value(), cell78.value());
+        }
+        std::sort(rows.begin(), rows.end());
+        return rows;
+    };
+    using rows_t = std::vector<std::pair<int64_t, int64_t>>;
+
+    // the set is {1, 5}: the departments of employees paid above 70000
+    CHECK(counts("SELECT d.id, s.n FROM TestDatabase.Departments d, LATERAL "
+                 "(SELECT count(*) AS n FROM TestDatabase.Employees e WHERE e.salary > d.budget AND e.dept_id IN "
+                 "(SELECT e2.dept_id FROM TestDatabase.Employees e2 WHERE e2.salary > 70000)) s;") ==
+          rows_t{{1, 0}, {2, 4}, {3, 4}, {4, 1}, {5, 4}});
+    CHECK(counts("SELECT d.id, s.n FROM TestDatabase.Departments d, LATERAL "
+                 "(SELECT count(*) AS n FROM TestDatabase.Employees e WHERE e.salary > d.budget AND e.dept_id NOT IN "
+                 "(SELECT e2.dept_id FROM TestDatabase.Employees e2 WHERE e2.salary > 70000)) s;") ==
+          rows_t{{1, 0}, {2, 4}, {3, 6}, {4, 0}, {5, 0}});
+}
+
+// A filter pushed to the disk agent builds its membership state there, once for the scan
+TEST_CASE("integration::cpp::test_subqueries::in_any_all_disk_pushdown_mixed_and_null") {
+    auto config =
+        test_create_config(integration_fixture_path("test_subqueries/in_any_all_disk_pushdown_mixed_and_null"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    auto ids = [&](const std::string& sql) {
+        auto cur = run(sql);
+        INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        return ids_of(cur);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (id bigint, v bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (id, v) VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, NULL);")->is_success());
+    REQUIRE(run("CREATE TABLE db.keys_int (k integer);")->is_success());
+    REQUIRE(run("INSERT INTO db.keys_int (k) VALUES (20), (40);")->is_success());
+    REQUIRE(run("CREATE TABLE db.keys_null (k bigint);")->is_success());
+    REQUIRE(run("INSERT INTO db.keys_null (k) VALUES (20), (NULL);")->is_success());
+
+    INFO("a narrower set is widened once");
+    CHECK(ids("SELECT id FROM db.t WHERE v IN (SELECT k FROM db.keys_int);") == ids_t{2, 4});
+    CHECK(ids("SELECT id FROM db.t WHERE v NOT IN (SELECT k FROM db.keys_int);") == ids_t{1, 3});
+    CHECK(ids("SELECT id FROM db.t WHERE v > ALL (SELECT k FROM db.keys_int);").empty());
+    CHECK(ids("SELECT id FROM db.t WHERE v < ANY (SELECT k FROM db.keys_int);") == ids_t{1, 2, 3});
+    INFO("a NULL element turns every non-member into UNKNOWN");
+    CHECK(ids("SELECT id FROM db.t WHERE v IN (SELECT k FROM db.keys_null);") == ids_t{2});
+    CHECK(ids("SELECT id FROM db.t WHERE v NOT IN (SELECT k FROM db.keys_null);").empty());
+    CHECK(ids("SELECT id FROM db.t WHERE v <> ALL (SELECT k FROM db.keys_null);").empty());
+}
+
+// Every NaN is the same value to PostgreSQL, whatever its sign and payload bits: hashing must not tell them apart
+TEST_CASE("integration::cpp::test_subqueries::nan_bit_patterns_are_one_value") {
+    auto config = test_create_config(integration_fixture_path("test_subqueries/nan_bit_patterns_are_one_value"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        INFO(sql);
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    auto ids = [&](const std::string& sql) {
+        auto cur = run(sql);
+        INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        return ids_of(cur);
+    };
+
+    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE TABLE db.t (id bigint, f double);")->is_success());
+    REQUIRE(run("INSERT INTO db.t (id, f) VALUES (1, CAST('NaN' AS double)), (2, CAST('-NaN' AS double)), "
+                "(3, 1.5), (4, CAST('NaN' AS double)), (5, CAST('-NaN' AS double));")
+                ->is_success());
+    REQUIRE(run("CREATE TABLE db.s (f double);")->is_success());
+    REQUIRE(run("INSERT INTO db.s (f) VALUES (CAST('NaN' AS double));")->is_success());
+    REQUIRE(run("CREATE TABLE db.n (f double);")->is_success());
+    REQUIRE(run("INSERT INTO db.n (f) VALUES (CAST('-NaN' AS double));")->is_success());
+
+    INFO("IN: a NaN of either sign is in a set holding one NaN");
+    CHECK(ids("SELECT id FROM db.t WHERE f IN (SELECT f FROM db.s);") == ids_t{1, 2, 4, 5});
+    CHECK(ids("SELECT id FROM db.t WHERE f IN (SELECT f FROM db.n);") == ids_t{1, 2, 4, 5});
+    CHECK(ids("SELECT id FROM db.t WHERE f NOT IN (SELECT f FROM db.s);") == ids_t{3});
+    CHECK(ids("SELECT id FROM db.t WHERE f <> ANY (SELECT f FROM db.n);") == ids_t{3});
+    CHECK(ids("SELECT id FROM db.t WHERE f = ALL (SELECT f FROM db.s);") == ids_t{1, 2, 4, 5});
+    INFO("NaN is the greatest value");
+    CHECK(ids("SELECT id FROM db.t WHERE f >= ANY (SELECT f FROM db.n);") == ids_t{1, 2, 4, 5});
+    CHECK(ids("SELECT id FROM db.t WHERE f < ANY (SELECT f FROM db.n);") == ids_t{3});
+    CHECK(ids("SELECT id FROM db.t WHERE f > ALL (SELECT f FROM db.s);").empty());
+
+    INFO("GROUP BY: one group for all NaNs");
+    {
+        auto cur = run("SELECT f, COUNT(*) FROM db.t GROUP BY f;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->size() == 2);
+    }
+    INFO("DISTINCT: one row for all NaNs");
+    {
+        auto cur = run("SELECT DISTINCT f FROM db.t;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->size() == 2);
+    }
+    INFO("hash JOIN: NaN joins -NaN");
+    {
+        auto cur = run("SELECT t.id FROM db.t JOIN db.n ON t.f = n.f;");
+        REQUIRE(cur->is_success());
+        CHECK(cur->size() == 4);
     }
 }

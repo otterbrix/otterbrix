@@ -20,6 +20,8 @@
 #include <components/planner/planner.hpp>
 #include <components/tests/generaty.hpp>
 
+#include <limits>
+
 using namespace components::logical_plan;
 using namespace components::expressions;
 using key = components::expressions::key_t;
@@ -253,15 +255,109 @@ TEST_CASE("components::planner::limit") {
         REQUIRE(node_limit->to_string() == R"_($limit: 1)_");
     }
     {
-        auto limit = limit_t::unlimit();
+        auto limit = limit_t::all();
         auto node_limit = make_node_limit(&resource, limit);
-        REQUIRE(node_limit->to_string() == R"_($limit: -1)_");
+        REQUIRE(node_limit->to_string().empty());
     }
     {
         auto limit = limit_t(5);
         auto node_limit = make_node_limit(&resource, limit);
         REQUIRE(node_limit->to_string() == R"_($limit: 5)_");
     }
+    {
+        auto node_limit = make_node_limit(&resource, limit_t::all_from(2));
+        REQUIRE(node_limit->to_string() == R"_($offset: 2)_");
+    }
+    {
+        // As written, not validated: a negative count prints as written.
+        auto node_limit = make_node_limit(&resource, limit_t(-1));
+        REQUIRE(node_limit->to_string() == R"_($limit: -1)_");
+    }
+}
+
+TEST_CASE("components::planner::limit_t_keeps_what_was_written") {
+    REQUIRE_FALSE(limit_t::all().has_count());
+    REQUIRE_FALSE(limit_t::all_from(3).has_count());
+    REQUIRE(limit_t::all_from(3).offset() == 3);
+    REQUIRE(limit_t(0).has_count());
+    REQUIRE(limit_t(0).count() == 0);
+    REQUIRE(limit_t(-1).has_count());
+    REQUIRE(limit_t(-1).count() == -1);
+    REQUIRE(limit_t(2, -7).offset() == -7);
+    REQUIRE(limit_t::limit_one().count() == 1);
+}
+
+TEST_CASE("components::planner::limit_t_is_effective") {
+    REQUIRE_FALSE(limit_t::all().is_effective());
+    REQUIRE_FALSE(limit_t().is_effective());
+    REQUIRE(limit_t::all_from(1).is_effective());
+    REQUIRE(limit_t(0).is_effective());
+    REQUIRE(limit_t(5).is_effective());
+    // an invalid window is still a window: operator_limit has to start to refuse it
+    REQUIRE(limit_t(-1).is_effective());
+    REQUIRE(limit_t::all_from(-1).is_effective());
+}
+
+TEST_CASE("components::planner::limit_t_validate") {
+    auto resource = core::pmr::otterbrix_resource();
+    REQUIRE_FALSE(limit_t::all().validate(&resource).contains_error());
+    REQUIRE_FALSE(limit_t(0).validate(&resource).contains_error());
+    REQUIRE_FALSE(limit_t(3, 4).validate(&resource).contains_error());
+    REQUIRE_FALSE(limit_t::all_from(4).validate(&resource).contains_error());
+
+    auto negative_limit = limit_t(-1).validate(&resource);
+    REQUIRE(negative_limit.contains_error());
+    REQUIRE(negative_limit.what == "LIMIT must not be negative");
+    REQUIRE(negative_limit.type == core::error_code_t::invalid_parameter);
+
+    auto negative_offset = limit_t::all_from(-1).validate(&resource);
+    REQUIRE(negative_offset.contains_error());
+    REQUIRE(negative_offset.what == "OFFSET must not be negative");
+    REQUIRE(negative_offset.type == core::error_code_t::invalid_parameter);
+
+    // OFFSET is checked first
+    auto both = limit_t(-1, -1).validate(&resource);
+    REQUIRE(both.contains_error());
+    REQUIRE(both.what == "OFFSET must not be negative");
+}
+
+TEST_CASE("components::planner::limit_t_read_cap") {
+    REQUIRE_FALSE(limit_t::all().read_cap().is_capped());
+    REQUIRE_FALSE(limit_t::all_from(5).read_cap().is_capped());
+    REQUIRE(limit_t(0).read_cap().is_capped());
+    REQUIRE(limit_t(0).read_cap().rows() == 0);
+    REQUIRE(limit_t(3).read_cap().rows() == 3);
+    // the cap is what a source has to produce for the window [offset, offset + count) to be filled
+    REQUIRE(limit_t(3, 4).read_cap().rows() == 7);
+    // the sum of two int64 fits the unsigned cap, so nothing wraps
+    REQUIRE(limit_t(std::numeric_limits<int64_t>::max(), 5).read_cap().rows() ==
+            static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 5);
+    // an invalid window caps nothing: it is refused when the Limit node starts
+    REQUIRE_FALSE(limit_t(-1).read_cap().is_capped());
+    REQUIRE_FALSE(limit_t(-5, 2).read_cap().is_capped());
+    REQUIRE_FALSE(limit_t(5, -2).read_cap().is_capped());
+}
+
+TEST_CASE("components::planner::row_cap_t") {
+    REQUIRE_FALSE(row_cap_t::uncapped().is_capped());
+    REQUIRE(row_cap_t::uncapped().admits(0));
+    REQUIRE(row_cap_t::uncapped().admits(std::numeric_limits<uint64_t>::max() - 1));
+    REQUIRE(row_cap_t::uncapped().to_disk() == -1);
+
+    REQUIRE(row_cap_t(0).is_capped());
+    REQUIRE_FALSE(row_cap_t(0).admits(0));
+    REQUIRE(row_cap_t(0).to_disk() == 0);
+
+    REQUIRE(row_cap_t(2).admits(0));
+    REQUIRE(row_cap_t(2).admits(1));
+    REQUIRE_FALSE(row_cap_t(2).admits(2));
+    REQUIRE(row_cap_t(2).rows() == 2);
+    REQUIRE(row_cap_t(2).to_disk() == 2);
+
+    // the disk protocol is signed and -1 means "no cap": a huge cap saturates below it
+    REQUIRE(row_cap_t(std::numeric_limits<uint64_t>::max() - 1).to_disk() == std::numeric_limits<int64_t>::max());
+    REQUIRE(row_cap_t(static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1).to_disk() ==
+            std::numeric_limits<int64_t>::max());
 }
 
 TEST_CASE("components::planner::delete") {
@@ -274,10 +370,10 @@ TEST_CASE("components::planner::delete") {
                                                          core::parameter_id_t(1)));
     components::logical_plan::storage_parameters parameters{&resource};
     {
-        auto node = make_node_delete(&resource, match, make_node_limit(&resource, limit_t::unlimit()));
+        auto node = make_node_delete(&resource, match, make_node_limit(&resource, limit_t::all()));
         components::planner::planner_t planner;
         auto node_delete = planner.create_plan(&resource, node);
-        REQUIRE(node_delete->to_string() == R"_($delete: <oid:0> {$match: {"key": {$eq: #1}}, $limit: -1})_");
+        REQUIRE(node_delete->to_string() == R"_($delete: <oid:0> {$match: {"key": {$eq: #1}}})_");
     }
     {
         auto node = make_node_delete(&resource, match, make_node_limit(&resource, limit_t::limit_one()));
@@ -303,10 +399,10 @@ TEST_CASE("components::planner::update") {
 
     components::logical_plan::storage_parameters parameters{&resource};
     {
-        auto node = make_node_update(&resource, match, make_node_limit(&resource, limit_t::unlimit()), {update});
+        auto node = make_node_update(&resource, match, make_node_limit(&resource, limit_t::all()), {update});
         components::planner::planner_t planner;
         auto node_update = planner.create_plan(&resource, node);
-        REQUIRE(node_update->to_string() == R"_($update: <oid:0> {$match: {"key": {$eq: #1}}, $limit: -1})_");
+        REQUIRE(node_update->to_string() == R"_($update: <oid:0> {$match: {"key": {$eq: #1}}})_");
     }
     {
         auto node = make_node_update(&resource, match, make_node_limit(&resource, limit_t::limit_one()), {update});

@@ -23,7 +23,7 @@
 #include <components/log/log.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/session/session.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/date/date_types.hpp>
 #include <core/executor.hpp>
 #include <core/pmr.hpp>
@@ -40,7 +40,7 @@ using services::index::tests::index_fixture_path;
 using services::index::tests::index_fixture_root;
 
 using components::session::session_id_t;
-using components::types::logical_value_t;
+using components::vector::make_scalar;
 using services::index::manager_index_t;
 
 namespace {
@@ -143,7 +143,7 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
             agent_raw->address(),
             session,
             components::expressions::compare_type::eq,
-            logical_value_t(&resource, int64_t{42}),
+            make_scalar(&resource, int64_t{42}),
             /*txn_id=*/uint64_t{0});
     REQUIRE_FALSE(read_future.is_ready());
 

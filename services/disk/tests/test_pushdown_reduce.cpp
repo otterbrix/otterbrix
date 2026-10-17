@@ -15,7 +15,6 @@
 #include <components/physical_plan/operators/scan/pushed_reduce_scan.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/table/column_state.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -59,7 +58,7 @@ namespace {
         chunk.set_cardinality(rows.size());
         for (size_t i = 0; i < rows.size(); ++i) {
             for (size_t c = 0; c < ncols; ++c) {
-                chunk.set_value(c, i, types::logical_value_t{r, rows[i][c]});
+                chunk.set_value(c, i, rows[i][c]);
             }
         }
         std::pmr::vector<components::vector::data_chunk_t> b{r};
@@ -146,9 +145,8 @@ TEST_CASE("pushdown_reduce: read-your-own-writes SUM over an uncommitted txn (D4
     for (const auto& chunk : partials) {
         for (uint64_t i = 0; i < chunk.size(); ++i) {
             ++rows;
-            auto cell = chunk.value(0, i);
-            if (!cell.is_null()) {
-                total += cell.value<int64_t>();
+            if (!chunk.data[0].is_null(i)) {
+                total += chunk.data[0].get_value<int64_t>(i);
             }
         }
     }
@@ -209,8 +207,8 @@ TEST_CASE("pushdown_reduce: GROUP BY key + SUM returns the full grouped result")
     for (const auto& chunk : partials) {
         REQUIRE(chunk.column_count() == 2);
         for (uint64_t i = 0; i < chunk.size(); ++i) {
-            const int64_t c0 = chunk.value(0, i).value<int64_t>();
-            const int64_t c1 = chunk.value(1, i).value<int64_t>();
+            const int64_t c0 = chunk.data[0].get_value<int64_t>(i);
+            const int64_t c1 = chunk.data[1].get_value<int64_t>(i);
             const bool c0_is_key = (c0 == 1 || c0 == 2);
             const int64_t key = c0_is_key ? c0 : c1;
             const int64_t sum = c0_is_key ? c1 : c0;
@@ -302,13 +300,13 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
         components::operators::operator_group_merge_t merge{&resource,
                                                             log_t{},
                                                             /*scalar=*/true,
-                                                            make_types(types::logical_type::BIGINT),
+                                                            make_types(types::logical_type::UBIGINT),
                                                             {{"cnt", "count"}}};
         components::operators::chunks_vector_t out{&resource};
         REQUIRE_FALSE(merge.finalize(nullptr, out).contains_error());
         REQUIRE(out.size() == 1);
         REQUIRE(out.front().size() == 1);
-        REQUIRE(out.front().value(0, 0).value<int64_t>() == 0);
+        REQUIRE(out.front().data[0].get_value<uint64_t>(0) == 0);
     }
 
     {
@@ -321,7 +319,7 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
         REQUIRE_FALSE(merge.finalize(nullptr, out).contains_error());
         REQUIRE(out.size() == 1);
         REQUIRE(out.front().size() == 1);
-        REQUIRE(out.front().value(0, 0).is_null());
+        REQUIRE(out.front().is_null(0, 0));
     }
 
     {
@@ -342,12 +340,12 @@ TEST_CASE("pushdown_reduce: group_merge synthesizes the scalar empty-input row")
                                                             make_types(types::logical_type::BIGINT),
                                                             {{"cnt", "count"}}};
         vec::data_chunk_t row{&resource, make_types(types::logical_type::BIGINT), 1};
-        row.set_value(0, 0, types::logical_value_t{&resource, int64_t{42}});
+        row.set_value(0, 0, int64_t{42});
         row.set_cardinality(1);
         components::operators::chunks_vector_t out{&resource};
         REQUIRE_FALSE(merge.push(nullptr, std::move(row), out).contains_error());
         REQUIRE(out.size() == 1);
-        REQUIRE(out.front().value(0, 0).value<int64_t>() == 42);
+        REQUIRE(out.front().data[0].get_value<int64_t>(0) == 42);
         components::operators::chunks_vector_t fin{&resource};
         REQUIRE_FALSE(merge.finalize(nullptr, fin).contains_error());
         REQUIRE(fin.empty());

@@ -3,7 +3,6 @@
 #include <core/result_wrapper.hpp>
 
 #include <components/expressions/forward.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/types/physical_value.hpp>
 #include <core/b_plus_tree/b_plus_tree.hpp>
 
@@ -19,12 +18,10 @@
 
 namespace services::index {
 
-    [[nodiscard]] components::types::physical_value convert(const components::types::logical_value_t& value);
-
     // TODO: add checkpoints to avoid flushing b+tree after each call
     class btree_index_disk_t final {
     public:
-        using value_t = components::types::logical_value_t;
+        using key_t = components::types::physical_value;
         using path_t = std::filesystem::path;
         using result = std::pmr::vector<int64_t>;
 
@@ -40,34 +37,30 @@ namespace services::index {
 
         [[nodiscard]] std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
-        [[nodiscard]] core::error_t insert(const value_t& key, int64_t row_id);
-        [[nodiscard]] core::error_t remove(value_t key);
-        [[nodiscard]] core::error_t remove(const value_t& key, int64_t row_id);
-
         // An undecodable record surfaces as data_corruption, never a fabricated row id 0.
-        [[nodiscard]] core::error_t find(const value_t& value, result& res) const;
+        [[nodiscard]] core::error_t find(const key_t& value, result& res) const;
         [[nodiscard]] core::error_t
-        scan_range(components::expressions::compare_type compare, const value_t& value, result& res) const;
+        scan_range(components::expressions::compare_type compare, const key_t& value, result& res) const;
 
         // Misnomer, not STL semantics: lower_bound(k) is key < k, upper_bound(k) is key > k (see scan_range lte/gte).
-        [[nodiscard]] core::error_t lower_bound(const value_t& value, result& res) const {
+        [[nodiscard]] core::error_t lower_bound(const key_t& value, result& res) const {
             return scan_range(components::expressions::compare_type::lt, value, res);
         }
-        [[nodiscard]] core::error_t upper_bound(const value_t& value, result& res) const {
+        [[nodiscard]] core::error_t upper_bound(const key_t& value, result& res) const {
             return scan_range(components::expressions::compare_type::gt, value, res);
         }
 
-        [[nodiscard]] result find(const value_t& value) const {
+        [[nodiscard]] result find(const key_t& value) const {
             result res(resource_);
             [[maybe_unused]] const auto unreported = find(value, res);
             return res;
         }
-        [[nodiscard]] result lower_bound(const value_t& value) const {
+        [[nodiscard]] result lower_bound(const key_t& value) const {
             result res(resource_);
             [[maybe_unused]] const auto unreported = lower_bound(value, res);
             return res;
         }
-        [[nodiscard]] result upper_bound(const value_t& value) const {
+        [[nodiscard]] result upper_bound(const key_t& value) const {
             result res(resource_);
             [[maybe_unused]] const auto unreported = upper_bound(value, res);
             return res;
@@ -78,7 +71,7 @@ namespace services::index {
         // The caller must fail the statement on io_error, or the table and its index silently disagree.
         [[nodiscard]] core::error_t force_flush();
 
-        // Skips the per-op find() dedup; caller must feed each (key, row_id) pair at most once (not unique keys).
+        // Byte-identical records are dropped by the tree (block_t::append); no flush happens per call.
         void insert_bulk_unchecked(core::b_plus_tree::btree_t::item_data record);
         void remove_bulk_unchecked(core::b_plus_tree::btree_t::item_data record);
 

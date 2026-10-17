@@ -30,7 +30,9 @@ TEST_CASE("integration::cpp::dispatcher::watchdog_quiet_on_healthy_runs") {
         REQUIRE(cur->is_success());
         auto count = test_helpers::exec(dispatcher, "SELECT count(*) FROM db.t;");
         REQUIRE(count->is_success());
-        REQUIRE(count->value(0, 0).value<int64_t>() == 5000);
+        auto cell0 = count->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == 5000);
     }
 
     // The engine is destructed, so the file sink is flushed. A healthy run must

@@ -2,6 +2,7 @@
 
 #include <components/context/context.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/vector/vector_operations.hpp>
 
 namespace components::operators {
 
@@ -23,12 +24,11 @@ namespace components::operators {
 
     core::error_t operator_function_t::materialize_(pipeline::context_t* ctx) {
         // Resolve the argument values for the single (per-run) input row.
-        std::pmr::vector<types::logical_value_t> arg_values(resource_);
-        arg_values.reserve(args_.size());
+        std::pmr::vector<core::parameter_id_t> arg_ids(resource_);
+        arg_ids.reserve(args_.size());
         for (const auto& arg : args_) {
             if (std::holds_alternative<core::parameter_id_t>(arg)) {
-                arg_values.emplace_back(
-                    logical_plan::get_parameter(&ctx->parameters, std::get<core::parameter_id_t>(arg)));
+                arg_ids.push_back(std::get<core::parameter_id_t>(arg));
             } else {
                 // A column-ref argument is a correlated (LATERAL) reference; resolving
                 // it needs an outer row, which only the LATERAL-join path provides.
@@ -40,13 +40,13 @@ namespace components::operators {
         }
 
         std::pmr::vector<types::complex_logical_type> arg_types(resource_);
-        arg_types.reserve(arg_values.size());
-        for (const auto& value : arg_values) {
-            arg_types.emplace_back(value.type());
+        arg_types.reserve(arg_ids.size());
+        for (const auto id : arg_ids) {
+            arg_types.emplace_back(ctx->parameters.type(id));
         }
         vector::data_chunk_t args(resource_, arg_types, 1);
-        for (size_t col = 0; col < arg_values.size(); ++col) {
-            args.set_value(col, 0, arg_values[col]);
+        for (size_t col = 0; col < arg_ids.size(); ++col) {
+            vector::vector_ops::copy(ctx->parameters.at(arg_ids[col]), args.data[col], 1, 0, 0);
         }
         args.set_cardinality(1);
 

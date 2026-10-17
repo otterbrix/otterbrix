@@ -6,7 +6,6 @@
 #include "system_table_schemas.hpp"
 
 #include <components/table/column_definition.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_buffer.hpp>
 

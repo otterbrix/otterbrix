@@ -66,8 +66,7 @@ namespace {
         std::vector<std::string> out;
         otterbrix_test::scan_table_segment(table, 0, upper_bound, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                auto cell = chunk.value(1, i);
-                out.emplace_back(cell.value<std::string_view>());
+                out.emplace_back(chunk.data[1].get_value<std::string_view>(i));
             }
         });
         return out;
@@ -189,7 +188,7 @@ namespace {
                 if (values[row].has_value()) {
                     chunk.set_value(1, i, std::string_view{*values[row]});
                 } else {
-                    chunk.set_value(1, i, logical_value_t{&env.resource, nullptr});
+                    chunk.data[1].set_null(i, true);
                 }
             }
             table_append_state state(&env.resource);
@@ -205,11 +204,10 @@ namespace {
         std::vector<maybe_string> out;
         otterbrix_test::scan_table_segment(table, 0, upper_bound, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                const auto cell = chunk.value(1, i);
-                if (cell.is_null()) {
+                if (chunk.data[1].is_null(i)) {
                     out.emplace_back(std::nullopt);
                 } else {
-                    out.emplace_back(std::string(cell.value<std::string_view>()));
+                    out.emplace_back(std::string(chunk.data[1].get_value<std::string_view>(i)));
                 }
             }
         });
@@ -478,8 +476,7 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
         column_fetch_state fetch_state;
         column->fetch_row(fetch_state, 0, result, 0);
         REQUIRE_FALSE(fetch_state.fetch_error.contains_error());
-        const auto cell = result.value(0);
-        REQUIRE(cell.value<std::string_view>() == big);
+        REQUIRE(result.get_value<std::string_view>(0) == big);
     }
 
     const uint64_t bogus_transient = tstorage::MAXIMUM_BLOCK + 424242;
@@ -586,9 +583,8 @@ TEST_CASE("big_strings: a reloaded segment reports its overflow blocks for compa
         REQUIRE(scanned == values.size());
         for (uint64_t i = 0; i < values.size(); i++) {
             INFO("row " << i);
-            const auto cell = result.value(i);
-            REQUIRE_FALSE(cell.is_null());
-            CHECK(cell.value<std::string_view>() == values[i]);
+            REQUIRE_FALSE(result.is_null(i));
+            CHECK(result.get_value<std::string_view>(i) == values[i]);
         }
     }
 

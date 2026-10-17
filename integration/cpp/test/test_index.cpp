@@ -16,6 +16,7 @@
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <services/collection/context_storage.hpp>
 
 #include <array>
@@ -175,12 +176,13 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
                                                                      key{dispatcher->resource(), KEY, SIDE},           \
-                                                                     id_par{1});                                       \
+                                                                     id_par{0});                                       \
         plan->append_child(components::logical_plan::make_node_match(dispatcher->resource(),                           \
                                                                      qualified_name_t{database_name, collection_name}, \
                                                                      std::move(expr)));                                \
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
-        params->add_parameter(id_par{1}, VALUE);                                                                       \
+        REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), VALUE),                  \
+                                      components::vector::parameter_kind::literal) == id_par{0});                      \
         auto c = dispatcher->execute_plan(                                                                             \
             session,                                                                                                   \
             components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});                         \
@@ -232,24 +234,25 @@ TEST_CASE("integration::cpp::test_index::base") {
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
                                                                  key{dispatcher->resource(), "count", side_t::left},
-                                                                 id_par{1});
+                                                                 id_par{0});
             plan->append_child(
                 components::logical_plan::make_node_match(dispatcher->resource(),
                                                           qualified_name_t{database_name, collection_name},
                                                           std::move(expr)));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 10));
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), 10),
+                                          components::vector::parameter_kind::literal) == id_par{0});
             auto c = dispatcher->execute_plan(
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), plan, params});
             REQUIRE(c->size() == 1);
         } while (false);
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 10), 1);
-        CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 10), 90);
-        CHECK_FIND_COUNT(compare_type::lt, side_t::left, logical_value_t(dispatcher->resource(), 10), 9);
-        CHECK_FIND_COUNT(compare_type::ne, side_t::left, logical_value_t(dispatcher->resource(), 10), 99);
-        CHECK_FIND_COUNT(compare_type::gte, side_t::left, logical_value_t(dispatcher->resource(), 10), 91);
-        CHECK_FIND_COUNT(compare_type::lte, side_t::left, logical_value_t(dispatcher->resource(), 10), 10);
+        CHECK_FIND_COUNT(compare_type::eq, side_t::left, 10, 1);
+        CHECK_FIND_COUNT(compare_type::gt, side_t::left, 10, 90);
+        CHECK_FIND_COUNT(compare_type::lt, side_t::left, 10, 9);
+        CHECK_FIND_COUNT(compare_type::ne, side_t::left, 10, 99);
+        CHECK_FIND_COUNT(compare_type::gte, side_t::left, 10, 91);
+        CHECK_FIND_COUNT(compare_type::lte, side_t::left, 10, 10);
     }
 }
 
@@ -394,7 +397,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
     }
 
     INFO("verify initial state via index");
-    { CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 50); }
+    { CHECK_FIND_COUNT(compare_type::gt, side_t::left, 50, 50); }
 
     INFO("delete rows where count > 90");
     {
@@ -411,11 +414,12 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                                                                   dispatcher->resource(),
                                                                   compare_type::gt,
                                                                   key{dispatcher->resource(), "count", side_t::left},
-                                                                  id_par{1})),
+                                                                  id_par{0})),
                     components::logical_plan::make_node_limit(dispatcher->resource(),
-                                                              components::logical_plan::limit_t::unlimit())));
+                                                              components::logical_plan::limit_t::all())));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 90));
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), 90),
+                                          components::vector::parameter_kind::literal) == id_par{0});
             auto cur = dispatcher->execute_plan(
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), del, params});
@@ -425,7 +429,7 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
     }
 
     INFO("verify index after delete");
-    { CHECK_FIND_COUNT(compare_type::gt, side_t::left, logical_value_t(dispatcher->resource(), 50), 40); }
+    { CHECK_FIND_COUNT(compare_type::gt, side_t::left, 50, 40); }
 
     INFO("update row where count == 50 to count = 999");
     {
@@ -437,12 +441,12 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                 components::expressions::make_compare_expression(dispatcher->resource(),
                                                                  compare_type::eq,
                                                                  key{dispatcher->resource(), "count", side_t::left},
-                                                                 id_par{1}));
+                                                                 id_par{0}));
             auto update_expr = components::expressions::make_scalar_expression(
                 dispatcher->resource(),
                 components::expressions::scalar_type::constant,
                 components::expressions::key_t{dispatcher->resource(), "count"});
-            update_expr->append_param(id_par{2});
+            update_expr->append_param(id_par{1});
             auto upd = components::sql::transform::name_catalog_target(
                 database_name,
                 collection_name,
@@ -450,11 +454,13 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
                     dispatcher->resource(),
                     match,
                     components::logical_plan::make_node_limit(dispatcher->resource(),
-                                                              components::logical_plan::limit_t::unlimit()),
+                                                              components::logical_plan::limit_t::all()),
                     {update_expr}));
             auto params = components::logical_plan::make_parameter_node(dispatcher->resource());
-            params->add_parameter(id_par{1}, logical_value_t(dispatcher->resource(), 50));
-            params->add_parameter(id_par{2}, logical_value_t(dispatcher->resource(), 999));
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), 50),
+                                          components::vector::parameter_kind::literal) == id_par{0});
+            REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), 999),
+                                          components::vector::parameter_kind::literal) == id_par{1});
             auto cur = dispatcher->execute_plan(
                 session,
                 components::logical_plan::execution_plan_t{dispatcher->resource(), upd, params});
@@ -465,8 +471,8 @@ TEST_CASE("integration::cpp::test_index::delete_and_update") {
 
     INFO("verify index after update");
     {
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 50), 0);
-        CHECK_FIND_COUNT(compare_type::eq, side_t::left, logical_value_t(dispatcher->resource(), 999), 1);
+        CHECK_FIND_COUNT(compare_type::eq, side_t::left, 50, 0);
+        CHECK_FIND_COUNT(compare_type::eq, side_t::left, 999, 1);
     }
 }
 
@@ -897,7 +903,7 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
         di->set_index_oid(index_oid);
         seq->append_child(di);
 
-        auto plan_planned = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+        auto plan_planned = services::planner::create_plan(context, registry, seq, lp::limit_t::all(), nullptr);
         REQUIRE_FALSE(plan_planned.has_error());
         auto plan = plan_planned.value();
         REQUIRE(plan);
@@ -914,7 +920,7 @@ TEST_CASE("integration::cpp::test_index::drop_index_folds_catalog_deletes") {
         auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
         append_delete_leaves(seq);
 
-        auto plan_planned = services::planner::create_plan(context, registry, seq, lp::limit_t::unlimit(), nullptr);
+        auto plan_planned = services::planner::create_plan(context, registry, seq, lp::limit_t::all(), nullptr);
         REQUIRE_FALSE(plan_planned.has_error());
         auto plan = plan_planned.value();
         REQUIRE(plan);

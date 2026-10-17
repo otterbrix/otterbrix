@@ -4,7 +4,8 @@ add_definitions(-DDEV_MODE)
 
 set(${PROJECT_NAME}_SOURCES
         test_create_index.cpp
-        test_logical_value_binary_codec.cpp
+        test_binary_codec.cpp
+        test_index_key_golden_bytes.cpp
 )
 
 add_executable(${PROJECT_NAME} ${${PROJECT_NAME}_SOURCES})

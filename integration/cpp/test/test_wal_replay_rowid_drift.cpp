@@ -124,8 +124,12 @@ namespace {
             auto cur = test_helpers::exec(dispatcher, "SELECT id, k FROM b.t WHERE k = 10;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 10);
+            auto cell0 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == 1);
+            auto cell1 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == 10);
         }
 
         copy_dir_as_crash(config.main_path, crash);
@@ -152,7 +156,9 @@ TEST_CASE("integration::cpp::wal_replay_rowid_drift::an_in_flight_transaction_ma
             REQUIRE(cur->size() == static_cast<std::size_t>(kCommitted));
             std::set<int64_t> ids;
             for (std::size_t r = 0; r < cur->size(); ++r) {
-                ids.insert(cur->value(0, r).value<int64_t>());
+                auto cell2 = cur->get<int64_t>(0, r);
+                REQUIRE_FALSE(cell2.has_error());
+                ids.insert(cell2.value());
             }
             for (int64_t i = 1; i <= kCommitted; ++i) {
                 CHECK(ids.count(i) == 1);
@@ -167,7 +173,9 @@ TEST_CASE("integration::cpp::wal_replay_rowid_drift::an_in_flight_transaction_ma
             auto cur = test_helpers::exec(dispatcher, "SELECT k FROM b.t WHERE id = 1;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            CHECK(cur->value(0, 0).value<int64_t>() == 10);
+            auto cell3 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell3.has_error());
+            CHECK(cell3.value() == 10);
         }
 
         // Either answer is legal: the row whose k IS 10, or a refusal. Answering some OTHER row --
@@ -181,8 +189,12 @@ TEST_CASE("integration::cpp::wal_replay_rowid_drift::an_in_flight_transaction_ma
             } else {
                 CHECK(cur->size() == 1);
                 if (cur->size() == 1) {
-                    CHECK(cur->value(0, 0).value<int64_t>() == 1);
-                    CHECK(cur->value(1, 0).value<int64_t>() == 10);
+                    auto cell4 = cur->get<int64_t>(0, 0);
+                    REQUIRE_FALSE(cell4.has_error());
+                    CHECK(cell4.value() == 1);
+                    auto cell5 = cur->get<int64_t>(1, 0);
+                    REQUIRE_FALSE(cell5.has_error());
+                    CHECK(cell5.value() == 10);
                 }
             }
         }
@@ -196,7 +208,9 @@ TEST_CASE("integration::cpp::wal_replay_rowid_drift::an_in_flight_transaction_ma
             } else {
                 CHECK(cur->size() == 1);
                 if (cur->size() == 1) {
-                    CHECK(cur->value(0, 0).value<int64_t>() == kCommitted);
+                    auto cell6 = cur->get<int64_t>(0, 0);
+                    REQUIRE_FALSE(cell6.has_error());
+                    CHECK(cell6.value() == kCommitted);
                 }
             }
         }
@@ -231,14 +245,20 @@ TEST_CASE("integration::cpp::wal_replay_rowid_drift::the_same_interleaving_commi
             auto scanned = test_helpers::exec(dispatcher, "SELECT k FROM b.t WHERE id = 1;");
             REQUIRE(scanned->is_success());
             REQUIRE(scanned->size() == 1);
-            CHECK(scanned->value(0, 0).value<int64_t>() == 10);
+            auto cell7 = scanned->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell7.has_error());
+            CHECK(cell7.value() == 10);
 
             auto indexed = test_helpers::exec(dispatcher, "SELECT id, k FROM b.t WHERE k = 10;");
             REQUIRE(indexed->is_success());
             CHECK(indexed->size() == 1);
             if (indexed->size() == 1) {
-                CHECK(indexed->value(0, 0).value<int64_t>() == 1);
-                CHECK(indexed->value(1, 0).value<int64_t>() == 10);
+                auto cell8 = indexed->get<int64_t>(0, 0);
+                REQUIRE_FALSE(cell8.has_error());
+                CHECK(cell8.value() == 1);
+                auto cell9 = indexed->get<int64_t>(1, 0);
+                REQUIRE_FALSE(cell9.has_error());
+                CHECK(cell9.value() == 10);
             }
         }
 
@@ -249,7 +269,9 @@ TEST_CASE("integration::cpp::wal_replay_rowid_drift::the_same_interleaving_commi
             REQUIRE(cur->is_success());
             CHECK(cur->size() == 1);
             if (cur->size() == 1) {
-                CHECK(cur->value(0, 0).value<int64_t>() == kCommitted);
+                auto cell10 = cur->get<int64_t>(0, 0);
+                REQUIRE_FALSE(cell10.has_error());
+                CHECK(cell10.value() == kCommitted);
             }
         }
     }

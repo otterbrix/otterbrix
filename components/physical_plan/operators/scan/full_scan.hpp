@@ -26,11 +26,11 @@ namespace components::operators {
                   log_t log,
                   components::catalog::oid_t table_oid,
                   const expressions::compare_expression_ptr& expression,
-                  logical_plan::limit_t limit,
+                  logical_plan::row_cap_t cap,
                   std::vector<size_t> projected_cols = {});
 
         const expressions::compare_expression_ptr& expression() const { return expression_; }
-        const logical_plan::limit_t& limit() const { return limit_; }
+        const logical_plan::row_cap_t& cap() const { return cap_; }
         const std::vector<size_t>& projected_cols() const noexcept { return projected_cols_; }
 
         // Safe to await here sequentially only because this coroutine is nested, not a behavior() handler.
@@ -65,7 +65,7 @@ namespace components::operators {
 
         components::catalog::oid_t table_oid_;
         expressions::compare_expression_ptr expression_;
-        const logical_plan::limit_t limit_;
+        const logical_plan::row_cap_t cap_;
         std::vector<size_t> projected_cols_;
 
         bool opened_{false};

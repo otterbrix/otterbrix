@@ -31,11 +31,6 @@ namespace components::operators {
                                          res_types_,
                                          indices_left_,
                                          indices_right_);
-        join_detail::compute_active_indices(probe_front,
-                                            build_chunks.front(),
-                                            indices_left_,
-                                            indices_right_,
-                                            &active_indices_);
 
         condition_ = expressions::classify_condition(expression_);
         if (condition_ == expressions::condition_kind::computed) {
@@ -46,7 +41,7 @@ namespace components::operators {
             merged_types.insert(merged_types.end(), build_types.begin(), build_types.end());
 
             auto built = expressions::build_condition_graph(resource_,
-                                                            context->parameters.parameters,
+                                                            context->parameters,
                                                             expression_.get(),
                                                             merged_types,
                                                             probe_front.column_count());
@@ -101,7 +96,7 @@ namespace components::operators {
             }
         }
         if (graph_) {
-            graph_->set_parameters(&context->parameters.parameters);
+            graph_->set_parameters(&context->parameters);
         }
 
         const uint64_t n = probe.size();

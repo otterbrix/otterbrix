@@ -1,3 +1,4 @@
+#include "parameter_equals.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
@@ -7,8 +8,8 @@
 using namespace components::sql;
 using namespace components::sql::transform;
 
-using v = components::types::logical_value_t;
-using vec = std::vector<v>;
+using components::vector::make_scalar;
+using vec = std::vector<components::vector::vector_t>;
 
 // Transformer now wraps SELECT in sequence_t(resolve_*..., aggregate); descend
 // to the aggregate consumer when inspecting its rendered form.
@@ -26,9 +27,9 @@ using vec = std::vector<v>;
             }                                                                                                          \
             auto agg = result.parameters;                                                                              \
             REQUIRE(node->to_string() == RESULT);                                                                      \
-            REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                             \
+            REQUIRE(agg->parameters().size() == PARAMS.size());                                                        \
             for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                               \
-                REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == PARAMS.at(i));                            \
+                REQUIRE(parameter_equals(*agg, core::parameter_id_t(uint32_t(i)), PARAMS.at(i)));                      \
             }                                                                                                          \
         }                                                                                                              \
     }
@@ -44,7 +45,7 @@ TEST_CASE("components::sql::functions") {
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT * FROM some_udf(5, 10);)_",
                          R"_($aggregate: {$function: {name: {"some_udf"}, args: {#0, #1}}})_",
-                         vec({v(&resource, 5l), v(&resource, 10l)}));
+                         vec({make_scalar(&resource, 5l), make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT * FROM users WHERE is_active_user(id);)_",
                          R"_($aggregate: {$match: {$function: {name: {"is_active_user"}, args: {"id"}}}})_",
@@ -62,11 +63,11 @@ TEST_CASE("components::sql::functions") {
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT *, some_udf_1(foo_name) FROM some_udf_2(1) AS some_alias;)_",
         R"_($aggregate: {$function: {name: {"some_udf_2"}, args: {#0}}, $group: {*, $function: {name: {"some_udf_1"}, args: {"foo_name"}}}, $select: {}})_",
-        vec({v(&resource, 1l)}));
+        vec({make_scalar(&resource, 1l)}));
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT some_udf(5, 10);)_",
                          R"_($aggregate: {$group: {$function: {name: {"some_udf"}, args: {#0, #1}}}, $select: {}})_",
-                         vec({v(&resource, 5l), v(&resource, 10l)}));
+                         vec({make_scalar(&resource, 5l), make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_FUNCTION(
         R"_(SELECT name, some_udf(name, number) AS some_alias;)_",
@@ -94,7 +95,7 @@ TEST_CASE("components::sql::functions") {
 
     TEST_SIMPLE_FUNCTION(R"_(SELECT * FROM db1.some_udf(5, 10);)_",
                          R"_($aggregate: {$function: {name: {"db1.some_udf"}, args: {#0, #1}}})_",
-                         vec({v(&resource, 5l), v(&resource, 10l)}));
+                         vec({make_scalar(&resource, 5l), make_scalar(&resource, 10l)}));
 
     SECTION("a function name has no uid slot") {
         auto select = linitial(raw_parser(&arena_resource, "SELECT u.d.s.some_udf(text) FROM some_table;"));

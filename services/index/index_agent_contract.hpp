@@ -18,7 +18,6 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/session/session.hpp>
-#include <components/types/logical_value.hpp>
 
 #include <concepts>
 #include <cstdint>
@@ -34,14 +33,8 @@
 
 namespace services::index {
 
-    // An index stores only non-NULL keys; a free function so both agent families share one check.
-    [[nodiscard]] inline bool index_key_is_null(const components::types::logical_value_t& key) noexcept {
-        return key.is_null();
-    }
-
     struct index_agent_contract {
         using session_id_t = components::session::session_id_t;
-        using value_t = components::types::logical_value_t;
 
         template<typename T>
         using unique_future = actor_zeta::unique_future<T>;
@@ -66,7 +59,10 @@ namespace services::index {
 
         // One full reply, duplicates included, no cursor: merges committed rows with staged inserts minus deletes.
         unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
-        read_rows(session_id_t session, components::expressions::compare_type compare, value_t key, uint64_t txn_id);
+        read_rows(session_id_t session,
+                  components::expressions::compare_type compare,
+                  components::vector::vector_t key,
+                  uint64_t txn_id);
 
         // Ordered behind this agent's pending writes; must report, or a checkpoint could truncate the WAL.
         unique_future<core::error_t> force_flush(session_id_t session);
@@ -101,7 +97,7 @@ namespace services::index {
                  uint64_t txn_id,
                  uint64_t commit_id,
                  key_batch_t values,
-                 index_agent_contract::value_t key,
+                 components::vector::vector_t key,
                  actor_zeta::mailbox::message* msg) {
         { agent.drop(session) }
         ->std::same_as<actor_zeta::unique_future<void>>;

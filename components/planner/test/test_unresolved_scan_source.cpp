@@ -84,7 +84,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::no_from_select_keeps_the_
     // An empty relname is the no-FROM shape (`SELECT 1`); pinned so the refusal tests below can't over-reach here.
     auto agg = lp::make_node_aggregate(&h.arena,
                                        qualified_name_t{core::dbname_t{std::string{}}, core::relname_t{std::string{}}});
-    auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::unlimit(), nullptr);
+    auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::all(), nullptr);
 
     REQUIRE_FALSE(plan.has_error());
     CHECK(fabricated_rows(plan.value(), &h.pipeline_ctx) == 1);
@@ -96,7 +96,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::aggregate_over_a_resolved
 
     auto agg = make_named_aggregate(&h.arena);
     agg->set_table_oid(known_oid);
-    auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::unlimit(), nullptr);
+    auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::all(), nullptr);
 
     INFO("a resolved, known table keeps its scan; the refusal below is only for the unresolved case");
     REQUIRE_FALSE(plan.has_error());
@@ -107,7 +107,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::aggregate_over_an_unresol
     harness_t h;
 
     auto agg = make_named_aggregate(&h.arena);
-    auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::unlimit(), nullptr);
+    auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::all(), nullptr);
 
     INFO("a table that never resolved must refuse, not scan a synthetic row");
     REQUIRE(plan.has_error());
@@ -124,7 +124,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::aggregate_with_an_unlower
         lp::make_node_match(&h.arena,
                             qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
                             nullptr));
-    auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::unlimit(), nullptr);
+    auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::all(), nullptr);
 
     INFO("a refused scan child must refuse the aggregate, not degrade into an unfiltered scan");
     REQUIRE(plan.has_error());
@@ -140,7 +140,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::union_arm_refusal_reaches
     auto ghost_arm = make_named_aggregate(&h.arena); // stays unresolved
     auto union_node = lp::make_node_union(&h.arena, good_arm, ghost_arm, true);
 
-    auto plan = services::planner::create_plan(h.context, h.registry, union_node, lp::limit_t::unlimit(), nullptr);
+    auto plan = services::planner::create_plan(h.context, h.registry, union_node, lp::limit_t::all(), nullptr);
 
     INFO("one refused arm must refuse the whole union, not execute as a half-union answering partial data");
     REQUIRE(plan.has_error());
@@ -154,11 +154,11 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_over_an_unresolved
         lp::make_node_match(&h.arena,
                             qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
                             expr::make_compare_expression(&h.arena, expr::compare_type::all_true));
-    auto limit = lp::make_node_limit(&h.arena, lp::limit_t::unlimit());
+    auto limit = lp::make_node_limit(&h.arena, lp::limit_t::all());
     auto del = lp::make_node_delete(&h.arena, match, limit);
     del->set_target(qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}});
 
-    auto plan = services::planner::create_plan(h.context, h.registry, del, lp::limit_t::unlimit(), nullptr);
+    auto plan = services::planner::create_plan(h.context, h.registry, del, lp::limit_t::all(), nullptr);
 
     INFO("a DELETE whose target never resolved must refuse; lowering it produces a sink with no table behind "
          "it, which executes as a no-op reporting success");
@@ -174,11 +174,11 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerabl
         lp::make_node_match(&h.arena,
                             qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
                             nullptr);
-    auto limit = lp::make_node_limit(&h.arena, lp::limit_t::unlimit());
+    auto limit = lp::make_node_limit(&h.arena, lp::limit_t::all());
     auto del = lp::make_node_delete(&h.arena, match, limit);
     del->set_target(qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}});
 
-    auto plan = services::planner::create_plan(h.context, h.registry, del, lp::limit_t::unlimit(), nullptr);
+    auto plan = services::planner::create_plan(h.context, h.registry, del, lp::limit_t::all(), nullptr);
 
     REQUIRE(plan.has_error());
     CHECK(refusal(plan) == "relation \"edb.ghost\" has no resolved table in this plan");
@@ -193,12 +193,12 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerabl
         lp::make_node_match(&h.arena,
                             qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"t"}}},
                             expr::make_compare_expression(&h.arena, expr::compare_type::all_true));
-    auto limit = lp::make_node_limit(&h.arena, lp::limit_t::unlimit());
+    auto limit = lp::make_node_limit(&h.arena, lp::limit_t::all());
     auto del = lp::make_node_delete(&h.arena, match, limit);
     del->set_table_oid(known_oid);
     del->append_child(lp::make_node_drop(&h.arena, lp::drop_target_kind::collection));
 
-    auto plan = services::planner::create_plan(h.context, h.registry, del, lp::limit_t::unlimit(), nullptr);
+    auto plan = services::planner::create_plan(h.context, h.registry, del, lp::limit_t::all(), nullptr);
 
     INFO("a USING source that failed to lower must refuse the DELETE, not join against a missing side");
     REQUIRE(plan.has_error());
@@ -212,11 +212,11 @@ TEST_CASE("physical_plan_generator::unresolved_source::update_over_an_unresolved
         lp::make_node_match(&h.arena,
                             qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
                             expr::make_compare_expression(&h.arena, expr::compare_type::all_true));
-    auto limit = lp::make_node_limit(&h.arena, lp::limit_t::unlimit());
+    auto limit = lp::make_node_limit(&h.arena, lp::limit_t::all());
     std::pmr::vector<expr::expression_ptr> updates{&h.arena};
     auto upd = lp::make_node_update(&h.arena, match, limit, updates);
 
-    auto plan = services::planner::create_plan(h.context, h.registry, upd, lp::limit_t::unlimit(), nullptr);
+    auto plan = services::planner::create_plan(h.context, h.registry, upd, lp::limit_t::all(), nullptr);
 
     INFO("an UPDATE whose target never resolved must refuse, same as DELETE");
     REQUIRE(plan.has_error());

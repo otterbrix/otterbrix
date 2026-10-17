@@ -26,9 +26,12 @@ namespace {
         REQUIRE(c->is_success());
         std::vector<int64_t> out;
         for (uint64_t r = 0; r < c->size(); ++r) {
-            auto v = c->value(0, r);
-            REQUIRE_FALSE(v.is_null());
-            out.push_back(v.template value<int64_t>());
+            auto cell0 = c->is_null(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE_FALSE(cell0.value());
+            auto cell1 = c->template get<int64_t>(0, r);
+            REQUIRE_FALSE(cell1.has_error());
+            out.push_back(cell1.value());
         }
         std::sort(out.begin(), out.end());
         return out;

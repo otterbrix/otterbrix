@@ -186,6 +186,10 @@ TEST_CASE("integration::cpp::commit_discard_horizon::a_refused_commit_leaves_its
     auto cur = exec(dispatcher, "SELECT id, v FROM undone.t;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1);
-    REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
-    REQUIRE(cur->value(1, 0).value<int64_t>() == 200);
+    const auto id = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(id.has_error());
+    REQUIRE(id.value() == 2);
+    const auto v = cur->get<int64_t>(1, 0);
+    REQUIRE_FALSE(v.has_error());
+    REQUIRE(v.value() == 200);
 }

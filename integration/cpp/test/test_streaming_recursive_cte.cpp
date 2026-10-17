@@ -51,8 +51,12 @@ TEST_CASE("integration::cpp::streaming_recursive_cte::fixpoint_streams_and_is_co
                         "SELECT name FROM hierarchy ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "CEO");
-        REQUIRE(cur->value(0, 4).value<std::string_view>() == "Designer");
+        auto cell0 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == "CEO");
+        auto cell1 = cur->get<std::string_view>(0, 4);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == "Designer");
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
     REQUIRE(runs_after > runs_before);
@@ -107,8 +111,12 @@ TEST_CASE("integration::cpp::streaming_recursive_cte::subtree_and_depth_stream")
                         "SELECT name FROM subtree ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        REQUIRE(cur->value(0, 0).value<std::string_view>() == "VP Eng");
-        REQUIRE(cur->value(0, 1).value<std::string_view>() == "Engineer");
+        auto cell2 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == "VP Eng");
+        auto cell3 = cur->get<std::string_view>(0, 1);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == "Engineer");
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
     REQUIRE(runs_after > runs_before);
@@ -139,6 +147,10 @@ TEST_CASE("integration::cpp::streaming_recursive_cte::union_in_anchor") {
     INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 5);
-    REQUIRE(cur->value(0, 0).value<std::string_view>() == "CEO");
-    REQUIRE(cur->value(0, 4).value<std::string_view>() == "Designer");
+    auto cell4 = cur->get<std::string_view>(0, 0);
+    REQUIRE_FALSE(cell4.has_error());
+    REQUIRE(cell4.value() == "CEO");
+    auto cell5 = cur->get<std::string_view>(0, 4);
+    REQUIRE_FALSE(cell5.has_error());
+    REQUIRE(cell5.value() == "Designer");
 }

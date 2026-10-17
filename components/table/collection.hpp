@@ -65,7 +65,6 @@ namespace components::table {
                    const vector::vector_t& row_identifiers,
                    uint64_t fetch_count,
                    column_fetch_state& state,
-                   const std::vector<size_t>& projected_cols,
                    const transaction_data& txn,
                    fetch_visibility_t visibility);
 

@@ -2,6 +2,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/expressions/compare_expression.hpp>
+#include <components/logical_plan/node_limit.hpp>
 
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
@@ -31,14 +32,12 @@ namespace components::operators {
                         std::pmr::vector<expressions::expression_ptr> updates,
                         std::pmr::vector<projected_column_t> returning,
                         expressions::expression_ptr expr = nullptr,
-                        // Matched-row bound for the UPDATE ... FROM source path
-                        // (UPDATE ... LIMIT n). -1 = unbounded. The no-source path
-                        // leaves this -1 (bound applied upstream by the scan /
-                        // operator_match count-cap); the source (semi-join) path reads
-                        // ALL left rows and stops here at exactly n MATCHED rows (MySQL
-                        // "rows-matched restriction" — matched, not value-changed),
-                        // across mid-pump flushes.
-                        std::int64_t affected_bound = -1);
+                        // Matched-row bound for the UPDATE ... FROM source path (UPDATE ... LIMIT n).
+                        // The no-source path leaves this uncapped (bound applied upstream by the scan /
+                        // operator_match count-cap); the source (semi-join) path reads ALL left rows and
+                        // stops here at exactly n MATCHED rows (MySQL "rows-matched restriction" — matched,
+                        // not value-changed), across mid-pump flushes.
+                        logical_plan::row_cap_t affected_bound = {});
 
         components::catalog::oid_t table_oid() const noexcept { return table_oid_; }
 
@@ -151,7 +150,7 @@ namespace components::operators {
         // matched_total_ counts MATCHED left rows at MATCH time (in consume_join_batch_)
         // and persists across mid-pump flushes — output_/written_ are cleared/lag
         // per flush, so a flush-derived count would miss already-flushed matches.
-        std::int64_t affected_bound_{-1};
+        logical_plan::row_cap_t affected_bound_{};
         uint64_t matched_total_{0};
         bool paired_from_{false};
         std::size_t paired_batches_{0};

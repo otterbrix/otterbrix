@@ -5,11 +5,13 @@ set(SOURCE_${PROJECT_NAME}
         vector_buffer.cpp
         indexing_vector.cpp
         vector_operations.cpp
+        vector_builders.cpp
+        storage_parameters.cpp
         data_chunk.cpp
         data_chunk_binary.cpp
         validation.cpp
-        arithmetic.cpp
         operations/apply_operator.cpp
+        operations/apply_quantified.cpp
 
         arrow/appender/bool_data.cpp
         arrow/appender/fixed_size_list_data.cpp
@@ -39,6 +41,7 @@ target_link_libraries(
         otterbrix::execution_context
         otterbrix::operators
         otterbrix::string_buffer
+        otterbrix::regex
         Boost::boost
 )
 

@@ -58,7 +58,9 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.dst;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
+        auto cell0 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == static_cast<uint64_t>(kRowCount));
     }
     {
         int64_t expected_sum = 0;
@@ -68,7 +70,9 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
         auto cur = exec(dispatcher, "SELECT SUM(val) AS s FROM StreamDb.dst;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == expected_sum);
+        auto cell1 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == expected_sum);
     }
 }
 
@@ -93,13 +97,17 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_streams") {
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.t;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 3);
+        auto cell2 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == 3);
     }
     {
         auto cur = exec(dispatcher, "SELECT val FROM StreamDb.t WHERE id = 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 20);
+        auto cell3 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == 20);
     }
 }
 
@@ -129,7 +137,9 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_returning_streams") {
         auto cur = exec(dispatcher, "SELECT val FROM StreamDb.t WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 10);
+        auto cell4 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == 10);
     }
 }
 
@@ -170,7 +180,9 @@ TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands")
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.t;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount - kThreshold));
+        auto cell5 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == static_cast<uint64_t>(kRowCount - kThreshold));
     }
     {
         auto cur = exec(dispatcher, "SELECT id FROM StreamDb.t WHERE id = 5;");
@@ -181,7 +193,9 @@ TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands")
         auto cur = exec(dispatcher, "SELECT id FROM StreamDb.t WHERE id = 4000;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 4000);
+        auto cell6 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == 4000);
     }
 }
 
@@ -225,13 +239,17 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
         auto cur = exec(dispatcher, "SELECT val FROM StreamDb.t WHERE id = 5;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 5 + kBump);
+        auto cell7 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell7.has_error());
+        REQUIRE(cell7.value() == 5 + kBump);
     }
     {
         auto cur = exec(dispatcher, "SELECT val FROM StreamDb.t WHERE id = 3000;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 3000);
+        auto cell8 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell8.has_error());
+        REQUIRE(cell8.value() == 3000);
     }
     {
         auto cur = exec(dispatcher, "SELECT id FROM StreamDb.t WHERE val = 5;");
@@ -242,7 +260,9 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
         auto cur = exec(dispatcher, "SELECT id FROM StreamDb.t WHERE val = " + std::to_string(5 + kBump) + ";");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 5);
+        auto cell9 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell9.has_error());
+        REQUIRE(cell9.value() == 5);
     }
 }
 
@@ -292,7 +312,9 @@ TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.child;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
+        auto cell10 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell10.has_error());
+        REQUIRE(cell10.value() == static_cast<uint64_t>(kRowCount));
     }
 
     {
@@ -309,8 +331,7 @@ TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_sele
     auto* dispatcher = space.dispatcher();
 
     REQUIRE(exec(dispatcher, "CREATE DATABASE StreamDb;")->is_success());
-    // age is bigint so the CHECK constant compares same-type (an int32 column would
-    // hit an unrelated logical_value_t coercion gap, not the path under test here).
+    // age is bigint so the CHECK constant compares same-type.
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.items (id bigint, age bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.src_ok (id bigint, age bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.src_bad (id bigint, age bigint);")->is_success());
@@ -337,7 +358,9 @@ TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_sele
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.items;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
+        auto cell11 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell11.has_error());
+        REQUIRE(cell11.value() == static_cast<uint64_t>(kRowCount));
     }
 
     {
@@ -382,12 +405,16 @@ TEST_CASE("integration::cpp::streaming_dml::fk_cascade_streams_delete") {
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.child WHERE parent_id = 1;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 0);
+        auto cell12 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell12.has_error());
+        REQUIRE(cell12.value() == 0);
     }
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM StreamDb.child WHERE parent_id = 2;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount / 2));
+        auto cell13 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell13.has_error());
+        REQUIRE(cell13.value() == static_cast<uint64_t>(kRowCount / 2));
     }
 }
 
@@ -414,7 +441,9 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM LimDb." + tbl + ";");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        return static_cast<int64_t>(cur->value(0, 0).value<uint64_t>());
+        auto cell14 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell14.has_error());
+        return static_cast<int64_t>(cell14.value());
     };
 
     // Column-vs-column predicate (a < b) is non-pushable, so this exercises operator_match.
@@ -453,7 +482,9 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
         REQUIRE(cur->size() == 2);
         auto cur2 = exec(dispatcher, "SELECT COUNT(id) AS c FROM LimDb.t_upd WHERE b = 101;");
         REQUIRE(cur2->is_success());
-        REQUIRE(cur2->value(0, 0).value<uint64_t>() == 2u);
+        auto cell15 = cur2->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell15.has_error());
+        REQUIRE(cell15.value() == 2u);
     }
 
     // DELETE ... USING ... LIMIT n bounds the semi-join's matched-row count directly.

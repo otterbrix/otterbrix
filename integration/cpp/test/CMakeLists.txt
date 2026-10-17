@@ -114,6 +114,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_type_spec_write_gate.cpp
         test_wide_integer_literal.cpp
         test_decimal_literal_exactness.cpp
+        test_uuid_cursor_roundtrip.cpp
         test_insert_param_column_routing.cpp
         test_insert_param_retype_preserves_cells.cpp
         test_select_missing_table_refusal.cpp
@@ -135,6 +136,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_multiple_primary_keys.cpp
         test_sql_features.cpp
         test_unique_constraint_operator.cpp
+        test_lateral_join_type_mismatch.cpp
+        test_index_scan_runtime_key.cpp
         test_create_index_backfill_batched.cpp
         test_create_index_catchup_refusal.cpp
         test_create_index_inflight_dml.cpp
@@ -145,6 +148,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_order_by_expressions.cpp
         test_order_by_nulls.cpp
         test_arithmetic_type_guards.cpp
+        test_array_empty_literal.cpp
         test_like_type_guards.cpp
         test_unary_plus.cpp
         test_multi_database_isolation.cpp
@@ -191,12 +195,15 @@ set( ${PROJECT_NAME}_SOURCES
         test_hash_join.cpp
         test_star_join_e2e.cpp
         test_returning.cpp
+        test_delete_using_returning_allocations.cpp
+        test_dictionary_input_allocations.cpp
         test_expression_matrix.cpp
         test_group_by_expressions.cpp
         test_parser_extension.cpp
         test_engine_lifecycle.cpp
         test_parameterized_queries.cpp
         test_list_array.cpp
+        test_quantified.cpp
         test_lost_wakeup_streaming.cpp
         test_lost_wakeup_realpath.cpp
         test_bounded_execution.cpp
@@ -238,6 +245,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_join_key_width.cpp
         test_explain_host_plan.cpp
         test_undefined_side_key.cpp
+        test_param_fold_and_limit_bounds.cpp
 
         concurrency/concurrency.cpp
         concurrency/test_visibility.cpp

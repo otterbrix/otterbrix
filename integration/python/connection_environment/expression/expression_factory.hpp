@@ -1,11 +1,10 @@
 #pragma once
 
-#include <components/types/logical_value.hpp>
-
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/vector/vector.hpp>
 
 #include <core/result_wrapper.hpp>
 
@@ -69,7 +68,7 @@ namespace otterbrix {
         virtual ~expression_factory_t();
         void set_null_space();
 
-        expression_wrapper_t make_constant(components::types::logical_value_t&& value);
+        expression_wrapper_t make_constant(components::vector::vector_t&& value);
 
         expression_wrapper_t make_count_expression();
 
@@ -112,16 +111,16 @@ namespace otterbrix {
         components::logical_plan::parameter_node_ptr get_params();
 
     private:
-        core::parameter_id_t add_value(components::types::logical_value_t&& value);
+        core::parameter_id_t add_value(components::vector::vector_t&& value);
 
         // `space` must be declared before `values` (same rule as relation_factory_t): members
-        // destroy in reverse declaration order, and `values` holds logical_value_t built on
+        // destroy in reverse declaration order, and `values` holds vectors built on
         // space->dispatcher()->resource(). Declared after it once, and a string constant's
         // pmr bytes were freed into an already-destroyed resource -- EXC_BAD_ACCESS, 10/10
         // runs (integer constants store inline and survived, so it looked selective).
         // Pinned by tests/test_constant_outlives_its_arena.py.
         boost::intrusive_ptr<otterbrix_t> space;
-        std::unordered_map<core::parameter_id_t, components::types::logical_value_t> values;
+        std::unordered_map<core::parameter_id_t, components::vector::vector_t> values;
         uint64_t counter;
     };
 } // namespace otterbrix

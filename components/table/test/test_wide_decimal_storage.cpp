@@ -92,12 +92,23 @@ namespace {
             for (uint64_t i = 0; i < batch; i++) {
                 const uint64_t row = offset + i;
                 if (is_null_row(row)) {
-                    chunk.set_value(0, i, logical_value_t{resource, nullptr});
+                    chunk.data[0].set_null(i, true);
                 } else {
-                    chunk.set_value(
-                        0,
-                        i,
-                        logical_value_t::create_decimal(resource, decimal_type, decimal_payload(row, width)));
+                    const auto payload = decimal_payload(row, width);
+                    switch (decimal_type.to_physical_type()) {
+                        case components::types::physical_type::INT16:
+                            chunk.data[0].set_value(i, static_cast<int16_t>(payload));
+                            break;
+                        case components::types::physical_type::INT32:
+                            chunk.data[0].set_value(i, static_cast<int32_t>(payload));
+                            break;
+                        case components::types::physical_type::INT64:
+                            chunk.data[0].set_value(i, static_cast<int64_t>(payload));
+                            break;
+                        default:
+                            chunk.data[0].set_value(i, payload);
+                            break;
+                    }
                 }
             }
             table_append_state state(resource);
@@ -115,11 +126,26 @@ namespace {
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 const uint64_t row = scanned + i;
                 INFO(stage << ": row " << row);
-                const auto value = chunk.data[0].value(i);
-                REQUIRE(value.is_null() == is_null_row(row));
+                const auto& column = chunk.data[0];
+                REQUIRE(column.is_null(i) == is_null_row(row));
                 if (!is_null_row(row)) {
-                    REQUIRE(value.type().type() == components::types::logical_type::DECIMAL);
-                    REQUIRE(value.value<components::types::int128_t>() == decimal_payload(row, width));
+                    REQUIRE(column.type().type() == components::types::logical_type::DECIMAL);
+                    components::types::int128_t stored = 0;
+                    switch (column.type().to_physical_type()) {
+                        case components::types::physical_type::INT16:
+                            stored = column.get_value<int16_t>(i);
+                            break;
+                        case components::types::physical_type::INT32:
+                            stored = column.get_value<int32_t>(i);
+                            break;
+                        case components::types::physical_type::INT64:
+                            stored = column.get_value<int64_t>(i);
+                            break;
+                        default:
+                            stored = column.get_value<components::types::int128_t>(i);
+                            break;
+                    }
+                    REQUIRE(stored == decimal_payload(row, width));
                 }
             }
             scanned += chunk.size();

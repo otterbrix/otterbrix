@@ -91,19 +91,15 @@ namespace components::storage {
             auto column_indices = begin_read(projected_cols, txn);
             table::table_scan_state state(resource_);
             table_.initialize_scan(state, column_indices, txn, filter);
-            auto chunk_types = types();
-            table_.scan_batched(chunk_types, projected_cols, batches, state, resource_);
+            auto chunk_types = read_types(projected_cols, txn);
+            table_.scan_batched(chunk_types, batches, state, resource_);
             // scan_batched stays void; errors land in state.table_state.scan_error, surfaced here as a value.
             if (state.table_state.has_error()) {
                 return state.table_state.scan_error;
             }
             // Always emit at least one chunk so downstream operators can read types/column_count.
             if (batches.empty()) {
-                if (projected_cols) {
-                    batches.emplace_back(resource_, chunk_types, *projected_cols, vector::DEFAULT_VECTOR_CAPACITY);
-                } else {
-                    batches.emplace_back(resource_, chunk_types, vector::DEFAULT_VECTOR_CAPACITY);
-                }
+                batches.emplace_back(resource_, chunk_types, vector::DEFAULT_VECTOR_CAPACITY);
                 batches.back().set_cardinality(0);
             }
             if (limit >= 0) {
@@ -156,7 +152,7 @@ namespace components::storage {
             // Guards the flag above, not the fetch itself.
             if (!state.result_outlives_pins) {
                 uint64_t string_cols = 0;
-                for (size_t i = 0; i < table_.column_count(); i++) {
+                for (size_t i = 0; i < output.column_count(); i++) {
                     if (output.data[i].type().to_physical_type() == types::physical_type::STRING) {
                         string_cols++;
                     }
@@ -164,13 +160,8 @@ namespace components::storage {
                 table::note_escaping_borrowed_cells(string_cols * count);
             }
 #endif
-            std::vector<table::storage_index_t> column_indices;
-            column_indices.reserve(table_.column_count());
-            for (size_t i = 0; i < table_.column_count(); i++) {
-                column_indices.emplace_back(static_cast<int64_t>(i));
-            }
-            // The list stays FULL WIDTH: the fetch mapping is positional, a shorter one shifts columns by ordinal.
-            table_.fetch(output, column_indices, row_ids, count, state, projected_cols, txn, visibility);
+            auto column_indices = begin_read(projected_cols.empty() ? nullptr : &projected_cols, txn);
+            table_.fetch(output, column_indices, row_ids, count, state, txn, visibility);
             if (state.fetch_error.contains_error()) {
                 return state.fetch_error;
             }
@@ -283,9 +274,8 @@ namespace components::storage {
             if (projected_cols != nullptr) {
                 out.reserve(projected_cols->size());
                 for (size_t idx : *projected_cols) {
-                    if (idx < visible) {
-                        out.emplace_back(static_cast<int64_t>(idx));
-                    }
+                    assert(idx < visible && "storage_indices: the projection names a column the reader cannot see");
+                    out.emplace_back(static_cast<int64_t>(idx));
                 }
                 return out;
             }

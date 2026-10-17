@@ -2,7 +2,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/physical_plan/operators/operator.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
 
 #include <memory_resource>
 #include <string>

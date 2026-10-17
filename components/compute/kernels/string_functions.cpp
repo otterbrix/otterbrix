@@ -1,5 +1,4 @@
 #include "../function.hpp"
-#include <components/types/logical_value.hpp>
 #include <components/vector/vector_buffer.hpp>
 
 #include <core/regex/like_to_regex.hpp>

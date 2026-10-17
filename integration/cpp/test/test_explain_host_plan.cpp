@@ -34,7 +34,9 @@ namespace {
         REQUIRE(c);
         REQUIRE(c->is_success());
         REQUIRE(c->size() == 1);
-        return c->value(0, 0).template value<uint64_t>();
+        auto cell0 = c->template get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        return cell0.value();
     }
 } // namespace
 

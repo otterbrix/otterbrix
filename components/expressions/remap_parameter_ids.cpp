@@ -39,7 +39,9 @@ namespace components::expressions {
                 remap_param(e->left(), id_map);
                 remap_param(e->right(), id_map);
                 // LIKE/regex flags are stored as a parameter id of their own.
-                e->set_regex_flags(mapped(id_map, e->regex_flags_param()));
+                if (const auto flags = e->regex_flags_param()) {
+                    e->set_regex_flags(mapped(id_map, *flags));
+                }
                 for (const auto& child : e->children()) {
                     remap_parameter_ids(child, id_map);
                 }

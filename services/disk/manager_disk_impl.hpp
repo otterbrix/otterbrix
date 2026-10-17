@@ -54,16 +54,6 @@ namespace services::disk {
             return chunk;
         }
 
-        // ---------------------------------------------------------------------------
-        // str_equals: test whether a string-typed logical_value_t equals a std::string.
-        // ---------------------------------------------------------------------------
-
-        inline bool str_equals(const components::types::logical_value_t& v, const std::string& s) {
-            if (v.is_null())
-                return false;
-            return v.value<std::string_view>() == std::string_view(s);
-        }
-
         // inline_scan(...) lives in services/disk/inline_scan.hpp (shared with agent_disk);
         // it is in namespace services::disk::detail, so "using namespace detail" exposes it here.
 

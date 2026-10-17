@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from otterbrix import ColumnExpression, ConstantExpression
 
@@ -35,3 +36,9 @@ def test_limit_after_filter(conn):
     val = ColumnExpression("val", conn)
     rows = rel.filter(val > ConstantExpression(5, conn)).limit(2).fetchall()
     assert len(rows) == 2
+
+
+def test_negative_limit_is_refused_when_it_executes(conn):
+    rel = _rows(conn)
+    with pytest.raises(RuntimeError, match="LIMIT must not be negative"):
+        rel.limit(-1).fetchall()

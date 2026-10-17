@@ -8,7 +8,8 @@
 #include <components/compute/kernel_signature.hpp>
 #include <components/table/column_definition.hpp>
 
-#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
+#include <components/vector/vector.hpp>
 #include <core/result_wrapper.hpp>
 
 #include <memory_resource>
@@ -69,7 +70,7 @@ namespace components::catalog {
     // Resolves legacy type-name aliases too (e.g. "string", "boolean"); UNKNOWN for user-defined types.
     types::logical_type pg_name_to_logical_type(std::string_view name) noexcept;
 
-    // Binary-codec encoding (logical_value_binary_codec.hpp), hex-armoured to stay printable text;
+    // Cell-codec encoding (default_cell_codec.hpp), hex-armoured to stay printable text;
     // type-directed, so no width/layout is stored beyond atttypspec. Three distinguishable states:
     //   ""        no default at all
     //   "N"       an explicit DEFAULT NULL
@@ -77,10 +78,10 @@ namespace components::catalog {
     // A type the codec can't carry is refused at CREATE TABLE/ALTER; a spec that doesn't decode
     // against `column_type` is reported as catalog corruption.
     [[nodiscard]] core::error_t
-    encode_default_spec(std::pmr::memory_resource* resource, const types::logical_value_t& v, std::string& out);
+    encode_default_spec(std::pmr::memory_resource* resource, const vector::vector_t& v, std::string& out);
     [[nodiscard]] core::error_t decode_default_spec(std::pmr::memory_resource* resource,
                                                     const types::complex_logical_type& column_type,
                                                     std::string_view spec,
-                                                    std::optional<types::logical_value_t>& out);
+                                                    std::optional<vector::vector_t>& out);
 
 } // namespace components::catalog

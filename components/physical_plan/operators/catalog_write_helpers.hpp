@@ -14,8 +14,7 @@ namespace components::operators {
     // Typed setters shared by the catalog resolve operators. Each resolve
     // operator builds a data_chunk with a statically-known column schema, so
     // these helpers write directly into the column's typed buffer at
-    // (col, row) and flip the validity bit — bypassing the logical_value_t
-    // variant construct/dispatch/destroy cycle. Extracted here (TASK C9) to
+    // (col, row) and flip the validity bit. Extracted here (TASK C9) to
     // remove the near-identical per-file duplicates.
 
     inline void set_uint32(vector::data_chunk_t& c, std::size_t col, std::size_t row, std::uint32_t v) {

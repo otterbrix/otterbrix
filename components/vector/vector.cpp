@@ -1,6 +1,5 @@
 #include "vector.hpp"
 
-#include <components/types/logical_value.hpp>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -42,13 +41,6 @@ namespace components::vector {
 
     vector_t::vector_t(std::pmr::memory_resource* resource, types::complex_logical_type type, uint64_t capacity)
         : vector_t(resource, std::move(type), true, true, capacity) {}
-
-    vector_t::vector_t(std::pmr::memory_resource* resource, const types::logical_value_t& value, uint64_t capacity)
-        : type_(value.type())
-        , validity_(type_.type() == types::logical_type::NA ? validity_mask_t{resource, nullptr}
-                                                            : validity_mask_t{resource, capacity}) {
-        reference(value);
-    }
 
     vector_t::vector_t(const vector_t& other, const indexing_vector_t& indexing, uint64_t count)
         : vector_type_(other.vector_type_)
@@ -137,46 +129,6 @@ namespace components::vector {
         buffer_ = std::move(other.buffer_);
         auxiliary_ = std::move(other.auxiliary_);
         return *this;
-    }
-
-    void vector_t::reference(const types::logical_value_t& value) {
-        // A NULL carries no type of its own: it becomes a NULL of this vector's type.
-        assert(value.is_null() || type_.type() == value.type().type());
-        this->vector_type_ = vector_type::CONSTANT;
-        if (type_.type() == types::logical_type::NA) {
-            return;
-        }
-        const auto& type = value.is_null() ? type_ : value.type();
-        buffer_ = std::make_unique<vector_buffer_t>(resource(), type, 1);
-        auto internal_type = type.to_physical_type();
-        if (internal_type == types::physical_type::STRUCT) {
-            auxiliary_ = std::make_unique<struct_vector_buffer_t>(resource());
-            auto& child_types = type.child_types();
-            auto& child_vectors = static_cast<struct_vector_buffer_t*>(auxiliary_.get())->entries();
-            for (uint64_t i = 0; i < child_types.size(); i++) {
-                if (value.is_null()) {
-                    auto vector = std::make_unique<vector_t>(resource(), child_types[i], 1);
-                    vector->reference(value);
-                    child_vectors.push_back(std::move(vector));
-                } else {
-                    child_vectors.push_back(std::make_unique<vector_t>(resource(), value.children()[i]));
-                }
-            }
-            if (value.is_null()) {
-                set_value(0, value);
-            }
-        } else if (internal_type == types::physical_type::LIST) {
-            auxiliary_ = std::make_shared<list_vector_buffer_t>(resource(), type);
-            data_ = buffer_->data();
-            set_value(0, value);
-        } else if (internal_type == types::physical_type::ARRAY) {
-            auxiliary_ = std::make_shared<array_vector_buffer_t>(resource(), type);
-            set_value(0, value);
-        } else {
-            auxiliary_.reset();
-            data_ = buffer_->data();
-            set_value(0, value);
-        }
     }
 
     void vector_t::reset_string_heap() {
@@ -420,9 +372,8 @@ namespace components::vector {
         return vector;
     }
 
-    vector_t::nested_element_t vector_t::resolve_nested_element(uint64_t row_index,
-                                                                const std::pmr::vector<size_t>& path,
-                                                                size_t element_start) const {
+    vector_t::nested_element_t
+    vector_t::resolve_nested_element(uint64_t row_index, std::span<const size_t> path, size_t element_start) const {
         const vector_t* vector = this;
         uint64_t index = row_index;
         bool null_seen = false;
@@ -512,6 +463,9 @@ namespace components::vector {
     }
 
     void vector_t::find_resize_infos(std::vector<resize_info_t>& resize_infos, uint64_t multiplier) {
+        if (type_.type() == types::logical_type::NA) {
+            return;
+        }
         resize_info_t resize_info(*this, data_, buffer_.get(), multiplier);
         resize_infos.emplace_back(resize_info);
 
@@ -542,39 +496,6 @@ namespace components::vector {
             }
             default:
                 break;
-        }
-    }
-
-    uint64_t vector_t::allocation_size(uint64_t cardinality) const {
-        if (!type_.is_nested()) {
-            auto physical_size = type_.size();
-            return cardinality * physical_size;
-        }
-        switch (type_.to_physical_type()) {
-            case types::physical_type::LIST: {
-                auto physical_size = type_.child_type().size();
-                auto total_size = physical_size * cardinality;
-
-                auto child_cardinality = static_cast<list_vector_buffer_t&>(*buffer_).capacity();
-                total_size += entry().allocation_size(child_cardinality);
-                return total_size;
-            }
-            case types::physical_type::ARRAY: {
-                auto child_cardinality = static_cast<array_vector_buffer_t&>(*buffer_).size();
-
-                auto total_size = entry().allocation_size(child_cardinality);
-                return total_size;
-            }
-            case types::physical_type::STRUCT: {
-                uint64_t total_size = 0;
-                auto& children = entries();
-                for (auto& child : children) {
-                    total_size += child->allocation_size(cardinality);
-                }
-                return total_size;
-            }
-            default:
-                throw std::logic_error("vector::vector_t::allocation_size not implemented for this type");
         }
     }
 
@@ -620,193 +541,7 @@ namespace components::vector {
         child_buffer->reserve(required_capacity);
     }
 
-    static bool struct_or_array_recursive(const types::complex_logical_type& type) {
-        return types::complex_logical_type::contains(type, [](const types::complex_logical_type& type) {
-            return type.to_physical_type() == types::physical_type::STRUCT ||
-                   type.to_physical_type() == types::physical_type::ARRAY;
-        });
-    }
-
-    void vector_t::push_back(types::logical_value_t value) {
-        static_cast<list_vector_buffer_t*>(auxiliary_.get())->push_back(std::move(value));
-    }
-
-    void vector_t::set_value(uint64_t index, const types::logical_value_t& val) {
-        if (get_vector_type() == vector_type::DICTIONARY) {
-            auto& indexing_vector = indexing();
-            return child().set_value(indexing_vector.get_index(index), val);
-        }
-        if (get_vector_type() == vector_type::CONSTANT) {
-            index = 0;
-        }
-        if (!val.is_null() && val.type() != type_) {
-            // A mistyped value is a caller bug; a bare assert would vanish under NDEBUG and make
-            // the write a silent no-op (old payload, caller reports success), so this refuses
-            // loudly in both builds instead.
-            assert(false && "value has to be casted to vector's type before set_value");
-            std::abort();
-        }
-
-        validity_.set(index, !val.is_null());
-        if (val.is_null() && !struct_or_array_recursive(type_)) {
-            return;
-        }
-
-        switch (type_.to_physical_type()) {
-            case types::physical_type::BOOL:
-                reinterpret_cast<bool*>(data_)[index] = val.value<bool>();
-                break;
-            case types::physical_type::INT8:
-                reinterpret_cast<int8_t*>(data_)[index] = val.value<int8_t>();
-                break;
-            case types::physical_type::INT16:
-                reinterpret_cast<int16_t*>(data_)[index] = val.value<int16_t>();
-                break;
-            case types::physical_type::INT32:
-                reinterpret_cast<int32_t*>(data_)[index] = val.value<int32_t>();
-                break;
-            case types::physical_type::INT64:
-                reinterpret_cast<int64_t*>(data_)[index] = val.value<int64_t>();
-                break;
-            case types::physical_type::INT128:
-                reinterpret_cast<types::int128_t*>(data_)[index] = val.value<types::int128_t>();
-                break;
-            case types::physical_type::UINT8:
-                reinterpret_cast<uint8_t*>(data_)[index] = val.value<uint8_t>();
-                break;
-            case types::physical_type::UINT16:
-                reinterpret_cast<uint16_t*>(data_)[index] = val.value<uint16_t>();
-                break;
-            case types::physical_type::UINT32:
-                reinterpret_cast<uint32_t*>(data_)[index] = val.value<uint32_t>();
-                break;
-            case types::physical_type::UINT64:
-                reinterpret_cast<uint64_t*>(data_)[index] = val.value<uint64_t>();
-                break;
-            case types::physical_type::UINT128:
-                reinterpret_cast<types::uint128_t*>(data_)[index] = val.value<types::uint128_t>();
-                break;
-            case types::physical_type::FLOAT:
-                reinterpret_cast<float*>(data_)[index] = val.value<float>();
-                break;
-            case types::physical_type::DOUBLE:
-                reinterpret_cast<double*>(data_)[index] = val.value<double>();
-                break;
-            //case types::physical_type::INTERVAL:
-            //	reinterpret_cast<interval_t*>(data_)[index] = val.value<interval_t>();
-            //	break;
-            case types::physical_type::STRING: {
-                if (!val.is_null()) {
-                    assert(type_.type() == types::logical_type::STRING_LITERAL);
-                    if (!auxiliary_) {
-                        auxiliary_ = std::make_unique<string_vector_buffer_t>(resource());
-                    }
-                    assert(auxiliary_->type() == vector_buffer_type::STRING);
-                    reinterpret_cast<std::string_view*>(data_)[index] =
-                        std::string_view(reinterpret_cast<char*>(static_cast<string_vector_buffer_t*>(auxiliary_.get())
-                                                                     ->insert(*(val.value<std::string*>()))),
-                                         val.value<std::string*>()->size());
-                }
-                break;
-            }
-            case types::physical_type::STRUCT: {
-                assert(get_vector_type() == vector_type::CONSTANT || get_vector_type() == vector_type::FLAT);
-
-                auto& children = entries();
-                if (val.is_null()) {
-                    for (size_t i = 0; i < children.size(); i++) {
-                        auto& vec_child = children[i];
-                        vec_child->set_value(
-                            index,
-                            types::logical_value_t(resource(), types::complex_logical_type{types::logical_type::NA}));
-                    }
-                } else {
-                    auto& val_children = val.children();
-                    assert(children.size() == val_children.size());
-                    for (size_t i = 0; i < children.size(); i++) {
-                        children[i]->set_value(index, val_children[i]);
-                    }
-                }
-                break;
-            }
-            case types::physical_type::LIST: {
-                auto offset = size();
-                if (val.is_null()) {
-                    auto& entry = reinterpret_cast<types::list_entry_t*>(data_)[index];
-                    push_back(types::logical_value_t(resource(), types::complex_logical_type{types::logical_type::NA}));
-                    entry.length = 1;
-                    entry.offset = offset;
-                } else {
-                    auto& val_children = val.children();
-                    if (!val_children.empty()) {
-                        for (uint64_t i = 0; i < val_children.size(); i++) {
-                            push_back(val_children[i]);
-                        }
-                    }
-                    auto& entry = reinterpret_cast<types::list_entry_t*>(data_)[index];
-                    entry.length = val_children.size();
-                    entry.offset = offset;
-                }
-                break;
-            }
-            case types::physical_type::ARRAY: {
-                auto array_size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
-                auto& child = entry();
-                if (val.is_null()) {
-                    for (uint64_t i = 0; i < array_size; i++) {
-                        child.set_value(
-                            index * array_size + i,
-                            types::logical_value_t(resource(), types::complex_logical_type{types::logical_type::NA}));
-                    }
-                } else {
-                    auto& val_children = val.children();
-                    for (uint64_t i = 0; i < array_size; i++) {
-                        // narrow per-element physical width (e.g. BIGINT literal into INT[N] slot)
-                        child.set_value(index * array_size + i, val_children[i]);
-                    }
-                }
-                break;
-            }
-            default:
-                throw std::runtime_error("Unimplemented type for vector_t::set_value");
-        }
-    }
-
-    bool try_get_union_tag(const vector_t& vector, uint64_t index, uint8_t& result) {
-        // tag is always the first struct child.
-        auto& tag_vector = vector.entries()[0];
-        if (tag_vector->get_vector_type() == vector_type::DICTIONARY) {
-            auto& child = tag_vector->child();
-            auto& dict_idx = tag_vector->indexing();
-            auto mapped_idx = dict_idx.get_index(index);
-            if (!child.validity().row_is_valid(mapped_idx)) {
-                return false;
-            } else {
-                result = child.data<uint8_t>()[mapped_idx];
-                return true;
-            }
-        }
-        if (tag_vector->get_vector_type() == vector_type::CONSTANT) {
-            if (!tag_vector->validity().row_is_valid(0)) {
-                return false;
-            } else {
-                result = tag_vector->data<uint8_t>()[0];
-                return true;
-            }
-        }
-        if (!tag_vector->validity().row_is_valid(index)) {
-            return false;
-        } else {
-            result = tag_vector->data<uint8_t>()[index];
-            return true;
-        }
-    }
-
     const vector_t* vector_t::resolve_value_location(uint64_t row_index, uint64_t* index) const {
-        if (!validity_.row_is_valid(row_index)) {
-            return nullptr;
-        }
-
         const vector_t* vector = this;
         *index = row_index;
         bool finished = false;
@@ -835,221 +570,6 @@ namespace components::vector {
             return nullptr;
         }
         return vector;
-    }
-
-    types::logical_value_t vector_t::value_internal(uint64_t index_p) const {
-        const vector_t* vector = this;
-        uint64_t index = index_p;
-        bool finished = false;
-        while (!finished) {
-            switch (vector->get_vector_type()) {
-                case vector_type::CONSTANT:
-                    index = 0;
-                    finished = true;
-                    break;
-                case vector_type::FLAT:
-                    finished = true;
-                    break;
-                case vector_type::DICTIONARY: {
-                    index = vector->indexing().get_index(index);
-                    vector = &(vector->child());
-                    break;
-                }
-                case vector_type::SEQUENCE: {
-                    int64_t start, increment;
-                    get_sequence(start, increment);
-                    return types::logical_value_t::create_numeric(vector->resource(),
-                                                                  vector->type_,
-                                                                  start + increment * static_cast<int64_t>(index));
-                }
-                default:
-                    throw std::runtime_error("Unimplemented vector type for vector_t::value");
-            }
-        }
-
-        // NULL rows never reach here: value() screens them with is_null() first. A default-built
-        // value of the declared type here would answer a zero in place of a NULL, not a null.
-        assert(vector->validity_.row_is_valid(index) && "value_internal reached a NULL row");
-
-        switch (vector->type_.type()) {
-            case types::logical_type::BOOLEAN:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<bool*>(vector->data_)[index]);
-            case types::logical_type::TINYINT:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<int8_t*>(vector->data_)[index]);
-            case types::logical_type::SMALLINT:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<int16_t*>(vector->data_)[index]);
-            case types::logical_type::INTEGER:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<int32_t*>(vector->data_)[index]);
-            case types::logical_type::BIGINT:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<int64_t*>(vector->data_)[index]);
-            case types::logical_type::DATE:
-                return types::logical_value_t(vector->resource(),
-                                              reinterpret_cast<core::date::date_t*>(vector->data_)[index]);
-            case types::logical_type::TIME:
-                return types::logical_value_t(vector->resource(),
-                                              reinterpret_cast<core::date::time_t*>(vector->data_)[index]);
-            case types::logical_type::TIMESTAMP:
-                return types::logical_value_t(vector->resource(),
-                                              reinterpret_cast<core::date::timestamp_t*>(vector->data_)[index]);
-            case types::logical_type::TIMESTAMP_TZ:
-                return types::logical_value_t(vector->resource(),
-                                              reinterpret_cast<core::date::timestamptz_t*>(vector->data_)[index]);
-            case types::logical_type::TIME_TZ: {
-                auto& child_entries = vector->entries();
-                return types::logical_value_t(
-                    vector->resource(),
-                    core::date::timetz_t{reinterpret_cast<core::date::microseconds*>(child_entries[0]->data_)[index],
-                                         reinterpret_cast<core::date::seconds_i32*>(child_entries[1]->data_)[index]});
-            }
-            case types::logical_type::INTERVAL: {
-                auto& child_entries = vector->entries();
-                return types::logical_value_t(
-                    vector->resource(),
-                    core::date::interval_t{reinterpret_cast<core::date::microseconds*>(child_entries[0]->data_)[index],
-                                           reinterpret_cast<core::date::days*>(child_entries[1]->data_)[index],
-                                           reinterpret_cast<core::date::months*>(child_entries[2]->data_)[index]});
-            }
-            case types::logical_type::UTINYINT:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<uint8_t*>(vector->data_)[index]);
-            case types::logical_type::USMALLINT:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<uint16_t*>(vector->data_)[index]);
-            case types::logical_type::UINTEGER:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<uint32_t*>(vector->data_)[index]);
-            case types::logical_type::UBIGINT:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<uint64_t*>(vector->data_)[index]);
-            case types::logical_type::HUGEINT:
-                return types::logical_value_t(vector->resource(),
-                                              reinterpret_cast<types::int128_t*>(vector->data_)[index]);
-            case types::logical_type::UHUGEINT:
-                return types::logical_value_t(vector->resource(),
-                                              reinterpret_cast<types::uint128_t*>(vector->data_)[index]);
-            case types::logical_type::DECIMAL: {
-                const auto* ext =
-                    reinterpret_cast<const types::decimal_logical_type_extension*>(vector->type_.extension());
-                assert(ext->type() == types::logical_type_extension::extension_type::DECIMAL);
-                switch (ext->stored_as()) {
-                    case types::physical_type::INT16:
-                        return types::logical_value_t::create_decimal(vector->resource(),
-                                                                      vector->type_,
-                                                                      reinterpret_cast<int16_t*>(vector->data_)[index]);
-                    case types::physical_type::INT32:
-                        return types::logical_value_t::create_decimal(vector->resource(),
-                                                                      vector->type_,
-                                                                      reinterpret_cast<int32_t*>(vector->data_)[index]);
-                    case types::physical_type::INT64:
-                        return types::logical_value_t::create_decimal(vector->resource(),
-                                                                      vector->type_,
-                                                                      reinterpret_cast<int64_t*>(vector->data_)[index]);
-                    case types::physical_type::INT128:
-                        return types::logical_value_t::create_decimal(
-                            vector->resource(),
-                            vector->type_,
-                            reinterpret_cast<types::int128_t*>(vector->data_)[index]);
-                    default:
-                        throw std::runtime_error(
-                            "incorrect decimal storage type encountered in vector_t::value_internal");
-                }
-            }
-            case types::logical_type::POINTER:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<void*>((vector->data_)[index]));
-            case types::logical_type::FLOAT:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<float*>(vector->data_)[index]);
-            case types::logical_type::DOUBLE:
-                return types::logical_value_t(vector->resource(), reinterpret_cast<double*>(vector->data_)[index]);
-            case types::logical_type::STRING_LITERAL: {
-                return types::logical_value_t(vector->resource(),
-                                              std::string(reinterpret_cast<std::string_view*>(vector->data_)[index]));
-            }
-            case types::logical_type::MAP: {
-                // MAP is materialized as a LIST of struct<key,value>; the children here are those
-                // struct entries, the same representation python_object_t::from_value(MAP) consumes.
-                auto offlen = reinterpret_cast<types::list_entry_t*>(vector->data_)[index];
-                auto& child_vec = vector->entry();
-                std::vector<types::logical_value_t> children;
-                for (uint64_t i = offlen.offset; i < offlen.offset + offlen.length; i++) {
-                    children.push_back(child_vec.value(i));
-                }
-                return types::logical_value_t::create_struct(vector->resource(), vector->type_, std::move(children));
-            }
-            case types::logical_type::STRUCT: {
-                auto& child_entries = vector->entries();
-                std::vector<types::logical_value_t> children;
-                children.reserve(child_entries.size());
-                for (uint64_t child_idx = 0; child_idx < child_entries.size(); child_idx++) {
-                    children.push_back(child_entries[child_idx]->value(index));
-                    if (vector->type_.child_types()[child_idx].has_alias()) {
-                        children.back().set_alias(vector->type_.child_name(child_idx));
-                    }
-                }
-                // The declared type, not one inferred from the fields: a NULL field carries
-                // logical_type::NA, which would answer STRUCT<BIGINT, NA> instead.
-                return types::logical_value_t::create_struct(vector->resource(), vector->type_, std::move(children));
-            }
-            case types::logical_type::LIST: {
-                auto offlen = reinterpret_cast<types::list_entry_t*>(vector->data_)[index];
-                auto& child_vec = vector->entry();
-                std::vector<types::logical_value_t> children;
-                for (uint64_t i = offlen.offset; i < offlen.offset + offlen.length; i++) {
-                    children.push_back(child_vec.value(i));
-                }
-                // The declared type, extension included: create_list(child) would rebuild a fresh
-                // default extension and drop the declared field_id/required.
-                return types::logical_value_t::create_list_from_type(vector->resource(),
-                                                                     vector->type_,
-                                                                     std::move(children));
-            }
-            case types::logical_type::ARRAY: {
-                auto stride =
-                    static_cast<const types::array_logical_type_extension*>(vector->type_.extension())->size();
-                auto offset = index * stride;
-                auto& child_vec = vector->entry();
-                std::vector<types::logical_value_t> children;
-                children.reserve(stride);
-                for (uint64_t i = offset; i < offset + stride; i++) {
-                    children.push_back(child_vec.value(i));
-                }
-                return types::logical_value_t::create_array(
-                    vector->resource(),
-                    types::complex_logical_type(
-                        static_cast<const types::array_logical_type_extension*>(vector->type_.extension())
-                            ->internal_type()),
-                    children);
-            }
-            case types::logical_type::ENUM: {
-                return types::logical_value_t::create_enum(vector->resource(),
-                                                           vector->type_,
-                                                           reinterpret_cast<int32_t*>(vector->data_)[index]);
-            }
-            case types::logical_type::UNION: {
-                uint8_t tag;
-                if (try_get_union_tag(*vector, index, tag)) {
-                    auto value = vector->entries()[static_cast<size_t>(tag) + 1]->value(index);
-                    // Naming vector->resource() here is required: `auto members = ...child_types()`
-                    // would copy the pmr vector without propagating its allocator, leaving it on the
-                    // default resource instead of the one the UNION value itself lives on.
-                    std::pmr::vector<types::complex_logical_type> members(vector->type().child_types(),
-                                                                          vector->resource());
-                    members.erase(members.begin());
-                    return types::logical_value_t::create_union(vector->resource(),
-                                                                std::move(members),
-                                                                tag,
-                                                                std::move(value));
-                } else {
-                    return types::logical_value_t(vector->resource(), vector->type());
-                }
-            }
-            case types::logical_type::VARIANT: {
-                std::vector<types::logical_value_t> children;
-                children.reserve(4);
-                children.emplace_back(vector->entries()[0]->value(index));
-                children.emplace_back(vector->entries()[1]->value(index));
-                children.emplace_back(vector->entries()[2]->value(index));
-                children.emplace_back(vector->entries()[3]->value(index));
-                return types::logical_value_t::create_variant(vector->resource(), children);
-            }
-            default:
-                throw std::runtime_error("Unimplemented type for value access");
-        }
     }
 
     void vector_t::get_sequence(int64_t& start, int64_t& increment, int64_t& sequence_count) const {
@@ -1168,27 +688,6 @@ namespace components::vector {
         }
     }
 
-    types::logical_value_t vector_t::value(uint64_t index) const {
-        // is_null(), not validity_ directly: on DICTIONARY the caller's index addresses the
-        // indexing vector, and on CONSTANT every index resolves to row 0, so validity_[index]
-        // directly would answer about the wrong row.
-        if (is_null(index)) {
-            types::logical_value_t null_val(resource(), types::complex_logical_type{types::logical_type::NA});
-            if (type_.has_alias()) {
-                null_val.set_alias(type_.alias());
-            }
-            return null_val;
-        }
-        auto value = value_internal(index);
-        if (type_.has_alias()) {
-            value.set_alias(type_.alias());
-        }
-        if (type_.type() != types::logical_type::FUNCTION && value.type().type() != types::logical_type::FUNCTION) {
-            assert(type_ == value.type());
-        }
-        return value;
-    }
-
     template<typename T>
     static void templated_flatten_constant_vector(std::byte* data, std::byte* constant_raw, uint64_t count) {
         const T constant = *reinterpret_cast<const T*>(constant_raw);
@@ -1219,6 +718,9 @@ namespace components::vector {
                                                             std::max<uint64_t>(DEFAULT_VECTOR_CAPACITY, count));
                 data_ = buffer_->data();
                 vector_type_ = vector_type::FLAT;
+                if (count > validity_.count()) {
+                    validity_.resize(resource(), count);
+                }
                 if (is_null() && type_.to_physical_type() != types::physical_type::ARRAY) {
                     validity_.set_all_invalid(count);
                     if (type_.to_physical_type() != types::physical_type::STRUCT) {
@@ -1370,6 +872,9 @@ namespace components::vector {
                 }
                 data_ = buffer_->data();
                 vector_type_ = vector_type::FLAT;
+                if (count > validity_.count()) {
+                    validity_.resize(resource(), count);
+                }
                 if (is_null && type_.to_physical_type() != types::physical_type::ARRAY) {
                     validity_.set_all_invalid(count);
                     if (type_.to_physical_type() != types::physical_type::STRUCT) {
@@ -1588,7 +1093,6 @@ namespace components::vector {
                        child.get_vector_type() == vector_type::FLAT);
                 auto array_size = static_cast<types::array_logical_type_extension*>(type_.extension())->size();
                 if (child.get_vector_type() == vector_type::CONSTANT) {
-                    assert(array_size == 1);
                     child.set_null(is_null);
                 } else {
                     for (uint64_t i = 0; i < array_size; i++) {

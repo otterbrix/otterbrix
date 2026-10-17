@@ -25,7 +25,7 @@
 #include <components/table/pushed_filter.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <components/table/transaction.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/wal/base.hpp>
 

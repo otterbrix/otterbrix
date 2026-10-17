@@ -2,7 +2,6 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-#include <components/types/logical_value.hpp>
 #include <core/operations_helper.hpp>
 
 // ORDER BY over expression keys: unary operators and mixed plain/computed key lists.
@@ -40,7 +39,9 @@ namespace {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == expected.size());
         for (size_t i = 0; i < expected.size(); ++i) {
-            REQUIRE(cur->value(0, i).value<int64_t>() == expected[i]);
+            auto cell0 = cur->get<int64_t>(0, i);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == expected[i]);
         }
     }
 
@@ -81,9 +82,15 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_minus_evaluation") {
         auto cur = dispatcher->execute_sql(session, "SELECT -v FROM db.m;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == -5);
-        REQUIRE(cur->value(0, 1).is_null());
-        REQUIRE(cur->value(0, 2).value<int64_t>() == -7);
+        auto cell1 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == -5);
+        auto cell2 = cur->is_null(0, 1);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value());
+        auto cell3 = cur->get<int64_t>(0, 2);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == -7);
     }
 }
 
@@ -128,8 +135,12 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_minus") {
         auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.t ORDER BY -id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
-        REQUIRE(cur->value(0, 0).value<int32_t>() == 4);
-        REQUIRE(cur->value(0, 3).value<int32_t>() == 1);
+        auto cell4 = cur->get<int32_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == 4);
+        auto cell5 = cur->get<int32_t>(0, 3);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == 1);
     }
 
     {
@@ -195,9 +206,15 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_minus_double_column") {
     auto cur = dispatcher->execute_sql(session, "SELECT x FROM db.d ORDER BY -x;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 3);
-    REQUIRE((cur->value(0, 0).value<double>() > 1.4 && cur->value(0, 0).value<double>() < 1.6));
-    REQUIRE((cur->value(0, 1).value<double>() > 0.4 && cur->value(0, 1).value<double>() < 0.6));
-    REQUIRE((cur->value(0, 2).value<double>() > -2.6 && cur->value(0, 2).value<double>() < -2.4));
+    auto cell6 = cur->get<double>(0, 0);
+    REQUIRE_FALSE(cell6.has_error());
+    REQUIRE((cell6.value() > 1.4 && cell6.value() < 1.6));
+    auto cell7 = cur->get<double>(0, 1);
+    REQUIRE_FALSE(cell7.has_error());
+    REQUIRE((cell7.value() > 0.4 && cell7.value() < 0.6));
+    auto cell8 = cur->get<double>(0, 2);
+    REQUIRE_FALSE(cell8.has_error());
+    REQUIRE((cell8.value() > -2.6 && cell8.value() < -2.4));
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::mixed_key_priority") {
@@ -292,10 +309,18 @@ TEST_CASE("integration::cpp::order_by_expressions::mixed_key_priority_multichunk
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 4);
         // grp DESC puts grp==2 first; within it id ASC: 2, 5, 8, 11.
-        REQUIRE(cur->value(0, 0).value<int32_t>() == 2);
-        REQUIRE(cur->value(0, 1).value<int32_t>() == 5);
-        REQUIRE(cur->value(0, 2).value<int32_t>() == 8);
-        REQUIRE(cur->value(0, 3).value<int32_t>() == 11);
+        auto cell9 = cur->get<int32_t>(0, 0);
+        REQUIRE_FALSE(cell9.has_error());
+        REQUIRE(cell9.value() == 2);
+        auto cell10 = cur->get<int32_t>(0, 1);
+        REQUIRE_FALSE(cell10.has_error());
+        REQUIRE(cell10.value() == 5);
+        auto cell11 = cur->get<int32_t>(0, 2);
+        REQUIRE_FALSE(cell11.has_error());
+        REQUIRE(cell11.value() == 8);
+        auto cell12 = cur->get<int32_t>(0, 3);
+        REQUIRE_FALSE(cell12.has_error());
+        REQUIRE(cell12.value() == 11);
     }
 }
 
@@ -348,9 +373,15 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_over_null_rows") {
     auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.n ORDER BY -v;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 3);
-    REQUIRE(cur->value(0, 0).value<int32_t>() == 3);
-    REQUIRE(cur->value(0, 1).value<int32_t>() == 1);
-    REQUIRE(cur->value(0, 2).value<int32_t>() == 2);
+    auto cell13 = cur->get<int32_t>(0, 0);
+    REQUIRE_FALSE(cell13.has_error());
+    REQUIRE(cell13.value() == 3);
+    auto cell14 = cur->get<int32_t>(0, 1);
+    REQUIRE_FALSE(cell14.has_error());
+    REQUIRE(cell14.value() == 1);
+    auto cell15 = cur->get<int32_t>(0, 2);
+    REQUIRE_FALSE(cell15.has_error());
+    REQUIRE(cell15.value() == 2);
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::null_literal_arithmetic_keys") {
@@ -409,8 +440,12 @@ TEST_CASE("integration::cpp::order_by_expressions::computed_key_over_group_outpu
     auto cur = dispatcher->execute_sql(session, "SELECT g, COUNT(*) FROM db.t GROUP BY g ORDER BY g + 0 DESC;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    REQUIRE(cur->value(0, 0).value<int32_t>() == 2);
-    REQUIRE(cur->value(0, 1).value<int32_t>() == 1);
+    auto cell16 = cur->get<int32_t>(0, 0);
+    REQUIRE_FALSE(cell16.has_error());
+    REQUIRE(cell16.value() == 2);
+    auto cell17 = cur->get<int32_t>(0, 1);
+    REQUIRE_FALSE(cell17.has_error());
+    REQUIRE(cell17.value() == 1);
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::computed_key_over_ungrouped_column_is_error") {
@@ -453,9 +488,15 @@ TEST_CASE("integration::cpp::order_by_expressions::unary_minus_nulls_first") {
     auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.n ORDER BY -v NULLS FIRST;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 3);
-    REQUIRE(cur->value(0, 0).value<int32_t>() == 2);
-    REQUIRE(cur->value(0, 1).value<int32_t>() == 3);
-    REQUIRE(cur->value(0, 2).value<int32_t>() == 1);
+    auto cell18 = cur->get<int32_t>(0, 0);
+    REQUIRE_FALSE(cell18.has_error());
+    REQUIRE(cell18.value() == 2);
+    auto cell19 = cur->get<int32_t>(0, 1);
+    REQUIRE_FALSE(cell19.has_error());
+    REQUIRE(cell19.value() == 3);
+    auto cell20 = cur->get<int32_t>(0, 2);
+    REQUIRE_FALSE(cell20.has_error());
+    REQUIRE(cell20.value() == 1);
 }
 
 TEST_CASE("integration::cpp::order_by_expressions::computed_desc_nulls_placement") {
@@ -485,17 +526,29 @@ TEST_CASE("integration::cpp::order_by_expressions::computed_desc_nulls_placement
         auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.n ORDER BY v + 0 DESC;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<int32_t>() == 2);
-        REQUIRE(cur->value(0, 1).value<int32_t>() == 3);
-        REQUIRE(cur->value(0, 2).value<int32_t>() == 1);
+        auto cell21 = cur->get<int32_t>(0, 0);
+        REQUIRE_FALSE(cell21.has_error());
+        REQUIRE(cell21.value() == 2);
+        auto cell22 = cur->get<int32_t>(0, 1);
+        REQUIRE_FALSE(cell22.has_error());
+        REQUIRE(cell22.value() == 3);
+        auto cell23 = cur->get<int32_t>(0, 2);
+        REQUIRE_FALSE(cell23.has_error());
+        REQUIRE(cell23.value() == 1);
     }
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.n ORDER BY v + 0 DESC NULLS LAST;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
-        REQUIRE(cur->value(0, 0).value<int32_t>() == 3);
-        REQUIRE(cur->value(0, 1).value<int32_t>() == 1);
-        REQUIRE(cur->value(0, 2).value<int32_t>() == 2);
+        auto cell24 = cur->get<int32_t>(0, 0);
+        REQUIRE_FALSE(cell24.has_error());
+        REQUIRE(cell24.value() == 3);
+        auto cell25 = cur->get<int32_t>(0, 1);
+        REQUIRE_FALSE(cell25.has_error());
+        REQUIRE(cell25.value() == 1);
+        auto cell26 = cur->get<int32_t>(0, 2);
+        REQUIRE_FALSE(cell26.has_error());
+        REQUIRE(cell26.value() == 2);
     }
 }

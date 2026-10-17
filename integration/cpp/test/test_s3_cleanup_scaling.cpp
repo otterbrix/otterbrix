@@ -138,7 +138,9 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::contiguous_tombstones_recl
         {
             auto cur = exec("SELECT count(*) FROM tomb.t;");
             REQUIRE(cur->is_success());
-            live_rows = cur->value(0, 0).value<int64_t>();
+            auto cell0 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell0.has_error());
+            live_rows = cell0.value();
         }
         INFO("live rows before the checkpoint: " << live_rows);
         REQUIRE(live_rows > 0);
@@ -213,7 +215,9 @@ TEST_CASE("integration::cpp::test_s3_cleanup_scaling::scattered_tombstones_recla
         {
             auto cur = exec("SELECT count(*) FROM tomb.t;");
             REQUIRE(cur->is_success());
-            live_rows = cur->value(0, 0).value<int64_t>();
+            auto cell1 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell1.has_error());
+            live_rows = cell1.value();
         }
         INFO("scattered: live rows before the checkpoint: " << live_rows);
         REQUIRE(live_rows > 0);

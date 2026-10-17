@@ -12,6 +12,7 @@
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/pmr.hpp>
 
 #include <algorithm>
@@ -412,7 +413,7 @@ namespace components::planner {
                     resource,
                     target,
                     expressions::make_compare_expression(resource, expressions::compare_type::all_true)),
-                logical_plan::make_node_limit(resource, logical_plan::limit_t::unlimit())));
+                logical_plan::make_node_limit(resource, logical_plan::limit_t::all())));
         logical_plan::execution_plan_t plan{resource, std::move(del), logical_plan::make_parameter_node(resource)};
         sql::transform::register_catalog_resolve_write_target(resource,
                                                               &plan.catalog_resolves,
@@ -429,9 +430,13 @@ namespace components::planner {
             return;
         }
         expressions::parameter_id_map_t id_map{resource};
-        for (const auto& [old_id, value] : body_params->parameters().parameters) {
-            // add_parameter(value) allocates the next free id in the OUTER plan.
-            const auto new_id = out_params->add_parameter(value);
+        const auto& source = body_params->parameters();
+        for (size_t index = 0; index < source.size(); ++index) {
+            const core::parameter_id_t old_id(static_cast<uint32_t>(index));
+            // add_parameter allocates the next free id in the OUTER plan.
+            const auto new_id = out_params->add_parameter(
+                vector::make_constant_copy(out_params->parameters().resource(), source.at(old_id)),
+                source.kind(old_id));
             id_map.emplace(old_id, new_id);
         }
         remap_node_expressions(body, id_map);

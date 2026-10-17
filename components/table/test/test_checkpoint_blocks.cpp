@@ -14,7 +14,6 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/table/test/fault_injection_file.hpp>
-#include <components/types/logical_value.hpp>
 #include <core/file/local_file_system.hpp>
 
 #include <cstdio>
@@ -169,11 +168,10 @@ namespace {
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 const uint64_t row = seen + i;
                 for (uint64_t col = 0; col < MIXED_INTS; col++) {
-                    CHECK(chunk.value(col, i).value<int32_t>() == static_cast<int32_t>(row * 7 + col));
+                    CHECK(chunk.data[col].get_value<int32_t>(i) == static_cast<int32_t>(row * 7 + col));
                 }
-                const auto cell = chunk.value(MIXED_INTS, i);
                 const auto expected = string_of(row);
-                CHECK(cell.value<std::string_view>() == expected);
+                CHECK(chunk.data[MIXED_INTS].get_value<std::string_view>(i) == expected);
             }
             seen += chunk.size();
         }
@@ -435,10 +433,9 @@ namespace {
                     break;
                 }
                 case shape_t::STRUCT: {
-                    std::vector<logical_value_t> members;
-                    members.emplace_back(resource, static_cast<int64_t>(row));
-                    members.emplace_back(resource, "name_" + std::to_string(row));
-                    chunk.set_value(0, i, logical_value_t::create_struct(resource, types[0], members));
+                    const std::string name = "name_" + std::to_string(row);
+                    chunk.data[0].entries()[0]->set_value(i, static_cast<int64_t>(row));
+                    chunk.data[0].entries()[1]->set_value(i, std::string_view{name});
                     break;
                 }
             }

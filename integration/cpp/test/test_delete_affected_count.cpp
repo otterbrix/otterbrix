@@ -42,6 +42,8 @@ TEST_CASE("integration::cpp::delete_affected_count::txn_re_delete_reports_zero",
         auto cur = exec(s, "SELECT id FROM dc.t;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        CHECK(cur->value(0, 0).value<int64_t>() == 3);
+        auto cell0 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        CHECK(cell0.value() == 3);
     }
 }

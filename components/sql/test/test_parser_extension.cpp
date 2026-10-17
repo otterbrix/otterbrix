@@ -9,7 +9,6 @@
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
-#include <components/types/logical_value.hpp>
 
 #include <demo_ast.hpp>
 #include <demo_extension.hpp>
@@ -81,11 +80,12 @@ namespace {
                                                       ExtensionNode* node,
                                                       components::logical_plan::parameter_node_t* /*params*/) {
         const auto* payload = static_cast<const echo_payload*>(node->data);
-        components::types::logical_value_t value(resource, payload->value);
         components::vector::data_chunk_t chunk(resource, {}, 1);
         chunk.set_cardinality(1);
-        chunk.data.emplace_back(resource, value.type(), chunk.capacity());
-        chunk.set_value(0, 0, std::move(value));
+        chunk.data.emplace_back(resource,
+                                components::types::complex_logical_type{components::types::to_logical_type<int64_t>()},
+                                chunk.capacity());
+        chunk.set_value(0, 0, payload->value);
         return components::logical_plan::make_node_raw_data(resource, std::move(chunk));
     }
 

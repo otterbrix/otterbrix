@@ -54,7 +54,9 @@ TEST_CASE("integration::cpp::create_index_backfill::large_table_streams_multiple
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM IdxDb.t WHERE grp = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount / kGroups));
+        auto cell0 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == static_cast<uint64_t>(kRowCount / kGroups));
     }
 }
 
@@ -119,13 +121,17 @@ TEST_CASE("integration::cpp::create_index_backfill::backfill_after_delete_maps_c
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM IdxDb.t WHERE grp = 0;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kAlivePerGroup));
+        auto cell1 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == static_cast<uint64_t>(kAlivePerGroup));
     }
     {
         auto cur = exec(dispatcher, "SELECT id FROM IdxDb.t WHERE grp = 1 ORDER BY id LIMIT 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 101);
+        auto cell2 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == 101);
     }
 }
 
@@ -171,8 +177,12 @@ TEST_CASE("integration::cpp::create_index_backfill::backfill_over_a_mid_batch_ho
         // while naming another, and the answer for grp = 0 would carry ODD ids. Checking every row is
         // what makes an off-by-one in that leg visible.
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            const auto id = cur->value(0, r).value<int64_t>();
-            const auto grp = cur->value(1, r).value<int32_t>();
+            auto cell3 = cur->get<int64_t>(0, r);
+            REQUIRE_FALSE(cell3.has_error());
+            const auto id = cell3.value();
+            auto cell4 = cur->get<int32_t>(1, r);
+            REQUIRE_FALSE(cell4.has_error());
+            const auto grp = cell4.value();
             INFO("row " << r << " answered id=" << id << " grp=" << grp);
             REQUIRE(grp == 0);
             REQUIRE(id % 2 == 0);
@@ -185,6 +195,8 @@ TEST_CASE("integration::cpp::create_index_backfill::backfill_over_a_mid_batch_ho
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM IdxDb.t WHERE grp = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount / kGroups));
+        auto cell5 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == static_cast<uint64_t>(kRowCount / kGroups));
     }
 }

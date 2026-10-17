@@ -72,7 +72,9 @@ namespace {
         INFO("count over " << table << ": " << (cur->is_error() ? cur->get_error().what.c_str() : "ok"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        return cur->value(0, 0).value<int64_t>();
+        auto cell0 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        return cell0.value();
     }
 
     // Header slot 1 overwritten with seeded garbage: its checksum no longer matches.
@@ -203,8 +205,9 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P3_after_write_through_multi_tabl
             auto cur = exec(d, "SELECT payload FROM b.u WHERE id = 7;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            auto cell = cur->value(0, 0);
-            CHECK(cell.value<std::string_view>() == "updated");
+            auto cell1 = cur->get<std::string_view>(0, 0);
+            REQUIRE_FALSE(cell1.has_error());
+            CHECK(cell1.value() == "updated");
         }
         after_reopen(d);
         CHECK(count_rows(d, "a.t") == kRows - 100 + 10);

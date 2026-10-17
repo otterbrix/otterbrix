@@ -1,7 +1,13 @@
+#include <array>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <components/vector/data_chunk_binary.hpp>
+#include <components/vector/vector_builders.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <core/pmr.hpp>
+#include <cstring>
 #include <services/wal/base.hpp>
 #include <services/wal/record.hpp>
 #include <services/wal/wal.hpp>
@@ -21,6 +27,34 @@ to_chunk_batch(const components::vector::data_chunk_t& chunk) {
     chunk.copy(copy, 0);
     batch.emplace_back(std::move(copy));
     return batch;
+}
+
+static void put(const vector_t& cell, vector_t& target, uint64_t row) { vector_ops::copy(cell, target, 1, 0, row); }
+
+static uint64_t len(const vector_t& v, uint64_t row) { return sequence_of(v, row).length; }
+
+template<typename T>
+static T elem(const vector_t& v, uint64_t row, uint64_t i) {
+    const auto seq = sequence_of(v, row);
+    return seq.child->get_value<T>(seq.offset + i);
+}
+
+static bool elem_null(const vector_t& v, uint64_t row, uint64_t i) {
+    const auto seq = sequence_of(v, row);
+    return seq.child->is_null(seq.offset + i);
+}
+
+template<typename T>
+static T fld(const vector_t& v, uint64_t row, uint64_t k) {
+    const auto cell = resolve_cell(v, row);
+    return cell.vec->entries()[k]->get_value<T>(cell.index);
+}
+
+static constexpr std::string_view kGarbageMarker = "GARBAGE-UNDER-NULL";
+
+static bool buffer_contains(const buffer_t& buffer, std::string_view needle) {
+    std::string_view haystack(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+    return haystack.find(needle) != std::string_view::npos;
 }
 
 static std::pmr::vector<components::types::complex_logical_type> wal_test_types(std::pmr::memory_resource* r) {
@@ -72,7 +106,8 @@ TEST_CASE("wal_binary::encode_decode_insert") {
 
     for (uint64_t col = 0; col < chunk.column_count(); col++) {
         for (uint64_t row = 0; row < chunk.size(); row++) {
-            REQUIRE(record.physical_data.front().value(col, row) == chunk.value(col, row));
+            REQUIRE(record.physical_data.front().data[col].type() == chunk.data[col].type());
+            REQUIRE(cells_equal(record.physical_data.front().data[col], row, chunk.data[col], row));
         }
     }
 }
@@ -148,7 +183,8 @@ TEST_CASE("wal_binary::encode_decode_update") {
 
     for (uint64_t col = 0; col < new_data.column_count(); col++) {
         for (uint64_t row = 0; row < new_data.size(); row++) {
-            REQUIRE(record.physical_data.front().value(col, row) == new_data.value(col, row));
+            REQUIRE(record.physical_data.front().data[col].type() == new_data.data[col].type());
+            REQUIRE(cells_equal(record.physical_data.front().data[col], row, new_data.data[col], row));
         }
     }
 }
@@ -247,7 +283,8 @@ TEST_CASE("wal_binary::data_chunk_binary_mixed_types") {
 
     for (uint64_t col = 0; col < chunk.column_count(); col++) {
         for (uint64_t row = 0; row < chunk.size(); row++) {
-            REQUIRE(result.value(col, row) == chunk.value(col, row));
+            REQUIRE(result.data[col].type() == chunk.data[col].type());
+            REQUIRE(cells_equal(result.data[col], row, chunk.data[col], row));
         }
     }
 }
@@ -310,14 +347,14 @@ TEST_CASE("wal_binary::data_chunk_binary_struct_type_roundtrip") {
     data_chunk_t chunk(&resource, types, 3);
     chunk.set_cardinality(3);
     for (uint64_t row = 0; row < 3; row++) {
-        chunk.set_value(0, row, logical_value_t{&resource, static_cast<int64_t>(row + 1)});
+        chunk.set_value(0, row, static_cast<int64_t>(row + 1));
         if (row == 1) {
-            chunk.set_value(1, row, logical_value_t{&resource, nullptr});
+            put(make_null(&resource, types[1]), chunk.data[1], row);
         } else {
-            std::vector<logical_value_t> members;
-            members.emplace_back(&resource, static_cast<int64_t>(row * 10));
-            members.emplace_back(&resource, static_cast<int64_t>(row * 20));
-            chunk.set_value(1, row, logical_value_t::create_struct(&resource, pair_type, members));
+            std::vector<vector_t> members;
+            members.push_back(make_scalar(&resource, static_cast<int64_t>(row * 10)));
+            members.push_back(make_scalar(&resource, static_cast<int64_t>(row * 20)));
+            put(make_struct(&resource, pair_type, members), chunk.data[1], row);
         }
     }
 
@@ -343,7 +380,7 @@ TEST_CASE("wal_binary::data_chunk_binary_struct_type_roundtrip") {
     REQUIRE(result.data[1].validity().row_is_valid(2));
 
     for (uint64_t row = 0; row < 3; row++) {
-        REQUIRE(result.value(0, row).value<int64_t>() == static_cast<int64_t>(row + 1));
+        REQUIRE(result.data[0].get_value<int64_t>(row) == static_cast<int64_t>(row + 1));
     }
 }
 
@@ -362,25 +399,25 @@ TEST_CASE("wal_binary::data_chunk_binary_array_payload_roundtrip") {
     data_chunk_t chunk(&resource, types, 4);
     chunk.set_cardinality(4);
     for (uint64_t row = 0; row < 4; row++) {
-        chunk.set_value(0, row, logical_value_t{&resource, static_cast<int64_t>(row + 1)});
+        chunk.set_value(0, row, static_cast<int64_t>(row + 1));
     }
     for (uint64_t row : {uint64_t{0}, uint64_t{1}}) {
-        std::vector<logical_value_t> elements;
+        std::vector<vector_t> elements;
         for (uint64_t i = 0; i < 3; i++) {
-            elements.emplace_back(&resource, static_cast<int64_t>(row * 10 + i));
+            elements.push_back(make_scalar(&resource, static_cast<int64_t>(row * 10 + i)));
         }
-        chunk.set_value(1, row, logical_value_t::create_array(&resource, element_type, elements));
+        put(make_array(&resource, element_type, elements), chunk.data[1], row);
     }
-    chunk.set_value(1, 2, logical_value_t{&resource, nullptr});
+    put(make_null(&resource, types[1]), chunk.data[1], 2);
     {
-        std::vector<logical_value_t> elements;
-        elements.emplace_back(&resource, static_cast<int64_t>(70));
-        elements.emplace_back(&resource, nullptr);
-        elements.emplace_back(&resource, static_cast<int64_t>(90));
-        chunk.set_value(1, 3, logical_value_t::create_array(&resource, element_type, elements));
+        std::vector<vector_t> elements;
+        elements.push_back(make_scalar(&resource, static_cast<int64_t>(70)));
+        elements.push_back(make_null(&resource, element_type));
+        elements.push_back(make_scalar(&resource, static_cast<int64_t>(90)));
+        put(make_array(&resource, element_type, elements), chunk.data[1], 3);
     }
 
-    REQUIRE(chunk.value(1, 3).children()[1].is_null());
+    REQUIRE(elem_null(chunk.data[1], 3, 1));
 
     buffer_t buffer(&resource);
     serialize_binary(chunk, buffer);
@@ -395,16 +432,15 @@ TEST_CASE("wal_binary::data_chunk_binary_array_payload_roundtrip") {
 
     for (uint64_t row = 0; row < 4; row++) {
         INFO("row " << row);
-        REQUIRE(result.value(0, row).value<int64_t>() == static_cast<int64_t>(row + 1));
+        REQUIRE(result.data[0].get_value<int64_t>(row) == static_cast<int64_t>(row + 1));
     }
 
     for (uint64_t row : {uint64_t{0}, uint64_t{1}}) {
         INFO("array row " << row);
-        auto cell = result.value(1, row);
-        REQUIRE(cell.children().size() == 3);
+        REQUIRE(len(result.data[1], row) == 3);
         for (uint64_t i = 0; i < 3; i++) {
             INFO("element " << i);
-            REQUIRE(cell.children()[i].value<int64_t>() == static_cast<int64_t>(row * 10 + i));
+            REQUIRE(elem<int64_t>(result.data[1], row, i) == static_cast<int64_t>(row * 10 + i));
         }
     }
 
@@ -413,11 +449,10 @@ TEST_CASE("wal_binary::data_chunk_binary_array_payload_roundtrip") {
 
     INFO("the interior NULL survives beside its present neighbours");
     {
-        auto cell = result.value(1, 3);
-        REQUIRE(cell.children().size() == 3);
-        REQUIRE(cell.children()[0].value<int64_t>() == 70);
-        REQUIRE(cell.children()[1].is_null());
-        REQUIRE(cell.children()[2].value<int64_t>() == 90);
+        REQUIRE(len(result.data[1], 3) == 3);
+        REQUIRE(elem<int64_t>(result.data[1], 3, 0) == 70);
+        REQUIRE(elem_null(result.data[1], 3, 1));
+        REQUIRE(elem<int64_t>(result.data[1], 3, 2) == 90);
     }
 }
 
@@ -434,17 +469,17 @@ TEST_CASE("wal_binary::data_chunk_binary_list_payload_roundtrip") {
     data_chunk_t chunk(&resource, types, 4);
     chunk.set_cardinality(4);
     for (uint64_t row = 0; row < 4; row++) {
-        chunk.set_value(0, row, logical_value_t{&resource, static_cast<int64_t>(row + 1)});
+        chunk.set_value(0, row, static_cast<int64_t>(row + 1));
     }
 
     // Deliberately ragged and longer than the row count, to catch sizing the child from row count, not the span.
     const std::vector<std::vector<int64_t>> rows = {{10, 20}, {}, {30, 40, 50, 60, 70}, {80}};
     for (uint64_t row = 0; row < rows.size(); row++) {
-        std::vector<logical_value_t> elements;
+        std::vector<vector_t> elements;
         for (auto value : rows[row]) {
-            elements.emplace_back(&resource, value);
+            elements.push_back(make_scalar(&resource, value));
         }
-        chunk.set_value(1, row, logical_value_t::create_list(&resource, element_type, elements));
+        put(make_list(&resource, element_type, elements), chunk.data[1], row);
     }
 
     buffer_t buffer(&resource);
@@ -460,13 +495,229 @@ TEST_CASE("wal_binary::data_chunk_binary_list_payload_roundtrip") {
 
     for (uint64_t row = 0; row < rows.size(); row++) {
         INFO("list row " << row << " expected length " << rows[row].size());
-        auto cell = result.value(1, row);
-        REQUIRE(cell.children().size() == rows[row].size());
+        REQUIRE(len(result.data[1], row) == rows[row].size());
         for (uint64_t i = 0; i < rows[row].size(); i++) {
             INFO("element " << i);
-            REQUIRE(cell.children()[i].value<int64_t>() == rows[row][i]);
+            REQUIRE(elem<int64_t>(result.data[1], row, i) == rows[row][i]);
         }
     }
+}
+
+TEST_CASE("wal_binary::data_chunk_binary_null_string_payload_is_not_read") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.emplace_back(logical_type::STRING_LITERAL, "s");
+
+    data_chunk_t chunk(&resource, types, 3);
+    chunk.set_cardinality(3);
+    chunk.set_value(0, 0, std::string_view{std::string("a")});
+    chunk.set_value(0, 1, std::string_view{std::string("b")});
+    chunk.set_value(0, 2, std::string_view{std::string("c")});
+    chunk.data[0].validity().set_invalid(1);
+    const std::string marker(kGarbageMarker);
+    reinterpret_cast<std::string_view*>(chunk.data[0].data())[1] = marker;
+
+    buffer_t buffer(&resource);
+    serialize_binary(chunk, buffer);
+
+    CHECK_FALSE(buffer_contains(buffer, kGarbageMarker));
+
+    bool ok = false;
+    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
+    REQUIRE(ok);
+    REQUIRE(result.size() == 3);
+    CHECK(result.data[0].get_value<std::string_view>(0) == "a");
+    CHECK_FALSE(result.data[0].validity().row_is_valid(1));
+    CHECK(result.data[0].get_value<std::string_view>(2) == "c");
+}
+
+TEST_CASE("wal_binary::data_chunk_binary_null_list_element_string_payload_is_not_read") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    auto element_type = complex_logical_type{logical_type::STRING_LITERAL};
+    auto list_type = complex_logical_type::create_list(element_type);
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.push_back(list_type);
+
+    data_chunk_t chunk(&resource, types, 2);
+    chunk.set_cardinality(2);
+    const std::vector<std::vector<std::string>> rows = {{"a", "b"}, {"c", "d", "e"}};
+    for (uint64_t row = 0; row < rows.size(); row++) {
+        std::vector<vector_t> elements;
+        for (const auto& value : rows[row]) {
+            elements.push_back(make_scalar(&resource, value));
+        }
+        put(make_list(&resource, element_type, elements), chunk.data[0], row);
+    }
+    auto& child = chunk.data[0].entry();
+    child.validity().set_invalid(3);
+    const std::string marker(kGarbageMarker);
+    reinterpret_cast<std::string_view*>(child.data())[3] = marker;
+
+    buffer_t buffer(&resource);
+    serialize_binary(chunk, buffer);
+
+    CHECK_FALSE(buffer_contains(buffer, kGarbageMarker));
+
+    bool ok = false;
+    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
+    REQUIRE(ok);
+    REQUIRE(result.size() == 2);
+    REQUIRE(len(result.data[0], 1) == 3);
+    CHECK(elem<std::string_view>(result.data[0], 1, 0) == "c");
+    CHECK(elem_null(result.data[0], 1, 1));
+    CHECK(elem<std::string_view>(result.data[0], 1, 2) == "e");
+}
+
+TEST_CASE("wal_binary::data_chunk_binary_null_list_row_entry_is_not_read") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    auto element_type = complex_logical_type{logical_type::BIGINT};
+    auto list_type = complex_logical_type::create_list(element_type);
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.push_back(list_type);
+
+    auto make_chunk = [&](uint64_t garbage_length) {
+        data_chunk_t chunk(&resource, types, 8);
+        chunk.set_cardinality(3);
+        const std::vector<std::vector<int64_t>> rows = {{10, 20}, {}, {30}};
+        for (uint64_t row = 0; row < rows.size(); row++) {
+            std::vector<vector_t> elements;
+            for (auto value : rows[row]) {
+                elements.push_back(make_scalar(&resource, value));
+            }
+            put(make_list(&resource, element_type, elements), chunk.data[0], row);
+        }
+        chunk.data[0].validity().set_invalid(1);
+        reinterpret_cast<list_entry_t*>(chunk.data[0].data())[1] = list_entry_t{0, garbage_length};
+        return chunk;
+    };
+
+    auto clean = make_chunk(0);
+    auto dirty = make_chunk(5);
+    buffer_t clean_buffer(&resource);
+    buffer_t dirty_buffer(&resource);
+    serialize_binary(clean, clean_buffer);
+    serialize_binary(dirty, dirty_buffer);
+
+    CHECK(dirty_buffer.size() == clean_buffer.size());
+
+    bool ok = false;
+    auto result = deserialize_binary(dirty_buffer.data(), dirty_buffer.size(), &resource, ok);
+    REQUIRE(ok);
+    REQUIRE(result.size() == 3);
+    CHECK(len(result.data[0], 0) == 2);
+    CHECK_FALSE(result.data[0].validity().row_is_valid(1));
+    REQUIRE(len(result.data[0], 2) == 1);
+    CHECK(elem<int64_t>(result.data[0], 2, 0) == 30);
+}
+
+TEST_CASE("wal_binary::data_chunk_binary_null_fixed_width_payload_is_not_read") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.emplace_back(logical_type::BIGINT, "b");
+    types.emplace_back(logical_type::INTEGER, "i");
+    types.emplace_back(logical_type::DOUBLE, "d");
+
+    data_chunk_t chunk(&resource, types, 3);
+    chunk.set_cardinality(3);
+    for (uint64_t row = 0; row < 3; row++) {
+        chunk.set_value(0, row, static_cast<int64_t>(row + 1));
+        chunk.set_value(1, row, static_cast<int32_t>(row + 1));
+        chunk.set_value(2, row, static_cast<double>(row + 1));
+    }
+    static constexpr std::string_view kBytes = "\xDE\xAD\xBE\xEF\xDE\xAD\xBE\xEF";
+    for (uint64_t column = 0; column < 3; column++) {
+        chunk.data[column].validity().set_invalid(1);
+        const size_t width = column == 1 ? 4 : 8;
+        std::memcpy(chunk.data[column].data() + width, kBytes.data(), width);
+    }
+
+    buffer_t buffer(&resource);
+    serialize_binary(chunk, buffer);
+
+    CHECK_FALSE(buffer_contains(buffer, kBytes.substr(0, 4)));
+
+    bool ok = false;
+    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
+    REQUIRE(ok);
+    REQUIRE(result.size() == 3);
+    CHECK(result.data[0].get_value<int64_t>(0) == 1);
+    CHECK(result.data[1].get_value<int32_t>(2) == 3);
+    CHECK_THAT(result.data[2].get_value<double>(2), Catch::Matchers::WithinULP(3.0, 0));
+    for (uint64_t column = 0; column < 3; column++) {
+        CHECK_FALSE(result.data[column].validity().row_is_valid(1));
+    }
+}
+
+TEST_CASE("wal_binary::data_chunk_binary_null_struct_row_children_are_not_read") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    std::pmr::vector<complex_logical_type> fields(&resource);
+    fields.emplace_back(logical_type::STRING_LITERAL, "s");
+    fields.emplace_back(logical_type::BIGINT, "n");
+    auto struct_type = complex_logical_type::create_struct("np_pair", fields);
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.push_back(struct_type);
+
+    data_chunk_t chunk(&resource, types, 3);
+    chunk.set_cardinality(3);
+    const std::string marker(kGarbageMarker);
+    constexpr int64_t kBigintMarker = 0x7A6B5C4D3E2F1A09;
+    const std::string_view bigint_marker(reinterpret_cast<const char*>(&kBigintMarker), sizeof(kBigintMarker));
+    for (uint64_t row = 0; row < 3; row++) {
+        std::vector<vector_t> members;
+        members.push_back(make_scalar(&resource, row == 1 ? marker : std::string("ok")));
+        members.push_back(make_scalar(&resource, row == 1 ? kBigintMarker : static_cast<int64_t>(row)));
+        put(make_struct(&resource, struct_type, members), chunk.data[0], row);
+    }
+    chunk.data[0].validity().set_invalid(1);
+    REQUIRE(chunk.data[0].entries()[0]->validity().row_is_valid(1));
+    REQUIRE(chunk.data[0].entries()[1]->validity().row_is_valid(1));
+
+    buffer_t buffer(&resource);
+    serialize_binary(chunk, buffer);
+
+    CHECK_FALSE(buffer_contains(buffer, kGarbageMarker));
+    CHECK_FALSE(buffer_contains(buffer, bigint_marker));
+
+    bool ok = false;
+    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
+    REQUIRE(ok);
+    REQUIRE(result.size() == 3);
+    CHECK_FALSE(result.data[0].validity().row_is_valid(1));
+    CHECK(result.data[0].entries()[0]->get_value<std::string_view>(0) == "ok");
+    CHECK(result.data[0].entries()[0]->get_value<std::string_view>(2) == "ok");
+}
+
+TEST_CASE("wal_binary::data_chunk_binary_null_array_row_elements_are_not_read") {
+    std::pmr::monotonic_buffer_resource resource(1024 * 64);
+    auto element_type = complex_logical_type{logical_type::STRING_LITERAL};
+    auto array_type = complex_logical_type::create_array(element_type, 2);
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.push_back(array_type);
+
+    data_chunk_t chunk(&resource, types, 3);
+    chunk.set_cardinality(3);
+    const std::string marker(kGarbageMarker);
+    for (uint64_t row = 0; row < 3; row++) {
+        std::vector<vector_t> elements;
+        elements.push_back(make_scalar(&resource, row == 1 ? marker : std::string("ok")));
+        elements.push_back(make_scalar(&resource, row == 1 ? marker : std::string("ok")));
+        put(make_array(&resource, element_type, elements), chunk.data[0], row);
+    }
+    chunk.data[0].validity().set_invalid(1);
+    REQUIRE(chunk.data[0].entry().validity().row_is_valid(2));
+
+    buffer_t buffer(&resource);
+    serialize_binary(chunk, buffer);
+
+    CHECK_FALSE(buffer_contains(buffer, kGarbageMarker));
+
+    bool ok = false;
+    auto result = deserialize_binary(buffer.data(), buffer.size(), &resource, ok);
+    REQUIRE(ok);
+    REQUIRE(result.size() == 3);
+    CHECK_FALSE(result.data[0].validity().row_is_valid(1));
+    CHECK(result.data[0].entry().get_value<std::string_view>(0) == "ok");
+    CHECK(result.data[0].entry().get_value<std::string_view>(4) == "ok");
 }
 
 TEST_CASE("wal_binary::data_chunk_binary_struct_payload_roundtrip") {
@@ -484,23 +735,22 @@ TEST_CASE("wal_binary::data_chunk_binary_struct_payload_roundtrip") {
     data_chunk_t chunk(&resource, types, 3);
     chunk.set_cardinality(3);
     for (uint64_t row = 0; row < 3; row++) {
-        chunk.set_value(0, row, logical_value_t{&resource, static_cast<int64_t>(row + 1)});
+        chunk.set_value(0, row, static_cast<int64_t>(row + 1));
     }
     {
-        std::vector<logical_value_t> members;
-        members.emplace_back(&resource, static_cast<int64_t>(11));
-        members.emplace_back(&resource, static_cast<int64_t>(12));
-        chunk.set_value(1, 0, logical_value_t::create_struct(&resource, pair_type, members));
+        std::vector<vector_t> members;
+        members.push_back(make_scalar(&resource, static_cast<int64_t>(11)));
+        members.push_back(make_scalar(&resource, static_cast<int64_t>(12)));
+        put(make_struct(&resource, pair_type, members), chunk.data[1], 0);
     }
-    chunk.set_value(1, 1, logical_value_t{&resource, nullptr});
+    put(make_null(&resource, types[1]), chunk.data[1], 1);
     {
-        std::vector<logical_value_t> members;
-        members.emplace_back(&resource, static_cast<int64_t>(31));
-        members.emplace_back(&resource, nullptr);
-        chunk.set_value(1, 2, logical_value_t::create_struct(&resource, pair_type, members));
+        std::vector<vector_t> members;
+        members.push_back(make_scalar(&resource, static_cast<int64_t>(31)));
+        members.push_back(make_null(&resource, complex_logical_type{logical_type::BIGINT}));
+        put(make_struct(&resource, pair_type, members), chunk.data[1], 2);
     }
 
-    // Reads via the field vector: data_chunk_t::value() would type a NULL field as <BIGINT, NA> and trip the assert.
     REQUIRE_FALSE(chunk.data[1].entries()[1]->validity().row_is_valid(2));
 
     buffer_t buffer(&resource);
@@ -515,10 +765,9 @@ TEST_CASE("wal_binary::data_chunk_binary_struct_payload_roundtrip") {
 
     INFO("both fields of the populated row carry their values");
     {
-        auto cell = result.value(1, 0);
-        REQUIRE(cell.children().size() == 2);
-        REQUIRE(cell.children()[0].value<int64_t>() == 11);
-        REQUIRE(cell.children()[1].value<int64_t>() == 12);
+        REQUIRE(result.data[1].entries().size() == 2);
+        REQUIRE(fld<int64_t>(result.data[1], 0, 0) == 11);
+        REQUIRE(fld<int64_t>(result.data[1], 0, 1) == 12);
     }
 
     INFO("the whole-struct NULL is still NULL");
@@ -527,7 +776,7 @@ TEST_CASE("wal_binary::data_chunk_binary_struct_payload_roundtrip") {
     INFO("a present field beside a NULL one");
     {
         REQUIRE(result.data[1].entries().size() == 2);
-        REQUIRE(result.data[1].entries()[0]->value(2).value<int64_t>() == 31);
+        REQUIRE(result.data[1].entries()[0]->get_value<int64_t>(2) == 31);
         REQUIRE_FALSE(result.data[1].entries()[1]->validity().row_is_valid(2));
     }
 }
@@ -556,24 +805,24 @@ TEST_CASE("wal_binary::data_chunk_binary_second_level_nesting_roundtrip") {
     data_chunk_t chunk(&resource, types, 2);
     chunk.set_cardinality(2);
     for (uint64_t row = 0; row < 2; row++) {
-        chunk.set_value(0, row, logical_value_t{&resource, static_cast<int64_t>(row + 1)});
+        chunk.set_value(0, row, static_cast<int64_t>(row + 1));
 
-        std::vector<logical_value_t> members;
+        std::vector<vector_t> members;
         for (uint64_t i = 0; i < 2 - row; i++) {
-            std::vector<logical_value_t> pair;
-            pair.emplace_back(&resource, static_cast<int64_t>(row * 100 + i));
-            pair.emplace_back(&resource, std::string("s") + std::to_string(row * 100 + i));
-            members.push_back(logical_value_t::create_struct(&resource, pair_type, pair));
+            std::vector<vector_t> pair;
+            pair.push_back(make_scalar(&resource, static_cast<int64_t>(row * 100 + i)));
+            pair.push_back(make_scalar(&resource, std::string("s") + std::to_string(row * 100 + i)));
+            members.push_back(make_struct(&resource, pair_type, pair));
         }
-        chunk.set_value(1, row, logical_value_t::create_list(&resource, pair_type, members));
+        put(make_list(&resource, pair_type, members), chunk.data[1], row);
 
-        std::vector<logical_value_t> inner;
+        std::vector<vector_t> inner;
         for (uint64_t i = 0; i <= row; i++) {
-            inner.emplace_back(&resource, static_cast<int64_t>(row * 1000 + i));
+            inner.push_back(make_scalar(&resource, static_cast<int64_t>(row * 1000 + i)));
         }
-        std::vector<logical_value_t> holder;
-        holder.push_back(logical_value_t::create_list(&resource, complex_logical_type{logical_type::BIGINT}, inner));
-        chunk.set_value(2, row, logical_value_t::create_struct(&resource, struct_of_list, holder));
+        std::vector<vector_t> holder;
+        holder.push_back(make_list(&resource, complex_logical_type{logical_type::BIGINT}, inner));
+        put(make_struct(&resource, struct_of_list, holder), chunk.data[2], row);
     }
 
     buffer_t buffer(&resource);
@@ -588,28 +837,27 @@ TEST_CASE("wal_binary::data_chunk_binary_second_level_nesting_roundtrip") {
 
     for (uint64_t row = 0; row < 2; row++) {
         INFO("row " << row);
-        REQUIRE(result.value(0, row).value<int64_t>() == static_cast<int64_t>(row + 1));
+        REQUIRE(result.data[0].get_value<int64_t>(row) == static_cast<int64_t>(row + 1));
 
         INFO("list of structs");
-        auto list_cell = result.value(1, row);
-        REQUIRE(list_cell.children().size() == 2 - row);
+        REQUIRE(len(result.data[1], row) == 2 - row);
+        const auto members = sequence_of(result.data[1], row);
+        REQUIRE(members.child->entries().size() == 2);
         for (uint64_t i = 0; i < 2 - row; i++) {
             INFO("member " << i);
-            const auto& member = list_cell.children()[i];
-            REQUIRE(member.children().size() == 2);
-            REQUIRE(member.children()[0].value<int64_t>() == static_cast<int64_t>(row * 100 + i));
-            REQUIRE(member.children()[1].value<std::string_view>() ==
+            REQUIRE(fld<int64_t>(*members.child, members.offset + i, 0) == static_cast<int64_t>(row * 100 + i));
+            REQUIRE(fld<std::string_view>(*members.child, members.offset + i, 1) ==
                     std::string_view(std::string("s") + std::to_string(row * 100 + i)));
         }
 
         INFO("struct holding a list");
-        auto holder_cell = result.value(2, row);
-        REQUIRE(holder_cell.children().size() == 1);
-        const auto& inner_list = holder_cell.children()[0];
-        REQUIRE(inner_list.children().size() == row + 1);
+        const auto holder = resolve_cell(result.data[2], row);
+        REQUIRE(holder.vec->entries().size() == 1);
+        const auto& inner_list = *holder.vec->entries()[0];
+        REQUIRE(len(inner_list, holder.index) == row + 1);
         for (uint64_t i = 0; i <= row; i++) {
             INFO("inner element " << i);
-            REQUIRE(inner_list.children()[i].value<int64_t>() == static_cast<int64_t>(row * 1000 + i));
+            REQUIRE(elem<int64_t>(inner_list, holder.index, i) == static_cast<int64_t>(row * 1000 + i));
         }
     }
 }
@@ -628,12 +876,12 @@ TEST_CASE("wal_binary::encode_decode_insert_carries_nested_payload") {
     data_chunk_t chunk(&resource, types, 3);
     chunk.set_cardinality(3);
     for (uint64_t row = 0; row < 3; row++) {
-        chunk.set_value(0, row, logical_value_t{&resource, static_cast<int64_t>(row)});
-        std::vector<logical_value_t> elements;
+        chunk.set_value(0, row, static_cast<int64_t>(row));
+        std::vector<vector_t> elements;
         for (uint64_t i = 0; i < 4; i++) {
-            elements.emplace_back(&resource, static_cast<int64_t>(row * 100 + i));
+            elements.push_back(make_scalar(&resource, static_cast<int64_t>(row * 100 + i)));
         }
-        chunk.set_value(1, row, logical_value_t::create_array(&resource, element_type, elements));
+        put(make_array(&resource, element_type, elements), chunk.data[1], row);
     }
 
     buffer_t buffer(&resource);
@@ -659,12 +907,11 @@ TEST_CASE("wal_binary::encode_decode_insert_carries_nested_payload") {
     REQUIRE(decoded.size() == 3);
     for (uint64_t row = 0; row < 3; row++) {
         INFO("row " << row);
-        REQUIRE(decoded.value(0, row).value<int64_t>() == static_cast<int64_t>(row));
-        auto cell = decoded.value(1, row);
-        REQUIRE(cell.children().size() == 4);
+        REQUIRE(decoded.data[0].get_value<int64_t>(row) == static_cast<int64_t>(row));
+        REQUIRE(len(decoded.data[1], row) == 4);
         for (uint64_t i = 0; i < 4; i++) {
             INFO("element " << i);
-            REQUIRE(cell.children()[i].value<int64_t>() == static_cast<int64_t>(row * 100 + i));
+            REQUIRE(elem<int64_t>(decoded.data[1], row, i) == static_cast<int64_t>(row * 100 + i));
         }
     }
 }

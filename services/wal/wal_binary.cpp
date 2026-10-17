@@ -78,16 +78,6 @@ namespace services::wal {
             return 4 + count * 4;
         }
 
-        bool attoids_match_chunks(const column_attoids_t& attoids,
-                                  const std::pmr::vector<components::vector::data_chunk_t>& chunks) {
-            for (const auto& chunk : chunks) {
-                if (chunk.column_count() != attoids.size()) {
-                    return false;
-                }
-            }
-            return true;
-        }
-
         // Inverse of serialize_chunk_batch, producing the vector form replay consumes.
         std::pmr::vector<components::vector::data_chunk_t> deserialize_chunk_batch(const char* payload,
                                                                                    uint32_t payload_size,
@@ -203,6 +193,16 @@ namespace services::wal {
         }
 
     } // anonymous namespace
+
+    bool attoids_match_chunks(const column_attoids_t& attoids,
+                              const std::pmr::vector<components::vector::data_chunk_t>& chunks) {
+        for (const auto& chunk : chunks) {
+            if (chunk.column_count() != attoids.size()) {
+                return false;
+            }
+        }
+        return true;
+    }
 
     crc32_t encode_insert(buffer_t& buffer,
                           std::pmr::memory_resource* /*resource*/,

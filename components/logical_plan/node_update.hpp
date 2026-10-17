@@ -8,7 +8,7 @@
 #include <components/expressions/expression.hpp>
 #include <components/expressions/key.hpp>
 #include <components/logical_plan/param_storage.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
 
 #include <string>
 #include <utility>

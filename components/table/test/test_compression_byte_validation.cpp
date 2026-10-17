@@ -121,7 +121,7 @@ namespace {
 
             vector_t v(&env.resource, complex_logical_type(logical_type::BIGINT), rows);
             for (uint64_t i = 0; i < rows; i++) {
-                v.set_value(i, logical_value_t(&env.resource, static_cast<int64_t>(i)));
+                v.set_value(i, static_cast<int64_t>(i));
             }
             unified_vector_format uvf(&env.resource, rows);
             v.to_unified_format(rows, uvf);
@@ -150,7 +150,7 @@ TEST_CASE("compression_byte: a segment stamped with an unreadable compression re
         state.row_index = 0;
         segment.scan(state, ROWS, result, 0, scan_vector_type::SCAN_ENTIRE_VECTOR);
         REQUIRE_FALSE(state.has_error());
-        REQUIRE(result.value(7).value<int64_t>() == 7);
+        REQUIRE(result.get_value<int64_t>(7) == 7);
     }
 
     segment.set_compression(tcompress::compression_type::BITPACKING);

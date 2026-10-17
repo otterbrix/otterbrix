@@ -1,7 +1,6 @@
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
-#include <components/types/logical_value.hpp>
 
 #include <set>
 #include <utility>
@@ -67,8 +66,11 @@ TEST_CASE("integration::cpp::pushed_reduce_scan::lateral_correlated_aggregate_re
     // The cache must NOT change these results.
     std::multiset<std::pair<int64_t, int64_t>> got;
     for (uint64_t r = 0; r < cur->size(); ++r) {
-        got.emplace(cur->value(static_cast<uint64_t>(id_i), r).value<int64_t>(),
-                    cur->value(static_cast<uint64_t>(s_i), r).value<int64_t>());
+        auto cell0 = cur->get<int64_t>(static_cast<uint64_t>(id_i), r);
+        REQUIRE_FALSE(cell0.has_error());
+        auto cell1 = cur->get<int64_t>(static_cast<uint64_t>(s_i), r);
+        REQUIRE_FALSE(cell1.has_error());
+        got.emplace(cell0.value(), cell1.value());
     }
     std::multiset<std::pair<int64_t, int64_t>> expected{{1, 201}, {2, 200}};
     REQUIRE(got == expected);

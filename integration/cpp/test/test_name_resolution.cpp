@@ -16,7 +16,6 @@
 #include <components/sql/parser/pg_functions.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
-#include <components/types/logical_value.hpp>
 #include <core/pmr.hpp>
 
 #include <algorithm>
@@ -359,7 +358,9 @@ namespace {
     size_t rows_with_a_value(const components::cursor::cursor_t_ptr& cursor) {
         size_t count = 0;
         for (uint64_t row = 0; row < cursor->size(); ++row) {
-            if (!cursor->value(0, row).is_null()) {
+            auto cell0 = cursor->is_null(0, row);
+            REQUIRE_FALSE(cell0.has_error());
+            if (!cell0.value()) {
                 ++count;
             }
         }
@@ -997,7 +998,9 @@ TEST_CASE("name_resolution::regression::chained_join_reads_the_middle_table") {
 
     auto cur = run_ok(db, "SELECT m.v FROM cd.l JOIN cd.m ON l.jk = m.jk JOIN cd.n ON m.jk = n.jk;");
     REQUIRE(cur->size() == 1);
-    CHECK(cur->value(0, 0).value<int32_t>() == 200);
+    auto cell1 = cur->get<int32_t>(0, 0);
+    REQUIRE_FALSE(cell1.has_error());
+    CHECK(cell1.value() == 200);
 }
 
 TEST_CASE("name_resolution::regression::cross_database_join_is_not_a_cross_product") {
@@ -1142,12 +1145,16 @@ TEST_CASE("name_resolution::star::qualified_star_keeps_its_side") {
     auto right = run_ok(db, "SELECT d2.t.* FROM d1.t JOIN d2.t ON d1.t.id = d2.t.id;");
     REQUIRE(right->size() == 1);
     REQUIRE(right->column_count() == 2);
-    CHECK(right->value(1, 0).value<int64_t>() == 20);
+    auto cell2 = right->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell2.has_error());
+    CHECK(cell2.value() == 20);
 
     auto left = run_ok(db, "SELECT d1.t.* FROM d1.t JOIN d2.t ON d1.t.id = d2.t.id;");
     REQUIRE(left->size() == 1);
     REQUIRE(left->column_count() == 2);
-    CHECK(left->value(1, 0).value<int64_t>() == 10);
+    auto cell3 = left->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell3.has_error());
+    CHECK(cell3.value() == 10);
 }
 
 TEST_CASE("name_resolution::alter::alter_table_if_exists_on_a_missing_table_is_a_no_op") {

@@ -1,6 +1,6 @@
 #include "btree_index_agent.hpp"
 
-#include <components/index/logical_value_binary_codec.hpp>
+#include <components/index/binary_codec.hpp>
 
 #include <algorithm>
 #include <cassert>
@@ -16,7 +16,7 @@ namespace services::index {
         // A STRING physical_value is a VIEW into `encoded`; every use below keeps the owning buffer alive.
         components::types::physical_value decode_as_tree_key(std::string_view encoded, bool& ok) {
             size_t pos = 0;
-            return codec::read_logical_value_as_view(encoded.data(), encoded.size(), pos, &ok);
+            return codec::read_tagged_value(encoded.data(), encoded.size(), pos, &ok);
         }
 
         // Uses the same operators as btree_index_disk_t::scan_range, so staged and committed halves agree.
@@ -244,7 +244,6 @@ namespace services::index {
                 core::error_code_t::index_not_exists,
                 std::pmr::string{"btree_index_agent_t::commit_inserts: the index has been dropped", resource()}};
         }
-        // insert_bulk_unchecked skips insert()'s per-row dedup find() and flush; no bulk window to open.
         co_return publish_buckets(pending_inserts_, txn_id, [this](core::b_plus_tree::btree_t::item_data record) {
             store_.insert_bulk_unchecked(record);
         });
@@ -294,7 +293,7 @@ namespace services::index {
     btree_index_agent_t::unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
     btree_index_agent_t::read_rows(session_id_t session,
                                    components::expressions::compare_type compare,
-                                   value_t key,
+                                   components::vector::vector_t key,
                                    uint64_t txn_id) {
         trace(log_, "btree_index_agent_t::read_rows, session: {}", session.data());
         if (is_dropped_) {
@@ -303,33 +302,51 @@ namespace services::index {
                 std::pmr::string{"btree_index_agent_t::read_rows: the index has been dropped", resource()}};
         }
         using components::expressions::compare_type;
-        bool null_test = compare == compare_type::is_null || compare == compare_type::is_not_null;
-        value_t probe_key =
-            null_test
-                ? value_t(resource(), components::types::complex_logical_type{components::types::logical_type::NA})
-                : key;
+        const bool null_test = compare == compare_type::is_null || compare == compare_type::is_not_null;
         auto store_compare = compare == compare_type::is_null       ? compare_type::eq
                              : compare == compare_type::is_not_null ? compare_type::ne
                                                                     : compare;
         assert(is_value_comparison(store_compare) &&
                "btree_index_agent_t::read_rows: the predicate is not a value comparison");
         std::pmr::vector<int64_t> rows(resource());
+        if (!null_test && key_is_null(key)) {
+            co_return std::move(rows);
+        }
+
+        // A STRING physical_value is a VIEW into `encoded_probe`, which therefore outlives every use below.
+        std::pmr::string encoded_probe(resource());
+        components::types::physical_value probe;
+        bool staged_ok = true;
+        if (!null_test) {
+            if (auto encode_error =
+                    for_each_key_bytes(key,
+                                       1,
+                                       &encoded_probe,
+                                       [](size_t, std::string_view) { return core::error_t::no_error(); });
+                encode_error.contains_error()) {
+                co_return encode_error;
+            }
+            probe = decode_as_tree_key(encoded_probe, staged_ok);
+            if (!staged_ok) {
+                co_return core::error_t{
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"btree_index_agent_t::read_rows: the key type has no ordered encoding",
+                                     resource()}};
+            }
+        }
+
         if (store_compare == compare_type::eq) {
-            if (auto read_error = store_.find(probe_key, rows); read_error.contains_error()) {
+            if (auto read_error = store_.find(probe, rows); read_error.contains_error()) {
                 co_return read_error;
             }
         } else {
-            if (auto read_error = store_.scan_range(store_compare, probe_key, rows); read_error.contains_error()) {
+            if (auto read_error = store_.scan_range(store_compare, probe, rows); read_error.contains_error()) {
                 co_return read_error;
             }
         }
 
         // Unlike the hashed family's merge, this compares decoded tree-key VALUES, not encoded bytes,
         // because the predicate here can be any of lt/lte/gt/gte/ne, not just `=`.
-        std::pmr::string encoded_probe(resource());
-        codec::append_logical_value(encoded_probe, probe_key);
-        bool staged_ok = true;
-        const auto probe = decode_as_tree_key(encoded_probe, staged_ok);
         std::pmr::string key_buffer(resource());
 
         const auto staged_matches = [&](const auto& stored) {

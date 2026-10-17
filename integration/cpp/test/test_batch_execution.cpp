@@ -823,7 +823,9 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == row_count);
+        auto cell0 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == row_count);
     }
 
     INFO("WHERE filter preserving all rows");
@@ -863,7 +865,9 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         int64_t expected = static_cast<int64_t>(row_count) * (static_cast<int64_t>(row_count) - 1) / 2;
-        REQUIRE(cur->value(0, 0).value<int64_t>() == expected);
+        auto cell1 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == expected);
     }
 
     INFO("ORDER BY without LIMIT emits sorted output across chunk boundaries");
@@ -876,7 +880,9 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         // Result spans multiple chunks once row_count > DEFAULT_VECTOR_CAPACITY, so read
         // through the cursor's chunk-spanning accessor rather than one chunk's raw buffer.
         for (unsigned i = 0; i < row_count; ++i) {
-            REQUIRE(cur->value(0, i).value<int64_t>() == static_cast<int64_t>(i));
+            auto cell2 = cur->get<int64_t>(0, i);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == static_cast<int64_t>(i));
         }
     }
 
@@ -889,8 +895,12 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == row_count);
         for (unsigned i = 0; i < row_count; ++i) {
-            REQUIRE(cur->value(0, i).value<int64_t>() == static_cast<int64_t>(i));
-            REQUIRE(cur->value(1, i).value<int64_t>() == 1);
+            auto cell3 = cur->get<int64_t>(0, i);
+            REQUIRE_FALSE(cell3.has_error());
+            REQUIRE(cell3.value() == static_cast<int64_t>(i));
+            auto cell4 = cur->get<int64_t>(1, i);
+            REQUIRE_FALSE(cell4.has_error());
+            REQUIRE(cell4.value() == 1);
         }
     }
 
@@ -903,6 +913,8 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(name) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == row_count - expected_removed);
+        auto cell5 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == row_count - expected_removed);
     }
 }

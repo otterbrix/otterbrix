@@ -5,6 +5,7 @@
 #include <components/table/storage/partial_block_manager.hpp>
 #include <components/types/type_spec_codec.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <cstdlib>
 #include <unordered_set>
@@ -272,7 +273,7 @@ namespace components::table {
                     continue;
                 }
                 cells.reset();
-                row_groups_->fetch(cells, columns, row_ids, live, state, {}, txn, fetch_visibility_t::RAW);
+                row_groups_->fetch(cells, columns, row_ids, live, state, txn, fetch_visibility_t::RAW);
                 if (state.fetch_error.contains_error()) {
                     return state.fetch_error;
                 }
@@ -305,7 +306,7 @@ namespace components::table {
         std::pmr::vector<storage_index_t> unseen_columns(resource_);
         for (uint64_t position = 0; position < column_definitions_.size(); position++) {
             const auto& column = column_definitions_[position];
-            bool fills_with_a_value = column.has_default_value() && !column.default_value().is_null();
+            bool fills_with_a_value = column.has_default_value() && !column.default_value().is_null(0);
             if (!column.is_not_null() || fills_with_a_value || !stands_at_commit(txn, column.added_at()) ||
                 stands_at_commit(txn, column.dropped_at())) {
                 continue;
@@ -339,9 +340,13 @@ namespace components::table {
 
     vector::vector_t data_table_t::default_column(uint64_t position, const vector::data_chunk_t& chunk) const {
         const auto& column = column_definitions_[position];
-        if (column.has_default_value() && !column.default_value().is_null()) {
-            vector::vector_t filled(resource_, column.default_value(), chunk.capacity());
-            filled.flatten(chunk.size());
+        if (column.has_default_value() && !column.default_value().is_null(0)) {
+            vector::vector_t filled(resource_, column.default_value().type(), chunk.capacity());
+            vector::vector_ops::copy(vector::make_constant_copy(resource_, column.default_value()),
+                                     filled,
+                                     chunk.size(),
+                                     0,
+                                     0);
             filled.set_type_alias(column.name());
             return filled;
         }
@@ -412,7 +417,7 @@ namespace components::table {
         if (!hidden_ids.empty()) {
             column_fetch_state state;
             state.result_outlives_pins = true;
-            row_groups_->fetch(old_values, hidden_ids, row_ids, chunk.size(), state, {}, txn, fetch_visibility_t::RAW);
+            row_groups_->fetch(old_values, hidden_ids, row_ids, chunk.size(), state, txn, fetch_visibility_t::RAW);
             if (state.fetch_error.contains_error()) {
                 return state.fetch_error;
             }
@@ -684,12 +689,11 @@ namespace components::table {
 #endif
     }
 
-    void data_table_t::scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
-                                    const std::vector<size_t>* projected_cols,
+    void data_table_t::scan_batched(const std::pmr::vector<types::complex_logical_type>& chunk_types,
                                     std::pmr::vector<vector::data_chunk_t>& batches,
                                     table_scan_state& state,
                                     std::pmr::memory_resource* resource) {
-        state.table_state.scan_batched(types, projected_cols, batches, resource);
+        state.table_state.scan_batched(chunk_types, batches, resource);
     }
 
     core::result_wrapper_t<bool> data_table_t::fetch_next_batch(vector::data_chunk_t& result,
@@ -788,11 +792,10 @@ namespace components::table {
                              const vector::vector_t& row_identifiers,
                              uint64_t fetch_count,
                              column_fetch_state& state,
-                             const std::vector<size_t>& projected_cols,
                              const transaction_data& txn,
                              fetch_visibility_t visibility) {
         const auto physical_ids = to_physical_columns(column_ids, visible_columns(txn));
-        row_groups_->fetch(result, physical_ids, row_identifiers, fetch_count, state, projected_cols, txn, visibility);
+        row_groups_->fetch(result, physical_ids, row_identifiers, fetch_count, state, txn, visibility);
     }
 
     core::result_wrapper_t<bool> data_table_t::append_lock(table_append_state& state) {

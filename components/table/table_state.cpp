@@ -36,9 +36,7 @@ namespace components::table {
     void collection_scan_state::initialize(const std::pmr::vector<types::complex_logical_type>& types) {
         auto& ids = column_ids();
         column_scans.resize(ids.size());
-        result_width_ = 0;
         for (uint64_t i = 0; i < ids.size(); i++) {
-            result_width_ = std::max(result_width_, ids[i].primary_index() + 1);
             auto col_id = ids[i].primary_index();
             column_scans[i].initialize(types[col_id], ids[i].child_indexes());
         }
@@ -83,14 +81,11 @@ namespace components::table {
         return false;
     }
 
-    void collection_scan_state::scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
-                                             const std::vector<size_t>* projected_cols,
+    void collection_scan_state::scan_batched(const std::pmr::vector<types::complex_logical_type>& chunk_types,
                                              std::pmr::vector<vector::data_chunk_t>& batches,
                                              std::pmr::memory_resource* resource) {
         while (row_group) {
-            vector::data_chunk_t batch =
-                projected_cols ? vector::data_chunk_t(resource, types, *projected_cols, vector::DEFAULT_VECTOR_CAPACITY)
-                               : vector::data_chunk_t(resource, types, vector::DEFAULT_VECTOR_CAPACITY);
+            vector::data_chunk_t batch(resource, chunk_types, vector::DEFAULT_VECTOR_CAPACITY);
             for (auto& cs : column_scans) {
                 cs.result_offset = 0;
             }

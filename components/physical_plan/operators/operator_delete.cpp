@@ -4,6 +4,7 @@
 #include "join_utils.hpp"
 #include <atomic>
 #include <components/vector/vector_operations.hpp>
+#include <optional>
 
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
@@ -28,7 +29,7 @@ namespace components::operators {
                                      components::catalog::oid_t table_oid,
                                      std::pmr::vector<projected_column_t> returning,
                                      expressions::expression_ptr expr,
-                                     std::int64_t affected_bound)
+                                     logical_plan::row_cap_t affected_bound)
         : read_write_operator_t(resource, log, operator_type::remove)
         , table_oid_(table_oid)
         , expression_(std::move(expr))
@@ -73,7 +74,7 @@ namespace components::operators {
         if (condition_ == expressions::condition_kind::computed) {
             if (!graph_) {
                 auto built = expressions::build_condition_graph(resource_,
-                                                                pipeline_context->parameters.parameters,
+                                                                pipeline_context->parameters,
                                                                 expression_.get(),
                                                                 types);
                 if (built.has_error()) {
@@ -82,7 +83,7 @@ namespace components::operators {
                 graph_ = std::move(built.value());
             }
             auto decided = expressions::run_graph(graph_.get(),
-                                                  pipeline_context->parameters.parameters,
+                                                  pipeline_context->parameters,
                                                   chunk,
                                                   pipeline_context->execution_context);
             if (decided.has_error()) {
@@ -114,32 +115,22 @@ namespace components::operators {
         }
 
         // Staged chunk row k pairs with index_old_row_ids_[k]; manager_index_t::delete_rows relies on that alignment.
-        {
-            data_chunk_t old_matched(resource_, types, index);
-            chunk.copy(old_matched, matched_indexing, index);
-            old_matched.set_cardinality(index);
-            index_old_chunks_.emplace_back(std::move(old_matched));
-            for (size_t i = 0; i < index; i++) {
-                index_old_row_ids_.push_back(batch_ids.data<int64_t>()[i]);
-            }
+        index_old_chunks_.emplace_back(dml_detail::stage_matched(resource_, chunk, matched_indexing, index));
+        for (size_t i = 0; i < index; i++) {
+            index_old_row_ids_.push_back(batch_ids.data<int64_t>()[i]);
         }
 
         if (collect_returning) {
-            data_chunk_t affected(resource_, types, index);
-            chunk.copy(affected, matched_indexing, index);
-            affected.set_cardinality(index);
-            if (affected.size() != 0) {
-                auto proj = evaluate_projection(resource_,
-                                                returning_,
-                                                &affected,
-                                                pipeline_context->parameters,
-                                                pipeline_context->execution_context,
-                                                &returning_graph_);
-                if (proj.has_error()) {
-                    return proj.error();
-                }
-                returning_staged_.emplace_back(std::move(proj.value()));
+            auto proj = evaluate_projection(resource_,
+                                            returning_,
+                                            &index_old_chunks_.back(),
+                                            pipeline_context->parameters,
+                                            pipeline_context->execution_context,
+                                            &returning_graph_);
+            if (proj.has_error()) {
+                return proj.error();
             }
+            returning_staged_.emplace_back(std::move(proj.value()));
         }
         return core::error_t::no_error();
     }
@@ -174,7 +165,7 @@ namespace components::operators {
                 merged_types.insert(merged_types.end(), types_left.begin(), types_left.end());
                 merged_types.insert(merged_types.end(), types_right.begin(), types_right.end());
                 auto built = expressions::build_condition_graph(resource_,
-                                                                pipeline_context->parameters.parameters,
+                                                                pipeline_context->parameters,
                                                                 expression_.get(),
                                                                 merged_types,
                                                                 types_left.size());
@@ -192,13 +183,15 @@ namespace components::operators {
         vector::vector_t batch_ids(resource_, types::logical_type::BIGINT, chunk_left.size());
         vector::indexing_vector_t matched_indexing(resource_);
         matched_indexing.reset(chunk_left.size());
-        // Gathered per-row, not via an indexing gather — a batch can match more right rows than the chunk holds.
-        data_chunk_t affected_right(resource_, types_right, chunk_left.size());
-
+        // Where output row k's right-side partner lives: (right chunk, row).
+        std::pmr::vector<std::pair<uint32_t, uint32_t>> partners(resource_);
+        if (collect_returning) {
+            partners.reserve(chunk_left.size());
+        }
         size_t index = 0;
         for (size_t i = 0; i < chunk_left.size(); i++) {
-            // Stops once matched_total_ + this batch's index reaches affected_bound_; -1 = unbounded.
-            if (affected_bound_ >= 0 && matched_total_ + index >= static_cast<uint64_t>(affected_bound_)) {
+            // Stops once matched_total_ + this batch's index reaches affected_bound_.
+            if (!affected_bound_.admits(matched_total_ + index)) {
                 break;
             }
             bool row_matched = false;
@@ -211,7 +204,7 @@ namespace components::operators {
                 if (graph_) {
                     join_detail::point_at_probe_row(resource_, merged[ci], chunk_left, i);
                     auto decided = expressions::run_graph(graph_.get(),
-                                                          pipeline_context->parameters.parameters,
+                                                          pipeline_context->parameters,
                                                           merged[ci],
                                                           pipeline_context->execution_context);
                     if (decided.has_error()) {
@@ -228,12 +221,9 @@ namespace components::operators {
                     batch_ids.data<int64_t>()[index] = dml_detail::row_id_of(chunk_left, i);
                     matched_indexing.set_index(index, i);
                     if (collect_returning) {
-                        for (size_t k = 0; k < chunk_right.column_count(); ++k) {
-                            vector::vector_ops::copy(chunk_right.data[k], affected_right.data[k], j + 1, j, index);
-                        }
+                        partners.emplace_back(static_cast<uint32_t>(ci), static_cast<uint32_t>(j));
                     }
                     index++;
-                    vector::validate_chunk_capacity(affected_right, index);
                     row_matched = true;
                     break;
                 }
@@ -246,39 +236,60 @@ namespace components::operators {
         if (index == 0) {
             return core::error_t::no_error();
         }
-        affected_right.set_cardinality(index);
-
         for (size_t i = 0; i < index; i++) {
             modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));
         }
 
-        {
-            data_chunk_t old_matched(resource_, types_left, index);
-            chunk_left.copy(old_matched, matched_indexing, index);
-            old_matched.set_cardinality(index);
-            index_old_chunks_.emplace_back(std::move(old_matched));
-            for (size_t i = 0; i < index; i++) {
-                index_old_row_ids_.push_back(batch_ids.data<int64_t>()[i]);
-            }
+        index_old_chunks_.emplace_back(dml_detail::stage_matched(resource_, chunk_left, matched_indexing, index));
+        for (size_t i = 0; i < index; i++) {
+            index_old_row_ids_.push_back(batch_ids.data<int64_t>()[i]);
         }
 
         if (collect_returning) {
-            data_chunk_t affected_left(resource_, types_left, index);
-            chunk_left.copy(affected_left, matched_indexing, index);
-            affected_left.set_cardinality(index);
-
-            if (affected_left.size() != 0) {
+            // One slice pair per right chunk the partners come from, in order of first appearance.
+            std::pmr::vector<uint32_t> chunk_order(resource_);
+            std::pmr::vector<std::pmr::vector<uint32_t>> rows_of(right_chunks.size(),
+                                                                 std::pmr::vector<uint32_t>(resource_),
+                                                                 resource_);
+            for (size_t k = 0; k < partners.size(); ++k) {
+                auto& rows = rows_of[partners[k].first];
+                if (rows.empty()) {
+                    chunk_order.push_back(partners[k].first);
+                }
+                rows.push_back(static_cast<uint32_t>(k));
+            }
+            data_chunk_t& staged = index_old_chunks_.back();
+            for (uint32_t ci : chunk_order) {
+                const auto& rows = rows_of[ci];
+                const auto& source_right = right_chunks[ci];
+                vector::indexing_vector_t left_selection(resource_, rows.size());
+                vector::indexing_vector_t right_selection(resource_, rows.size());
+                for (size_t n = 0; n < rows.size(); ++n) {
+                    left_selection.set_index(n, rows[n]);
+                    right_selection.set_index(n, partners[rows[n]].second);
+                }
+                std::optional<data_chunk_t> left_part;
+                if (rows.size() != index) {
+                    left_part.emplace(dml_detail::sliced_rows(resource_, staged, left_selection, rows.size()));
+                }
+                auto right_part = dml_detail::sliced_rows(resource_, source_right, right_selection, rows.size());
                 auto proj = evaluate_projection(resource_,
                                                 returning_,
-                                                &affected_left,
+                                                left_part.has_value() ? &*left_part : &staged,
                                                 pipeline_context->parameters,
                                                 pipeline_context->execution_context,
                                                 &returning_graph_,
-                                                &affected_right);
+                                                &right_part);
                 if (proj.has_error()) {
                     return proj.error();
                 }
-                returning_staged_.emplace_back(std::move(proj.value()));
+                // A kept slice would hold the whole right chunk alive inside the cursor.
+                if (dml_detail::references_columns_of(proj.value(), right_part) &&
+                    !dml_detail::returning_keeps_slice(rows.size(), source_right.capacity())) {
+                    returning_staged_.emplace_back(dml_detail::gather_rows(resource_, proj.value()));
+                } else {
+                    returning_staged_.emplace_back(std::move(proj.value()));
+                }
             }
         }
         return core::error_t::no_error();
@@ -287,11 +298,7 @@ namespace components::operators {
     core::error_t
     operator_delete::push(pipeline::context_t* ctx, vector::data_chunk_t&& input, chunks_vector_t& /*out*/) {
 #ifdef DEV_MODE
-        for (const auto& column : input.data) {
-            if (column.data() != nullptr || column.auxiliary() != nullptr) {
-                g_delete_scanned_columns.fetch_add(1, std::memory_order_relaxed);
-            }
-        }
+        g_delete_scanned_columns.fetch_add(input.column_count(), std::memory_order_relaxed);
 #endif
         if (right_ && right_->output()) {
             return consume_join_batch_(ctx, input, right_->output()->chunks());

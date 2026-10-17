@@ -3,7 +3,7 @@
 #include <components/execution_context/graph_execution_context.hpp>
 #include <components/expressions/clone_expression.hpp>
 #include <components/table/column_state.hpp>
-#include <components/types/parameter_map.hpp>
+#include <components/vector/storage_parameters.hpp>
 #include <core/result_wrapper.hpp>
 
 #include <cstdint>
@@ -18,11 +18,11 @@ namespace components::table {
     // table_filter_t from it.
     struct pushed_filter_t final {
         pushed_filter_t(expressions::detached_expression_t&& expression,
-                        types::parameter_map_t&& parameters,
+                        vector::storage_parameters&& parameters,
                         const graph_execution_context& context);
 
         expressions::detached_expression_t expression;
-        types::parameter_map_t parameters;
+        vector::storage_parameters parameters;
         core::date::timezone_offset_t timezone_offset;
         uint8_t decimal_width;
         uint8_t decimal_scale;
@@ -31,7 +31,7 @@ namespace components::table {
     // Sender side: deep copies onto `target`, the receiving actor's resource.
     [[nodiscard]] std::unique_ptr<pushed_filter_t> make_pushed_filter(std::pmr::memory_resource* target,
                                                                       const expressions::expression_ptr& expression,
-                                                                      const types::parameter_map_t& parameters,
+                                                                      const vector::storage_parameters& parameters,
                                                                       const graph_execution_context& context);
 
     // Receiver side: everything the built filter holds lives on `resource`.

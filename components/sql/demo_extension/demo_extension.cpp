@@ -12,7 +12,6 @@
 #include <components/sql/parser/flex_scanner_guard.hpp>
 #include <components/sql/parser/nodes/parsenodes.h>
 #include <components/sql/parser/pg_std_list.h>
-#include <components/types/logical_value.hpp>
 
 namespace {
     // demo's scanner: the shared macro binds the demo_yy entry points into the RAII guard type
@@ -65,11 +64,12 @@ namespace demo_ext {
         assert(node->extension_id != nullptr && std::string_view(node->extension_id) == "demo");
         const auto* root = static_cast<const demo_node*>(node->data);
 
-        components::types::logical_value_t value(resource, static_cast<int64_t>(evaluate(root)));
         components::vector::data_chunk_t chunk(resource, {}, 1);
         chunk.set_cardinality(1);
-        chunk.data.emplace_back(resource, value.type(), chunk.capacity());
-        chunk.set_value(0, 0, std::move(value));
+        chunk.data.emplace_back(resource,
+                                components::types::complex_logical_type{components::types::logical_type::BIGINT},
+                                chunk.capacity());
+        chunk.set_value(0, 0, static_cast<int64_t>(evaluate(root)));
         return components::logical_plan::make_node_raw_data(resource, std::move(chunk));
     }
 } // namespace demo_ext

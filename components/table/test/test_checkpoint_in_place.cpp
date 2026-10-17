@@ -173,8 +173,7 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                auto cell = chunk.value(0, i);
-                REQUIRE(cell.value<int64_t>() == fixed_value(seen));
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == fixed_value(seen));
                 seen++;
             }
         }
@@ -196,11 +195,9 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                auto id_cell = chunk.value(0, i);
-                auto payload_cell = chunk.value(1, i);
-                const auto id = id_cell.value<int64_t>();
+                const auto id = chunk.data[0].get_value<int64_t>(i);
                 REQUIRE(id == static_cast<int64_t>(seen));
-                const auto payload = payload_cell.value<std::string_view>();
+                const auto payload = chunk.data[1].get_value<std::string_view>(i);
                 REQUIRE(payload == string_payload(static_cast<uint64_t>(id)));
                 seen++;
             }

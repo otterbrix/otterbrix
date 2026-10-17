@@ -3,7 +3,6 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/physical_plan/operators/operator_update.hpp>
-#include <components/types/logical_value.hpp>
 #include <string>
 
 // UPDATE SET used to dispatch operators by their FIRST character: '?' matched
@@ -31,7 +30,9 @@ TEST_CASE("integration::cpp::test_update::set_unknown_operators") {
     {
         auto cur = exec("SELECT x FROM t.u;");
         REQUIRE(cur->is_success());
-        CHECK(cur->value(0, 0).value<int64_t>() == 9); // untouched by the rejects
+        auto cell0 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        CHECK(cell0.value() == 9); // untouched by the rejects
     }
 
     REQUIRE(exec("UPDATE t.u SET x = x + 1;")->is_success());  // 10
@@ -40,7 +41,9 @@ TEST_CASE("integration::cpp::test_update::set_unknown_operators") {
     {
         auto cur = exec("SELECT x FROM t.u;");
         REQUIRE(cur->is_success());
-        CHECK(cur->value(0, 0).value<int64_t>() == 18);
+        auto cell1 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        CHECK(cell1.value() == 18);
     }
 }
 
@@ -69,7 +72,9 @@ TEST_CASE("integration::cpp::test_update::set_unary_operand_arity") {
     {
         auto cur = exec("SELECT x FROM t.ua;");
         REQUIRE(cur->is_success());
-        CHECK(cur->value(0, 0).value<int64_t>() == 9); // @9 = 9
+        auto cell2 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        CHECK(cell2.value() == 9); // @9 = 9
     }
 }
 
@@ -93,10 +98,18 @@ TEST_CASE("integration::cpp::test_update::set_function_call") {
         auto cur = exec("SELECT x, s FROM t.fn ORDER BY x;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        CHECK(cur->value(0, 0).value<int64_t>() == 4); // -4 -> 4, per row
-        CHECK(cur->value(1, 0).value<std::string_view>() == "CD");
-        CHECK(cur->value(0, 1).value<int64_t>() == 9);
-        CHECK(cur->value(1, 1).value<std::string_view>() == "AB");
+        auto cell3 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        CHECK(cell3.value() == 4); // -4 -> 4, per row
+        auto cell4 = cur->get<std::string_view>(1, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        CHECK(cell4.value() == "CD");
+        auto cell5 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell5.has_error());
+        CHECK(cell5.value() == 9);
+        auto cell6 = cur->get<std::string_view>(1, 1);
+        REQUIRE_FALSE(cell6.has_error());
+        CHECK(cell6.value() == "AB");
     }
 }
 
@@ -123,8 +136,12 @@ TEST_CASE("integration::cpp::test_update::set_unsupported_expressions") {
     {
         auto cur = exec("SELECT x, s FROM t.uf;");
         REQUIRE(cur->is_success());
-        CHECK(cur->value(0, 0).value<int64_t>() == 9); // data untouched
-        CHECK(cur->value(1, 0).value<std::string_view>() == "ab");
+        auto cell7 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell7.has_error());
+        CHECK(cell7.value() == 9); // data untouched
+        auto cell8 = cur->get<std::string_view>(1, 0);
+        REQUIRE_FALSE(cell8.has_error());
+        CHECK(cell8.value() == "ab");
     }
 }
 
@@ -150,8 +167,12 @@ TEST_CASE("integration::cpp::test_update::set_null") {
     {
         auto cur = exec("SELECT x FROM t.un ORDER BY y;");
         REQUIRE(cur->is_success());
-        CHECK(cur->value(0, 0).is_null());
-        CHECK(cur->value(0, 1).value<int64_t>() == 10); // other row untouched
+        auto cell9 = cur->is_null(0, 0);
+        REQUIRE_FALSE(cell9.has_error());
+        CHECK(cell9.value());
+        auto cell10 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell10.has_error());
+        CHECK(cell10.value() == 10); // other row untouched
     }
     // Nested-element NULL writes have no NA cast kernel: clean transform error.
     CHECK_FALSE(exec("UPDATE t.un SET x[1] = NULL;")->is_success());
@@ -207,6 +228,8 @@ TEST_CASE("integration::cpp::test_update::gather_is_one_copy_per_column") {
     {
         auto cur = exec("SELECT a FROM g.t WHERE id = 0;");
         REQUIRE(cur->is_success());
-        CHECK(cur->value(0, 0).value<int64_t>() == 1); // the rows really were updated
+        auto cell11 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell11.has_error());
+        CHECK(cell11.value() == 1); // the rows really were updated
     }
 }

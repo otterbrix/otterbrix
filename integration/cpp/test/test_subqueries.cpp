@@ -1258,6 +1258,50 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
     }
 }
 
+TEST_CASE("integration::cpp::test_subqueries::struct_field_names_in_type_identity") {
+    auto config = test_create_config(integration_fixture_path("test_subqueries/struct_field_names"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto run = [&](const std::string& sql) {
+        auto session = otterbrix::session_id_t();
+        return dispatcher->execute_sql(session, sql);
+    };
+    for (const char* sql : {"CREATE DATABASE d;",
+                            "CREATE TYPE point_t AS (x int, y int);",
+                            "CREATE TYPE ta AS (a int);",
+                            "CREATE TYPE tb AS (b int);",
+                            "CREATE TABLE d.pts (id int, pt point_t);",
+                            "CREATE TABLE d.t1 (s ta);",
+                            "CREATE TABLE d.t2 (s tb);",
+                            "INSERT INTO d.pts (id, pt) VALUES (1, ROW(0,0)), (2, ROW(1,2));",
+                            "INSERT INTO d.t1 (s) VALUES (ROW(1));",
+                            "INSERT INTO d.t2 (s) VALUES (ROW(2));"}) {
+        INFO("statement: " << sql);
+        REQUIRE(run(sql)->is_success());
+    }
+
+    INFO("composite = positional ROW of the same field types");
+    {
+        auto cur = run("SELECT id FROM d.pts WHERE pt = ROW(0::int, 0::int);");
+        INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        auto id = cur->get<int32_t>(0, 0);
+        REQUIRE_FALSE(id.has_error());
+        REQUIRE(id.value() == 1);
+    }
+
+    INFO("UNION of structs that differ only in field names is rejected");
+    {
+        auto cur = run("SELECT s FROM d.t1 UNION ALL SELECT s FROM d.t2;");
+        REQUIRE(cur->is_error());
+        INFO("error: " << cur->get_error().what);
+        REQUIRE(std::string{cur->get_error().what}.find("UNION column type mismatch") != std::string::npos);
+    }
+}
+
 namespace {
     void setup_recursive_db(otterbrix::wrapper_dispatcher_t* dispatcher) {
         {

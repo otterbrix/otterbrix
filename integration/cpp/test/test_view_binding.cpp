@@ -592,6 +592,21 @@ TEST_CASE("integration::cpp::view_binding::or_replace_refuses_to_rename_a_column
     CHECK(error_text(refused).find("cannot change name of view column \"a\" to \"z\"") != std::string::npos);
 }
 
+TEST_CASE("integration::cpp::view_binding::or_replace_refuses_to_rename_a_struct_field") {
+    test_spaces space(config_for("replace_rename_struct_field"));
+    auto* d = space.dispatcher();
+    run_ok(d, "CREATE TYPE ta AS (a int);");
+    run_ok(d, "CREATE TYPE tb AS (b int);");
+    run_ok(d, "CREATE DATABASE vb;");
+    run_ok(d, "CREATE TABLE vb.t1 (s ta);");
+    run_ok(d, "CREATE TABLE vb.t2 (s tb);");
+    run_ok(d, "CREATE VIEW vb.v AS SELECT s FROM vb.t1;");
+
+    auto refused = exec(d, "CREATE OR REPLACE VIEW vb.v AS SELECT s FROM vb.t2;");
+    INFO("error: " << error_text(refused));
+    CHECK(error_text(refused).find("cannot change data type of view column \"s\"") != std::string::npos);
+}
+
 TEST_CASE("integration::cpp::view_binding::or_replace_refuses_to_change_a_column_type") {
     test_spaces space(config_for("replace_retype_column"));
     auto* d = space.dispatcher();

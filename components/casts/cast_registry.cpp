@@ -199,8 +199,11 @@ namespace components::casts {
         if (source_fields.size() != target_fields.size()) {
             return std::nullopt;
         }
+        const bool positional = std::all_of(source_fields.begin(), source_fields.end(), [](const auto& field) {
+            return field.alias().empty();
+        });
         // if even one field is explicit, we can not create a cast
-        cast_type level = cast_type::assignment;
+        cast_type level = positional ? cast_type::implicit : cast_type::assignment;
         for (size_t index = 0; index < source_fields.size(); ++index) {
             std::optional<cast_info> field = lookup(source_fields[index], target_fields[index]);
             if (!field.has_value()) {

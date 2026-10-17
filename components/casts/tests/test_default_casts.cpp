@@ -1655,6 +1655,27 @@ TEST_CASE("cast_registry: level_of passes containers through and takes structs a
                 std::optional<level>{level::assignment});
     }
 
+    {
+        auto row_of = [&](std::initializer_list<complex_logical_type> fields) {
+            std::pmr::vector<complex_logical_type> vec(fields.begin(), fields.end(), resource);
+            return complex_logical_type::create_struct("", vec);
+        };
+        auto point_fields = [&] {
+            return std::pmr::vector<complex_logical_type>{{field(logical_type::INTEGER, "x"),
+                                                           field(logical_type::INTEGER, "y")},
+                                                          resource};
+        };
+        const complex_logical_type point = complex_logical_type::create_struct("point_t", point_fields());
+        const complex_logical_type row_i32 = row_of({i32, i32});
+        const complex_logical_type row_i64 = row_of({i64, i64});
+        const complex_logical_type row_mixed = row_of({i32, field(logical_type::INTEGER, "y")});
+
+        REQUIRE(registry.level_of(row_i32, point) == std::optional<level>{level::implicit});
+        REQUIRE(registry.level_of(row_i32, row_i64) == std::optional<level>{level::implicit});
+        REQUIRE(registry.level_of(row_mixed, point) == std::optional<level>{level::assignment});
+        REQUIRE_FALSE(registry.level_of(point, row_i32).has_value());
+    }
+
     REQUIRE(registry.level_of(i32, i32) == std::optional<level>{level::implicit});
     REQUIRE_FALSE(registry
                       .level_of(complex_logical_type::create_list(complex_logical_type{logical_type::BOOLEAN}),

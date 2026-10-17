@@ -132,3 +132,15 @@ TEST_CASE("integration::cpp::alter_add_column_types::null_default_on_a_resolved_
         CHECK(cell7.value());
     }
 }
+
+TEST_CASE("integration::cpp::alter_add_column_types::row_literal_default_for_composite_column") {
+    test_spaces space(config_for("row_implicit"));
+    auto* d = space.dispatcher();
+    run_ok(d, "CREATE TYPE pair_t AS (x int, y int);");
+    run_ok(d, "CREATE DATABASE d;");
+    run_ok(d, "CREATE TABLE d.a (a bigint);");
+    run_ok(d, "ALTER TABLE d.a ADD COLUMN p pair_t DEFAULT ROW(1,2);");
+    run_ok(d, "INSERT INTO d.a (a) VALUES (1);");
+    auto added = run_ok(d, "SELECT p FROM d.a;");
+    REQUIRE(added->size() == 1);
+}

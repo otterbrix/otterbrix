@@ -751,7 +751,15 @@ namespace components::types {
     }
 
     bool struct_logical_type_extension::operator==(const struct_logical_type_extension& rhs) const {
-        return fields_ == rhs.fields_;
+        if (fields_.size() != rhs.fields_.size()) {
+            return false;
+        }
+        for (size_t i = 0; i < fields_.size(); ++i) {
+            if (fields_[i].alias() != rhs.fields_[i].alias() || !(fields_[i] == rhs.fields_[i])) {
+                return false;
+            }
+        }
+        return true;
     }
 
     decimal_logical_type_extension::decimal_logical_type_extension(uint8_t width, uint8_t scale)

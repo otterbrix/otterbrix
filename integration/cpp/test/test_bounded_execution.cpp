@@ -41,7 +41,7 @@ TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", 
         }
         auto cur = dispatcher->execute_sql(session, query.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
 
     std::array<int64_t, kNumGroups> expected_sum{};

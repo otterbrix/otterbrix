@@ -104,6 +104,7 @@ namespace components::expressions {
                 dst->set_pin(src->pin());
                 dst->set_function(copy_function(resource, src->function()));
                 dst->set_pins({src->pins().begin(), src->pins().end(), resource});
+                dst->set_volatility(src->volatility());
                 copy = std::move(dst);
                 break;
             }

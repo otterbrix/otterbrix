@@ -398,51 +398,121 @@ namespace components::planner::optimizer {
             }
         }
 
-        // ON keys are stamped SIDE-LOCAL: the right key's merged index is left_width + its local index.
+        // An ON operand is a join_key_operand (a column, bare or under one cast), stamped SIDE-LOCAL: the
+        // right root's merged index is left_width + its local index.
+        // `*_widens`: the operand is a lossless integer widening of its column, so a filter on the bare column
+        // carries over to the partner as a filter against the same widening of the constant.
         struct equi_pair_t {
-            key_t left_key;
-            key_t right_key;
+            param_storage left_operand;
+            param_storage right_operand;
             size_t left_merged;
             size_t right_merged;
+            bool left_widens;
+            bool right_widens;
         };
 
+        bool is_lossless_integer_widening(components::types::logical_type from, components::types::logical_type to) {
+            using components::types::logical_type;
+            if (!components::types::is_integer(from) || !components::types::is_integer(to)) {
+                return false;
+            }
+            if (components::types::is_unsigned(to) && !components::types::is_unsigned(from)) {
+                return false;
+            }
+            const auto rank = [](logical_type t) {
+                const auto first = components::types::is_unsigned(t) ? logical_type::UTINYINT : logical_type::TINYINT;
+                return static_cast<int>(t) - static_cast<int>(first);
+            };
+            return rank(to) > rank(from);
+        }
+
+        // `columns` is the side's output schema; empty when it is not stamped.
+        bool widens_its_column(const param_storage& operand,
+                               const std::pmr::vector<components::types::complex_logical_type>& columns) {
+            if (!is_expr(operand) || as_expr(operand)->group() != expression_group::cast) {
+                return false;
+            }
+            const auto* cast = static_cast<const cast_expression_t*>(as_expr(operand).get());
+            const auto* column = join_key_operand(operand);
+            if (column == nullptr || column->path()[0] >= columns.size()) {
+                return false;
+            }
+            return is_lossless_integer_widening(columns[column->path()[0]].type(), cast->result_type().type());
+        }
+
         // `resource` is explicit because key_t's plain copy ctor lands an un-placed copy on the process default.
+        param_storage copy_operand(std::pmr::memory_resource* resource, const param_storage& operand) {
+            if (is_key(operand)) {
+                return param_storage{key_t{as_key(operand), resource}};
+            }
+            return param_storage{clone_expression(resource, as_expr(operand))};
+        }
+
+        // Two operands over the same column compute the same value when both are the bare column, or both
+        // are the same cast of it.
+        bool same_operand_shape(const param_storage& a, const param_storage& b) {
+            if (is_key(a) || is_key(b)) {
+                return is_key(a) && is_key(b);
+            }
+            const auto* ca = static_cast<const cast_expression_t*>(as_expr(a).get());
+            const auto* cb = static_cast<const cast_expression_t*>(as_expr(b).get());
+            return ca->kind() == cb->kind() && ca->result_type() == cb->result_type();
+        }
+
         std::optional<equi_pair_t>
-        equi_pair_from_conjunct(std::pmr::memory_resource* resource, const expression_ptr& on_conj, size_t left_width) {
+        equi_pair_from_conjunct(std::pmr::memory_resource* resource,
+                                const expression_ptr& on_conj,
+                                const std::pmr::vector<components::types::complex_logical_type>& left_columns,
+                                const std::pmr::vector<components::types::complex_logical_type>& right_columns) {
+            const size_t left_width = left_columns.size();
             if (!on_conj || on_conj->group() != expression_group::compare) {
                 return std::nullopt;
             }
             auto* cmp = static_cast<compare_expression_t*>(on_conj.get());
-            if (cmp->type() != compare_type::eq || !is_key(cmp->left()) || !is_key(cmp->right())) {
+            if (cmp->type() != compare_type::eq) {
                 return std::nullopt;
             }
-            const auto& a = as_key(cmp->left());
-            const auto& b = as_key(cmp->right());
-            if (a.path().size() != 1 || b.path().size() != 1) {
+            const auto* a = join_key_operand(cmp->left());
+            const auto* b = join_key_operand(cmp->right());
+            if (a == nullptr || b == nullptr) {
                 return std::nullopt;
             }
-            if (a.side() == side_t::left && b.side() == side_t::right) {
-                return equi_pair_t{key_t{a, resource}, key_t{b, resource}, a.path()[0], left_width + b.path()[0]};
+            if (a->side() == side_t::left && b->side() == side_t::right) {
+                return equi_pair_t{copy_operand(resource, cmp->left()),
+                                   copy_operand(resource, cmp->right()),
+                                   a->path()[0],
+                                   left_width + b->path()[0],
+                                   widens_its_column(cmp->left(), left_columns),
+                                   widens_its_column(cmp->right(), right_columns)};
             }
-            if (a.side() == side_t::right && b.side() == side_t::left) {
-                return equi_pair_t{key_t{b, resource}, key_t{a, resource}, b.path()[0], left_width + a.path()[0]};
+            if (a->side() == side_t::right && b->side() == side_t::left) {
+                return equi_pair_t{copy_operand(resource, cmp->right()),
+                                   copy_operand(resource, cmp->left()),
+                                   b->path()[0],
+                                   left_width + a->path()[0],
+                                   widens_its_column(cmp->right(), left_columns),
+                                   widens_its_column(cmp->left(), right_columns)};
             }
             return std::nullopt;
         }
 
         std::pmr::vector<equi_pair_t>
-        collect_equi_pairs(std::pmr::memory_resource* resource, const expression_ptr& on_expr, size_t left_width) {
+        collect_equi_pairs(std::pmr::memory_resource* resource,
+                           const expression_ptr& on_expr,
+                           const std::pmr::vector<components::types::complex_logical_type>& left_columns,
+                           const std::pmr::vector<components::types::complex_logical_type>& right_columns) {
             std::pmr::vector<equi_pair_t> pairs{resource};
             for (const auto& c : split_conjuncts(resource, on_expr)) {
-                if (auto p = equi_pair_from_conjunct(resource, c, left_width)) {
+                if (auto p = equi_pair_from_conjunct(resource, c, left_columns, right_columns)) {
                     pairs.push_back(std::move(*p));
                 }
             }
             return pairs;
         }
 
-        // `col` points into the conjunct (valid while it lives).
+        // `operand` and `col` point into the conjunct (valid while it lives).
         struct key_const_conj_t {
+            const param_storage* operand;
             const key_t* col;
             core::parameter_id_t param;
             bool key_on_left;
@@ -457,30 +527,28 @@ namespace components::planner::optimizer {
             if (!is_transportable_compare(cmp->type())) {
                 return std::nullopt;
             }
-            if (is_key(cmp->left()) && is_parameter(cmp->right())) {
-                const auto& k = as_key(cmp->left());
-                if (k.path().size() != 1) {
-                    return std::nullopt;
+            if (is_parameter(cmp->right())) {
+                if (const auto* k = join_key_operand(cmp->left())) {
+                    return key_const_conj_t{&cmp->left(), k, as_parameter(cmp->right()), true, cmp->type()};
                 }
-                return key_const_conj_t{&k, as_parameter(cmp->right()), true, cmp->type()};
             }
-            if (is_parameter(cmp->left()) && is_key(cmp->right())) {
-                const auto& k = as_key(cmp->right());
-                if (k.path().size() != 1) {
-                    return std::nullopt;
+            if (is_parameter(cmp->left())) {
+                if (const auto* k = join_key_operand(cmp->right())) {
+                    return key_const_conj_t{&cmp->right(), k, as_parameter(cmp->left()), false, cmp->type()};
                 }
-                return key_const_conj_t{&k, as_parameter(cmp->left()), false, cmp->type()};
             }
             return std::nullopt;
         }
 
         bool conjunct_set_has(const std::pmr::vector<expression_ptr>& conjuncts,
+                              const param_storage& operand,
                               size_t merged_idx,
                               compare_type op,
                               core::parameter_id_t param) {
             for (const auto& c : conjuncts) {
                 auto kc = as_key_const_conjunct(c);
-                if (kc && kc->op == op && kc->param == param && kc->col->path()[0] == merged_idx) {
+                if (kc && kc->op == op && kc->param == param && kc->col->path()[0] == merged_idx &&
+                    same_operand_shape(*kc->operand, operand)) {
                     return true;
                 }
             }
@@ -503,32 +571,49 @@ namespace components::planner::optimizer {
                 }
                 const size_t m = kc->col->path()[0];
                 for (const auto& pr : pairs) {
-                    const key_t* partner_on_key = nullptr;
+                    const param_storage* partner_operand = nullptr;
+                    // Set when the WHERE reads the bare column the ON operand widens: the constant is widened too.
+                    const param_storage* widening = nullptr;
                     size_t partner_merged = 0;
-                    if (m == pr.left_merged) {
-                        partner_on_key = &pr.right_key;
+                    if (m == pr.left_merged && same_operand_shape(*kc->operand, pr.left_operand)) {
+                        partner_operand = &pr.right_operand;
                         partner_merged = pr.right_merged;
-                    } else if (m == pr.right_merged) {
-                        partner_on_key = &pr.left_key;
+                    } else if (m == pr.left_merged && is_key(*kc->operand) && pr.left_widens) {
+                        partner_operand = &pr.right_operand;
+                        partner_merged = pr.right_merged;
+                        widening = &pr.left_operand;
+                    } else if (m == pr.right_merged && same_operand_shape(*kc->operand, pr.right_operand)) {
+                        partner_operand = &pr.left_operand;
                         partner_merged = pr.left_merged;
+                    } else if (m == pr.right_merged && is_key(*kc->operand) && pr.right_widens) {
+                        partner_operand = &pr.left_operand;
+                        partner_merged = pr.left_merged;
+                        widening = &pr.right_operand;
                     } else {
                         continue;
                     }
                     if (partner_merged == m) {
                         continue; // degenerate self-equi
                     }
-                    if (conjunct_set_has(conjuncts, partner_merged, kc->op, kc->param) ||
-                        conjunct_set_has(derived, partner_merged, kc->op, kc->param)) {
+                    if (conjunct_set_has(conjuncts, *partner_operand, partner_merged, kc->op, kc->param) ||
+                        conjunct_set_has(derived, *partner_operand, partner_merged, kc->op, kc->param)) {
                         continue; // partner predicate already present — avoid duplicates
                     }
-                    // Built on partner.resource(), never a plain copy. Verified zero extra allocation in
+                    // Built on `resource`, never a plain copy. Verified zero extra allocation in
                     // test_pushdown_key_arena.cpp ("derivation_allocates_on_the_named_arena").
-                    key_t partner{*partner_on_key, resource};
-                    std::pmr::vector<size_t> p{partner.resource()};
+                    auto partner = copy_operand(resource, *partner_operand);
+                    auto* root = join_key_operand(partner);
+                    std::pmr::vector<size_t> p{root->resource()};
                     p.push_back(partner_merged);
-                    partner.set_path(std::move(p));
-                    derived.push_back(kc->key_on_left ? make_compare_expression(resource, kc->op, partner, kc->param)
-                                                      : make_compare_expression(resource, kc->op, kc->param, partner));
+                    root->set_path(std::move(p));
+                    param_storage constant{kc->param};
+                    if (widening != nullptr) {
+                        const auto* cast = static_cast<const cast_expression_t*>(as_expr(*widening).get());
+                        constant = param_storage{expression_ptr(
+                            make_cast_expression(resource, constant, cast->result_type(), cast->cast(), cast->kind()))};
+                    }
+                    derived.push_back(kc->key_on_left ? make_compare_expression(resource, kc->op, partner, constant)
+                                                      : make_compare_expression(resource, kc->op, constant, partner));
                 }
             }
             conjuncts.insert(conjuncts.end(), derived.begin(), derived.end());
@@ -742,7 +827,14 @@ namespace components::planner::optimizer {
 
                     if ((jt == join_type::inner || jt == join_type::cross) && left_width_known &&
                         !join->expressions().empty()) {
-                        auto pairs = collect_equi_pairs(resource, join->expressions().front(), left_width);
+                        const std::pmr::vector<components::types::complex_logical_type> unstamped{resource};
+                        const auto& right_columns = join->children()[1]->has_output_types()
+                                                        ? join->children()[1]->output_types()
+                                                        : unstamped;
+                        auto pairs = collect_equi_pairs(resource,
+                                                        join->expressions().front(),
+                                                        join->children()[0]->output_types(),
+                                                        right_columns);
                         derive_transitive_conjuncts(resource, pairs, conjuncts);
                     }
 

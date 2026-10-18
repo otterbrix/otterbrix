@@ -632,6 +632,7 @@ namespace services::dispatcher::validation {
 
                 call->set_pin(resolved.value().pin);
                 call->set_function(resolved_copy(resolved.value().pin));
+                call->set_volatility(resolved.value().volatility);
                 call->set_result_type(resolved.value().result);
                 if (!reduces) {
                     last_cardinality_ = combined;

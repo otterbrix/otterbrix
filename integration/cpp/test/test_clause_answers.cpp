@@ -146,7 +146,7 @@ namespace {
             "probe",
             components::compute::arity::unary(),
             doc,
-            size_t{1});
+            size_t{1}, components::compute::volatility_t::volatile_);
         components::compute::kernel_signature_t sig(
             components::compute::function_type_t::vector,
             {components::compute::parameter_type::exact(components::types::logical_type::BIGINT)},

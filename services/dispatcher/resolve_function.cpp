@@ -331,6 +331,7 @@ namespace services::dispatcher {
                 resolved.result = std::move(candidate->result);
                 resolved.function_type = signature.function_type;
                 resolved.mergeable = function->is_mergeable();
+                resolved.volatility = function->volatility();
                 best = std::move(resolved);
                 best_cost = candidate->cost;
                 ambiguous = false;

@@ -3,6 +3,8 @@
 #include <cassert>
 #include <cstdlib>
 
+#include <components/expressions/compare_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/effective_table_oid.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/physical_plan/operators/operator_hash_join.hpp>
@@ -34,6 +36,15 @@ namespace services::planner::impl {
             for (const auto& child : n->children()) {
                 probe_subplan_shape(child, out);
             }
+        }
+
+        components::expressions::expression_ptr key_expression(std::pmr::memory_resource* resource,
+                                                               const components::expressions::param_storage& operand) {
+            using namespace components::expressions;
+            if (is_key(operand)) {
+                return make_scalar_expression(resource, scalar_type::get_field, as_key(operand));
+            }
+            return as_expr(operand);
         }
 
     } // namespace
@@ -114,16 +125,20 @@ namespace services::planner::impl {
                 }
             }
 
-            // After a swap the probe is the logical-right table and the build is the logical-left
-            // table, so the ctor key columns swap too (see operator_hash_join_t's ctor contract).
-            const std::size_t probe_key_col = swap_build_side ? join_node->right_col() : join_node->left_col();
-            const std::size_t build_key_col = swap_build_side ? join_node->left_col() : join_node->right_col();
+            // rewrite_hash_joins put the left side's operand first; after a swap the probe is the
+            // logical-right table, so the right operand is the probe key.
+            const auto* on =
+                static_cast<const components::expressions::compare_expression_t*>(node->expressions().front().get());
+            std::pmr::vector<components::expressions::expression_ptr> probe_keys(resource);
+            std::pmr::vector<components::expressions::expression_ptr> build_keys(resource);
+            probe_keys.push_back(key_expression(resource, swap_build_side ? on->right() : on->left()));
+            build_keys.push_back(key_expression(resource, swap_build_side ? on->left() : on->right()));
             components::operators::operator_ptr hash_join =
                 boost::intrusive_ptr(new components::operators::operator_hash_join_t(resource,
                                                                                      log.clone(),
                                                                                      join_node->type(),
-                                                                                     probe_key_col,
-                                                                                     build_key_col,
+                                                                                     std::move(probe_keys),
+                                                                                     std::move(build_keys),
                                                                                      swap_build_side));
             // The hash path covers inner/left/right/full only; cross never carries an equi-key.
             switch (join_node->type()) {

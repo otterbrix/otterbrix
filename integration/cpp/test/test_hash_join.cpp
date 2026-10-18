@@ -2,7 +2,9 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 
+#include <components/casts/default_casts.hpp>
 #include <components/compute/function.hpp>
+#include <components/expressions/cast_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/key.hpp>
 #include <components/log/log.hpp>
@@ -141,6 +143,40 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
         auto plan = plan_planned.value();
         REQUIRE(plan);
         CHECK(plan->type() == operator_type::join);
+    }
+
+    INFO("a key under a cast on either side is still an equi-join key");
+    {
+        casts::cast_registry_t casts_registry{res};
+        casts::register_default_casts(casts_registry);
+        const types::complex_logical_type to_double{types::logical_type::DOUBLE};
+        auto cast = casts_registry.resolve(types::complex_logical_type{types::logical_type::BIGINT},
+                                           to_double,
+                                           casts::cast_type::explicit_only);
+        REQUIRE(cast.has_value());
+        auto widened = [&](const char* name, side_t side) {
+            return expressions::param_storage{expressions::expression_ptr(
+                expressions::make_cast_expression(res,
+                                                  expressions::param_storage{make_key(res, name, side, 0)},
+                                                  to_double,
+                                                  *cast,
+                                                  casts::cast_kind::cast))};
+        };
+        auto cond = expressions::make_compare_expression(res,
+                                                         compare_type::eq,
+                                                         widened("l", side_t::left),
+                                                         widened("r", side_t::right));
+        auto join = logical_plan::make_node_join(res, join_type::inner);
+        join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
+        join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
+        join->append_expression(cond);
+        auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
+        auto plan_planned =
+            services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::all(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
+        REQUIRE(plan);
+        CHECK(plan->type() == operator_type::hash_join);
     }
 }
 
@@ -571,7 +607,7 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
         join->append_child(wrapper);
         join->append_child(tiny);
         join->append_expression(cond);
-        join->set_equi_columns(0, 0); // post-rewrite_hash_joins state: algo -> hash
+        join->set_algo(logical_plan::node_join_t::join_algo::hash); // post-rewrite_hash_joins state
 
         auto plan_planned =
             services::planner::create_plan(context, registry, join, logical_plan::limit_t::all(), nullptr);

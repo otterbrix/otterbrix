@@ -49,6 +49,20 @@ using namespace components::logical_plan;
 using expressions::compare_type;
 using expressions::side_t;
 
+namespace {
+    // The column the left / right ON operand reads: rewrite_hash_joins puts the left side's operand first.
+    size_t on_column(const components::logical_plan::node_join_t* join, bool right) {
+        REQUIRE_FALSE(join->expressions().empty());
+        const auto* on =
+            static_cast<const components::expressions::compare_expression_t*>(join->expressions().front().get());
+        const auto& operand = right ? on->right() : on->left();
+        REQUIRE(components::expressions::is_key(operand));
+        return components::expressions::as_key(operand).path()[0];
+    }
+    size_t on_left_col(const components::logical_plan::node_join_t* join) { return on_column(join, false); }
+    size_t on_right_col(const components::logical_plan::node_join_t* join) { return on_column(join, true); }
+} // namespace
+
 // ----------------------------------------------------------------------------
 // Multi-way (nested) cross-join promotion.
 //
@@ -153,8 +167,8 @@ TEST_CASE("optimizer::promote_cross_join::multiway_three_table") {
     auto* oj = static_cast<node_join_t*>(outer_after.get());
     CHECK(oj->type() == join_type::inner);
     CHECK(oj->algo() == node_join_t::join_algo::hash);
-    CHECK(oj->left_col() == 3);
-    CHECK(oj->right_col() == 0);
+    CHECK(on_left_col(oj) == 3);
+    CHECK(on_right_col(oj) == 0);
     REQUIRE(oj->children().size() == 2);
     CHECK(oj->children()[1].get() == c.get()); // right child is still table c
 
@@ -165,8 +179,8 @@ TEST_CASE("optimizer::promote_cross_join::multiway_three_table") {
     auto* ij = static_cast<node_join_t*>(inner_after.get());
     CHECK(ij->type() == join_type::inner);
     CHECK(ij->algo() == node_join_t::join_algo::hash);
-    CHECK(ij->left_col() == 1);
-    CHECK(ij->right_col() == 0);
+    CHECK(on_left_col(ij) == 1);
+    CHECK(on_right_col(ij) == 0);
     REQUIRE(ij->children().size() == 2);
     CHECK(ij->children()[0].get() == a.get());
     CHECK(ij->children()[1].get() == b.get());

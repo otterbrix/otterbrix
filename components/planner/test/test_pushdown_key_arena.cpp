@@ -79,8 +79,9 @@ namespace {
     }
 } // namespace
 
-// The deriving run costs exactly 5 (4 from the expression layer's copies of the derived key, 1 from
-// relocalize_key_path); before this rule placed its own copies, the same run cost 12.
+// The deriving run costs exactly 3 (2 from the compare expression's copy of the derived key, 1 from
+// relocalize_key_path); it cost 5 while the derived key reached the compare as a key_t, 12 before this rule
+// placed its own copies.
 TEST_CASE("components::planner::pushdown_filter::derivation_allocates_on_the_named_arena") {
     auto resource = core::pmr::otterbrix_resource();
 
@@ -113,6 +114,6 @@ TEST_CASE("components::planner::pushdown_filter::derivation_allocates_on_the_nam
     CHECK(one_compare_expression == 2 * one_plain_key_copy);
 
     const size_t deriving = default_allocations_of_run(join_type::inner, &resource, true);
-    CHECK(deriving == 5);
+    CHECK(deriving == 3);
     REQUIRE(deriving <= one_compare_expression + 1);
 }

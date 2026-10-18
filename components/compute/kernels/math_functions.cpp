@@ -212,7 +212,8 @@ namespace {
                                                                       name,
                                                                       arity::fixed_num(num_args),
                                                                       doc,
-                                                                      /*available_kernel_slots=*/size_t{1});
+                                                                      /*available_kernel_slots=*/size_t{1},
+                                                                      volatility_t::immutable);
 
         std::pmr::vector<parameter_type> parameters(resource);
         for (size_t i = 0; i < num_args; i++) {
@@ -240,7 +241,8 @@ namespace {
                                                                       name,
                                                                       arity::unary(),
                                                                       doc,
-                                                                      /*available_kernel_slots=*/size_t{1});
+                                                                      /*available_kernel_slots=*/size_t{1},
+                                                                      volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::variable(0, absolute_parameters(resource))},

@@ -645,7 +645,12 @@ namespace {
         using namespace components::compute;
         function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
         auto fn =
-            core::pmr::make_polymorphic_unique<vector_function>(resource, "call_probe", arity::unary(), doc, size_t{1});
+            core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                "call_probe",
+                                                                arity::unary(),
+                                                                doc,
+                                                                size_t{1},
+                                                                components::compute::volatility_t::volatile_);
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(components::types::logical_type::BIGINT)},
                                {output_type::fixed(components::types::logical_type::BIGINT)});

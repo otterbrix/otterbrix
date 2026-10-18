@@ -135,7 +135,8 @@ TEST_CASE("components::compute::vector::single") {
                                                                   "vec_test",
                                                                   arity::unary(),
                                                                   function_doc_with_options(&resource),
-                                                                  size_t{1});
+                                                                  size_t{1},
+                                                                  components::compute::volatility_t::volatile_);
 
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
@@ -162,7 +163,8 @@ TEST_CASE("components::compute::vector::batch") {
                                                                   "vec_batch",
                                                                   arity::unary(),
                                                                   function_doc_with_options(&resource),
-                                                                  size_t{1});
+                                                                  size_t{1},
+                                                                  components::compute::volatility_t::volatile_);
 
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
@@ -199,7 +201,8 @@ TEST_CASE("components::compute::vector::output_resolver_refusal_reaches_the_call
                                                                   "vec_bad_output",
                                                                   arity::unary(),
                                                                   function_doc_with_options(&resource),
-                                                                  size_t{1});
+                                                                  size_t{1},
+                                                                  components::compute::volatility_t::volatile_);
 
     kernel_signature_t sig(
         function_type_t::vector,
@@ -232,7 +235,8 @@ counting_aggregate(std::pmr::memory_resource* resource,
                                                                      arity::unary(),
                                                                      function_doc{resource},
                                                                      size_t{1},
-                                                                     false);
+                                                                     false,
+                                                                     components::compute::volatility_t::volatile_);
     kernel_signature_t sig(function_type_t::aggregate,
                            {parameter_type::exact(logical_type::INTEGER)},
                            {output_type::fixed(logical_type::INTEGER)});
@@ -291,7 +295,8 @@ TEST_CASE("components::compute::vector::plain::chunk") {
                                                                   "plain_chunk",
                                                                   arity::unary(),
                                                                   function_doc{&resource},
-                                                                  size_t{1});
+                                                                  size_t{1},
+                                                                  components::compute::volatility_t::volatile_);
 
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
@@ -321,7 +326,8 @@ TEST_CASE("components::compute::vector::plain::batch") {
                                                                   "plain_batch",
                                                                   arity::unary(),
                                                                   function_doc{&resource},
-                                                                  size_t{1});
+                                                                  size_t{1},
+                                                                  components::compute::volatility_t::volatile_);
 
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
@@ -414,7 +420,8 @@ TEST_CASE("components::compute::options_required") {
                                                                   "opts",
                                                                   arity::unary(),
                                                                   function_doc_with_options(&resource),
-                                                                  size_t{1});
+                                                                  size_t{1},
+                                                                  components::compute::volatility_t::volatile_);
 
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
@@ -441,7 +448,8 @@ TEST_CASE("components::compute::errors") {
                                                                       "vec",
                                                                       arity::unary(),
                                                                       function_doc{&resource},
-                                                                      size_t{1});
+                                                                      size_t{1},
+                                                                      components::compute::volatility_t::volatile_);
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::INTEGER), parameter_type::exact(logical_type::NA)},
@@ -455,7 +463,8 @@ TEST_CASE("components::compute::errors") {
                                                                       "bad_types",
                                                                       arity::unary(),
                                                                       function_doc{&resource},
-                                                                      size_t{1});
+                                                                      size_t{1},
+                                                                      components::compute::volatility_t::volatile_);
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::INTEGER)},
@@ -478,7 +487,8 @@ TEST_CASE("components::compute::errors") {
                                                                       "vec",
                                                                       arity::unary(),
                                                                       function_doc{&resource},
-                                                                      size_t{1});
+                                                                      size_t{1},
+                                                                      components::compute::volatility_t::volatile_);
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::INTEGER)},
@@ -904,7 +914,8 @@ multiplying_vector_function(std::pmr::memory_resource* resource, const std::stri
                                                                   name,
                                                                   arity::unary(),
                                                                   function_doc_with_options(resource),
-                                                                  size_t{1});
+                                                                  size_t{1},
+                                                                  components::compute::volatility_t::volatile_);
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(logical_type::INTEGER)},
                            {output_type::fixed(logical_type::INTEGER)});

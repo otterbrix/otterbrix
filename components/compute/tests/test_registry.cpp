@@ -18,7 +18,8 @@ TEST_CASE("components::compute::registry::basic") {
                                                                 "only_in_other",
                                                                 arity::unary(),
                                                                 function_doc{&resource},
-                                                                /*available_kernel_slots=*/size_t{1}));
+                                                                /*available_kernel_slots=*/size_t{1},
+                                                                components::compute::volatility_t::volatile_));
         REQUIRE_FALSE(added.has_error());
         REQUIRE(other.find_functions("only_in_other").size() == 1);
         REQUIRE(reg->find_functions("only_in_other").empty());
@@ -96,7 +97,8 @@ TEST_CASE("components::compute::registry::shifted_builtin_table_never_serves") {
                                                             "stray",
                                                             arity::unary(),
                                                             function_doc{&resource},
-                                                            /*available_kernel_slots=*/size_t{1}));
+                                                            /*available_kernel_slots=*/size_t{1},
+                                                            components::compute::volatility_t::volatile_));
     REQUIRE_FALSE(added.has_error());
     REQUIRE(added.value() == 0);
 
@@ -120,7 +122,8 @@ TEST_CASE("components::compute::registry::poisoned_builtin_registration_reports_
                                                             "stray",
                                                             arity::unary(),
                                                             function_doc{&resource},
-                                                            /*available_kernel_slots=*/size_t{1}));
+                                                            /*available_kernel_slots=*/size_t{1},
+                                                            components::compute::volatility_t::volatile_));
     REQUIRE_FALSE(added.has_error());
 
     register_default_functions(registry);
@@ -144,7 +147,8 @@ TEST_CASE("components::compute::registry::poisoned_builtin_registration_reports_
                                                             "late",
                                                             arity::unary(),
                                                             function_doc{&resource},
-                                                            /*available_kernel_slots=*/size_t{1}));
+                                                            /*available_kernel_slots=*/size_t{1},
+                                                            components::compute::volatility_t::volatile_));
     REQUIRE(after.has_error());
     CHECK(after.error().type == core::error_code_t::function_registry_error);
 }

@@ -121,7 +121,8 @@ namespace {
                                                                                name,
                                                                                compute::arity::unary(),
                                                                                doc,
-                                                                               size_t{1});
+                                                                               size_t{1},
+                                                                               compute::volatility_t::volatile_);
         compute::kernel_signature_t sig(compute::function_type_t::vector,
                                         {compute::parameter_type::exact(types::logical_type::BIGINT)},
                                         {compute::output_type::fixed(types::logical_type::BIGINT)});

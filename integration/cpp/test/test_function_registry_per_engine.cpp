@@ -32,7 +32,8 @@ namespace {
                                                                       name,
                                                                       arity::unary(),
                                                                       function_doc{resource, "", "", {"arg"}, false},
-                                                                      size_t{1});
+                                                                      size_t{1},
+                                                                      components::compute::volatility_t::volatile_);
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(components::types::logical_type::BIGINT)},
                                {output_type::fixed(components::types::logical_type::BOOLEAN)});

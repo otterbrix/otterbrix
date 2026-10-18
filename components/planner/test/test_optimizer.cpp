@@ -74,6 +74,20 @@ using key = components::expressions::key_t;
 
 using planner_test::make_agg_group;
 
+namespace {
+    // The column the left / right ON operand reads: rewrite_hash_joins puts the left side's operand first.
+    size_t on_column(const components::logical_plan::node_join_t* join, bool right) {
+        REQUIRE_FALSE(join->expressions().empty());
+        const auto* on =
+            static_cast<const components::expressions::compare_expression_t*>(join->expressions().front().get());
+        const auto& operand = right ? on->right() : on->left();
+        REQUIRE(components::expressions::is_key(operand));
+        return components::expressions::as_key(operand).path()[0];
+    }
+    size_t on_left_col(const components::logical_plan::node_join_t* join) { return on_column(join, false); }
+    size_t on_right_col(const components::logical_plan::node_join_t* join) { return on_column(join, true); }
+} // namespace
+
 constexpr auto database_name = "database";
 constexpr auto collection_name = "collection";
 
@@ -1589,8 +1603,8 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     auto* jn = static_cast<node_join_t*>(agg->children()[0].get());
     REQUIRE(jn->type() == join_type::inner);
     REQUIRE(jn->algo() == node_join_t::join_algo::hash);
-    REQUIRE(jn->left_col() == 0);
-    REQUIRE(jn->right_col() == 0);
+    REQUIRE(on_left_col(jn) == 0);
+    REQUIRE(on_right_col(jn) == 0);
 
     REQUIRE(jn->expressions().size() == 1);
     auto* on = static_cast<compare_expression_t*>(jn->expressions()[0].get());
@@ -2417,7 +2431,7 @@ namespace { namespace eag {
                                                         param_storage{col(r, "k", 1, side_t::left)},
                                                         param_storage{col(r, "k", 0, side_t::right)}));
         if (hash) {
-            join->set_equi_columns(1, 0);
+            join->set_algo(node_join_t::join_algo::hash);
         }
         auto gexpr = make_scalar_expression(r, scalar_type::group_field, col(r, "g", key_path));
         auto aexpr = make_aggregate_expression(r, fn, key(r, "m"), col(r, "x", agg_arg_path));
@@ -2468,8 +2482,8 @@ TEST_CASE("optimizer::eager_aggregation::min_is_pushed") {
           components::types::logical_type::BIGINT);
 
     auto* join = static_cast<node_join_t*>(outer->children()[0].get());
-    CHECK(join->left_col() == 1);
-    CHECK(join->right_col() == 0);
+    CHECK(on_left_col(join) == 1);
+    CHECK(on_right_col(join) == 0);
 
     node_group_t* final_group = nullptr;
     for (const auto& c : outer->children()) {
@@ -2828,4 +2842,454 @@ TEST_CASE("optimizer::compare_of_mismatched_physical_types_is_not_folded") {
                                   test_execution_context());
 
     REQUIRE(static_cast<compare_expression_t*>(comp.get())->type() == compare_type::eq);
+}
+
+// A join key under a cast hashes like a bare one; the rest of the optimizer sees through the cast too.
+namespace { namespace cast_key {
+    components::types::complex_logical_type int_type() {
+        return components::types::complex_logical_type(components::types::logical_type::INTEGER);
+    }
+
+    expression_ptr widened(std::pmr::memory_resource* r, const key& k) {
+        return expression_ptr(make_cast_expression(r,
+                                                   param_storage{k},
+                                                   bigint_type(),
+                                                   test_cast(int_type(), bigint_type()),
+                                                   components::casts::cast_kind::cast));
+    }
+
+    // CAST(k AS BIGINT) over the left input's column 1
+    param_storage widened_k(std::pmr::memory_resource* r) {
+        return param_storage{widened(r, pruned_key(r, "k", 1, side_t::left))};
+    }
+
+    const key& key_under_cast(const param_storage& operand) {
+        REQUIRE(is_expr(operand));
+        REQUIRE(as_expr(operand)->group() == expression_group::cast);
+        const auto& child = static_cast<const cast_expression_t*>(as_expr(operand).get())->child();
+        REQUIRE(is_key(child));
+        return as_key(child);
+    }
+
+    // [a BIGINT, k INTEGER] x [b BIGINT, k2 BIGINT]
+    node_ptr join_over(std::pmr::memory_resource* r, join_type type, const expression_ptr& on) {
+        auto join = make_node_join(r, type);
+        auto left = join_scan(r, {"a", "k"});
+        std::pmr::vector<components::types::complex_logical_type> types(left->output_types().begin(),
+                                                                        left->output_types().end(),
+                                                                        r);
+        types[1] = components::types::complex_logical_type(components::types::logical_type::INTEGER, "k");
+        left->set_output_types(std::move(types));
+        join->append_child(left);
+        join->append_child(join_scan(r, {"b", "k2"}));
+        join->append_expression(on);
+        return join;
+    }
+}} // namespace ::cast_key
+
+TEST_CASE("optimizer::hash_join::cast_key_operand_is_hashed") {
+    auto resource = core::pmr::otterbrix_resource();
+    for (auto type : {join_type::inner, join_type::left, join_type::right, join_type::full}) {
+        auto join = cast_key::join_over(
+            &resource,
+            type,
+            make_compare_expression(&resource,
+                                    compare_type::eq,
+                                    cast_key::widened_k(&resource),
+                                    pruned_key(&resource, "k2", 1, side_t::right)));
+        auto out = components::planner::optimizer::rewrite_hash_joins(&resource, join);
+        REQUIRE(out == join);
+        CHECK(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::hash);
+    }
+}
+
+TEST_CASE("optimizer::hash_join::on_is_normalised_left_operand_first") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto join = cast_key::join_over(
+        &resource,
+        join_type::inner,
+        make_compare_expression(&resource,
+                                compare_type::eq,
+                                pruned_key(&resource, "k2", 1, side_t::right),
+                                cast_key::widened_k(&resource)));
+    components::planner::optimizer::rewrite_hash_joins(&resource, join);
+    REQUIRE(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::hash);
+    auto* on = static_cast<compare_expression_t*>(join->expressions()[0].get());
+    CHECK(cast_key::key_under_cast(on->left()).side() == side_t::left);
+    REQUIRE(is_key(on->right()));
+    CHECK(as_key(on->right()).side() == side_t::right);
+}
+
+TEST_CASE("optimizer::hash_join::keys_from_one_side_stay_nested") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto join = cast_key::join_over(
+        &resource,
+        join_type::inner,
+        make_compare_expression(&resource,
+                                compare_type::eq,
+                                cast_key::widened_k(&resource),
+                                pruned_key(&resource, "a", 0, side_t::left)));
+    components::planner::optimizer::rewrite_hash_joins(&resource, join);
+    CHECK(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::nested);
+}
+
+TEST_CASE("optimizer::promote_cross_join::comma_join_on_narrow_key_becomes_inner_hash") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto lt_param = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                          components::vector::parameter_kind::literal);
+
+    auto make_scan = [&](std::initializer_list<std::pair<const char*, components::types::logical_type>> cols) {
+        std::pmr::vector<components::types::complex_logical_type> types(&resource);
+        for (const auto& [name, type] : cols) {
+            types.emplace_back(type, name);
+        }
+        auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, types, &resource);
+        return make_node_raw_data(&resource, std::move(chunk));
+    };
+    auto scan_a = make_scan({{"ak", components::types::logical_type::INTEGER},
+                             {"ap", components::types::logical_type::BIGINT}});
+    auto scan_b = make_scan({{"bk", components::types::logical_type::BIGINT}});
+
+    auto join = make_node_join(&resource, join_type::cross);
+    join->append_child(scan_a);
+    join->append_child(scan_b);
+    join->append_expression(make_compare_expression(&resource, compare_type::all_true));
+
+    auto eq = make_compare_expression(&resource, compare_type::eq, key(&resource, "ak"), key(&resource, "bk"));
+    auto lt = make_compare_expression(&resource, compare_type::lt, key(&resource, "ap"), lt_param);
+    auto where = make_compare_union_expression(&resource, compare_type::union_and);
+    where->append_child(eq);
+    where->append_child(lt);
+
+    auto outer = make_node_aggregate(&resource,
+                                     qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+    outer->append_child(join);
+    outer->append_child(
+        make_node_match(&resource,
+                        qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                        where));
+    auto sum_expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum_ap"));
+    sum_expr->append_param(key(&resource, "ap"));
+    std::vector<expression_ptr> group_exprs;
+    group_exprs.emplace_back(expression_ptr(sum_expr));
+    outer->append_child(make_node_group(&resource, group_exprs));
+
+    auto validated =
+        services::dispatcher::validate_schema(test_validation_context(&resource), outer.get(), params->parameters());
+    REQUIRE_FALSE(validated.has_error());
+
+    node_ptr out = components::planner::optimizer::promote_cross_joins(&resource, outer);
+    out = components::planner::optimizer::rewrite_hash_joins(&resource, out);
+
+    REQUIRE(out == outer);
+    auto* agg = static_cast<node_aggregate_t*>(out.get());
+    REQUIRE(agg->children().size() == 3);
+    REQUIRE(agg->children()[0]->type() == node_type::join_t);
+    auto* jn = static_cast<node_join_t*>(agg->children()[0].get());
+    REQUIRE(jn->type() == join_type::inner);
+    REQUIRE(jn->algo() == node_join_t::join_algo::hash);
+
+    REQUIRE(jn->expressions().size() == 1);
+    auto* on = static_cast<compare_expression_t*>(jn->expressions()[0].get());
+    REQUIRE(on->type() == compare_type::eq);
+    const auto& lk = cast_key::key_under_cast(on->left());
+    CHECK(lk.side() == side_t::left);
+    REQUIRE(lk.path().size() == 1);
+    CHECK(lk.path()[0] == 0);
+    REQUIRE(is_key(on->right()));
+    const auto& rk = as_key(on->right());
+    CHECK(rk.side() == side_t::right);
+    REQUIRE(rk.path().size() == 1);
+    CHECK(rk.path()[0] == 0);
+
+    REQUIRE(agg->children()[1]->type() == node_type::match_t);
+    auto* residual = static_cast<compare_expression_t*>(agg->children()[1]->expressions()[0].get());
+    CHECK(residual->type() == compare_type::lt);
+}
+
+namespace { namespace one_sided {
+    node_ptr scan(std::pmr::memory_resource* r, std::initializer_list<const char*> cols) {
+        std::pmr::vector<components::types::complex_logical_type> types(r);
+        for (const char* name : cols) {
+            types.emplace_back(components::types::logical_type::BIGINT, name);
+        }
+        auto chunk = gen_data_chunk(/*size=*/1, /*start=*/0, types, r);
+        return make_node_raw_data(r, std::move(chunk));
+    }
+
+    expression_ptr abs_of(std::pmr::memory_resource* r, param_storage arg) {
+        std::pmr::vector<param_storage> args(r);
+        args.push_back(std::move(arg));
+        return expression_ptr(
+            make_function_expression(r, function_qualified_name_t{core::function_name_t{"abs"}}, std::move(args)));
+    }
+
+    // SELECT SUM(ap) FROM a(ak, ap), b(bk) WHERE `where`, validated and then promoted; returns the FROM node.
+    node_ptr promote(std::pmr::memory_resource* r, const expression_ptr& where) {
+        auto params = make_parameter_node(r);
+        auto join = make_node_join(r, join_type::cross);
+        join->append_child(scan(r, {"ak", "ap"}));
+        join->append_child(scan(r, {"bk"}));
+        join->append_expression(make_compare_expression(r, compare_type::all_true));
+        const qualified_name_t name{core::dbname_t{database_name}, core::relname_t{collection_name}};
+        auto outer = make_node_aggregate(r, name);
+        outer->append_child(join);
+        outer->append_child(make_node_match(r, name, where));
+        auto sum_expr = make_aggregate_expression(r, "sum", key(r, "sum_ap"));
+        sum_expr->append_param(key(r, "ap"));
+        std::vector<expression_ptr> group_exprs;
+        group_exprs.emplace_back(expression_ptr(sum_expr));
+        outer->append_child(make_node_group(r, group_exprs));
+        auto validated =
+            services::dispatcher::validate_schema(test_validation_context(r), outer.get(), params->parameters());
+        REQUIRE_FALSE(validated.has_error());
+        node_ptr out = components::planner::optimizer::promote_cross_joins(r, outer);
+        REQUIRE(out == outer);
+        return outer->children()[0];
+    }
+}} // namespace ::one_sided
+
+// Any operand that reads one side only is a join key, as in PostgreSQL; its columns are re-stamped side-local.
+TEST_CASE("optimizer::promote_cross_join::function_of_one_side_is_a_join_key") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto from = one_sided::promote(
+        &resource,
+        make_compare_expression(&resource,
+                                compare_type::eq,
+                                param_storage{key(&resource, "bk")},
+                                param_storage{one_sided::abs_of(&resource, key(&resource, "ak"))}));
+    REQUIRE(from->type() == node_type::join_t);
+    auto* join = static_cast<node_join_t*>(from.get());
+    CHECK(join->type() == join_type::inner);
+    REQUIRE(join->expressions().size() == 1);
+    auto* on = static_cast<compare_expression_t*>(join->expressions()[0].get());
+    REQUIRE(is_key(on->left()));
+    CHECK(as_key(on->left()).side() == side_t::right);
+    REQUIRE(as_key(on->left()).path().size() == 1);
+    CHECK(as_key(on->left()).path()[0] == 0);
+    REQUIRE(is_expr(on->right()));
+    REQUIRE(as_expr(on->right())->group() == expression_group::function);
+    const auto& args = static_cast<function_expression_t*>(as_expr(on->right()).get())->args();
+    REQUIRE(args.size() == 1);
+    REQUIRE(is_key(args[0]));
+    CHECK(as_key(args[0]).side() == side_t::left);
+    REQUIRE(as_key(args[0]).path().size() == 1);
+    CHECK(as_key(args[0]).path()[0] == 0);
+}
+
+// An operand reading both sides cannot be evaluated on either input alone.
+TEST_CASE("optimizer::promote_cross_join::operand_over_both_sides_is_not_a_join_key") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto sum = make_scalar_expression(&resource, scalar_type::add);
+    sum->append_param(key(&resource, "ak"));
+    sum->append_param(key(&resource, "bk"));
+    auto from = one_sided::promote(&resource,
+                                   make_compare_expression(&resource,
+                                                           compare_type::eq,
+                                                           param_storage{expression_ptr(sum)},
+                                                           param_storage{key(&resource, "ap")}));
+    REQUIRE(from->type() == node_type::join_t);
+    CHECK(static_cast<node_join_t*>(from.get())->type() == join_type::cross);
+}
+
+namespace { namespace cast_key {
+    // ON cast(k) = k2 over [a, k] x [b, k2]; the WHERE is in merged coordinates.
+    node_ptr filtered_join(std::pmr::memory_resource* r, node_ptr& join, const expression_ptr& where) {
+        join = join_over(r,
+                         join_type::inner,
+                         make_compare_expression(r,
+                                                 compare_type::eq,
+                                                 widened_k(r),
+                                                 pruned_key(r, "k2", 1, side_t::right)));
+        auto outer = make_node_aggregate(r, qualified_name_t{pdb(), prel()});
+        outer->append_child(join);
+        outer->append_child(make_node_match(r, qualified_name_t{pdb(), prel()}, where));
+        return outer;
+    }
+
+    compare_expression_t* pushed_filter(const node_ptr& join, size_t side) {
+        const auto& child = join->children()[side];
+        REQUIRE(child->type() == node_type::aggregate_t);
+        REQUIRE(child->children().size() == 2);
+        REQUIRE(child->children()[1]->type() == node_type::match_t);
+        return static_cast<compare_expression_t*>(child->children()[1]->expressions()[0].get());
+    }
+}} // namespace ::cast_key
+
+TEST_CASE("optimizer::pushdown_filter::transitive_equi_propagation_onto_cast_key") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
+    node_ptr join;
+    auto outer = cast_key::filtered_join(
+        &resource,
+        join,
+        make_compare_expression(&resource, compare_type::eq, pruned_key(&resource, "k2", 3), p5));
+
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+    REQUIRE(out == join);
+
+    auto* left = cast_key::pushed_filter(join, 0);
+    CHECK(left->type() == compare_type::eq);
+    const auto& k = cast_key::key_under_cast(left->left());
+    REQUIRE(k.path().size() == 1);
+    CHECK(k.path()[0] == 1);
+    REQUIRE(is_parameter(left->right()));
+    CHECK(as_parameter(left->right()) == p5);
+
+    auto* right = cast_key::pushed_filter(join, 1);
+    REQUIRE(is_key(right->left()));
+    CHECK(as_key(right->left()).as_string() == "k2");
+    CHECK(as_key(right->left()).path()[0] == 1);
+}
+
+TEST_CASE("optimizer::pushdown_filter::transitive_equi_propagation_from_cast_key") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
+    node_ptr join;
+    auto outer = cast_key::filtered_join(
+        &resource,
+        join,
+        make_compare_expression(&resource,
+                                compare_type::gt,
+                                param_storage{cast_key::widened(&resource, pruned_key(&resource, "k", 1))},
+                                p5));
+
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+    REQUIRE(out == join);
+
+    auto* left = cast_key::pushed_filter(join, 0);
+    CHECK(left->type() == compare_type::gt);
+    CHECK(cast_key::key_under_cast(left->left()).path()[0] == 1);
+
+    auto* right = cast_key::pushed_filter(join, 1);
+    CHECK(right->type() == compare_type::gt);
+    REQUIRE(is_key(right->left()));
+    CHECK(as_key(right->left()).as_string() == "k2");
+    REQUIRE(as_key(right->left()).path().size() == 1);
+    CHECK(as_key(right->left()).path()[0] == 1);
+    REQUIRE(is_parameter(right->right()));
+    CHECK(as_parameter(right->right()) == p5);
+}
+
+// k = 5 on the narrow side holds exactly when CAST(k AS BIGINT) = CAST(5 AS BIGINT), so k2 gets that filter.
+TEST_CASE("optimizer::pushdown_filter::bare_key_propagates_through_widening_cast_key") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int32_t(5)),
+                                    components::vector::parameter_kind::literal);
+    for (auto op : {compare_type::eq, compare_type::lt}) {
+        node_ptr join;
+        auto outer = cast_key::filtered_join(
+            &resource,
+            join,
+            make_compare_expression(&resource, op, pruned_key(&resource, "k", 1), p5));
+
+        node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+        REQUIRE(out == join);
+        auto* left = cast_key::pushed_filter(join, 0);
+        CHECK(left->type() == op);
+        REQUIRE(is_key(left->left()));
+
+        auto* right = cast_key::pushed_filter(join, 1);
+        CHECK(right->type() == op);
+        REQUIRE(is_key(right->left()));
+        CHECK(as_key(right->left()).as_string() == "k2");
+        REQUIRE(as_key(right->left()).path().size() == 1);
+        CHECK(as_key(right->left()).path()[0] == 1);
+        REQUIRE(is_expr(right->right()));
+        REQUIRE(as_expr(right->right())->group() == expression_group::cast);
+        const auto* widened = static_cast<const cast_expression_t*>(as_expr(right->right()).get());
+        CHECK(widened->result_type().type() == components::types::logical_type::BIGINT);
+        REQUIRE(is_parameter(widened->child()));
+        CHECK(as_parameter(widened->child()) == p5);
+    }
+}
+
+// A narrowing cast is not injective, so a filter on the column under it says nothing about the other side.
+TEST_CASE("optimizer::pushdown_filter::bare_key_does_not_propagate_through_narrowing_cast_key") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
+    auto join = make_node_join(&resource, join_type::inner);
+    join->append_child(join_scan(&resource, {"a", "k"}));
+    join->append_child(join_scan(&resource, {"b", "k2"}));
+    join->append_expression(make_compare_expression(
+        &resource,
+        compare_type::eq,
+        param_storage{expression_ptr(make_cast_expression(&resource,
+                                                          param_storage{pruned_key(&resource, "k", 1, side_t::left)},
+                                                          cast_key::int_type(),
+                                                          test_cast(bigint_type(), cast_key::int_type()),
+                                                          components::casts::cast_kind::cast))},
+        pruned_key(&resource, "k2", 1, side_t::right)));
+    auto outer = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
+    outer->append_child(join);
+    outer->append_child(make_node_match(&resource,
+                                        qualified_name_t{pdb(), prel()},
+                                        make_compare_expression(&resource,
+                                                                compare_type::eq,
+                                                                pruned_key(&resource, "k", 1),
+                                                                p5)));
+    const node_ptr right = join->children()[1];
+
+    node_ptr out = components::planner::optimizer::pushdown_filter(&resource, outer);
+    REQUIRE(out == join);
+    CHECK(cast_key::pushed_filter(join, 0)->type() == compare_type::eq);
+    CHECK(join->children()[1] == right);
+}
+
+// MIN pushed onto the side whose join key is cast(k): the partial groups by k, and the cast follows it.
+TEST_CASE("optimizer::eager_aggregation::cast_join_key_is_pushed") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto* r = &resource;
+    auto a = make_node_aggregate(r, qualified_name_t{core::dbname_t{"db"}, core::relname_t{"a"}});
+    a->set_table_oid(components::catalog::oid_t{100});
+    {
+        std::pmr::vector<components::types::complex_logical_type> types(r);
+        types.emplace_back(components::types::logical_type::BIGINT, "g");
+        types.emplace_back(components::types::logical_type::BIGINT, "x");
+        types.emplace_back(components::types::logical_type::INTEGER, "k");
+        a->set_output_types(std::move(types));
+    }
+    auto b = eag::leaf(r, "b", components::catalog::oid_t{200}, {"k"});
+    auto join = make_node_join(r, join_type::inner);
+    join->append_child(a);
+    join->append_child(b);
+    const param_storage cast_k{cast_key::widened(r, eag::col(r, "k", 2, side_t::left))};
+    join->append_expression(
+        make_compare_expression(r, compare_type::eq, cast_k, param_storage{eag::col(r, "k", 0, side_t::right)}));
+    components::planner::optimizer::rewrite_hash_joins(r, join);
+    REQUIRE(static_cast<node_join_t*>(join.get())->algo() == node_join_t::join_algo::hash);
+
+    auto aexpr = make_aggregate_expression(r, "min", key(r, "m"), eag::col(r, "x", 1));
+    aexpr->set_mergeable(true);
+    aexpr->set_result_type(components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    std::vector<expression_ptr> gxs;
+    gxs.emplace_back(make_scalar_expression(r, scalar_type::group_field, eag::col(r, "g", 0)));
+    gxs.emplace_back(expression_ptr(aexpr));
+    auto outer = make_node_aggregate(r, qualified_name_t{});
+    outer->append_child(join);
+    outer->append_child(make_node_group(r, gxs));
+
+    components::planner::optimizer::eager_aggregation(r, outer);
+
+    auto* partial = eag::pushed_partial(outer);
+    REQUIRE(partial != nullptr);
+    REQUIRE(partial->expressions().size() == 5);
+    auto* second = static_cast<scalar_expression_t*>(partial->expressions()[1].get());
+    CHECK(second->type() == scalar_type::group_field);
+    REQUIRE(second->key().path().size() == 1);
+    CHECK(second->key().path()[0] == 2);
+
+    auto* on = static_cast<compare_expression_t*>(join->expressions()[0].get());
+    const auto& k = cast_key::key_under_cast(on->left());
+    REQUIRE(k.path().size() == 1);
+    CHECK(k.path()[0] == 1);
+    CHECK(partial->output_types()[1].type() == components::types::logical_type::INTEGER);
 }

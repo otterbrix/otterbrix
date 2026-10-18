@@ -26,7 +26,7 @@ namespace components::logical_plan {
     class node_join_t final : public node_t {
     public:
         // Physical algorithm chosen for this logical join. Stamped by the optimizer
-        // rule rewrite_hash_joins (via set_equi_columns) and read by create_plan_join.
+        // rule rewrite_hash_joins and read by create_plan_join; the hash keys are the ON operands.
         // This is an ANNOTATION only — it does NOT change the logical semantics.
         enum class join_algo : uint8_t
         {
@@ -39,11 +39,7 @@ namespace components::logical_plan {
         join_type type() const;
 
         join_algo algo() const noexcept;
-        std::size_t left_col() const noexcept;
-        std::size_t right_col() const noexcept;
-        // Records the detected equi-key column indices (into each side's input chunk)
-        // and switches algo() to hash. Called by rewrite_hash_joins.
-        void set_equi_columns(std::size_t left, std::size_t right) noexcept;
+        void set_algo(join_algo algo) noexcept;
 
         using correlation_t = std::pair<core::parameter_id_t, expressions::key_t>;
 
@@ -57,8 +53,6 @@ namespace components::logical_plan {
     private:
         join_type type_;
         join_algo algo_{join_algo::nested};
-        std::size_t left_col_{0};
-        std::size_t right_col_{0};
         bool lateral_{false};
         std::pmr::vector<correlation_t> correlations_{resource()};
 

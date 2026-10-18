@@ -21,6 +21,7 @@ namespace services::dispatcher {
         components::types::complex_logical_type result;
         components::compute::function_type_t function_type{components::compute::function_type_t::invalid};
         bool mergeable{false};
+        components::compute::volatility_t volatility{components::compute::volatility_t::volatile_};
 
         explicit resolved_function_t(std::pmr::memory_resource* resource)
             : arguments(resource) {}

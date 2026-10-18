@@ -403,6 +403,9 @@ namespace components::execution_dag {
         [[nodiscard]] core::error_t process_keys(const vector::data_chunk_t& input,
                                                  const graph_execution_context& context);
         [[nodiscard]] const vector::vector_t& key_values(size_t index) const;
+        // Hands the key the last process_keys() computed to `out` without copying it: a slot bound to an input
+        // column is shared, a computed slot gives up its buffer and gets a fresh one for the next chunk.
+        void take_key_values(size_t index, vector::vector_t* out);
         [[nodiscard]] core::error_t process_groups(core::span<const uint32_t> group_ids,
                                                    const graph_execution_context& context);
         [[nodiscard]] core::error_t finalize_groups(const graph_execution_context& context,

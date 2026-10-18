@@ -63,7 +63,8 @@ core::pmr::polymorphic_unique_ptr<aggregate_function> make_concat_func(std::pmr:
                                                                      arity::unary(),
                                                                      doc,
                                                                      size_t{1},
-                                                                     false);
+                                                                     false,
+                                                                     components::compute::volatility_t::volatile_);
 
     kernel_signature_t sig(function_type_t::aggregate,
                            {parameter_type::exact(types::logical_type::STRING_LITERAL)},
@@ -110,7 +111,8 @@ core::pmr::polymorphic_unique_ptr<aggregate_function> make_mult_func(std::pmr::m
                                                                      arity::binary(),
                                                                      doc,
                                                                      size_t{1},
-                                                                     false);
+                                                                     false,
+                                                                     components::compute::volatility_t::volatile_);
 
     kernel_signature_t sig(
         function_type_t::aggregate,
@@ -134,7 +136,12 @@ static core::error_t is_even_exec(kernel_context&, const vector::data_chunk_t& i
 core::pmr::polymorphic_unique_ptr<vector_function> make_is_even_func(std::pmr::memory_resource* resource) {
     function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
 
-    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource, udf3_name, arity::unary(), doc, size_t{1});
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                  udf3_name,
+                                                                  arity::unary(),
+                                                                  doc,
+                                                                  size_t{1},
+                                                                  components::compute::volatility_t::volatile_);
 
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(types::logical_type::BIGINT)},
@@ -158,7 +165,12 @@ static core::error_t modulo_exec(kernel_context&, const vector::data_chunk_t& in
 core::pmr::polymorphic_unique_ptr<vector_function> make_modulo_func(std::pmr::memory_resource* resource) {
     function_doc doc{resource, "short_doc", "full_doc", {"arg1", "arg2"}, false};
 
-    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource, udf4_name, arity::binary(), doc, size_t{1});
+    auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                  udf4_name,
+                                                                  arity::binary(),
+                                                                  doc,
+                                                                  size_t{1},
+                                                                  components::compute::volatility_t::volatile_);
 
     kernel_signature_t sig(
         function_type_t::vector,
@@ -167,6 +179,19 @@ core::pmr::polymorphic_unique_ptr<vector_function> make_modulo_func(std::pmr::me
     vector_kernel k{std::move(sig), modulo_exec};
 
     std::ignore = fn->add_kernel(resource, std::move(k));
+    return fn;
+}
+
+core::pmr::polymorphic_unique_ptr<vector_function>
+make_named_modulo_func(std::pmr::memory_resource* resource, const std::string& name, volatility_t volatility) {
+    function_doc doc{resource, "short_doc", "full_doc", {"arg1", "arg2"}, false};
+    auto fn =
+        core::pmr::make_polymorphic_unique<vector_function>(resource, name, arity::binary(), doc, size_t{1}, volatility);
+    kernel_signature_t sig(
+        function_type_t::vector,
+        {parameter_type::exact(types::logical_type::BIGINT), parameter_type::exact(types::logical_type::BIGINT)},
+        {output_type::fixed(types::logical_type::BIGINT)});
+    REQUIRE_FALSE(fn->add_kernel(resource, vector_kernel{std::move(sig), modulo_exec}).contains_error());
     return fn;
 }
 
@@ -481,7 +506,8 @@ namespace {
                                                                          arity::unary(),
                                                                          doc,
                                                                          size_t{1},
-                                                                         /*mergeable=*/true);
+                                                                         /*mergeable=*/true,
+                                                                         components::compute::volatility_t::volatile_);
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::exact(types::logical_type::BIGINT)},
                                {output_type::fixed(types::logical_type::BIGINT)});
@@ -611,6 +637,51 @@ TEST_CASE("integration::cpp::test_udfs::a_udf_in_a_pushable_aggregate_is_pushed_
             auto cell3 = cur->get<int64_t>(1, row);
             REQUIRE_FALSE(cell3.has_error());
             REQUIRE(cell3.value() == expected[row]);
+        }
+    }
+}
+// A UDF its host declares immutable hashes as a join key like a built-in; a volatile one keeps the nested loop.
+TEST_CASE("integration::cpp::test_udfs::udf_join_key_is_hashed_only_when_immutable") {
+    auto config = test_create_config(integration_fixture_path("test_udfs/udf_join_key"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+
+    auto exec = [&](const std::string& sql) { return dispatcher->execute_sql(otterbrix::session_id_t(), sql); };
+    REQUIRE(exec("CREATE DATABASE udfjoin;")->is_success());
+    REQUIRE(exec("CREATE TABLE udfjoin.f (a BIGINT, v BIGINT);")->is_success());
+    REQUIRE(exec("CREATE TABLE udfjoin.d (id BIGINT, n BIGINT);")->is_success());
+    REQUIRE(exec("INSERT INTO udfjoin.f (a, v) VALUES (11, 1), (12, 2), (23, 3), (5, 4);")->is_success());
+    REQUIRE(exec("INSERT INTO udfjoin.d (id, n) VALUES (1, 100), (2, 200), (3, 300);")->is_success());
+    REQUIRE_FALSE(dispatcher
+                      ->register_udf(otterbrix::session_id_t(),
+                                     make_named_modulo_func(dispatcher->resource(), "imm_mod", volatility_t::immutable))
+                      .contains_error());
+    REQUIRE_FALSE(dispatcher
+                      ->register_udf(otterbrix::session_id_t(),
+                                     make_named_modulo_func(dispatcher->resource(), "vol_mod", volatility_t::volatile_))
+                      .contains_error());
+
+    for (const std::string udf : {"imm_mod", "vol_mod"}) {
+        const std::string sql =
+            "SELECT f.v, d.n FROM udfjoin.f JOIN udfjoin.d ON " + udf + "(f.a, 10) = d.id ORDER BY f.v;";
+        const auto plan = explain_text(dispatcher, sql);
+        INFO(sql << "\n" << plan);
+        if (udf == "imm_mod") {
+            CHECK(plan.find("Hash Join") != std::string::npos);
+        } else {
+            CHECK(plan.find("Nested Loop") != std::string::npos);
+        }
+        auto cur = exec(sql);
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 3);
+        for (uint64_t row = 0; row < 3; ++row) {
+            auto v = cur->get<int64_t>(0, row);
+            auto n = cur->get<int64_t>(1, row);
+            REQUIRE_FALSE(v.has_error());
+            REQUIRE_FALSE(n.has_error());
+            CHECK(v.value() == static_cast<int64_t>(row + 1));
+            CHECK(n.value() == static_cast<int64_t>((row + 1) * 100));
         }
     }
 }

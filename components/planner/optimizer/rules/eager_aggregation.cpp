@@ -1,5 +1,7 @@
 #include "eager_aggregation.hpp"
 
+#include "conjunct_utils.hpp"
+
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -217,7 +219,18 @@ namespace components::planner::optimizer {
             if (!is_bare_table_source(pushed)) {
                 return;
             }
-            const size_t join_key_local = pushed_left ? join->left_col() : join->right_col();
+            // rewrite_hash_joins put the left side's operand first. Only a column, bare or under a cast, can be
+            // added to the partial's grouping; any other key leaves the rule off.
+            if (join->expressions().empty() || !join->expressions()[0] ||
+                join->expressions()[0]->group() != ce::expression_group::compare) {
+                return;
+            }
+            auto* on = static_cast<ce::compare_expression_t*>(join->expressions()[0].get());
+            ce::key_t* join_key = join_key_operand(pushed_left ? on->left() : on->right());
+            if (join_key == nullptr) {
+                return;
+            }
+            const size_t join_key_local = join_key->path()[0];
             if (join_key_local >= pushed->output_types().size()) {
                 return; // defensive: unexpected stamp
             }
@@ -332,23 +345,8 @@ namespace components::planner::optimizer {
                 pushed->set_output_types(std::move(partial_types));
             }
 
-            if (pushed_left) {
-                join->set_equi_columns(join_key_pos, join->right_col());
-            } else {
-                join->set_equi_columns(join->left_col(), join_key_pos);
-            }
-            // Keeps the ON condition truthful: the pushed-side key now sits at its partial-output
-            // position; the other side is untouched.
-            if (!join->expressions().empty() && join->expressions()[0] &&
-                join->expressions()[0]->group() == ce::expression_group::compare) {
-                auto* cmp = static_cast<ce::compare_expression_t*>(join->expressions()[0].get());
-                const ce::side_t want = pushed_left ? ce::side_t::left : ce::side_t::right;
-                if (ce::is_key(cmp->left()) && ce::as_key(cmp->left()).side() == want) {
-                    set_key_path(resource, ce::as_key(cmp->left()), join_key_pos);
-                } else if (ce::is_key(cmp->right()) && ce::as_key(cmp->right()).side() == want) {
-                    set_key_path(resource, ce::as_key(cmp->right()), join_key_pos);
-                }
-            }
+            // The pushed-side key now sits at its partial-output position; the other side is untouched.
+            set_key_path(resource, *join_key, join_key_pos);
         }
 
         void walk(std::pmr::memory_resource* resource, const lp::node_ptr& node) {

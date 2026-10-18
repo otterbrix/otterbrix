@@ -241,7 +241,8 @@ namespace {
                                                                       name,
                                                                       arity::var_args(2),
                                                                       doc,
-                                                                      /*available_kernel_slots=*/size_t{2});
+                                                                      /*available_kernel_slots=*/size_t{2},
+                                                                      volatility_t::immutable);
 
         // NULL-aware: a null argument is accepted at signature-match time by the string/integer
         // matchers (kernel_signature.cpp); the kernel body propagates it through the validity mask.
@@ -278,7 +279,8 @@ namespace {
                                                                       name,
                                                                       arity::unary(),
                                                                       doc,
-                                                                      /*available_kernel_slots=*/size_t{1});
+                                                                      /*available_kernel_slots=*/size_t{1},
+                                                                      volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::STRING_LITERAL)},
@@ -301,7 +303,8 @@ namespace {
                                                                       name,
                                                                       arity::unary(),
                                                                       doc,
-                                                                      /*available_kernel_slots=*/size_t{1});
+                                                                      /*available_kernel_slots=*/size_t{1},
+                                                                      volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::STRING_LITERAL)},
@@ -323,7 +326,8 @@ namespace {
                                                                       name,
                                                                       arity::ternary(),
                                                                       doc,
-                                                                      /*available_kernel_slots=*/size_t{1});
+                                                                      /*available_kernel_slots=*/size_t{1},
+                                                                      volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::STRING_LITERAL),
@@ -347,7 +351,8 @@ namespace {
                                                                       name,
                                                                       arity::var_args(2),
                                                                       doc,
-                                                                      /*available_kernel_slots=*/size_t{2});
+                                                                      /*available_kernel_slots=*/size_t{2},
+                                                                      volatility_t::immutable);
 
         kernel_signature_t sig2(
             function_type_t::vector,

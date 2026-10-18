@@ -728,7 +728,8 @@ namespace {
                                                                          arity::unary(),
                                                                          doc,
                                                                          available_kernel_slots,
-                                                                         /*mergeable=*/true);
+                                                                         /*mergeable=*/true,
+                                                                         volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0, numeric_parameters(resource))},
@@ -751,7 +752,8 @@ namespace {
                                                                          arity::unary(),
                                                                          doc,
                                                                          available_kernel_slots,
-                                                                         /*mergeable=*/true);
+                                                                         /*mergeable=*/true,
+                                                                         volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0)},
@@ -774,7 +776,8 @@ namespace {
                                                                          arity::unary(),
                                                                          doc,
                                                                          available_kernel_slots,
-                                                                         /*mergeable=*/true);
+                                                                         /*mergeable=*/true,
+                                                                         volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0)},
@@ -797,7 +800,8 @@ namespace {
                                                                          arity::var_args(0),
                                                                          doc,
                                                                          available_kernel_slots + 1,
-                                                                         /*mergeable=*/true);
+                                                                         /*mergeable=*/true,
+                                                                         volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0)},
@@ -825,7 +829,8 @@ namespace {
                                                                          arity::unary(),
                                                                          doc,
                                                                          available_kernel_slots,
-                                                                         /*mergeable=*/true);
+                                                                         /*mergeable=*/true,
+                                                                         volatility_t::immutable);
 
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::variable(0, numeric_parameters(resource))},

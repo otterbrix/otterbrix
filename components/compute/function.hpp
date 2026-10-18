@@ -102,6 +102,14 @@ namespace components::compute {
             : result(std::move(init)) {}
     };
 
+    // PostgreSQL's provolatile.
+    enum class volatility_t : uint8_t
+    {
+        immutable,
+        stable,
+        volatile_
+    };
+
     class function {
     public:
         function(const function&) = delete;
@@ -110,6 +118,7 @@ namespace components::compute {
 
         std::string_view name() const noexcept { return name_; }
         const arity& fn_arity() const { return arity_; }
+        volatility_t volatility() const noexcept { return volatility_; }
         const function_doc& doc() const { return doc_; }
 
         virtual size_t num_kernels() const = 0;
@@ -160,13 +169,15 @@ namespace components::compute {
                  std::string_view name,
                  arity fn_arity,
                  const function_doc& doc,
-                 const function_options* default_options);
+                 const function_options* default_options,
+                 volatility_t volatility);
         function(std::pmr::memory_resource* resource, const function& other);
 
         std::pmr::string name_;
         arity arity_;
         function_doc doc_;
         const function_options* default_options_;
+        volatility_t volatility_;
     };
 
     using function_uid = size_t;
@@ -184,8 +195,9 @@ namespace components::compute {
                           std::string_view name,
                           arity fn_arity,
                           const function_doc& doc,
-                          size_t available_kernel_slots)
-                : function(resource, name, fn_arity, doc, nullptr)
+                          size_t available_kernel_slots,
+                          volatility_t volatility)
+                : function(resource, name, fn_arity, doc, nullptr, volatility)
                 , kernel_slots_(available_kernel_slots)
                 , kernels_(resource) {
                 kernels_.reserve(kernel_slots_);
@@ -288,7 +300,8 @@ namespace components::compute {
                         std::string_view name,
                         arity fn_arity,
                         const function_doc& doc,
-                        size_t available_kernel_slots);
+                        size_t available_kernel_slots,
+                        volatility_t volatility);
         vector_function(std::pmr::memory_resource* resource, const vector_function& other);
         void accept_visitor(function_visitor& visitor) const override;
 
@@ -302,7 +315,8 @@ namespace components::compute {
                            arity fn_arity,
                            const function_doc& doc,
                            size_t available_kernel_slots,
-                           bool mergeable);
+                           bool mergeable,
+                           volatility_t volatility);
         aggregate_function(std::pmr::memory_resource* resource, const aggregate_function& other);
         void accept_visitor(function_visitor& visitor) const override;
 
@@ -320,7 +334,8 @@ namespace components::compute {
                         std::string_view name,
                         arity fn_arity,
                         const function_doc& doc,
-                        size_t available_kernel_slots);
+                        size_t available_kernel_slots,
+                        volatility_t volatility);
         expand_function(std::pmr::memory_resource* resource, const expand_function& other);
         void accept_visitor(function_visitor& visitor) const override;
 

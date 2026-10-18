@@ -45,17 +45,20 @@ namespace components::compute {
                        std::string_view name,
                        arity fn_arity,
                        const function_doc& doc,
-                       const function_options* default_options)
+                       const function_options* default_options,
+                       volatility_t volatility)
         : name_(name, resource)
         , arity_(fn_arity)
         , doc_(doc, resource)
-        , default_options_(default_options) {}
+        , default_options_(default_options)
+        , volatility_(volatility) {}
 
     function::function(std::pmr::memory_resource* resource, const function& other)
         : name_(other.name_, resource)
         , arity_(other.arity_)
         , doc_(other.doc_, resource)
-        , default_options_(other.default_options_) {}
+        , default_options_(other.default_options_)
+        , volatility_(other.volatility_) {}
 
     core::result_wrapper_t<std::reference_wrapper<const compute_kernel>>
     function::dispatch_exact(std::pmr::memory_resource* resource,
@@ -318,8 +321,9 @@ namespace components::compute {
                                      std::string_view name,
                                      arity fn_arity,
                                      const function_doc& doc,
-                                     size_t available_kernel_slots)
-        : function_impl<vector_kernel>(resource, name, fn_arity, doc, available_kernel_slots) {}
+                                     size_t available_kernel_slots,
+                                     volatility_t volatility)
+        : function_impl<vector_kernel>(resource, name, fn_arity, doc, available_kernel_slots, volatility) {}
 
     vector_function::vector_function(std::pmr::memory_resource* resource, const vector_function& other)
         : function_impl<vector_kernel>(resource, other) {}
@@ -335,8 +339,9 @@ namespace components::compute {
                                            arity fn_arity,
                                            const function_doc& doc,
                                            size_t available_kernel_slots,
-                                           bool mergeable)
-        : function_impl<aggregate_kernel>(resource, name, fn_arity, doc, available_kernel_slots)
+                                           bool mergeable,
+                                           volatility_t volatility)
+        : function_impl<aggregate_kernel>(resource, name, fn_arity, doc, available_kernel_slots, volatility)
         , mergeable_(mergeable) {}
 
     aggregate_function::aggregate_function(std::pmr::memory_resource* resource, const aggregate_function& other)
@@ -353,8 +358,9 @@ namespace components::compute {
                                      std::string_view name,
                                      arity fn_arity,
                                      const function_doc& doc,
-                                     size_t available_kernel_slots)
-        : function_impl<expand_kernel>(resource, name, fn_arity, doc, available_kernel_slots) {}
+                                     size_t available_kernel_slots,
+                                     volatility_t volatility)
+        : function_impl<expand_kernel>(resource, name, fn_arity, doc, available_kernel_slots, volatility) {}
 
     expand_function::expand_function(std::pmr::memory_resource* resource, const expand_function& other)
         : function_impl<expand_kernel>(resource, other) {}

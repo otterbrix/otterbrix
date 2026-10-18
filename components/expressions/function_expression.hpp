@@ -44,11 +44,16 @@ namespace components::expressions {
         void set_star_argument(bool star) noexcept;
         bool has_star_argument() const noexcept;
 
+        void set_volatility(compute::volatility_t volatility) noexcept { volatility_ = volatility; }
+        [[nodiscard]] compute::volatility_t volatility() const noexcept { return volatility_; }
+
     private:
         function_qualified_name_t name_;
         std::pmr::vector<param_storage> args_;
         bool distinct_{false};
         bool star_argument_{false};
+        // Resolved at validate from the function's volatility(); unresolved counts as volatile.
+        compute::volatility_t volatility_{compute::volatility_t::volatile_};
         compute::function_pin_t pin_;
         compute::function_ptr function_{compute::no_function()};
         std::pmr::vector<compute::function_pin_t> pins_;

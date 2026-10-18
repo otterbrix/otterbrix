@@ -129,7 +129,12 @@ namespace {
         using namespace components::compute;
         function_doc doc{resource, "twice", "twice", {"arg"}, false};
         auto fn =
-            core::pmr::make_polymorphic_unique<vector_function>(resource, "twice", arity::unary(), doc, kernels.size());
+            core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                "twice",
+                                                                arity::unary(),
+                                                                doc,
+                                                                kernels.size(),
+                                                                components::compute::volatility_t::volatile_);
         for (const auto& [input, output] : kernels) {
             kernel_signature_t sig(function_type_t::vector,
                                    {parameter_type::exact(input)},
@@ -1074,7 +1079,8 @@ namespace {
                                                                          arity::unary(),
                                                                          doc,
                                                                          size_t{1},
-                                                                         false);
+                                                                         false,
+                                                                         components::compute::volatility_t::volatile_);
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::exact(logical_type::BIGINT)},
                                {output_type::fixed(logical_type::BIGINT)});

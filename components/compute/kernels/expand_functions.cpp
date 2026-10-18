@@ -109,7 +109,8 @@ namespace {
                                                                       name,
                                                                       arity::var_args(2),
                                                                       doc,
-                                                                      /*available_kernel_slots=*/size_t{2});
+                                                                      /*available_kernel_slots=*/size_t{2},
+                                                                      volatility_t::immutable);
 
         kernel_signature_t sig2(
             function_type_t::expand,

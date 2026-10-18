@@ -1198,6 +1198,17 @@ namespace components::execution_dag {
         return data_storage_[key_slots_[index]];
     }
 
+    void execution_dag_t::take_key_values(size_t index, vector::vector_t* out) {
+        assert(index < key_slots_.size());
+        const slot_id_t slot = key_slots_[index];
+        if (slots_[slot].bound) {
+            out->reference(data_storage_[slot]);
+            return;
+        }
+        *out = std::move(data_storage_[slot]);
+        data_storage_[slot] = vector::vector_t(resource_, slots_[slot].type, true, false, capacity_);
+    }
+
     core::error_t execution_dag_t::process_groups(core::span<const uint32_t> group_ids,
                                                   const graph_execution_context& context) {
         if (group_ids.size() < bound_rows_) {

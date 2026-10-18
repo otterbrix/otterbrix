@@ -34,15 +34,7 @@ namespace components::logical_plan {
 
     node_join_t::join_algo node_join_t::algo() const noexcept { return algo_; }
 
-    std::size_t node_join_t::left_col() const noexcept { return left_col_; }
-
-    std::size_t node_join_t::right_col() const noexcept { return right_col_; }
-
-    void node_join_t::set_equi_columns(std::size_t left, std::size_t right) noexcept {
-        left_col_ = left;
-        right_col_ = right;
-        algo_ = join_algo::hash;
-    }
+    void node_join_t::set_algo(join_algo algo) noexcept { algo_ = algo; }
 
     hash_t node_join_t::hash_impl() const {
         // node_t::hash() combines type_ + hash_impl(); a hash-annotated join carries
@@ -50,8 +42,6 @@ namespace components::logical_plan {
         // here to keep them in distinct buckets.
         hash_t hash_value{0};
         boost::hash_combine(hash_value, static_cast<uint8_t>(algo_));
-        boost::hash_combine(hash_value, left_col_);
-        boost::hash_combine(hash_value, right_col_);
         return hash_value;
     }
 
@@ -60,7 +50,7 @@ namespace components::logical_plan {
         stream << "$join: {";
         stream << "$type: " << logical_plan::to_string(type_);
         if (algo_ == join_algo::hash) {
-            stream << ", $algo: hash, $left_col: " << left_col_ << ", $right_col: " << right_col_;
+            stream << ", $algo: hash";
         }
         for (const auto& child : children_) {
             stream << ", " << child->to_string();

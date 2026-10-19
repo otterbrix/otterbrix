@@ -1,4 +1,5 @@
 #include "buffer_pool.hpp"
+#include <algorithm>
 #include <cstdlib>
 #include <new>
 #include <stdexcept>
@@ -12,23 +13,9 @@ namespace components::table::storage {
         assert(!this->handle.expired());
     }
 
-    bool buffer_eviction_node_t::can_evict(block_handle_t& handle) {
-        if (handle_sequence_number != handle.eviction_sequence_number()) {
-            return false;
-        }
-        return (handle.can_unload() || handle.can_spill());
-    }
-
-    std::shared_ptr<block_handle_t> buffer_eviction_node_t::try_get_block_handle() {
+    bool buffer_eviction_node_t::is_current() const {
         auto handle_ptr = handle.lock();
-        if (!handle_ptr) {
-            return nullptr;
-        }
-        // can_evict, not can_unload: a transient block the pool can spill is a candidate too.
-        if (!can_evict(*handle_ptr)) {
-            return nullptr;
-        }
-        return handle_ptr;
+        return handle_ptr && is_current(*handle_ptr);
     }
 
     eviction_queue_t::~eviction_queue_t() {
@@ -43,7 +30,6 @@ namespace components::table::storage {
             resource_->allocate(sizeof(buffer_eviction_node_t), alignof(buffer_eviction_node_t)));
         new (ptr) buffer_eviction_node_t(std::move(node));
         q.push(ptr);
-        approx_q_size_.fetch_add(1, std::memory_order_relaxed);
     }
 
     void eviction_queue_t::destroy_node(buffer_eviction_node_t* node) {
@@ -51,9 +37,16 @@ namespace components::table::storage {
         resource_->deallocate(node, sizeof(buffer_eviction_node_t), alignof(buffer_eviction_node_t));
     }
 
-    bool eviction_queue_t::add_to_eviction_queue(buffer_eviction_node_t&& node) {
+    bool eviction_queue_t::add_to_eviction_queue(buffer_eviction_node_t&& node, bool replaces_queued) {
+        if (replaces_queued) {
+            dead_nodes_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            live_nodes_.fetch_add(1, std::memory_order_relaxed);
+        }
         enqueue(std::move(node));
-        return ++evict_queue_insertions_ % INSERT_INTERVAL == 0;
+        // 1M pin/unpin cycles, Release, arm64 macOS, mean of 9: R=4 handles 49.7 ns/cycle (41.9 with the
+        // former purge of every 4096th insert over a ~32768-node queue), R=4096 42.0 ns (42.0).
+        return dead_nodes_.load(std::memory_order_relaxed) > live_nodes_.load(std::memory_order_relaxed);
     }
 
     bool eviction_queue_t::try_dequeue(buffer_eviction_node_t& node) {
@@ -61,7 +54,6 @@ namespace components::table::storage {
         if (!q.pop(ptr)) {
             return false;
         }
-        approx_q_size_.fetch_sub(1, std::memory_order_relaxed);
         node = std::move(*ptr);
         destroy_node(ptr);
         return true;
@@ -78,60 +70,33 @@ namespace components::table::storage {
         }
         std::lock_guard lock{purge_lock_, std::adopt_lock};
 
-        uint64_t purge_size = INSERT_INTERVAL * PURGE_SIZE_MULTIPLIER;
-        uint64_t approx_q_size = approx_q_size_.load(std::memory_order_relaxed);
-
-        if (approx_q_size < purge_size * EARLY_OUT_MULTIPLIER) {
-            return;
-        }
-
-        uint64_t max_purges = approx_q_size / purge_size;
-        while (max_purges != 0) {
-            purge_iteration(purge_size);
-
-            approx_q_size = approx_q_size_.load(std::memory_order_relaxed);
-
-            if (approx_q_size < purge_size * EARLY_OUT_MULTIPLIER) {
-                break;
-            }
-
-            uint64_t approx_dead_nodes = total_dead_nodes_;
-            approx_dead_nodes = approx_dead_nodes > approx_q_size ? approx_q_size : approx_dead_nodes;
-            uint64_t approx_alive_nodes = approx_q_size - approx_dead_nodes;
-
-            if (approx_alive_nodes * (ALIVE_NODE_MULTIPLIER - 1) > approx_dead_nodes) {
-                break;
-            }
-
-            max_purges--;
+        for (int batch = 0; batch < 2 && dead_nodes_.load(std::memory_order_relaxed) >
+                                             live_nodes_.load(std::memory_order_relaxed);
+             ++batch) {
+            purge_batch();
         }
     }
 
-    void eviction_queue_t::purge_iteration(uint64_t purge_size) {
-        uint64_t previous_purge_size = purge_nodes_.size();
-        if (purge_size < previous_purge_size / 2 || purge_size > previous_purge_size) {
-            purge_nodes_.resize(purge_size);
-        }
-
-        uint64_t actually_dequeued = purge_size;
-        for (size_t i = 0; i < purge_size; i++) {
-            if (!try_dequeue(purge_nodes_[i])) {
-                actually_dequeued = i;
+    void eviction_queue_t::purge_batch() {
+        const int64_t queued =
+            live_nodes_.load(std::memory_order_relaxed) + dead_nodes_.load(std::memory_order_relaxed);
+        const int64_t batch = std::min(queued, PURGE_BATCH);
+        for (int64_t i = 0; i < batch; i++) {
+            buffer_eviction_node_t* ptr = nullptr;
+            if (!q.pop(ptr)) {
                 break;
             }
-        }
-
-        uint64_t alive_nodes = 0;
-        for (uint64_t i = 0; i < actually_dequeued; i++) {
-            auto& node = purge_nodes_[i];
-            auto handle = node.try_get_block_handle();
-            if (handle) {
-                enqueue(std::move(node));
-                alive_nodes++;
+            if (ptr->is_current()) {
+                purge_nodes_.push_back(ptr);
+            } else {
+                destroy_node(ptr);
+                dead_nodes_.fetch_sub(1, std::memory_order_relaxed);
             }
         }
-
-        total_dead_nodes_ -= actually_dequeued - alive_nodes;
+        for (auto* ptr : purge_nodes_) {
+            q.push(ptr);
+        }
+        purge_nodes_.clear();
     }
 
     template<typename FN>
@@ -146,19 +111,25 @@ namespace components::table::storage {
                 }
             }
 
-            auto handle = node.try_get_block_handle();
+            auto handle = node.handle.lock();
             if (!handle) {
-                decrement_dead_nodes();
+                dead_nodes_.fetch_sub(1, std::memory_order_relaxed);
                 continue;
             }
 
             auto lock = handle->get_lock();
+            if (!node.is_current(*handle)) {
+                dead_nodes_.fetch_sub(1, std::memory_order_relaxed);
+                continue;
+            }
+            [[maybe_unused]] const bool was_queued = handle->exchange_queued(lock, false);
+            assert(was_queued);
+            live_nodes_.fetch_sub(1, std::memory_order_relaxed);
             // A candidate is either already backed by disk (can_unload) or transient and idle, in
             // which case the pool writes it to its scratch file first (can_spill). Before the spill
             // path existed only the first kind could ever be queued, which is why the queues were
             // empty exactly when a bulk load needed them.
-            if (!node.can_evict(*handle)) {
-                decrement_dead_nodes();
+            if (!handle->can_unload() && !handle->can_spill()) {
                 continue;
             }
 
@@ -302,11 +273,11 @@ namespace components::table::storage {
         return {found, std::move(r)};
     }
 
-    void buffer_pool_t::purge_queue(const block_handle_t& handle) { eviction_queue_for_handle(handle).purge(); }
-
-    bool buffer_pool_t::add_to_eviction_queue(std::shared_ptr<block_handle_t>& handle) {
+    eviction_queue_t* buffer_pool_t::add_to_eviction_queue(std::shared_ptr<block_handle_t>& handle,
+                                                           std::unique_lock<std::mutex>& lock) {
         auto& queue = eviction_queue_for_handle(*handle);
         assert(handle->readers() == 0);
+        const bool replaces_queued = handle->exchange_queued(lock, true);
         auto ts = handle->next_eviction_sequence_number();
         if (track_eviction_timestamps) {
             handle->set_LRU_timestamp(
@@ -315,11 +286,10 @@ namespace components::table::storage {
                     .count());
         }
 
-        if (ts != 1) {
-            queue.increment_dead_nodes();
+        if (!queue.add_to_eviction_queue(buffer_eviction_node_t(std::weak_ptr(handle), ts), replaces_queued)) {
+            return nullptr;
         }
-
-        return queue.add_to_eviction_queue(buffer_eviction_node_t(std::weak_ptr(handle), ts));
+        return &queue;
     }
 
     eviction_queue_t& buffer_pool_t::eviction_queue_for_handle(const block_handle_t& handle) {
@@ -345,8 +315,8 @@ namespace components::table::storage {
         return *queues[queue_index];
     }
 
-    void buffer_pool_t::increment_dead_nodes(const block_handle_t& handle) {
-        eviction_queue_for_handle(handle).increment_dead_nodes();
+    void buffer_pool_t::retire_queued_node(const block_handle_t& handle) {
+        eviction_queue_for_handle(handle).retire_queued_node();
     }
 
     buffer_pool_t::memory_usage_t::memory_usage_t() {

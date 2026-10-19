@@ -117,8 +117,8 @@ namespace components::table::storage {
             std::unique_lock<std::mutex> lock(lock_);
             unswizzled_ = nullptr;
             assert(!buffer_ || buffer_->buffer_type() == buffer_type_);
-            if (buffer_ && buffer_type_ != file_buffer_type::TINY_BUFFER) {
-                buffer_manager.buffer_pool().increment_dead_nodes(*this);
+            if (queued_) {
+                buffer_manager.buffer_pool().retire_queued_node(*this);
             }
 
             if (buffer_ && state_ == block_state::LOADED) {

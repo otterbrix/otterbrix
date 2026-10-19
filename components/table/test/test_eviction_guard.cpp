@@ -82,7 +82,10 @@ TEST_CASE("buffer manager: re-pinning an evicted managed block does not crash", 
     REQUIRE(h1->readers() == 0);
 
     // Enqueues h1 explicitly and runs an eviction pass, exercising can_unload() directly.
-    env.buffer_pool.add_to_eviction_queue(h1);
+    {
+        auto lock = h1->get_lock();
+        env.buffer_pool.add_to_eviction_queue(h1, lock);
+    }
     auto eviction = env.buffer_pool.evict_blocks(memory_tag::TRANSIENT_TABLE,
                                                  /*extra_memory=*/0,
                                                  /*memory_limit=*/0,

@@ -333,14 +333,8 @@ namespace components::table::storage {
         return buf;
     }
 
-    void standard_buffer_manager_t::purge_queue(const block_handle_t& handle) { buffer_pool_.purge_queue(handle); }
-
-    void standard_buffer_manager_t::add_to_eviction_queue(std::shared_ptr<block_handle_t>& handle) {
-        buffer_pool_.add_to_eviction_queue(handle);
-    }
-
     void standard_buffer_manager_t::unpin(block_handle_t* handle) {
-        bool purge = false;
+        eviction_queue_t* purge = nullptr;
         {
             auto lock = handle->get_lock();
             if (!handle->get_buffer(lock)) {
@@ -358,10 +352,10 @@ namespace components::table::storage {
                     // can write such a buffer to its scratch file and take the memory back, so it
                     // belongs in the eviction queue like any other candidate.
                     auto sp = handle->shared_from_this();
-                    purge = buffer_pool_.add_to_eviction_queue(sp);
+                    purge = buffer_pool_.add_to_eviction_queue(sp, lock);
                 } else if (handle->must_add_to_eviction_queue()) {
                     auto sp = handle->shared_from_this();
-                    purge = buffer_pool_.add_to_eviction_queue(sp);
+                    purge = buffer_pool_.add_to_eviction_queue(sp, lock);
                 } else {
                     handle->unload(lock);
                 }
@@ -369,7 +363,7 @@ namespace components::table::storage {
         }
 
         if (purge) {
-            purge_queue(*handle);
+            purge->purge();
         }
     }
 

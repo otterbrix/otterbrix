@@ -71,11 +71,7 @@ namespace components::table::storage {
         [[nodiscard]] core::result_wrapper_t<std::shared_ptr<block_handle_t>>
         register_memory(memory_tag tag, uint64_t block_size, bool can_destroy);
 
-        void purge_queue(const block_handle_t& handle) final;
-
         buffer_pool_t& buffer_pool() const final;
-
-        void add_to_eviction_queue(std::shared_ptr<block_handle_t>& handle) final;
 
         [[nodiscard]] core::result_wrapper_t<bool> batch_read(std::vector<std::shared_ptr<block_handle_t>>& handles,
                                                               const std::map<uint64_t, uint64_t>& load_map,

@@ -87,10 +87,6 @@ namespace components::table::storage {
 
         virtual std::pmr::memory_resource* resource() const noexcept = 0;
 
-    protected:
-        virtual void purge_queue(const block_handle_t& handle) = 0;
-        virtual void add_to_eviction_queue(std::shared_ptr<block_handle_t>& handle);
-
     private:
         // reserve_memory's customization point (NVI). Derived managers override here —
         // privately as well; every caller goes through the public non-virtual face above.

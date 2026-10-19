@@ -43,8 +43,4 @@ namespace components::table::storage {
         throw std::logic_error("Incorrect call: This type of buffer_manager_t can not construct managed buffers");
     }
 
-    void buffer_manager_t::add_to_eviction_queue(std::shared_ptr<block_handle_t>&) {
-        throw std::logic_error("Incorrect call: This type of buffer_manager_t does not support 'add_to_eviction_queue");
-    }
-
 } // namespace components::table::storage

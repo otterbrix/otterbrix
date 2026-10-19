@@ -21,9 +21,10 @@ namespace components::table::storage {
         std::weak_ptr<block_handle_t> handle;
         uint64_t handle_sequence_number;
 
-        // Same staleness check as can_unload, but accepts a transient block the pool can spill.
-        bool can_evict(block_handle_t& handle);
-        std::shared_ptr<block_handle_t> try_get_block_handle();
+        bool is_current(const block_handle_t& handle) const {
+            return handle_sequence_number == handle.eviction_sequence_number();
+        }
+        bool is_current() const;
     };
 
     struct eviction_queue_t {
@@ -39,23 +40,23 @@ namespace components::table::storage {
             // empty is functionally identical and pays a malloc only on the first
             // evictions (restores the lazy a13 std::queue behaviour).
             , q(0)
-            , approx_q_size_(0)
-            , evict_queue_insertions_(0)
-            , total_dead_nodes_(0) {}
+            , purge_nodes_(resource) {}
         ~eviction_queue_t();
 
-        bool add_to_eviction_queue(buffer_eviction_node_t&& node);
+        bool add_to_eviction_queue(buffer_eviction_node_t&& node, bool replaces_queued);
         bool try_dequeue(buffer_eviction_node_t& node);
         bool try_dequeue_with_lock(buffer_eviction_node_t& node);
         void purge();
         template<typename FN>
         void iterate_unloadable_blocks(FN fn);
 
-        void increment_dead_nodes() { total_dead_nodes_++; }
-        void decrement_dead_nodes() { total_dead_nodes_--; }
+        void retire_queued_node() {
+            live_nodes_.fetch_sub(1, std::memory_order_relaxed);
+            dead_nodes_.fetch_add(1, std::memory_order_relaxed);
+        }
 
     private:
-        void purge_iteration(uint64_t purge_size);
+        void purge_batch();
         void enqueue(buffer_eviction_node_t&& node);
         void destroy_node(buffer_eviction_node_t* node);
 
@@ -63,24 +64,21 @@ namespace components::table::storage {
         const file_buffer_type buffer_type;
 
     private:
-        constexpr static uint64_t INSERT_INTERVAL = 4096;
-        constexpr static uint64_t PURGE_SIZE_MULTIPLIER = 2;
-        constexpr static uint64_t EARLY_OUT_MULTIPLIER = 4;
-        constexpr static uint64_t ALIVE_NODE_MULTIPLIER = 4;
+        constexpr static int64_t PURGE_BATCH = 4096;
 
         std::pmr::memory_resource* resource_;
         // lock-free MPMC queue of heap nodes: producers (unpin on scan/disk
         // threads) push without taking purge_lock_; stores raw pointers
         // because boost::lockfree requires a trivially-copyable element type
         boost::lockfree::queue<buffer_eviction_node_t*> q;
-        std::atomic<uint64_t> approx_q_size_;
-        std::atomic<uint64_t> evict_queue_insertions_;
-        std::atomic<uint64_t> total_dead_nodes_;
+        // Signed, not unsigned: a pop and the accounting it undoes can land in either order.
+        std::atomic<int64_t> live_nodes_{0};
+        std::atomic<int64_t> dead_nodes_{0};
         // serializes purge passes and the slow-path dequeue against an
         // in-flight purge (which briefly holds nodes in purge_nodes_);
         // does not guard q itself (q is lock-free)
         std::mutex purge_lock_;
-        std::vector<buffer_eviction_node_t> purge_nodes_;
+        std::pmr::vector<buffer_eviction_node_t*> purge_nodes_;
     };
 
     inline uint64_t estimated_CPU_id() { return std::hash<std::thread::id>()(std::this_thread::get_id()); }
@@ -136,10 +134,10 @@ namespace components::table::storage {
                                               uint64_t memory_limit,
                                               std::unique_ptr<file_buffer_t>* buffer = nullptr);
 
-        void purge_queue(const block_handle_t& handle);
-        bool add_to_eviction_queue(std::shared_ptr<block_handle_t>& handle);
+        eviction_queue_t* add_to_eviction_queue(std::shared_ptr<block_handle_t>& handle,
+                                                std::unique_lock<std::mutex>& lock);
         eviction_queue_t& eviction_queue_for_handle(const block_handle_t& handle);
-        void increment_dead_nodes(const block_handle_t& handle);
+        void retire_queued_node(const block_handle_t& handle);
 
         static constexpr uint64_t BLOCK_QUEUE_SIZE = 1;
         static constexpr uint64_t MANAGED_BUFFER_QUEUE_SIZE = 6;

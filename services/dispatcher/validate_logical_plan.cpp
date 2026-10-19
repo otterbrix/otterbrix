@@ -1053,20 +1053,20 @@ namespace services::dispatcher {
                     RETURN_IF_ERROR(sort_operand_as_expression(resource, sort_key));
                     auto& expression = components::expressions::as_expr(sort_key->operand());
                     RETURN_IF_ERROR(validation::resolve_expression(expression, projection_context));
-                    if (!distinct) {
-                        RETURN_IF_ERROR(bind_operand(bind_operand, sort_key->operand()));
-                        continue;
-                    }
                     const auto same_output = std::find_if(visible.begin(), visible.end(), [&](size_t index) {
                         return index != SIZE_MAX && outputs[index].expression &&
                                components::expressions::same_computation(expression,
                                                                          outputs[index].expression,
                                                                          parameters);
                     });
-                    if (same_output == visible.end()) {
+                    if (same_output != visible.end()) {
+                        sort_key->set_operand(output_key(*same_output));
+                        continue;
+                    }
+                    if (distinct) {
                         return not_in_distinct_list(resource);
                     }
-                    sort_key->set_operand(output_key(*same_output));
+                    RETURN_IF_ERROR(bind_operand(bind_operand, sort_key->operand()));
                 }
             }
             for (auto& on_key : aggregate->distinct_on_keys()) {

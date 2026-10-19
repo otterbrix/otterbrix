@@ -18,6 +18,7 @@
 #include <services/disk/agent_disk.hpp>
 #include <services/index/manager_index.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <string>
 #include <utility>
@@ -150,11 +151,26 @@ namespace {
         return core::error_t::no_error();
     }
 
-    components::compute::function_ptr make_probe(std::pmr::memory_resource* resource) {
+    std::atomic<uint64_t> flip_rows{0};
+
+    core::error_t flip_kernel(components::compute::kernel_context&,
+                              const components::vector::data_chunk_t& in,
+                              components::vector::vector_t& out) {
+        const auto* source = in.data[0].data<int64_t>();
+        auto* destination = out.data<int64_t>();
+        for (uint64_t row = 0; row < in.size(); ++row) {
+            destination[row] = flip_rows++ % 2 == 0 ? source[row] : -source[row];
+        }
+        return core::error_t::no_error();
+    }
+
+    components::compute::function_ptr make_volatile_udf(std::pmr::memory_resource* resource,
+                                                        const char* name,
+                                                        components::compute::vector_exec_fn exec) {
         components::compute::function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
         auto fn = core::pmr::make_polymorphic_unique<components::compute::vector_function>(
             resource,
-            "probe",
+            name,
             components::compute::arity::unary(),
             doc,
             size_t{1}, components::compute::volatility_t::volatile_);
@@ -162,7 +178,7 @@ namespace {
             components::compute::function_type_t::vector,
             {components::compute::parameter_type::exact(components::types::logical_type::BIGINT)},
             {components::compute::output_type::fixed(components::types::logical_type::BIGINT)});
-        components::compute::vector_kernel kernel{std::move(sig), probe_kernel};
+        components::compute::vector_kernel kernel{std::move(sig), exec};
         auto added = fn->add_kernel(resource, std::move(kernel));
         REQUIRE_FALSE(added.contains_error());
         return fn;
@@ -549,7 +565,13 @@ TEST_CASE("integration::cpp::clause_answers::select_list_is_evaluated_once_and_a
     auto* dispatcher = space.dispatcher();
     seed_ob(dispatcher);
     REQUIRE_FALSE(
-        dispatcher->register_udf(otterbrix::session_id_t(), make_probe(dispatcher->resource())).contains_error());
+        dispatcher
+            ->register_udf(otterbrix::session_id_t(), make_volatile_udf(dispatcher->resource(), "probe", probe_kernel))
+            .contains_error());
+    REQUIRE_FALSE(
+        dispatcher
+            ->register_udf(otterbrix::session_id_t(), make_volatile_udf(dispatcher->resource(), "flip", flip_kernel))
+            .contains_error());
     components::cursor::cursor_t_ptr cur;
 
     SECTION("E1 guard: a column not sorted on is computed for the LIMIT rows only") {
@@ -622,6 +644,22 @@ TEST_CASE("integration::cpp::clause_answers::select_list_is_evaluated_once_and_a
         CHECK(probe_calls_of(dispatcher, "SELECT DISTINCT ON (k) probe(v) FROM ob.dup ORDER BY k, v LIMIT 5;", cur) ==
               5);
         CHECK(column_of(cur) == values{1, 2, 3, 4, 5});
+    }
+    SECTION("E12 a shown computation over the groups is not computed again for ORDER BY") {
+        CHECK(probe_calls_of(dispatcher,
+                             "SELECT probe(k) + 0 AS r, count(*) FROM ob.d GROUP BY k ORDER BY probe(k) + 0;",
+                             cur) == 2);
+        CHECK(column_of(cur) == values{2, 3});
+        CHECK(width_of(cur) == 2);
+    }
+    SECTION("E13 a volatile computation over the groups sorts by the value shown") {
+        flip_rows = 0;
+        auto shown = column_of(
+            exec(dispatcher, "SELECT flip(a) + 0 AS r, count(*) FROM ob.t GROUP BY a ORDER BY flip(a) + 0;"));
+        REQUIRE(shown.size() == 3);
+        INFO("r: " << shown[0] << ", " << shown[1] << ", " << shown[2]);
+        CHECK(std::is_sorted(shown.begin(), shown.end()));
+        CHECK(flip_rows.load() == 3);
     }
 }
 

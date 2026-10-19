@@ -5,6 +5,8 @@
 
 #include <boost/smart_ptr/intrusive_ptr.hpp>
 
+#include <cstdint>
+
 namespace services {
     struct context_storage_t;
 }
@@ -46,6 +48,8 @@ namespace components::logical_plan {
         // A sink of rows to delete; row_ids name them.
         storage_operator_t make_delete(const services::context_storage_t& context);
 
+        uint64_t flush_row_threshold() const noexcept { return flush_row_threshold_impl(); }
+
     protected:
         explicit table_storage_t(const void* owner) noexcept
             : owner_(owner) {}
@@ -56,6 +60,7 @@ namespace components::logical_plan {
         // A storage that cannot change rows by number (ClickHouse, say) returns an error here.
         virtual storage_operator_t make_update_impl(const services::context_storage_t& context) = 0;
         virtual storage_operator_t make_delete_impl(const services::context_storage_t& context) = 0;
+        virtual uint64_t flush_row_threshold_impl() const noexcept = 0;
 
         const void* owner_;
     };

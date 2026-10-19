@@ -55,7 +55,8 @@ namespace services::planner::impl {
             }
             plan->set_storage_sink(std::move(sink),
                                    std::move(columns),
-                                   std::pmr::vector<uint64_t>{node_insert->column_slots(), context.resource});
+                                   std::pmr::vector<uint64_t>{node_insert->column_slots(), context.resource},
+                                   table->storage->flush_row_threshold());
         }
         VALUE_OR_RETURN(auto child,
                         create_plan(context,

@@ -156,35 +156,29 @@ namespace components::operators {
 
         if (storage_sink_) {
             if (output_ && output_->size() > 0) {
-                chunks_vector_t ignored{resource_};
-                for (auto& out_chunk : output_->chunks()) {
-                    if (out_chunk.size() == 0) {
+                auto& chunks = output_->chunks();
+                for (auto& out_chunk : chunks) {
+                    if (out_chunk.size() == 0 || returning_.empty()) {
                         continue;
                     }
-                    if (!returning_.empty()) {
-                        auto proj = evaluate_projection(resource_,
-                                                        returning_,
-                                                        &out_chunk,
-                                                        ctx->parameters,
-                                                        ctx->execution_context,
-                                                        &returning_graph_);
-                        if (proj.has_error()) {
-                            set_error(proj.error());
-                            mark_failed();
-                            co_return;
-                        }
-                        returning_accum_.emplace_back(std::move(proj.value()));
-                    }
-                    if (auto error = storage_sink_->push(ctx, std::move(out_chunk), ignored); error.contains_error()) {
-                        set_error(error);
+                    auto proj = evaluate_projection(resource_,
+                                                    returning_,
+                                                    &out_chunk,
+                                                    ctx->parameters,
+                                                    ctx->execution_context,
+                                                    &returning_graph_);
+                    if (proj.has_error()) {
+                        set_error(proj.error());
                         mark_failed();
                         co_return;
                     }
+                    returning_accum_.emplace_back(std::move(proj.value()));
                 }
-                output_->chunks().clear();
-                co_await storage_sink_->await_async_and_resume(ctx);
-                if (storage_sink_->has_error()) {
-                    set_error(storage_sink_->get_error());
+                auto error =
+                    co_await dml_detail::push_in_rounds(resource_, ctx, *storage_sink_, chunks, storage_flush_rows_);
+                chunks.clear();
+                if (error.contains_error()) {
+                    set_error(error);
                     mark_failed();
                     co_return;
                 }

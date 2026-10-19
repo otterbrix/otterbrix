@@ -67,6 +67,24 @@ namespace {
         return names;
     }
 
+    // The storage's flush_row_threshold: the most rows one sink round carries.
+    std::uint64_t& flush_rows() {
+        static std::uint64_t rows = 0;
+        return rows;
+    }
+
+    // The rows of every sink round, in order.
+    std::vector<std::size_t>& round_sizes() {
+        static std::vector<std::size_t> sizes;
+        return sizes;
+    }
+
+    // The sink round, counted from 1 in round_sizes, whose backend call fails; 0 for none.
+    std::size_t& failing_round() {
+        static std::size_t round = 0;
+        return round;
+    }
+
     std::vector<std::string>& asked_names() {
         static std::vector<std::string> names;
         return names;
@@ -150,6 +168,7 @@ namespace {
         logical_plan::storage_operator_t make_insert_impl(const services::context_storage_t& context) override;
         logical_plan::storage_operator_t make_update_impl(const services::context_storage_t& context) override;
         logical_plan::storage_operator_t make_delete_impl(const services::context_storage_t& context) override;
+        uint64_t flush_row_threshold_impl() const noexcept override { return flush_rows(); }
 
         std::string name_;
         std::pmr::vector<types::complex_logical_type> columns_;
@@ -252,6 +271,16 @@ namespace {
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     protected:
+        // Records the round; true, with the backend's error set, when it is the failing one.
+        bool round_fails(std::size_t rows) {
+            round_sizes().push_back(rows);
+            if (round_sizes().size() != failing_round()) {
+                return false;
+            }
+            set_error(backend_error(resource(), "server m2: round " + std::to_string(failing_round()) + " failed"));
+            return true;
+        }
+
         remote_storage_t* storage_;
     };
 
@@ -282,6 +311,9 @@ namespace {
                 set_error(backend_error(resource(), it->second));
                 co_return;
             }
+            if (round_fails(rows_.size())) {
+                co_return;
+            }
             write_log().push_back("insert " + storage_->name() + " " + types_);
             auto& remote = backend()[storage_->name()];
             rows_.resize(rows_applied(storage_->name(), rows_.size()));
@@ -299,7 +331,7 @@ namespace {
         std::pmr::vector<std::pmr::string> explain_details_impl() const override {
             std::pmr::vector<std::pmr::string> details{resource()};
             details.emplace_back("Remote SQL: INSERT INTO " + remote_name(*storage_) + " VALUES ($1, $2)");
-            details.emplace_back("Batch Size: 1");
+            details.emplace_back("Batch Size: " + std::to_string(flush_rows() > 0 ? flush_rows() : 1));
             return details;
         }
 
@@ -323,6 +355,9 @@ namespace {
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t*) override {
             if (auto it = unreachable().find(storage_->name()); it != unreachable().end()) {
                 set_error(backend_error(resource(), it->second));
+                co_return;
+            }
+            if (round_fails(changed_.size())) {
                 co_return;
             }
             write_log().push_back("update " + storage_->name() + " rows " + std::to_string(changed_.size()));
@@ -369,12 +404,19 @@ namespace {
                 set_error(backend_error(resource(), it->second));
                 co_return;
             }
+            if (round_fails(positions_.size())) {
+                co_return;
+            }
             write_log().push_back("delete " + storage_->name() + " rows " + std::to_string(positions_.size()));
             positions_.resize(rows_applied(storage_->name(), positions_.size()));
             std::sort(positions_.rbegin(), positions_.rend());
             auto& remote = backend()[storage_->name()];
             for (const auto position : positions_) {
-                remote.erase(remote.begin() + static_cast<std::ptrdiff_t>(position));
+                const auto before = std::count_if(erased_.begin(), erased_.end(), [position](std::size_t erased) {
+                    return erased < position;
+                });
+                remote.erase(remote.begin() + static_cast<std::ptrdiff_t>(position) - before);
+                erased_.push_back(position);
             }
             written_ += positions_.size();
             positions_.clear();
@@ -393,6 +435,8 @@ namespace {
         }
 
         std::vector<std::size_t> positions_;
+        // The scan's positions of the rows earlier rounds of this statement erased: the rows after them moved up.
+        std::vector<std::size_t> erased_;
     };
 
     logical_plan::storage_operator_t remote_storage_t::make_scan_impl(const services::context_storage_t& context) {
@@ -742,6 +786,9 @@ namespace {
     unreachable().clear();                                                                                             \
     no_row_numbers().clear();                                                                                          \
     short_writing().clear();                                                                                           \
+    flush_rows() = 0;                                                                                                  \
+    round_sizes().clear();                                                                                             \
+    failing_round() = 0;                                                                                               \
     asked_names().clear();                                                                                             \
     write_log().clear();                                                                                               \
     explicit_transactions().clear();                                                                                   \
@@ -1139,14 +1186,16 @@ TEST_CASE("integration::cpp::host_names::the_count_is_what_the_sink_reports_writ
 
 // A flush round reports the sink's running total, not a part: the count is the total once, not a sum of totals.
 TEST_CASE("integration::cpp::host_names::the_count_survives_flush_rounds") {
-    HOST_TEST_BOILERPLATE_WITH("test_host_names/sink_count_rounds", config.execution.dml_flush_row_threshold = 1)
+    HOST_TEST_BOILERPLATE("test_host_names/sink_count_rounds")
     REQUIRE(run(dispatcher, declare_orders)->is_success());
     batches()["m2.shop.orders"] = {{{1, 100}}, {{2, 200}, {3, 300}}};
+    flush_rows() = 1;
 
     auto updated = run(dispatcher, "UPDATE m2.shop.orders SET amount = amount + 1;");
     INFO(error_of(updated));
     REQUIRE(updated->is_success());
     CHECK(updated->affected_rows() == 3);
+    CHECK(backend()["m2.shop.orders"] == rows_t{{1, 101}, {2, 201}, {3, 301}});
 
     auto inserted =
         run(dispatcher, "INSERT INTO m2.shop.orders (id, amount) SELECT id + 10, amount FROM m2.shop.orders;");
@@ -1158,6 +1207,134 @@ TEST_CASE("integration::cpp::host_names::the_count_survives_flush_rounds") {
     INFO(error_of(deleted));
     REQUIRE(deleted->is_success());
     CHECK(deleted->affected_rows() == 3);
+    CHECK(backend()["m2.shop.orders"] == rows_t{{11, 100}, {12, 200}, {13, 300}});
+}
+
+// The storage's flush_row_threshold caps every sink round; the rest of a flush goes in further rounds of the same
+// flush, and the count is the total.
+TEST_CASE("integration::cpp::host_names::the_storage_caps_each_sink_round") {
+    HOST_TEST_BOILERPLATE("test_host_names/flush_rows")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    backend()["m2.shop.orders"] = {{1, 100}, {2, 200}, {3, 300}, {4, 400}};
+    batches()["m2.shop.orders"] = {{{1, 100}}, {{2, 200}}, {{3, 300}}, {{4, 400}}};
+    flush_rows() = 2;
+    const char* insert_five = "INSERT INTO m2.shop.orders (id, amount) VALUES (5, 500), (6, 600), (7, 700), (8, 800), "
+                              "(9, 900)";
+
+    SECTION("INSERT") {
+        auto inserted = run(dispatcher, std::string{insert_five} + ";");
+        INFO(error_of(inserted));
+        REQUIRE(inserted->is_success());
+        CHECK(inserted->affected_rows() == 5);
+        CHECK(round_sizes() == std::vector<std::size_t>{2, 2, 1});
+        CHECK(backend()["m2.shop.orders"].size() == 9);
+        CHECK(backend()["m2.shop.orders"].back() == std::vector<int64_t>{9, 900});
+    }
+    SECTION("UPDATE") {
+        auto updated = run(dispatcher, "UPDATE m2.shop.orders SET amount = amount + 1 WHERE id <= 3;");
+        INFO(error_of(updated));
+        REQUIRE(updated->is_success());
+        CHECK(updated->affected_rows() == 3);
+        CHECK(round_sizes() == std::vector<std::size_t>{2, 1});
+        CHECK(backend()["m2.shop.orders"] == rows_t{{1, 101}, {2, 201}, {3, 301}, {4, 400}});
+    }
+    SECTION("DELETE") {
+        auto deleted = run(dispatcher, "DELETE FROM m2.shop.orders WHERE id >= 2;");
+        INFO(error_of(deleted));
+        REQUIRE(deleted->is_success());
+        CHECK(deleted->affected_rows() == 3);
+        CHECK(round_sizes() == std::vector<std::size_t>{2, 1});
+        CHECK(backend()["m2.shop.orders"] == rows_t{{1, 100}});
+    }
+    SECTION("a cap above the rows: one round") {
+        flush_rows() = 1000;
+        auto inserted = run(dispatcher, std::string{insert_five} + ";");
+        INFO(error_of(inserted));
+        REQUIRE(inserted->is_success());
+        CHECK(inserted->affected_rows() == 5);
+        CHECK(round_sizes() == std::vector<std::size_t>{5});
+    }
+    SECTION("RETURNING gives every row, in order") {
+        auto inserted = run(dispatcher, std::string{insert_five} + " RETURNING id;");
+        INFO(error_of(inserted));
+        REQUIRE(inserted->is_success());
+        CHECK(round_sizes() == std::vector<std::size_t>{2, 2, 1});
+        rows_t ids;
+        for (const auto& chunk : inserted->chunks()) {
+            for (std::uint64_t row = 0; row < chunk.size(); ++row) {
+                ids.push_back(int_row(chunk, row));
+            }
+        }
+        CHECK(ids == rows_t{{5}, {6}, {7}, {8}, {9}});
+
+        round_sizes().clear();
+        auto updated =
+            run(dispatcher, "UPDATE m2.shop.orders SET amount = amount + 1 WHERE id <= 3 RETURNING id, amount;");
+        INFO(error_of(updated));
+        REQUIRE(updated->is_success());
+        CHECK(round_sizes() == std::vector<std::size_t>{2, 1});
+        CHECK(sorted_int_rows(updated) == rows_t{{1, 101}, {2, 201}, {3, 301}});
+    }
+    SECTION("a short-writing backend: the count is what every round applied") {
+        short_writing().insert("m2.shop.orders");
+        auto inserted = run(dispatcher, std::string{insert_five} + ";");
+        INFO(error_of(inserted));
+        REQUIRE(inserted->is_success());
+        CHECK(round_sizes() == std::vector<std::size_t>{2, 2, 1});
+        CHECK(inserted->affected_rows() == 2);
+    }
+}
+
+// A round the backend refuses ends the statement with the backend's error; the rounds before it stay written (no
+// two-phase commit, #663), and the next statement runs.
+TEST_CASE("integration::cpp::host_names::a_failed_sink_round_is_the_statement_error") {
+    HOST_TEST_BOILERPLATE("test_host_names/failed_round")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    flush_rows() = 1;
+    failing_round() = 2;
+
+    auto failed = run(dispatcher, "INSERT INTO m2.shop.orders (id, amount) VALUES (4, 400), (5, 500), (6, 600);");
+    REQUIRE(failed->is_error());
+    CHECK(failed->get_error().type == core::error_code_t::connection_closed);
+    CHECK(std::string{failed->get_error().what} == "server m2: round 2 failed");
+    CHECK(round_sizes() == std::vector<std::size_t>{1, 1});
+    CHECK(backend()["m2.shop.orders"] == rows_t{{1, 100}, {2, 200}, {3, 300}, {4, 400}});
+
+    auto next = run(dispatcher, "INSERT INTO m2.shop.orders (id, amount) VALUES (7, 700);");
+    INFO(error_of(next));
+    REQUIRE(next->is_success());
+    CHECK(next->affected_rows() == 1);
+    CHECK(backend()["m2.shop.orders"].back() == std::vector<int64_t>{7, 700});
+}
+
+// An INSERT into a storage flushes on the storage's threshold, not the engine's (as PostgreSQL 18 batches a foreign
+// INSERT by the FDW's batch size); an UPDATE / DELETE flushes on the engine's.
+TEST_CASE("integration::cpp::host_names::an_insert_flushes_on_the_storage_threshold") {
+    HOST_TEST_BOILERPLATE_WITH("test_host_names/insert_threshold", config.execution.dml_flush_row_threshold = 1)
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    batches()["m2.shop.orders"] = {{{1, 100}}, {{2, 200}}, {{3, 300}}};
+
+    auto inserted =
+        run(dispatcher, "INSERT INTO m2.shop.orders (id, amount) SELECT id + 10, amount FROM m2.shop.orders;");
+    INFO(error_of(inserted));
+    REQUIRE(inserted->is_success());
+    CHECK(inserted->affected_rows() == 3);
+    CHECK(round_sizes() == std::vector<std::size_t>{3});
+
+    round_sizes().clear();
+    auto updated = run(dispatcher, "UPDATE m2.shop.orders SET amount = amount + 1 WHERE id <= 3;");
+    INFO(error_of(updated));
+    REQUIRE(updated->is_success());
+    CHECK(updated->affected_rows() == 3);
+    CHECK(round_sizes() == std::vector<std::size_t>{1, 1, 1});
+
+    round_sizes().clear();
+    auto deleted = run(dispatcher, "DELETE FROM m2.shop.orders WHERE id <= 3;");
+    INFO(error_of(deleted));
+    REQUIRE(deleted->is_success());
+    CHECK(deleted->affected_rows() == 3);
+    CHECK(round_sizes() == std::vector<std::size_t>{1, 1, 1});
+    CHECK(backend()["m2.shop.orders"] == rows_t{{11, 100}, {12, 200}, {13, 300}});
 }
 
 // A storage table declares no defaults: a column the INSERT leaves out is NULL, as for a local table without one.

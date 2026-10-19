@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <components/context/context.hpp>
+#include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <components/table/transaction.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -104,6 +105,44 @@ namespace components::operators::dml_detail {
             }
         }
         return false;
+    }
+
+    [[nodiscard]] inline actor_zeta::unique_future<core::error_t> push_in_rounds(std::pmr::memory_resource* resource,
+                                                                                 pipeline::context_t* ctx,
+                                                                                 operator_t& sink,
+                                                                                 chunks_vector_t& chunks,
+                                                                                 uint64_t rows_per_round) {
+        chunks_vector_t ignored{resource};
+        uint64_t in_round = 0;
+        for (auto& chunk : chunks) {
+            const uint64_t rows = chunk.size();
+            uint64_t offset = 0;
+            while (offset < rows) {
+                const uint64_t take =
+                    rows_per_round == 0 ? rows - offset : std::min(rows - offset, rows_per_round - in_round);
+                auto error = take == rows ? sink.push(ctx, std::move(chunk), ignored)
+                                          : sink.push(ctx, chunk.partial_copy(resource, offset, take), ignored);
+                if (error.contains_error()) {
+                    co_return error;
+                }
+                offset += take;
+                in_round += take;
+                if (in_round == rows_per_round) {
+                    co_await sink.await_async_and_resume(ctx);
+                    if (sink.has_error()) {
+                        co_return sink.get_error();
+                    }
+                    in_round = 0;
+                }
+            }
+        }
+        if (in_round > 0) {
+            co_await sink.await_async_and_resume(ctx);
+            if (sink.has_error()) {
+                co_return sink.get_error();
+            }
+        }
+        co_return core::error_t::no_error();
     }
 
     // Normalized result of one operator storage op, handed to record_flush().

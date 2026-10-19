@@ -344,8 +344,8 @@ namespace services::collection::executor {
         unique_future<core::error_t> materialize_build_sides_(components::operators::operator_ptr root,
                                                               components::pipeline::context_t* ctx);
 
-        // Fires a non-final incremental flush once chain[dml_idx]'s buffered rows >= dml_flush_row_threshold_; a
-        // member coroutine with exactly one co_await (lost-wakeup-safe).
+        // Fires a non-final incremental flush once chain[dml_idx]'s buffered rows reach its flush_row_threshold over
+        // dml_flush_row_threshold_.
         unique_future<core::error_t> maybe_mid_flush(std::pmr::vector<components::operators::operator_t*>& chain,
                                                      std::size_t dml_idx,
                                                      components::pipeline::context_t* ctx);

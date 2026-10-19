@@ -189,6 +189,10 @@ namespace components::operators {
         // Catalog-mode DML returns 0 too: its single-shot path must not be mid-flushed.
         [[nodiscard]] virtual uint64_t buffered_rows() const noexcept { return 0; }
 
+        [[nodiscard]] uint64_t flush_row_threshold(uint64_t engine) const noexcept {
+            return flush_row_threshold_impl(engine);
+        }
+
         // The rows a write changed; the executor reads it from the plan root of an INSERT / UPDATE / DELETE.
         [[nodiscard]] uint64_t written() const noexcept { return written_; }
 
@@ -268,6 +272,7 @@ namespace components::operators {
     private:
         virtual actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx);
         virtual bool opens_at_start_impl() const noexcept { return false; }
+        virtual uint64_t flush_row_threshold_impl(uint64_t engine) const noexcept { return engine; }
 
         // Empty: the engine's name for type(), e.g. "Seq Scan", "Hash Join", "Extension Scan".
         virtual std::pmr::string explain_label_impl() const { return std::pmr::string{resource_}; }

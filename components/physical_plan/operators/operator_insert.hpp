@@ -39,10 +39,12 @@ namespace components::operators {
         // sink instead of the disk, the WAL and the index. `slots` holds each declared column's position in the chunk.
         void set_storage_sink(operator_ptr sink,
                               std::pmr::vector<types::complex_logical_type> columns,
-                              std::pmr::vector<uint64_t> slots) {
+                              std::pmr::vector<uint64_t> slots,
+                              uint64_t flush_rows) {
             storage_sink_ = std::move(sink);
             storage_columns_ = std::move(columns);
             storage_slots_ = std::move(slots);
+            storage_flush_rows_ = flush_rows;
         }
 
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
@@ -60,6 +62,10 @@ namespace components::operators {
         }
 
     private:
+        uint64_t flush_row_threshold_impl(uint64_t engine) const noexcept override {
+            return storage_sink_ ? storage_flush_rows_ : engine;
+        }
+
         // EXPLAIN labels a write into external storage the way its sink does, like postgres_fdw's "Foreign Insert on".
         std::pmr::string explain_label_impl() const override {
             return storage_sink_ ? storage_sink_->explain_label() : std::pmr::string{resource_};
@@ -79,6 +85,7 @@ namespace components::operators {
         operator_ptr storage_sink_;
         std::pmr::vector<types::complex_logical_type> storage_columns_{resource_};
         std::pmr::vector<uint64_t> storage_slots_{resource_};
+        uint64_t storage_flush_rows_{0};
     };
 
 } // namespace components::operators

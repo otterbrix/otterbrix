@@ -337,28 +337,22 @@ namespace components::operators {
 
         if (storage_sink_) {
             if (modified_ && modified_->size() > 0) {
-                chunks_vector_t ignored{resource_};
                 std::size_t next_id = 0;
                 for (auto& matched : index_old_chunks_) {
-                    const uint64_t rows = matched.size();
-                    for (uint64_t row = 0; row < rows; ++row) {
+                    for (uint64_t row = 0; row < matched.size(); ++row) {
                         matched.row_ids.data<int64_t>()[row] = index_old_row_ids_[next_id++];
                     }
-                    if (rows == 0) {
-                        continue;
-                    }
-                    if (auto error = storage_sink_->push(ctx, std::move(matched), ignored); error.contains_error()) {
-                        set_error(error);
-                        mark_failed();
-                        co_return;
-                    }
                 }
+                auto error = co_await dml_detail::push_in_rounds(resource_,
+                                                                 ctx,
+                                                                 *storage_sink_,
+                                                                 index_old_chunks_,
+                                                                 storage_flush_rows_);
                 modified_ = operators::make_operator_write_data(resource_);
                 index_old_chunks_.clear();
                 index_old_row_ids_.clear();
-                co_await storage_sink_->await_async_and_resume(ctx);
-                if (storage_sink_->has_error()) {
-                    set_error(storage_sink_->get_error());
+                if (error.contains_error()) {
+                    set_error(error);
                     mark_failed();
                     co_return;
                 }

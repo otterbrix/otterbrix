@@ -44,9 +44,12 @@ namespace components::operators {
 
         // A table with external storage: the matched rows, numbered by its scan in row_ids, go to the storage's
         // delete sink instead of the disk, the WAL, the index and the MVCC marker.
-        void set_storage_sink(operator_ptr sink, std::pmr::vector<types::complex_logical_type> columns) {
+        void set_storage_sink(operator_ptr sink,
+                              std::pmr::vector<types::complex_logical_type> columns,
+                              uint64_t flush_rows) {
             storage_sink_ = std::move(sink);
             storage_columns_ = std::move(columns);
+            storage_flush_rows_ = flush_rows;
         }
 
         // The catalog form is a SOURCELESS sink (no children, no scan input): its entire effect is
@@ -102,6 +105,7 @@ namespace components::operators {
         components::catalog::oid_t target_oid_{components::catalog::INVALID_OID};
         operator_ptr storage_sink_;
         std::pmr::vector<types::complex_logical_type> storage_columns_{resource_};
+        uint64_t storage_flush_rows_{0};
     };
 
 } // namespace components::operators

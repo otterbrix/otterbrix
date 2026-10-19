@@ -40,7 +40,7 @@ namespace services::planner::impl {
                                                                                             context.log.clone(),
                                                                                             node_delete.table_oid(),
                                                                                             std::move(returning)));
-                plan->set_storage_sink(std::move(sink), std::move(columns));
+                plan->set_storage_sink(std::move(sink), std::move(columns), table.storage->flush_row_threshold());
                 auto filter = boost::intrusive_ptr(
                     new components::operators::operator_match_t(context.resource, context.log.clone(), where, cap));
                 filter->set_children(std::move(scan));
@@ -53,7 +53,7 @@ namespace services::planner::impl {
                                                                                         std::move(returning),
                                                                                         where,
                                                                                         cap));
-            plan->set_storage_sink(std::move(sink), std::move(columns));
+            plan->set_storage_sink(std::move(sink), std::move(columns), table.storage->flush_row_threshold());
             VALUE_OR_RETURN(
                 auto source_op,
                 create_plan(context, function_registry, node_source, components::logical_plan::limit_t::all(), params));

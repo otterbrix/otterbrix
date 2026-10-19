@@ -403,6 +403,7 @@ namespace {
         logical_plan::storage_operator_t make_delete_impl(const services::context_storage_t& context) override {
             return read_only(context);
         }
+        uint64_t flush_row_threshold_impl() const noexcept override { return 0; }
 
         const remote_table_t* table_;
     };

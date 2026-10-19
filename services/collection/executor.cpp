@@ -2441,9 +2441,10 @@ namespace services::collection::executor {
     executor_t::maybe_mid_flush(std::pmr::vector<components::operators::operator_t*>& chain,
                                 std::size_t dml_idx,
                                 components::pipeline::context_t* ctx) {
-        // co_await must live outside the synchronous pump_one lambda; exactly one co_await keeps it lost-wakeup-safe.
-        if (dml_flush_row_threshold_ != 0 && dml_idx < chain.size() &&
-            chain[dml_idx]->buffered_rows() >= dml_flush_row_threshold_) {
+        // co_await must live outside the synchronous pump_one lambda.
+        const uint64_t threshold =
+            dml_idx < chain.size() ? chain[dml_idx]->flush_row_threshold(dml_flush_row_threshold_) : 0;
+        if (threshold != 0 && chain[dml_idx]->buffered_rows() >= threshold) {
             ctx->dml_flush_is_final = false;
 #ifdef DEV_MODE
             g_dml_flush_count.fetch_add(1, std::memory_order_relaxed);

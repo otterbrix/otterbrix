@@ -104,6 +104,7 @@ public:
     storage_operator_t make_insert(const services::context_storage_t&);  // sink of full rows, declared order, cast
     storage_operator_t make_update(const services::context_storage_t&);  // sink: row_ids + the rows' new values
     storage_operator_t make_delete(const services::context_storage_t&);  // sink: row_ids
+    uint64_t flush_row_threshold() const noexcept;                       // most rows per sink round; 0: no cap
 protected:
     explicit table_storage_t(const void* owner) noexcept;
 };
@@ -122,6 +123,15 @@ using table_storage_ptr = core::pmr::polymorphic_unique_ptr<table_storage_t>;
 - **Refusals.** A `make_*_impl` may return an error, which becomes the statement's error. A storage that cannot
   change a row by its number (ClickHouse, say) refuses `make_update` / `make_delete`; then only the host's rule can
   take an UPDATE / DELETE (`a_storage_without_row_numbers_refuses_the_batch_path`).
+- **Rows per round.** `flush_row_threshold_impl()` (pure virtual) is the storage's batch size: no sink round carries
+  more rows, the rest of a flush goes in further rounds (`the_storage_caps_each_sink_round`). An INSERT also flushes
+  on it instead of the engine's `dml_flush_row_threshold`, 0 meaning one round at the end; an UPDATE / DELETE
+  flushes on the engine's, as PostgreSQL 18 batches only a foreign INSERT
+  (`an_insert_flushes_on_the_storage_threshold`).
+  A storage whose sinks see a round before its scan ends (by its own threshold, or by the engine's
+  `dml_flush_row_threshold` for UPDATE / DELETE) keeps its row numbers and its scan's snapshot stable for the whole
+  statement: an earlier round has already changed the backend (an INSERT … SELECT from the same table, a DELETE by
+  number).
 - **Connections** live in the host's own cache (keyed per server, as postgres_fdw's `ConnectionHash` is), not in
   the storage and not in otterbrix.
 
@@ -161,8 +171,9 @@ Pitfalls:
   coroutine without such an argument aborts at its first call. Under GCC define a member coroutine inside the class.
 - **A batch holds at most `vector::DEFAULT_VECTOR_CAPACITY` rows.** A wider chunk from a storage source is refused
   with `invalid_parameter` (`chunk_over_vector_capacity`): slicing a wide backend page is the storage's job.
-- A sink may see several rounds of pushes + `await_async_and_resume` in one statement: once per buffer flush during
-  the scan and once at the end.
+- A sink may see several rounds of pushes + `await_async_and_resume` in one statement: per buffer flush during the
+  scan and at the end, each split into rounds of at most `flush_row_threshold()` rows. A round's error is the
+  statement's; the rounds before it stay written (`a_failed_sink_round_is_the_statement_error`, #663).
 - Errors travel only as `core::error_t` / `result_wrapper_t`. The backend's error reaches the cursor unchanged, code
   and text (`a_storage_error_reaches_the_cursor`, `a_storage_write_error_reaches_the_cursor`).
 
@@ -240,7 +251,7 @@ struct optimizer_rule_t { optimizer_stage stage; optimizer_rule_fn apply; };
 
 `operator_t::written()` is one counter in the base class, cumulative for the whole statement. For INSERT / UPDATE /
 DELETE into a storage sink the sink adds what the backend applied to `written_` on every round, and the DML reads the
-total with `written_ = sink->written()` after `await_async_and_resume`. A host operator that replaces the write (the
+total with `written_ = sink->written()` after its last round. A host operator that replaces the write (the
 fast path) adds what the backend reported to `written_` the same way. The executor knows from the statement before
 optimization that it is a write and takes `written()` of the plan root. The cursor answers `affected_rows()` and
 `is_write()`; a write without RETURNING has no result rows.

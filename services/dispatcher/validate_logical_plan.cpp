@@ -520,6 +520,11 @@ namespace services::dispatcher {
             return &components::expressions::as_key(field->params().front());
         }
 
+        core::error_t column_read_without_a_column(std::pmr::memory_resource* resource) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"a column read holds an operand that is not a column", resource});
+        }
+
         bool is_bare_name(const components::expressions::key_t& key) {
             return key.storage().size() == 1 && !key.has_qualifier() && key.storage().front() != "*";
         }
@@ -556,6 +561,21 @@ namespace services::dispatcher {
             return core::error_t(
                 core::error_code_t::sql_parse_error,
                 std::pmr::string{"for SELECT DISTINCT, ORDER BY expressions must appear in select list", resource});
+        }
+
+        [[nodiscard]] core::error_t sort_operand_as_expression(std::pmr::memory_resource* resource,
+                                                               sort_expression_t* sort_key) {
+            if (components::expressions::is_parameter(sort_key->operand())) {
+                auto constant = make_scalar_expression(resource, scalar_type::constant);
+                constant->append_param(sort_key->operand());
+                sort_key->set_operand(expression_ptr{std::move(constant)});
+            }
+            if (!components::expressions::is_expr(sort_key->operand()) ||
+                !components::expressions::as_expr(sort_key->operand())) {
+                return core::error_t(core::error_code_t::invalid_parameter,
+                                     std::pmr::string{"ORDER BY key is neither a column nor an expression", resource});
+            }
+            return core::error_t::no_error();
         }
 
         [[nodiscard]] core::error_t resolve_scalar_order_entry(const validation::validation_context_t& context,
@@ -732,7 +752,8 @@ namespace services::dispatcher {
                         }
                         continue;
                     }
-                    auto& expression = std::get<expression_ptr>(sort_key->operand());
+                    RETURN_IF_ERROR(sort_operand_as_expression(resource, sort_key));
+                    auto& expression = components::expressions::as_expr(sort_key->operand());
                     RETURN_IF_ERROR(validation::resolve_expression(expression, row_context));
                     std::optional<size_t> same_column;
                     for (size_t index = 0; index < visible && select; ++index) {
@@ -1029,6 +1050,7 @@ namespace services::dispatcher {
                         sort_key->set_operand(std::move(bound));
                         continue;
                     }
+                    RETURN_IF_ERROR(sort_operand_as_expression(resource, sort_key));
                     auto& expression = components::expressions::as_expr(sort_key->operand());
                     RETURN_IF_ERROR(validation::resolve_expression(expression, projection_context));
                     if (!distinct) {
@@ -1113,9 +1135,11 @@ namespace services::dispatcher {
                 auto* scalar_expr = static_cast<scalar_expression_t*>(exprs[idx].get());
                 switch (scalar_expr->type()) {
                     case scalar_type::get_field: {
-                        auto& key = scalar_expr->params().empty()
-                                        ? scalar_expr->key()
-                                        : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                        auto* key_read = read_column(exprs[idx]);
+                        if (key_read == nullptr) {
+                            return column_read_without_a_column(resource);
+                        }
+                        auto& key = *key_read;
                         if (key.path().empty()) {
                             auto res = validate_key(resource, key, schema_left, schema_right, context.column_uses);
                             if (res.has_error()) {
@@ -1699,9 +1723,11 @@ namespace services::dispatcher {
                                 expr_index++;
                                 continue;
                             }
-                            auto& k_ref = scalar_expr->params().empty()
-                                              ? scalar_expr->key()
-                                              : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                            auto* k_ref_read = impl::read_column(exprs[expr_index]);
+                            if (k_ref_read == nullptr) {
+                                return impl::column_read_without_a_column(resource);
+                            }
+                            auto& k_ref = *k_ref_read;
                             if (k_ref.storage().empty() || k_ref.storage().back() != "*") {
                                 expr_index++;
                                 continue;
@@ -1823,10 +1849,11 @@ namespace services::dispatcher {
                             }
                             auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
                             if (scalar_expr->type() == scalar_type::get_field) {
-                                auto& key =
-                                    scalar_expr->params().empty()
-                                        ? scalar_expr->key()
-                                        : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                                auto* key_read = impl::read_column(expr);
+                                if (key_read == nullptr) {
+                                    return impl::column_read_without_a_column(resource);
+                                }
+                                auto& key = *key_read;
                                 if (key.path().empty()) {
                                     auto validated_key = validation::validate_key(resource,
                                                                                   key,
@@ -1922,10 +1949,11 @@ namespace services::dispatcher {
                             }
                             auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
                             if (scalar_expr->type() == scalar_type::get_field) {
-                                const auto& key =
-                                    scalar_expr->params().empty()
-                                        ? scalar_expr->key()
-                                        : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                                auto* key_read = impl::read_column(expr);
+                                if (key_read == nullptr) {
+                                    return impl::column_read_without_a_column(resource);
+                                }
+                                const auto& key = *key_read;
                                 if (!key.path().empty() && key.path().front() < incoming_schema.size()) {
                                     auto column = incoming_schema[key.path().front()];
                                     name_as_projected(scalar_expr, column.type);
@@ -1989,9 +2017,11 @@ namespace services::dispatcher {
                             expr_index++;
                             continue;
                         }
-                        auto& k_ref = scalar_expr->params().empty()
-                                          ? scalar_expr->key()
-                                          : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                        auto* k_ref_read = impl::read_column(exprs[expr_index]);
+                        if (k_ref_read == nullptr) {
+                            return impl::column_read_without_a_column(resource);
+                        }
+                        auto& k_ref = *k_ref_read;
                         if (k_ref.storage().empty() || k_ref.storage().back() != "*") {
                             expr_index++;
                             continue;
@@ -2078,7 +2108,13 @@ namespace services::dispatcher {
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector),
                             context.column_uses};
-                        auto& operand = std::get<expression_ptr>(scalar_expr->params().front());
+                        if (!components::expressions::is_expr(scalar_expr->params().front()) ||
+                            !components::expressions::as_expr(scalar_expr->params().front())) {
+                            return core::error_t(
+                                core::error_code_t::invalid_parameter,
+                                std::pmr::string{"GROUP BY key holds an operand that is not an expression", resource});
+                        }
+                        auto& operand = components::expressions::as_expr(scalar_expr->params().front());
                         if (auto error = validation::resolve_expression(operand, key_context); error.contains_error()) {
                             return error;
                         }
@@ -2178,10 +2214,11 @@ namespace services::dispatcher {
                         if (expr->group() == expression_group::scalar) {
                             auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
                             if (scalar_expr->type() == scalar_type::get_field) {
-                                auto& key =
-                                    scalar_expr->params().empty()
-                                        ? scalar_expr->key()
-                                        : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                                auto* key_read = impl::read_column(expr);
+                                if (key_read == nullptr) {
+                                    return impl::column_read_without_a_column(resource);
+                                }
+                                auto& key = *key_read;
                                 auto res = validation::validate_key(resource,
                                                                     key,
                                                                     &grouping_schema,
@@ -2319,10 +2356,11 @@ namespace services::dispatcher {
                             }
                             auto* scalar_expr = reinterpret_cast<scalar_expression_t*>(expr.get());
                             if (scalar_expr->type() == scalar_type::get_field) {
-                                auto& key =
-                                    scalar_expr->params().empty()
-                                        ? scalar_expr->key()
-                                        : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                                auto* key_read = impl::read_column(expr);
+                                if (key_read == nullptr) {
+                                    return impl::column_read_without_a_column(resource);
+                                }
+                                auto& key = *key_read;
                                 if (key.path().empty()) {
                                     auto res = validation::validate_key(resource,
                                                                         key,
@@ -2420,9 +2458,11 @@ namespace services::dispatcher {
                             projected.push_back(std::move(entry));
                             continue;
                         }
-                        const auto& key = scalar_expr->params().empty()
-                                              ? scalar_expr->key()
-                                              : std::get<components::expressions::key_t>(scalar_expr->params().front());
+                        auto* key_read = impl::read_column(expr);
+                        if (key_read == nullptr) {
+                            return impl::column_read_without_a_column(resource);
+                        }
+                        const auto& key = *key_read;
                         auto entry = result[key.path().front()];
                         for (size_t depth = 1; depth < key.path().size(); depth++) {
                             entry.type = entry.type.type() == logical_type::STRUCT

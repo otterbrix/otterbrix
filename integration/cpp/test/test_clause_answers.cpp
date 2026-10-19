@@ -3,6 +3,17 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/compute/function.hpp>
+#include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/compare_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
+#include <components/expressions/sort_expression.hpp>
+#include <components/logical_plan/node_aggregate.hpp>
+#include <components/logical_plan/node_delete.hpp>
+#include <components/logical_plan/node_group.hpp>
+#include <components/logical_plan/node_limit.hpp>
+#include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_select.hpp>
+#include <components/logical_plan/node_sort.hpp>
 #include <components/vector/vector_builders.hpp>
 #include <services/disk/agent_disk.hpp>
 #include <services/index/manager_index.hpp>
@@ -788,5 +799,145 @@ TEST_CASE("integration::cpp::clause_answers::order_by_an_expression_over_groups"
                        "must appear in the GROUP BY clause or be used in an aggregate function"));
         CHECK(mentions(refusal_of(exec(dispatcher, "SELECT a FROM ob.t GROUP BY a ORDER BY b + 1;")),
                        "must appear in the GROUP BY clause or be used in an aggregate function"));
+    }
+}
+
+TEST_CASE("integration::cpp::clause_answers::a_hand_built_plan_names_a_parameter_or_a_bad_group_key") {
+    using namespace components;
+    test_spaces space(make_test_config(integration_fixture_path("test_clause_answers/hand_built_plan")));
+    auto* dispatcher = space.dispatcher();
+    auto* resource = dispatcher->resource();
+    seed_ob(dispatcher);
+    const qualified_name_t table{core::dbname_t{"ob"}, core::relname_t{"t"}};
+    auto grouped_by_a = [&](expressions::scalar_expression_ptr key) {
+        auto group = logical_plan::make_node_group(resource);
+        group->append_expression(std::move(key));
+        group->append_expression(expressions::make_scalar_expression(resource,
+                                                                     expressions::scalar_type::get_field,
+                                                                     expressions::key_t(resource, "a")));
+        auto count = expressions::make_aggregate_expression(resource, "count", expressions::key_t(resource, "cnt"));
+        count->append_param(expressions::key_t(resource, "b"));
+        group->append_expression(std::move(count));
+        return group;
+    };
+    auto group_key_a = [&] {
+        return expressions::make_scalar_expression(resource,
+                                                   expressions::scalar_type::group_field,
+                                                   expressions::key_t(resource, "a"));
+    };
+    auto run = [&](logical_plan::node_ptr plan, bool sorted) {
+        if (sorted) {
+            std::vector<expressions::expression_ptr> sort = {
+                expressions::make_sort_expression(resource, core::parameter_id_t{0}, expressions::sort_order::asc)};
+            plan->append_child(logical_plan::make_node_sort(resource, std::move(sort)));
+        }
+        auto parameters = logical_plan::make_parameter_node(resource);
+        REQUIRE(parameters->add_parameter(vector::make_scalar(resource, static_cast<int64_t>(2)),
+                                          vector::parameter_kind::literal) == core::parameter_id_t{0});
+        return dispatcher->execute_plan(otterbrix::session_id_t(),
+                                        logical_plan::execution_plan_t{resource, plan, parameters});
+    };
+
+    auto invalid_parameter = [](const components::cursor::cursor_t_ptr& cur) {
+        REQUIRE(cur->is_error());
+        CHECK(cur->get_error().type == core::error_code_t::invalid_parameter);
+        return std::string(cur->get_error().what);
+    };
+
+    SECTION("O1 a parameter sort key over the rows is a constant and keeps their order") {
+        auto cur = run(logical_plan::make_node_aggregate(resource, table), true);
+        CHECK(pairs_of(cur) == pairs{{2, 20}, {3, 10}, {1, 30}});
+        CHECK(width_of(cur) == 2);
+    }
+    SECTION("O2 a parameter sort key over the groups is a constant and keeps their order") {
+        auto unsorted = logical_plan::make_node_aggregate(resource, table);
+        unsorted->append_child(grouped_by_a(group_key_a()));
+        auto expected = pairs_of(run(unsorted, false));
+        auto sorted = logical_plan::make_node_aggregate(resource, table);
+        sorted->append_child(grouped_by_a(group_key_a()));
+        auto cur = run(sorted, true);
+        CHECK(pairs_of(cur) == expected);
+        CHECK(width_of(cur) == 2);
+        CHECK(expected.size() == 3);
+    }
+    SECTION("O3 a group key whose operand is not an expression is refused") {
+        auto key_operand = group_key_a();
+        key_operand->append_param(expressions::key_t(resource, "a"));
+        auto by_key = logical_plan::make_node_aggregate(resource, table);
+        by_key->append_child(grouped_by_a(std::move(key_operand)));
+        CHECK(mentions(invalid_parameter(run(by_key, false)),
+                       "GROUP BY key holds an operand that is not an expression"));
+        auto parameter_operand = group_key_a();
+        parameter_operand->append_param(core::parameter_id_t{0});
+        auto by_parameter = logical_plan::make_node_aggregate(resource, table);
+        by_parameter->append_child(grouped_by_a(std::move(parameter_operand)));
+        CHECK(mentions(invalid_parameter(run(by_parameter, false)),
+                       "GROUP BY key holds an operand that is not an expression"));
+    }
+    auto column_read_of_a_parameter = [&] {
+        auto read = expressions::make_scalar_expression(resource,
+                                                        expressions::scalar_type::get_field,
+                                                        expressions::key_t(resource, "a"));
+        read->append_param(core::parameter_id_t{0});
+        return read;
+    };
+    SECTION("O4 a RETURNING column read whose operand is not a column is refused") {
+        auto match = logical_plan::make_node_match(
+            resource,
+            table,
+            expressions::make_compare_expression(resource,
+                                                 expressions::compare_type::eq,
+                                                 expressions::key_t{resource, "a", expressions::side_t::left},
+                                                 core::parameter_id_t{0}));
+        auto del =
+            logical_plan::make_node_delete(resource,
+                                           match,
+                                           logical_plan::make_node_limit(resource, logical_plan::limit_t::all()));
+        del->set_target(table);
+        del->returning().push_back(column_read_of_a_parameter());
+        CHECK(mentions(invalid_parameter(run(del, false)), "a column read holds an operand that is not a column"));
+        CHECK(column_of(exec(dispatcher, "SELECT a FROM ob.t ORDER BY a;")) == values{1, 2, 3});
+    }
+    SECTION("O5 a projected column read whose operand is not a column is refused") {
+        auto plan = logical_plan::make_node_aggregate(resource, table);
+        auto select = logical_plan::make_node_select(resource);
+        select->append_expression(column_read_of_a_parameter());
+        plan->append_child(std::move(select));
+        CHECK(mentions(invalid_parameter(run(plan, false)), "a column read holds an operand that is not a column"));
+    }
+    SECTION("O6 a grouped column read whose operand is not a column is refused") {
+        auto group = grouped_by_a(group_key_a());
+        group->append_expression(column_read_of_a_parameter());
+        auto plan = logical_plan::make_node_aggregate(resource, table);
+        plan->append_child(std::move(group));
+        CHECK(mentions(invalid_parameter(run(plan, false)), "a column read holds an operand that is not a column"));
+    }
+    SECTION("O7 a column read over the groups whose operand is not a column is refused") {
+        auto plan = logical_plan::make_node_aggregate(resource, table);
+        plan->append_child(grouped_by_a(group_key_a()));
+        auto select = logical_plan::make_node_select(resource);
+        select->append_expression(column_read_of_a_parameter());
+        plan->append_child(std::move(select));
+        CHECK(mentions(invalid_parameter(run(plan, false)), "a column read holds an operand that is not a column"));
+    }
+    SECTION("O8 a null sort key is refused") {
+        for (const bool grouped : {false, true}) {
+            auto plan = logical_plan::make_node_aggregate(resource, table);
+            if (grouped) {
+                plan->append_child(grouped_by_a(group_key_a()));
+            }
+            std::vector<expressions::expression_ptr> sort = {expressions::make_sort_expression(
+                resource, expressions::expression_ptr{}, expressions::sort_order::asc)};
+            plan->append_child(logical_plan::make_node_sort(resource, std::move(sort)));
+            INFO("grouped: " << grouped);
+            CHECK(mentions(invalid_parameter(run(plan, false)), "ORDER BY key is neither a column nor an expression"));
+        }
+    }
+    SECTION("O9 a null GROUP BY key operand is refused") {
+        auto key = group_key_a();
+        key->append_param(expressions::expression_ptr{});
+        auto plan = logical_plan::make_node_aggregate(resource, table);
+        plan->append_child(grouped_by_a(std::move(key)));
+        CHECK(mentions(invalid_parameter(run(plan, false)), "GROUP BY key holds an operand that is not an expression"));
     }
 }

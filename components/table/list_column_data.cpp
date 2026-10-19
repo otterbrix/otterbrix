@@ -108,12 +108,12 @@ namespace components::table {
         auto data = offsets.get_data<uint64_t>();
 
         auto result_data = result.data<types::list_entry_t>();
-        auto last_entry = result_data[state.result_offset == 0 ? 0 : state.result_offset - 1];
         auto base_offset = state.last_offset;
+        auto prev_size = result.size();
         uint64_t current_offset = 0;
         for (uint64_t i = 0; i < scan_count; i++) {
             auto offset_index = offsets.referenced_indexing->get_index(i);
-            result_data[i + state.result_offset].offset = current_offset + last_entry.offset + last_entry.length;
+            result_data[i + state.result_offset].offset = current_offset + prev_size;
             result_data[i + state.result_offset].length = data[offset_index] - current_offset;
             current_offset += result_data[i + state.result_offset].length;
         }
@@ -121,7 +121,6 @@ namespace components::table {
         uint64_t child_scan_count = current_offset;
         result.reserve(child_scan_count + base_offset);
 
-        auto prev_size = result.size();
         if (child_scan_count > 0) {
             auto& child_entry = result.entry();
             if (child_entry.type().to_physical_type() != types::physical_type::STRUCT &&

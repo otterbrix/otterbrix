@@ -185,7 +185,7 @@ namespace {
         table.initialize_scan(state, column_ids, transaction_data::committed(), nullptr);
         auto types = table.copy_types();
         data_chunk_t chunk(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
-        uint64_t seen = 0;
+        std::set<uint64_t> rows;
         while (true) {
             chunk.reset();
             table.scan(chunk, state);
@@ -194,13 +194,14 @@ namespace {
             }
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 const auto& column = chunk.data[0];
+                uint64_t row = 0;
                 switch (kind) {
                     case nested_kind_t::STRUCT: {
                         REQUIRE(column.type().type() == logical_type::STRUCT);
                         const auto cell = resolve_cell(column, i);
                         REQUIRE(cell.vec->entries().size() == 2);
                         const auto stored = cell.vec->entries()[0]->get_value<int64_t>(cell.index);
-                        const auto row = static_cast<uint64_t>(stored) / 7;
+                        row = static_cast<uint64_t>(stored) / 7;
                         REQUIRE(stored == static_cast<int64_t>(row * 7));
                         REQUIRE(cell.vec->entries()[1]->get_value<std::string_view>(cell.index) == row_name(row));
                         break;
@@ -209,7 +210,7 @@ namespace {
                         REQUIRE(column.type().type() == logical_type::LIST);
                         const auto seq = sequence_of(column, i);
                         REQUIRE(seq.length == LIST_LENGTH);
-                        const auto row = seq.child->get_value<uint64_t>(seq.offset) / 100;
+                        row = seq.child->get_value<uint64_t>(seq.offset) / 100;
                         for (uint64_t j = 0; j < LIST_LENGTH; j++) {
                             REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == row * 100 + j);
                         }
@@ -219,17 +220,17 @@ namespace {
                         REQUIRE(column.type().type() == logical_type::ARRAY);
                         const auto seq = sequence_of(column, i);
                         REQUIRE(seq.length == ARRAY_WIDTH);
-                        const auto row = seq.child->get_value<uint64_t>(seq.offset) / 1000;
+                        row = seq.child->get_value<uint64_t>(seq.offset) / 1000;
                         for (uint64_t j = 0; j < ARRAY_WIDTH; j++) {
                             REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == row * 1000 + j);
                         }
                         break;
                     }
                 }
-                seen++;
+                REQUIRE(rows.insert(row).second);
             }
         }
-        return seen;
+        return rows.size();
     }
 
     void delete_first_rows(data_table_t& table, nested_env_t& env, uint64_t delete_count) {

@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -977,5 +978,232 @@ TEST_CASE("integration::cpp::clause_answers::a_hand_built_plan_names_a_parameter
         auto plan = logical_plan::make_node_aggregate(resource, table);
         plan->append_child(grouped_by_a(std::move(key)));
         CHECK(mentions(invalid_parameter(run(plan, false)), "GROUP BY key holds an operand that is not an expression"));
+    }
+}
+
+TEST_CASE("integration::cpp::clause_answers::a_constant_sort_key_is_dropped") {
+    test_spaces space(make_test_config(integration_fixture_path("test_clause_answers/order_constant")));
+    auto* dispatcher = space.dispatcher();
+    seed_ob(dispatcher);
+    REQUIRE_FALSE(
+        dispatcher
+            ->register_udf(otterbrix::session_id_t(), make_volatile_udf(dispatcher->resource(), "probe", probe_kernel))
+            .contains_error());
+    auto session = otterbrix::session_id_t();
+    const std::vector<std::pair<size_t, components::vector::vector_t>> two{
+        {1, components::vector::make_scalar(dispatcher->resource(), static_cast<int64_t>(2))}};
+    auto sorts = [](const std::string& plan) {
+        std::istringstream lines(plan);
+        for (std::string line; std::getline(lines, line);) {
+            const auto label = line.find_first_not_of(" ->");
+            if (label != std::string::npos && line.compare(label, std::string::npos, "Sort") == 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto scan_order = column_of(exec(dispatcher, "SELECT id FROM ob.big;"));
+    REQUIRE(scan_order.size() == 1000);
+
+    SECTION("C1 an expression over constants") {
+        const std::string sql = "SELECT id FROM ob.big ORDER BY 1 + 1;";
+        const auto plan = plan_of(dispatcher, sql);
+        INFO("plan:\n" << plan);
+        CHECK_FALSE(sorts(plan));
+        CHECK(column_of(exec(dispatcher, sql)) == scan_order);
+    }
+    SECTION("C2 a parameter") {
+        const std::string sql = "SELECT id FROM ob.big ORDER BY $1;";
+        auto explained = dispatcher->execute_sql_with_params(session, "EXPLAIN " + sql, two);
+        REQUIRE(explained->is_success());
+        std::string plan;
+        for (std::size_t row = 0; row < explained->size(); ++row) {
+            auto line = explained->get<std::string_view>(0, row);
+            REQUIRE_FALSE(line.has_error());
+            plan += std::string(line.value()) + '\n';
+        }
+        INFO("plan:\n" << plan);
+        CHECK_FALSE(sorts(plan));
+        CHECK(column_of(dispatcher->execute_sql_with_params(session, sql, two)) == scan_order);
+    }
+    SECTION("C3 next to a column only the column sorts") {
+        const std::string sql = "SELECT a FROM ob.t ORDER BY 1 + 1, b;";
+        CHECK(column_of(exec(dispatcher, sql)) == values{3, 2, 1});
+        const auto plan = plan_of(dispatcher, sql);
+        INFO("plan:\n" << plan);
+        CHECK(plan == plan_of(dispatcher, "SELECT a FROM ob.t ORDER BY b;"));
+    }
+    SECTION("C4 LIMIT and OFFSET over a dropped sort") {
+        const auto plain = column_of(exec(dispatcher, "SELECT id FROM ob.big LIMIT 5 OFFSET 3;"));
+        CHECK(plain == values{4, 5, 6, 7, 8});
+        const std::string sql = "SELECT id FROM ob.big ORDER BY 1 + 1 LIMIT 5 OFFSET 3;";
+        CHECK(column_of(exec(dispatcher, sql)) == plain);
+        const auto plan = plan_of(dispatcher, sql);
+        INFO("plan:\n" << plan);
+        CHECK_FALSE(sorts(plan));
+    }
+    SECTION("C5 under DISTINCT the constant must still be shown") {
+        CHECK(mentions(refusal_of(exec(dispatcher, "SELECT DISTINCT a FROM ob.t ORDER BY 1 + 1;")),
+                       "for SELECT DISTINCT, ORDER BY expressions must appear in select list"));
+        auto shown = column_of(exec(dispatcher, "SELECT DISTINCT a, 1 + 1 FROM ob.t ORDER BY 1 + 1;"));
+        std::sort(shown.begin(), shown.end());
+        CHECK(shown == values{1, 2, 3});
+    }
+    SECTION("C6 over groups") {
+        const std::string sql = "SELECT k, count(*) FROM ob.d GROUP BY k ORDER BY 1 + 1;";
+        const auto plan = plan_of(dispatcher, sql);
+        INFO("plan:\n" << plan);
+        CHECK_FALSE(sorts(plan));
+        auto keys = column_of(exec(dispatcher, sql));
+        std::sort(keys.begin(), keys.end());
+        CHECK(keys == values{1, 2});
+    }
+    SECTION("C7 guard: a volatile call over constants still sorts") {
+        const auto plan = plan_of(dispatcher, "SELECT id FROM ob.big ORDER BY probe(1);");
+        INFO("plan:\n" << plan);
+        CHECK(sorts(plan));
+    }
+    SECTION("C8 a position or an alias of a constant output") {
+        for (const auto* shown : {"1 + 1", "abs(0 - 2)"}) {
+            for (const auto* order : {"1", "c"}) {
+                const std::string sql =
+                    std::string{"SELECT "} + shown + " AS c, id FROM ob.big ORDER BY " + order + ";";
+                const auto plan = plan_of(dispatcher, sql);
+                INFO("plan:\n" << plan);
+                CHECK_FALSE(sorts(plan));
+                auto cur = exec(dispatcher, sql);
+                CHECK(ints_at(cur, 1) == scan_order);
+                CHECK(width_of(cur) == 2);
+            }
+        }
+    }
+    SECTION("C9 a position or an alias of a constant output over groups") {
+        for (const auto* order : {"1", "c"}) {
+            const std::string sql =
+                std::string{"SELECT 1 + 1 AS c, k, count(*) FROM ob.d GROUP BY k ORDER BY "} + order + ";";
+            const auto plan = plan_of(dispatcher, sql);
+            INFO("plan:\n" << plan);
+            CHECK_FALSE(sorts(plan));
+            auto cur = exec(dispatcher, sql);
+            auto keys = ints_at(cur, 1);
+            std::sort(keys.begin(), keys.end());
+            CHECK(keys == values{1, 2});
+            CHECK(width_of(cur) == 3);
+        }
+    }
+    SECTION("C11 a constant under DESC NULLS FIRST") {
+        const std::string sql = "SELECT id FROM ob.big ORDER BY 1 + 1 DESC NULLS FIRST;";
+        const auto plan = plan_of(dispatcher, sql);
+        INFO("plan:\n" << plan);
+        CHECK_FALSE(sorts(plan));
+        CHECK(column_of(exec(dispatcher, sql)) == scan_order);
+    }
+    SECTION("C12 a parameter bound as text") {
+        const std::vector<std::pair<size_t, components::vector::vector_t>> text{
+            {1, components::vector::make_scalar(dispatcher->resource(), std::string("x"))}};
+        CHECK(column_of(dispatcher->execute_sql_with_params(session, "SELECT id FROM ob.big ORDER BY $1;", text)) ==
+              scan_order);
+    }
+    SECTION("C13 a scalar sub-query") {
+        const std::string sql = "SELECT id FROM ob.big ORDER BY (SELECT max(v) FROM ob.d);";
+        const auto plan = plan_of(dispatcher, sql);
+        INFO("plan:\n" << plan);
+        CHECK_FALSE(sorts(plan));
+        CHECK(column_of(exec(dispatcher, sql)) == scan_order);
+    }
+    SECTION("C14 the error of a dropped scalar sub-query still surfaces") {
+        CHECK(exec(dispatcher, "SELECT id FROM ob.big ORDER BY (SELECT v FROM ob.d);")->is_error());
+    }
+    SECTION("C10 guard: a position or an alias of a volatile output over constants still sorts") {
+        for (const auto* order : {"1", "c"}) {
+            const auto plan =
+                plan_of(dispatcher, std::string{"SELECT probe(1) AS c, id FROM ob.big ORDER BY "} + order + ";");
+            INFO("plan:\n" << plan);
+            CHECK(sorts(plan));
+        }
+    }
+}
+
+TEST_CASE("integration::cpp::clause_answers::a_constant_distinct_on_key_is_dropped") {
+    test_spaces space(make_test_config(integration_fixture_path("test_clause_answers/distinct_on_constant")));
+    auto* dispatcher = space.dispatcher();
+    seed_ob(dispatcher);
+    REQUIRE_FALSE(
+        dispatcher
+            ->register_udf(otterbrix::session_id_t(), make_volatile_udf(dispatcher->resource(), "probe", probe_kernel))
+            .contains_error());
+    auto shows_node = [](const std::string& plan, const std::string& name) {
+        std::istringstream lines(plan);
+        for (std::string line; std::getline(lines, line);) {
+            const auto label = line.find_first_not_of(" ->");
+            if (label != std::string::npos && line.compare(label, std::string::npos, name) == 0) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    SECTION("K1 a constant ON key leaves one row, the first in scan order") {
+        for (const auto* shown : {"abs(0 - 2)", "1 + 1"}) {
+            for (const auto* order : {" ORDER BY c", ""}) {
+                const std::string sql =
+                    std::string{"SELECT DISTINCT ON (c) "} + shown + " AS c, id FROM ob.big" + order + ";";
+                const auto plan = plan_of(dispatcher, sql);
+                INFO(sql << "\nplan:\n" << plan);
+                CHECK_FALSE(shows_node(plan, "Unique"));
+                auto cur = exec(dispatcher, sql);
+                CHECK(ints_at(cur, 1) == values{1});
+                CHECK(width_of(cur) == 2);
+            }
+        }
+    }
+    SECTION("K2 the one row is the first after the rest of ORDER BY") {
+        CHECK(ints_at(exec(dispatcher, "SELECT DISTINCT ON (c) 1 + 1 AS c, id FROM ob.big ORDER BY c, id DESC;"), 1) ==
+              values{1000});
+    }
+    SECTION("K3 LIMIT and OFFSET apply to the one row") {
+        CHECK(ints_at(exec(dispatcher, "SELECT DISTINCT ON (c) 1 + 1 AS c, id FROM ob.big ORDER BY c OFFSET 1;"), 1)
+                  .empty());
+        CHECK(ints_at(exec(dispatcher, "SELECT DISTINCT ON (c) 1 + 1 AS c, id FROM ob.big ORDER BY c LIMIT 0;"), 1)
+                  .empty());
+        CHECK(ints_at(exec(dispatcher, "SELECT DISTINCT ON (c) 1 + 1 AS c, id FROM ob.big ORDER BY c LIMIT 5;"), 1) ==
+              values{1});
+    }
+    SECTION("K6 a LIMIT or an OFFSET given as a parameter") {
+        auto session = otterbrix::session_id_t();
+        const auto bound = [&](int64_t value) {
+            return std::vector<std::pair<size_t, components::vector::vector_t>>{
+                {1, components::vector::make_scalar(dispatcher->resource(), value)}};
+        };
+        CHECK(ints_at(dispatcher->execute_sql_with_params(
+                          session,
+                          "SELECT DISTINCT ON (c) 1 + 1 AS c, id FROM ob.big ORDER BY c LIMIT $1;",
+                          bound(5)),
+                      1) == values{1});
+        CHECK(ints_at(dispatcher->execute_sql_with_params(
+                          session,
+                          "SELECT DISTINCT ON (c) 1 + 1 AS c, id FROM ob.big ORDER BY c OFFSET $1;",
+                          bound(1)),
+                      1)
+                  .empty());
+    }
+    SECTION("K7 over groups under HAVING") {
+        auto cur = exec(dispatcher,
+                        "SELECT DISTINCT ON (c) 1 + 1 AS c, k, count(*) FROM ob.d GROUP BY k HAVING count(*) > 1 "
+                        "ORDER BY c;");
+        CHECK(ints_at(cur, 1).size() == 1);
+        CHECK(width_of(cur) == 3);
+    }
+    SECTION("K4 next to a column only the column is an ON key") {
+        auto with = exec(dispatcher, "SELECT DISTINCT ON (c, k) 1 + 1 AS c, k, v FROM ob.d ORDER BY c, k, ts DESC;");
+        CHECK(ints_at(with, 1) == values{1, 2});
+        CHECK(ints_at(with, 2) == values{11, 21});
+    }
+    SECTION("K5 guard: a volatile ON key stays") {
+        const std::string sql = "SELECT DISTINCT ON (c) probe(1) AS c, id FROM ob.big ORDER BY c;";
+        const auto plan = plan_of(dispatcher, sql);
+        INFO("plan:\n" << plan);
+        CHECK(shows_node(plan, "Unique"));
+        CHECK(ints_at(exec(dispatcher, sql), 1).size() == 1);
     }
 }

@@ -578,6 +578,90 @@ namespace services::dispatcher {
             return core::error_t::no_error();
         }
 
+        bool calls_volatile(const param_storage& operand);
+
+        bool calls_volatile(const expression_ptr& expression) {
+            if (!expression) {
+                return false;
+            }
+            auto any = [](const auto& operands) {
+                return std::any_of(operands.begin(), operands.end(), [](const auto& operand) {
+                    return calls_volatile(operand);
+                });
+            };
+            switch (expression->group()) {
+                case expression_group::function: {
+                    const auto* call = static_cast<const function_expression_t*>(expression.get());
+                    return call->volatility() == components::compute::volatility_t::volatile_ || any(call->args());
+                }
+                case expression_group::scalar:
+                    return any(static_cast<const scalar_expression_t*>(expression.get())->params());
+                case expression_group::aggregate:
+                    return any(static_cast<const aggregate_expression_t*>(expression.get())->params());
+                case expression_group::cast:
+                    return calls_volatile(
+                        static_cast<const components::expressions::cast_expression_t*>(expression.get())->child());
+                case expression_group::compare: {
+                    const auto* compare = static_cast<const compare_expression_t*>(expression.get());
+                    return calls_volatile(compare->left()) || calls_volatile(compare->right()) ||
+                           any(compare->children());
+                }
+                case expression_group::sort:
+                    return calls_volatile(static_cast<const sort_expression_t*>(expression.get())->operand());
+                case expression_group::invalid:
+                    return true;
+            }
+            return true;
+        }
+
+        bool calls_volatile(const param_storage& operand) {
+            return components::expressions::is_expr(operand) &&
+                   calls_volatile(components::expressions::as_expr(operand));
+        }
+
+        bool is_constant_order_key(const expression_ptr& expression) {
+            return expression->cardinality() == cardinality_t::constant && !calls_volatile(expression);
+        }
+
+        void erase_dropped_order_keys(node_sort_t* sort) {
+            auto& keys = sort->expressions();
+            keys.erase(std::remove_if(keys.begin(), keys.end(), [](const expression_ptr& key) { return !key; }),
+                       keys.end());
+        }
+
+        void erase_constant_distinct_on_keys(std::pmr::memory_resource* resource,
+                                             node_aggregate_t* aggregate,
+                                             const std::pmr::vector<size_t>& constant) {
+            if (constant.empty()) {
+                return;
+            }
+            auto& keys = aggregate->distinct_on_keys();
+            for (auto index = constant.rbegin(); index != constant.rend(); ++index) {
+                keys.erase(keys.begin() + static_cast<ptrdiff_t>(*index));
+            }
+            if (!keys.empty()) {
+                return;
+            }
+            for (auto& child : aggregate->children()) {
+                if (child->type() != node_type::limit_t) {
+                    continue;
+                }
+                auto* limit = static_cast<components::logical_plan::node_limit_t*>(child.get());
+                const auto& window = limit->limit();
+                if (window.validate(resource).contains_error()) {
+                    return;
+                }
+                aggregate->set_distinct(false);
+                const int64_t count =
+                    window.offset() > 0 ? 0 : (window.has_count() ? std::min<int64_t>(window.count(), 1) : 1);
+                limit->set_limit(components::logical_plan::limit_t(count));
+                return;
+            }
+            aggregate->set_distinct(false);
+            aggregate->append_child(
+                components::logical_plan::make_node_limit(resource, components::logical_plan::limit_t(1)));
+        }
+
         [[nodiscard]] core::error_t resolve_scalar_order_entry(const validation::validation_context_t& context,
                                                                const expression_ptr& entry,
                                                                const named_schema& schema,
@@ -669,40 +753,43 @@ namespace services::dispatcher {
                 }
                 return left_key.path() == right_key.path();
             };
-            auto output_operand = [&](size_t index, param_storage& operand) -> core::error_t {
+            auto output_operand = [&](size_t index, param_storage& operand) -> core::result_wrapper_t<bool> {
                 if (!select) {
                     const auto& column = incoming[index];
                     components::expressions::key_t key{resource,
                                                        column.type.has_alias() ? column.type.alias() : std::string{}};
                     key.set_path(single_path(resource, index));
                     operand = std::move(key);
-                    return core::error_t::no_error();
+                    return true;
                 }
                 auto& column = select->expressions()[index];
                 if (const auto* read = read_column(column)) {
                     if (!read->path().empty() && read->path().front() >= width) {
                         operand = components::expressions::key_t{*read, resource};
-                        return core::error_t::no_error();
+                        return true;
                     }
                     components::expressions::key_t key{resource};
                     RETURN_IF_ERROR(input_path_of(*read, key));
                     operand = std::move(key);
-                    return core::error_t::no_error();
+                    return true;
                 }
                 if (column->group() == expression_group::scalar) {
                     RETURN_IF_ERROR(validation::resolve_expression(column, row_context));
+                }
+                if (is_constant_order_key(column)) {
+                    return false;
                 }
                 computed.push_back(column);
                 operand = param_storage{column};
                 if (column->group() == expression_group::scalar &&
                     static_cast<scalar_expression_t*>(column.get())->type() == scalar_type::constant) {
-                    return core::error_t::no_error();
+                    return true;
                 }
                 components::expressions::key_t reference{resource, column->key().as_string()};
                 reference.set_path(single_path(resource, width + computed.size() - 1));
                 column = make_scalar_expression(resource, scalar_type::get_field, reference);
                 keep_computed_keys = true;
-                return core::error_t::no_error();
+                return true;
             };
             auto shown_by_select = [&](const components::expressions::key_t& key) -> bool {
                 if (!select) {
@@ -730,7 +817,11 @@ namespace services::dispatcher {
                         if (sort_key->ordinal() > visible) {
                             return position_out_of_range(resource);
                         }
-                        RETURN_IF_ERROR(output_operand(sort_key->ordinal() - 1, sort_key->operand()));
+                        VALUE_OR_RETURN(auto kept, output_operand(sort_key->ordinal() - 1, sort_key->operand()));
+                        if (!kept) {
+                            entry = nullptr;
+                            continue;
+                        }
                         sort_key->set_ordinal(0);
                         continue;
                     }
@@ -739,7 +830,10 @@ namespace services::dispatcher {
                         if (select && is_bare_name(key)) {
                             VALUE_OR_RETURN(auto found, find_output_by_name(resource, key, visible, name_of, same));
                             if (found.has_value()) {
-                                RETURN_IF_ERROR(output_operand(*found, sort_key->operand()));
+                                VALUE_OR_RETURN(auto kept, output_operand(*found, sort_key->operand()));
+                                if (!kept) {
+                                    entry = nullptr;
+                                }
                                 continue;
                             }
                         }
@@ -763,22 +857,40 @@ namespace services::dispatcher {
                             break;
                         }
                     }
-                    if (same_column.has_value()) {
-                        RETURN_IF_ERROR(output_operand(*same_column, sort_key->operand()));
+                    if (!same_column.has_value() && distinct) {
+                        return not_in_distinct_list(resource);
+                    }
+                    if (is_constant_order_key(expression)) {
+                        entry = nullptr;
                         continue;
                     }
-                    if (distinct) {
-                        return not_in_distinct_list(resource);
+                    if (same_column.has_value()) {
+                        VALUE_OR_RETURN(auto kept, output_operand(*same_column, sort_key->operand()));
+                        if (!kept) {
+                            entry = nullptr;
+                        }
+                        continue;
                     }
                     computed.push_back(expression);
                 }
+                erase_dropped_order_keys(sort);
             }
 
-            for (auto& on_key : aggregate->distinct_on_keys()) {
+            std::pmr::vector<size_t> constant_on_keys(resource);
+            for (size_t on_index = 0; on_index < aggregate->distinct_on_keys().size(); ++on_index) {
+                auto& on_key = aggregate->distinct_on_keys()[on_index];
                 if (select && is_bare_name(on_key)) {
                     VALUE_OR_RETURN(auto found, find_output_by_name(resource, on_key, visible, name_of, same));
                     if (found.has_value()) {
-                        const auto* read = read_column(select->expressions()[*found]);
+                        auto& column = select->expressions()[*found];
+                        const auto* read = read_column(column);
+                        if (read == nullptr && column->group() == expression_group::scalar) {
+                            RETURN_IF_ERROR(validation::resolve_expression(column, row_context));
+                        }
+                        if (read == nullptr && is_constant_order_key(column)) {
+                            constant_on_keys.push_back(on_index);
+                            continue;
+                        }
                         if (read == nullptr) {
                             return core::error_t(core::error_code_t::unimplemented_yet,
                                                  std::pmr::string{"DISTINCT ON a computed column of the select list "
@@ -796,6 +908,7 @@ namespace services::dispatcher {
                     return found.error();
                 }
             }
+            erase_constant_distinct_on_keys(resource, aggregate, constant_on_keys);
 
             if (sort) {
                 sort->set_keep_computed_keys(keep_computed_keys);
@@ -865,6 +978,10 @@ namespace services::dispatcher {
             };
             auto is_visible = [&](size_t index) {
                 return std::find(visible.begin(), visible.end(), index) != visible.end();
+            };
+            auto constant_output = [&](size_t index) {
+                return index < outputs.size() && outputs[index].expression &&
+                       is_constant_order_key(outputs[index].expression);
             };
 
             auto bind_input_key = [&](const components::expressions::key_t& key,
@@ -1037,6 +1154,10 @@ namespace services::dispatcher {
                                                                   "grouping is not supported",
                                                                   resource});
                         }
+                        if (constant_output(visible[sort_key->ordinal() - 1])) {
+                            entry = nullptr;
+                            continue;
+                        }
                         sort_key->set_operand(output_key(visible[sort_key->ordinal() - 1]));
                         sort_key->set_ordinal(0);
                         continue;
@@ -1046,6 +1167,10 @@ namespace services::dispatcher {
                         RETURN_IF_ERROR(bind_key(components::expressions::as_key(sort_key->operand()), bound));
                         if (distinct && !is_visible(bound.path().front())) {
                             return not_in_distinct_list(resource);
+                        }
+                        if (constant_output(bound.path().front())) {
+                            entry = nullptr;
+                            continue;
                         }
                         sort_key->set_operand(std::move(bound));
                         continue;
@@ -1059,21 +1184,33 @@ namespace services::dispatcher {
                                                                          outputs[index].expression,
                                                                          parameters);
                     });
+                    if (same_output == visible.end() && distinct) {
+                        return not_in_distinct_list(resource);
+                    }
+                    if (is_constant_order_key(expression)) {
+                        entry = nullptr;
+                        continue;
+                    }
                     if (same_output != visible.end()) {
                         sort_key->set_operand(output_key(*same_output));
                         continue;
                     }
-                    if (distinct) {
-                        return not_in_distinct_list(resource);
-                    }
                     RETURN_IF_ERROR(bind_operand(bind_operand, sort_key->operand()));
                 }
+                erase_dropped_order_keys(sort);
             }
-            for (auto& on_key : aggregate->distinct_on_keys()) {
+            std::pmr::vector<size_t> constant_on_keys(resource);
+            for (size_t on_index = 0; on_index < aggregate->distinct_on_keys().size(); ++on_index) {
+                auto& on_key = aggregate->distinct_on_keys()[on_index];
                 components::expressions::key_t bound{resource};
                 RETURN_IF_ERROR(bind_key(on_key, bound));
+                if (constant_output(bound.path().front())) {
+                    constant_on_keys.push_back(on_index);
+                    continue;
+                }
                 on_key.set_path(column_path{bound.path(), on_key.resource()});
             }
+            erase_constant_distinct_on_keys(resource, aggregate, constant_on_keys);
             if (result.size() > shown && !select) {
                 aggregate->set_output_width(shown);
             }
@@ -1500,6 +1637,20 @@ namespace services::dispatcher {
                     }
                 }
 
+                auto drop_sort_without_keys = [&] {
+                    if (node_sort == nullptr || !node_sort->expressions().empty()) {
+                        return;
+                    }
+                    auto& children = node->children();
+                    children.erase(std::remove_if(children.begin(),
+                                                  children.end(),
+                                                  [node_sort](const components::logical_plan::node_ptr& child) {
+                                                      return child.get() == node_sort;
+                                                  }),
+                                   children.end());
+                    node_sort = nullptr;
+                };
+
                 // Table-valued jsonb operators expand only on the non-GROUP-BY path (else crash).
                 if (node_group && node_select) {
                     for (const auto& expr : node_select->expressions()) {
@@ -1653,6 +1804,7 @@ namespace services::dispatcher {
                                                                    incoming_schema,
                                                                    parameters,
                                                                    computed_sort_types));
+                        drop_sort_without_keys();
                         return node_sort ? impl::check_order_keys_bound(resource, node_sort)
                                          : core::error_t::no_error();
                     };
@@ -2418,6 +2570,7 @@ namespace services::dispatcher {
                                                              result,
                                                              group_outputs,
                                                              parameters));
+                    drop_sort_without_keys();
                     if (node_sort) {
                         RETURN_IF_ERROR(impl::check_order_keys_bound(resource, node_sort));
                     }

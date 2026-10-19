@@ -16,6 +16,7 @@
 #include <components/table/column_definition.hpp>
 #include <components/table/constraint.hpp>
 #include <components/types/types.hpp>
+#include <components/vector/vector.hpp>
 #include <span>
 #include <string>
 #include <utility>
@@ -254,6 +255,8 @@ namespace components::sql::transform {
         return expressions::compare_type::invalid;
     }
 
+    types::complex_logical_type sub_query_placeholder(SubLinkType kind);
+
     inline types::logical_type get_logical_type(std::string_view str) {
         static const std::unordered_map<std::string_view, types::logical_type> lookup = {
             {"int2", types::logical_type::SMALLINT},
@@ -391,18 +394,27 @@ namespace components::sql::transform {
     core::result_wrapper_t<types::int128_t>
     parse_exact_decimal(std::pmr::memory_resource* resource, std::string_view text, uint8_t width, uint8_t scale);
 
+    struct numeric_literal_t {
+        types::logical_type type{types::logical_type::BIGINT};
+        int64_t as_int64{0};
+        types::int128_t as_int128{0};
+        types::uint128_t as_uint128{0};
+        double as_double{0.0};
+    };
+
     // BIGINT/HUGEINT/UHUGEINT by magnitude, DOUBLE only if fractional; out-of-range is refused, not rounded.
-    core::result_wrapper_t<types::logical_value_t> numeric_literal_value(std::pmr::memory_resource* resource,
-                                                                         Value* value);
+    core::result_wrapper_t<numeric_literal_t> parse_numeric_literal(std::pmr::memory_resource* resource, Value* value);
+
+    core::result_wrapper_t<vector::vector_t> numeric_literal_value(std::pmr::memory_resource* resource, Value* value);
 
     // The digits of a fractional numeric literal; a DECIMAL-typed caller re-reads them with parse_exact_decimal.
     std::string_view fractional_literal_text(Node* node);
 
-    core::result_wrapper_t<types::logical_value_t> get_value(std::pmr::memory_resource* resource, Node* node);
-    core::result_wrapper_t<types::logical_value_t> get_array(std::pmr::memory_resource* resource, PGList* list);
+    // A one-row CONSTANT vector.
+    core::result_wrapper_t<vector::vector_t> get_value(std::pmr::memory_resource* resource, Node* node);
+    core::result_wrapper_t<vector::vector_t> get_array(std::pmr::memory_resource* resource, PGList* list);
 
-    core::result_wrapper_t<types::logical_value_t> evaluate_const_a_expr(std::pmr::memory_resource* resource,
-                                                                         A_Expr* node);
+    core::result_wrapper_t<vector::vector_t> evaluate_const_a_expr(std::pmr::memory_resource* resource, A_Expr* node);
 
     // gram.y maps empty and RESTRICT both to DROP_RESTRICT -> restrict_ (PostgreSQL parity, #638).
     components::catalog::drop_behavior_t drop_behavior_of(DropBehavior written) noexcept;

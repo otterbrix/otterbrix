@@ -4,7 +4,9 @@
 #include "vector_buffer.hpp"
 #include "vector_helpers.hpp"
 
-#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
+
+#include <span>
 
 namespace components::vector {
 
@@ -88,9 +90,6 @@ namespace components::vector {
         explicit vector_t(std::pmr::memory_resource* resource,
                           types::complex_logical_type type,
                           uint64_t capacity = DEFAULT_VECTOR_CAPACITY);
-        explicit vector_t(std::pmr::memory_resource* resource,
-                          const types::logical_value_t& value,
-                          uint64_t capacity = DEFAULT_VECTOR_CAPACITY);
         explicit vector_t(const vector_t& other, const indexing_vector_t& indexing, uint64_t count);
         explicit vector_t(const vector_t& other, uint64_t offset, uint64_t count);
         explicit vector_t(std::pmr::memory_resource* resource,
@@ -123,7 +122,6 @@ namespace components::vector {
         std::shared_ptr<vector_buffer_t> auxiliary() const { return auxiliary_; }
         std::shared_ptr<vector_buffer_t> get_buffer() { return buffer_; }
 
-        void reference(const types::logical_value_t& value);
         void reference(const vector_t& other);
         void reinterpret(const vector_t& other);
 
@@ -140,9 +138,6 @@ namespace components::vector {
         static void recursive_to_unified_format(vector_t& input, uint64_t count, recursive_unified_vector_format& data);
 
         void sequence(int64_t start, int64_t increment, uint64_t count);
-
-        void push_back(types::logical_value_t logical_value);
-        void set_value(uint64_t index, const types::logical_value_t& val);
 
         void set_auxiliary(std::shared_ptr<vector_buffer_t> new_buffer) { auxiliary_ = std::move(new_buffer); }
 
@@ -162,8 +157,6 @@ namespace components::vector {
         void reserve(uint64_t required_capacity);
 
         void find_resize_infos(std::vector<resize_info_t>& resize_infos, uint64_t multiplier);
-
-        uint64_t allocation_size(uint64_t cardinality) const;
 
         void set_vector_type(vector_type vector_type);
 
@@ -199,8 +192,6 @@ namespace components::vector {
         void get_sequence(int64_t& start, int64_t& increment, int64_t& sequence_count) const;
         void get_sequence(int64_t& start, int64_t& increment) const;
 
-        types::logical_value_t value(uint64_t row_index) const;
-
         // Walk a nested path
         const vector_t* resolve_nested_location(const std::pmr::vector<uint64_t>& path,
                                                 uint64_t* leaf_index,
@@ -210,7 +201,7 @@ namespace components::vector {
         template<typename T>
         T get_value(uint64_t row_index) const;
         template<typename T>
-        requires non_logical_value_arg<T> void set_value(uint64_t row_index, T&& value);
+        void set_value(uint64_t row_index, T&& value);
 
         // Location of a nested element: its leaf storage vector and flat index within it. When is_null,
         // index is not meaningful but leaf still carries the element type.
@@ -225,11 +216,10 @@ namespace components::vector {
         // (array<array>, list<array>, ...) resolve. An out-of-range list subscript, or a NULL enclosing
         // container, is a NULL element.
         nested_element_t
-        resolve_nested_element(uint64_t row_index, const std::pmr::vector<size_t>& path, size_t element_start) const;
+        resolve_nested_element(uint64_t row_index, std::span<const size_t> path, size_t element_start) const;
 
     private:
         const vector_t* resolve_value_location(uint64_t row_index, uint64_t* index) const;
-        types::logical_value_t value_internal(uint64_t index) const;
 
         vector_type vector_type_;
         types::complex_logical_type type_;
@@ -252,7 +242,7 @@ namespace components::vector {
             // still instantiated, so guard sequence_entry<T> (which needs numeric_limits<T>).
             if constexpr (std::is_arithmetic_v<T>) {
                 int64_t start, increment;
-                get_sequence(start, increment);
+                vector->get_sequence(start, increment);
                 return sequence_entry<T>(start + increment * static_cast<int64_t>(index));
             } else {
                 assert(false && "sequence vector requires an arithmetic value type");
@@ -295,13 +285,17 @@ namespace components::vector {
     }
 
     template<typename T>
-    requires non_logical_value_arg<T> void vector_t::set_value(uint64_t row_index, T&& value) {
+    void vector_t::set_value(uint64_t row_index, T&& value) {
         if (get_vector_type() == vector_type::DICTIONARY) {
             auto& indexing_vector = indexing();
             return child().set_value(indexing_vector.get_index(row_index), std::forward<T>(value));
         }
 
         using value_type = std::remove_cvref_t<T>;
+        static_assert(!std::is_same_v<value_type, std::string> && !std::is_same_v<value_type, std::pmr::string> &&
+                          !std::is_convertible_v<value_type, const char*>,
+                      "vector_t::set_value stores a string through std::string_view: pass std::string_view, not an "
+                      "owning string, a const char* or a char array");
 
         // The row itself is always present here; callers store nulls via set_null.
         validity_.set(row_index, true);

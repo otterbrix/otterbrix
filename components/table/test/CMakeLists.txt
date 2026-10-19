@@ -5,6 +5,7 @@ set(${PROJECT_NAME}_SOURCES
         test_add_column_null_fill.cpp
         test_column_type_without_storage.cpp
         test_table.cpp
+        test_pushed_filter.cpp
         test_block_manager.cpp
         test_block_reachability.cpp
         test_fault_injection.cpp
@@ -25,6 +26,7 @@ set(${PROJECT_NAME}_SOURCES
         test_mvcc_operations.cpp
         test_one_block_manager.cpp
         test_statistics.cpp
+        test_statistics_golden_bytes.cpp
         test_block_e_procarray.cpp
         test_disk_backed_scan.cpp
         test_root_reclaim.cpp

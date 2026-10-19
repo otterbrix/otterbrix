@@ -31,8 +31,15 @@ namespace {
         REQUIRE(c->is_success());
         std::vector<opt> out;
         for (uint64_t r = 0; r < c->size(); ++r) {
-            auto v = c->value(0, r);
-            out.push_back(v.is_null() ? opt{} : opt{v.template value<int64_t>()});
+            auto cell0 = c->is_null(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            if (cell0.value()) {
+                out.push_back(opt{});
+            } else {
+                auto cell0v = c->template get<int64_t>(0, r);
+                REQUIRE_FALSE(cell0v.has_error());
+                out.push_back(opt{cell0v.value()});
+            }
         }
         return out;
     }

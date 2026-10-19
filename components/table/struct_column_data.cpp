@@ -155,11 +155,10 @@ namespace components::table {
         return true;
     }
 
-    core::result_wrapper_t<bool>
-    struct_column_data_t::append(column_append_state& state,
-                                 vector::vector_t& vector,
-                                 uint64_t offset,
-                                 uint64_t count) {
+    core::result_wrapper_t<bool> struct_column_data_t::append(column_append_state& state,
+                                                              vector::vector_t& vector,
+                                                              uint64_t offset,
+                                                              uint64_t count) {
         if (vector.get_vector_type() != vector::vector_type::FLAT) {
             vector::vector_t append_vector(vector);
             append_vector.flatten(offset + count);

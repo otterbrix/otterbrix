@@ -12,7 +12,8 @@
 #include <components/table/storage/metadata_writer.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/vector/cell_equal.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/file/local_file_system.hpp>
 
 #include <algorithm>
@@ -132,7 +133,7 @@ namespace {
 
     struct row_t {
         int64_t k;
-        logical_value_t v;
+        vector_t v;
     };
 
     uint64_t scan_rows(data_table_t& table, env_t& env, std::vector<row_t>* cells = nullptr) {
@@ -150,7 +151,8 @@ namespace {
             }
             if (cells) {
                 for (uint64_t i = 0; i < chunk.size(); i++) {
-                    cells->push_back(row_t{chunk.value(0, i).value<int64_t>(), chunk.value(1, i)});
+                    cells->push_back(row_t{chunk.data[0].get_value<int64_t>(i),
+                                           make_constant_copy(&env.resource, chunk.data[1], i)});
                 }
             }
             seen += chunk.size();
@@ -219,26 +221,28 @@ namespace {
                 chunk.set_value(1, 0, std::vector<std::string_view>{std::string_view{payload}});
                 break;
             case shape_t::STRUCT: {
-                std::vector<logical_value_t> fields;
-                fields.emplace_back(&env.resource, payload);
-                chunk.set_value(1, 0, logical_value_t::create_struct(&env.resource, types[1], fields));
+                chunk.data[1].entries()[0]->set_value(0, std::string_view{payload});
                 break;
             }
         }
         return chunk;
     }
 
-    std::string cell_string(const logical_value_t& cell, shape_t shape) {
+    std::string cell_string(const vector_t& cell, shape_t shape) {
         switch (shape) {
             case shape_t::STRING:
-                return std::string{cell.value<std::string_view>()};
+                return std::string{cell.get_value<std::string_view>(0)};
             case shape_t::LIST:
-            case shape_t::ARRAY:
-                REQUIRE(cell.children().size() == 1);
-                return *cell.children()[0].value<std::string*>();
-            case shape_t::STRUCT:
-                REQUIRE(cell.children().size() == 1);
-                return std::string{cell.children()[0].value<std::string_view>()};
+            case shape_t::ARRAY: {
+                const auto seq = sequence_of(cell, 0);
+                REQUIRE(seq.length == 1);
+                return std::string{seq.child->get_value<std::string_view>(seq.offset)};
+            }
+            case shape_t::STRUCT: {
+                const auto field = resolve_cell(cell, 0);
+                REQUIRE(field.vec->entries().size() == 1);
+                return std::string{field.vec->entries()[0]->get_value<std::string_view>(field.index)};
+            }
         }
         return {};
     }

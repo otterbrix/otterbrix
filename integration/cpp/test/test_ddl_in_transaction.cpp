@@ -41,7 +41,9 @@ namespace {
     std::string plan_text(const cursor_t& plan) {
         std::string text;
         for (std::size_t row = 0; row < plan.size(); ++row) {
-            text += std::string(plan.value(0, row).value<std::string_view>());
+            auto cell0 = plan.get<std::string_view>(0, row);
+            REQUIRE_FALSE(cell0.has_error());
+            text += std::string(cell0.value());
             text += '\n';
         }
         return text;
@@ -86,8 +88,12 @@ TEST_CASE("integration::cpp::ddl_in_transaction") {
             auto cur = run(dispatcher, writer, "SELECT a, d FROM TestDatabase.t ORDER BY a;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
-            REQUIRE(cur->value(0, 1).value<std::int64_t>() == A_BASE + 1);
-            REQUIRE(cur->value(1, 1).value<std::int64_t>() == D_BASE + 1);
+            auto cell1 = cur->get<std::int64_t>(0, 1);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == A_BASE + 1);
+            auto cell2 = cur->get<std::int64_t>(1, 1);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == D_BASE + 1);
         }
 
         INFO("nobody else sees it until this transaction commits");
@@ -102,7 +108,9 @@ TEST_CASE("integration::cpp::ddl_in_transaction") {
             auto cur = run(dispatcher, reader, "SELECT a, d FROM TestDatabase.t ORDER BY a;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
-            REQUIRE(cur->value(1, 1).value<std::int64_t>() == D_BASE + 1);
+            auto cell3 = cur->get<std::int64_t>(1, 1);
+            REQUIRE_FALSE(cell3.has_error());
+            REQUIRE(cell3.value() == D_BASE + 1);
         }
     }
 
@@ -119,7 +127,9 @@ TEST_CASE("integration::cpp::ddl_in_transaction") {
             INFO("SELECT a: " << why(*cur));
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<std::int64_t>() == A_BASE);
+            auto cell4 = cur->get<std::int64_t>(0, 0);
+            REQUIRE_FALSE(cell4.has_error());
+            REQUIRE(cell4.value() == A_BASE);
         }
 
         INFO("another session still sees b, because the drop has not committed");
@@ -134,7 +144,9 @@ TEST_CASE("integration::cpp::ddl_in_transaction") {
             REQUIRE(run(dispatcher, reader, "SELECT b FROM TestDatabase.t;")->is_error());
             auto cur = run(dispatcher, reader, "SELECT a FROM TestDatabase.t;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->value(0, 0).value<std::int64_t>() == A_BASE);
+            auto cell5 = cur->get<std::int64_t>(0, 0);
+            REQUIRE_FALSE(cell5.has_error());
+            REQUIRE(cell5.value() == A_BASE);
         }
     }
 
@@ -158,8 +170,12 @@ TEST_CASE("integration::cpp::ddl_in_transaction") {
             auto cur = run(dispatcher, writer, "SELECT a, b FROM TestDatabase.t ORDER BY a;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
-            REQUIRE(cur->value(0, 1).value<std::int64_t>() == A_BASE + 2);
-            REQUIRE(cur->value(1, 1).value<std::int64_t>() == B_BASE + 2);
+            auto cell6 = cur->get<std::int64_t>(0, 1);
+            REQUIRE_FALSE(cell6.has_error());
+            REQUIRE(cell6.value() == A_BASE + 2);
+            auto cell7 = cur->get<std::int64_t>(1, 1);
+            REQUIRE_FALSE(cell7.has_error());
+            REQUIRE(cell7.value() == B_BASE + 2);
         }
     }
 
@@ -188,8 +204,12 @@ TEST_CASE("integration::cpp::ddl_in_transaction") {
             auto cur = run(dispatcher, writer, "SELECT a, d FROM TestDatabase.t;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<std::int64_t>() == A_BASE);
-            REQUIRE(cur->value(1, 0).is_null());
+            const auto a = cur->get<std::int64_t>(0, 0);
+            REQUIRE_FALSE(a.has_error());
+            REQUIRE(a.value() == A_BASE);
+            const auto d_null = cur->is_null(1, 0);
+            REQUIRE_FALSE(d_null.has_error());
+            REQUIRE(d_null.value());
         }
     }
 
@@ -203,7 +223,9 @@ TEST_CASE("integration::cpp::ddl_in_transaction") {
             auto cur = run(dispatcher, reader, "SELECT b FROM TestDatabase.t;");
             INFO("SELECT b before the drop: " << why(*cur));
             REQUIRE(cur->is_success());
-            REQUIRE(cur->value(0, 0).value<std::int64_t>() == B_BASE);
+            auto cell8 = cur->get<std::int64_t>(0, 0);
+            REQUIRE_FALSE(cell8.has_error());
+            REQUIRE(cell8.value() == B_BASE);
         }
 
         auto dropper = otterbrix::session_id_t();
@@ -214,7 +236,9 @@ TEST_CASE("integration::cpp::ddl_in_transaction") {
             auto cur = run(dispatcher, reader, "SELECT b FROM TestDatabase.t;");
             INFO("SELECT b after the drop committed: " << why(*cur));
             REQUIRE(cur->is_success());
-            REQUIRE(cur->value(0, 0).value<std::int64_t>() == B_BASE);
+            auto cell9 = cur->get<std::int64_t>(0, 0);
+            REQUIRE_FALSE(cell9.has_error());
+            REQUIRE(cell9.value() == B_BASE);
         }
 
         REQUIRE(run(dispatcher, reader, "COMMIT;")->is_success());
@@ -224,7 +248,9 @@ TEST_CASE("integration::cpp::ddl_in_transaction") {
         {
             auto cur = run(dispatcher, reader, "SELECT a FROM TestDatabase.t;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->value(0, 0).value<std::int64_t>() == A_BASE);
+            auto cell10 = cur->get<std::int64_t>(0, 0);
+            REQUIRE_FALSE(cell10.has_error());
+            REQUIRE(cell10.value() == A_BASE);
         }
     }
 
@@ -249,7 +275,9 @@ TEST_CASE("integration::cpp::ddl_in_transaction") {
             INFO(point_query << ": " << why(*cur));
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<std::int64_t>() == B_BASE);
+            auto cell11 = cur->get<std::int64_t>(0, 0);
+            REQUIRE_FALSE(cell11.has_error());
+            REQUIRE(cell11.value() == B_BASE);
         }
     }
 }

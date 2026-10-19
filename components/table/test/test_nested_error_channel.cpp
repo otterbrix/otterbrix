@@ -3,6 +3,9 @@
 // erroring. Each refusal is pinned to the error channel its caller already reads.
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/vector/cell_equal.hpp>
+#include <components/vector/vector_builders.hpp>
+#include <components/vector/vector_operations.hpp>
 
 #include <components/table/array_column_data.hpp>
 #include <components/table/column_data.hpp>
@@ -141,10 +144,8 @@ TEST_CASE("nested column: a list offset past the element column reports data_cor
         const auto scanned = built.column->scan_count(state, result, 2);
         REQUIRE_FALSE(state.has_error());
         REQUIRE(scanned == 2);
-        const auto row0 = result.value(0);
-        REQUIRE(row0.children().size() == 2);
-        const auto row1 = result.value(1);
-        REQUIRE(row1.children().size() == 3);
+        REQUIRE(sequence_of(result, 0).length == 2);
+        REQUIRE(sequence_of(result, 1).length == 3);
     }
 
     auto* offsets_segment = built.append_state.current;

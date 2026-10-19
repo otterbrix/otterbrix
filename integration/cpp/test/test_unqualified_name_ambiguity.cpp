@@ -120,7 +120,9 @@ namespace {
                                          "SELECT oid FROM pg_catalog.pg_namespace WHERE nspname = '" + nspname + "';");
         REQUIRE(cursor->is_success());
         REQUIRE(cursor->size() == 1);
-        return cursor->value(0, 0).value<std::uint32_t>();
+        auto cell0 = cursor->get<std::uint32_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        return cell0.value();
     }
 
     // One entry per pg_class row of that name, so a missing row and a duplicate both show.
@@ -132,7 +134,9 @@ namespace {
         REQUIRE(cursor->is_success());
         std::vector<std::uint32_t> namespaces;
         for (std::size_t row = 0; row < cursor->size(); ++row) {
-            namespaces.push_back(cursor->value(0, row).value<std::uint32_t>());
+            auto cell1 = cursor->get<std::uint32_t>(0, row);
+            REQUIRE_FALSE(cell1.has_error());
+            namespaces.push_back(cell1.value());
         }
         return namespaces;
     }

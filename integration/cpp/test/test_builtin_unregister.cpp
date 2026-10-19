@@ -167,8 +167,9 @@ TEST_CASE("integration::cpp::udf_unregister::a_running_query_finishes_with_a_udf
         REQUIRE(plan->is_success());
         std::string text;
         for (std::size_t row = 0; row < plan->size(); ++row) {
-            const auto cell = plan->value(0, row);
-            text += std::string(cell.value<std::string_view>()) + '\n';
+            auto cell0 = plan->get<std::string_view>(0, row);
+            REQUIRE_FALSE(cell0.has_error());
+            text += std::string(cell0.value()) + '\n';
         }
         INFO(text);
         REQUIRE(text.find("Filter") == std::string::npos);
@@ -205,7 +206,9 @@ TEST_CASE("integration::cpp::udf_unregister::a_running_query_finishes_with_a_udf
     int64_t got = 0;
     for (std::size_t row = 0; row < kRows; ++row) {
         expected += static_cast<int64_t>(row % 7);
-        got += reader_cursor->value(0, row).value<int64_t>();
+        auto cell1 = reader_cursor->get<int64_t>(0, row);
+        REQUIRE_FALSE(cell1.has_error());
+        got += cell1.value();
     }
     CHECK(got == expected);
 

@@ -173,10 +173,29 @@ namespace components::vector {
             return true;
         }
 
-        uint64_t list_child_count(const vector_t& vector, uint64_t count) {
+        // Whether an element carries a payload: its own validity, and that of the STRUCT / ARRAY row it sits in.
+        // A parent made NULL without cascading leaves its children marked valid over memory nobody wrote.
+        struct payload_rows_t {
+            const vector_t& vector;
+            const payload_rows_t* parent;
+            uint64_t elements_per_parent_row;
+
+            bool valid(uint64_t index) const {
+                return vector.validity().row_is_valid(index) &&
+                       (parent == nullptr || parent->valid(index / elements_per_parent_row));
+            }
+            bool all_valid() const {
+                return vector.validity().all_valid() && (parent == nullptr || parent->all_valid());
+            }
+        };
+
+        uint64_t list_child_count(const payload_rows_t& rows, const vector_t& vector, uint64_t count) {
             uint64_t child_count = vector.size();
             const auto* entries = reinterpret_cast<const types::list_entry_t*>(vector.data());
             for (uint64_t row = 0; row < count; ++row) {
+                if (!rows.valid(row)) {
+                    continue;
+                }
                 const uint64_t entry_end = entries[row].offset + entries[row].length;
                 if (entry_end > child_count) {
                     child_count = entry_end;
@@ -186,7 +205,8 @@ namespace components::vector {
         }
 
         // False means no rule for this payload; the caller poisons the column rather than writing a short one.
-        bool append_vector_payload(const vector_t& vector, uint64_t count, services::wal::buffer_t& buffer) {
+        bool append_vector_payload(const payload_rows_t& rows, uint64_t count, services::wal::buffer_t& buffer) {
+            const vector_t& vector = rows.vector;
             const auto physical_type = vector.type().to_physical_type();
 
             if (is_variable_type(physical_type)) {
@@ -194,11 +214,15 @@ namespace components::vector {
                 uint32_t running_offset = 0;
                 for (uint64_t index = 0; index < count; ++index) {
                     append_le32(buffer, running_offset);
-                    running_offset += static_cast<uint32_t>(views[index].size());
+                    if (rows.valid(index)) {
+                        running_offset += static_cast<uint32_t>(views[index].size());
+                    }
                 }
                 append_le32(buffer, running_offset);
                 for (uint64_t index = 0; index < count; ++index) {
-                    append_bytes(buffer, views[index].data(), views[index].size());
+                    if (rows.valid(index)) {
+                        append_bytes(buffer, views[index].data(), views[index].size());
+                    }
                 }
                 return true;
             }
@@ -210,7 +234,7 @@ namespace components::vector {
                     const auto& fields = vector.entries();
                     for (const auto& field : fields) {
                         append_validity_block(*field, count, buffer);
-                        if (!append_vector_payload(*field, count, buffer)) {
+                        if (!append_vector_payload(payload_rows_t{*field, &rows, 1}, count, buffer)) {
                             return false;
                         }
                     }
@@ -224,19 +248,20 @@ namespace components::vector {
                     const uint64_t child_count = count * stride;
                     const auto& child = vector.entry();
                     append_validity_block(child, child_count, buffer);
-                    return append_vector_payload(child, child_count, buffer);
+                    return append_vector_payload(payload_rows_t{child, &rows, stride}, child_count, buffer);
                 }
                 case types::physical_type::LIST: {
                     const auto* entries = reinterpret_cast<const types::list_entry_t*>(vector.data());
                     for (uint64_t row = 0; row < count; ++row) {
-                        append_le64(buffer, entries[row].offset);
-                        append_le64(buffer, entries[row].length);
+                        const bool valid = rows.valid(row);
+                        append_le64(buffer, valid ? entries[row].offset : 0);
+                        append_le64(buffer, valid ? entries[row].length : 0);
                     }
-                    const uint64_t child_count = list_child_count(vector, count);
+                    const uint64_t child_count = list_child_count(rows, vector, count);
                     append_le64(buffer, child_count);
                     const auto& child = vector.entry();
                     append_validity_block(child, child_count, buffer);
-                    return append_vector_payload(child, child_count, buffer);
+                    return append_vector_payload(payload_rows_t{child, nullptr, 1}, child_count, buffer);
                 }
                 default:
                     break;
@@ -247,7 +272,15 @@ namespace components::vector {
                 // BIT / UNKNOWN / INVALID have no payload rule; only 0 rows can be written.
                 return count == 0;
             }
+            const size_t at = buffer.size();
             append_bytes(buffer, vector.data(), element_size * count);
+            if (!rows.all_valid()) {
+                for (uint64_t index = 0; index < count; ++index) {
+                    if (!rows.valid(index)) {
+                        std::memset(buffer.data() + at + index * element_size, 0, element_size);
+                    }
+                }
+            }
             return true;
         }
 
@@ -414,7 +447,7 @@ namespace components::vector {
             append_le32(buffer, 0); // data_size, back-patched once the payload is written
             const size_t data_start = buffer.size();
 
-            const bool payload_written = append_vector_payload(column, num_rows, buffer);
+            const bool payload_written = append_vector_payload(payload_rows_t{column, nullptr, 1}, num_rows, buffer);
             const size_t payload_size = buffer.size() - data_start;
 
             if (!payload_written || spec.empty() || payload_size > std::numeric_limits<uint32_t>::max()) {

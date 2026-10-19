@@ -296,14 +296,7 @@ TEST_CASE("catalog::type_spec::union_member_names_with_delimiters_roundtrip") {
 }
 
 TEST_CASE("catalog::type_spec::enum_names_with_delimiters_roundtrip") {
-    std::vector<components::types::logical_value_t> entries;
-    components::types::logical_value_t e0(g_resource, 0);
-    e0.set_alias("a=b,c:d");
-    entries.push_back(std::move(e0));
-    components::types::logical_value_t e1(g_resource, 1);
-    e1.set_alias("plain");
-    entries.push_back(std::move(e1));
-    auto t = complex_logical_type::create_enum("mo:od,s", std::move(entries));
+    auto t = complex_logical_type::create_enum("mo:od,s", {{"a=b,c:d", 0}, {"plain", 1}});
     auto spec = encode_type_spec(t);
 
     auto t2 = decode_ok(spec);
@@ -311,8 +304,8 @@ TEST_CASE("catalog::type_spec::enum_names_with_delimiters_roundtrip") {
     REQUIRE(t2.type_name() == "mo:od,s");
     const auto* ext = static_cast<const enum_logical_type_extension*>(t2.extension());
     REQUIRE(ext->entries().size() == 2);
-    REQUIRE(ext->entries()[0].type().alias() == "a=b,c:d");
-    REQUIRE(ext->entries()[1].type().alias() == "plain");
+    REQUIRE(ext->entries()[0].label == "a=b,c:d");
+    REQUIRE(ext->entries()[1].label == "plain");
 }
 
 TEST_CASE("catalog::type_spec::unknown_name_with_delimiters_roundtrip") {

@@ -3,6 +3,7 @@
 
 #include <components/casts/default_casts.hpp>
 #include <components/expressions/execution_dag_builder.hpp>
+#include <components/vector/vector_builders.hpp>
 
 using namespace components::expressions;
 
@@ -12,9 +13,9 @@ using components::execution_dag::slot_id_t;
 using components::execution_dag::slot_list_t;
 using components::types::complex_logical_type;
 using components::types::logical_type;
-using components::types::logical_value_t;
-using components::types::parameter_map_t;
 using components::vector::data_chunk_t;
+using components::vector::parameter_kind;
+using components::vector::storage_parameters;
 
 using expr_key_t = components::expressions::key_t;
 
@@ -95,7 +96,7 @@ namespace {
 
 TEST_CASE("expressions::graph_builder::same-typed operands need no cast") {
     auto types = input_types({logical_type::BIGINT, logical_type::BIGINT});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     auto expr = binary(scalar_type::add,
@@ -128,7 +129,7 @@ TEST_CASE("expressions::graph_builder::same-typed operands need no cast") {
 
 TEST_CASE("expressions::graph_builder::a stamped operand type becomes a cast node") {
     auto types = input_types({logical_type::INTEGER, logical_type::DOUBLE});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     // validation unified INTEGER with DOUBLE, so the left operand carries a cast
@@ -163,7 +164,7 @@ TEST_CASE("expressions::graph_builder::a stamped operand type becomes a cast nod
 
 TEST_CASE("expressions::graph_builder::a column named twice binds one slot") {
     auto types = input_types({logical_type::BIGINT});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     auto expr = binary(scalar_type::add,
@@ -194,7 +195,7 @@ TEST_CASE("expressions::graph_builder::a column named twice binds one slot") {
 
 TEST_CASE("expressions::graph_builder::a nested expression becomes an interior slot") {
     auto types = input_types({logical_type::BIGINT, logical_type::BIGINT, logical_type::BIGINT});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     // c0 + (c1 * c2)
@@ -235,13 +236,14 @@ TEST_CASE("expressions::graph_builder::a nested expression becomes an interior s
 
 TEST_CASE("expressions::graph_builder::a parameter operand becomes a parameter node") {
     auto types = input_types({logical_type::BIGINT});
-    parameter_map_t parameters(resource());
-    parameters.emplace(core::parameter_id_t{1}, logical_value_t(resource(), int64_t{40}));
+    storage_parameters parameters(resource());
+    REQUIRE(parameters.add(components::vector::make_scalar(resource(), int64_t{40}), parameter_kind::literal) ==
+            core::parameter_id_t{0});
     execution_dag_t graph(resource());
 
     auto expr = binary(scalar_type::add,
                        column(0),
-                       param_storage{core::parameter_id_t{1}},
+                       param_storage{core::parameter_id_t{0}},
                        logical_type::BIGINT,
                        logical_type::BIGINT,
                        logical_type::BIGINT);
@@ -265,7 +267,7 @@ TEST_CASE("expressions::graph_builder::a parameter operand becomes a parameter n
 
 TEST_CASE("expressions::graph_builder::unary minus builds a one-operand node") {
     auto types = input_types({logical_type::BIGINT});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     auto expr = make_scalar_expression(resource(), scalar_type::unary_minus, expr_key_t{resource()});
@@ -292,7 +294,7 @@ TEST_CASE("expressions::graph_builder::unary minus builds a one-operand node") {
 
 TEST_CASE("expressions::graph_builder::a reference whose stamp differs is refused") {
     auto types = input_types({logical_type::INTEGER});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     // CAST(c0 AS BIGINT): validation stamps the target but resolves no body for it yet
@@ -305,7 +307,7 @@ TEST_CASE("expressions::graph_builder::a reference whose stamp differs is refuse
 
 TEST_CASE("expressions::graph_builder::a plain reference claims only its column slot") {
     auto types = input_types({logical_type::BIGINT, logical_type::BIGINT});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
     execution_dag_t graph(resource());
 
     auto expr = make_scalar_expression(resource(), scalar_type::get_field, expr_key_t{resource()});
@@ -321,7 +323,7 @@ TEST_CASE("expressions::graph_builder::a plain reference claims only its column 
 
 TEST_CASE("expressions::graph_builder::what it cannot express is refused, not half-built") {
     auto types = input_types({logical_type::BIGINT, logical_type::BIGINT});
-    parameter_map_t parameters(resource());
+    storage_parameters parameters(resource());
 
     SECTION("scaffolding that is neither an operator nor a blend") {
         // COALESCE and CASE build blend nodes now; what is left refused is scaffolding with no node

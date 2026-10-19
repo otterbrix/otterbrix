@@ -1,9 +1,8 @@
 #pragma once
 #include "vector.hpp"
 
-#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
 #include <core/result_wrapper.hpp>
-#include <optional>
 
 namespace components::vector {
     class data_chunk_t {
@@ -11,12 +10,6 @@ namespace components::vector {
         data_chunk_t(std::pmr::memory_resource* resource,
                      const std::pmr::vector<types::complex_logical_type>& types,
                      uint64_t capacity = DEFAULT_VECTOR_CAPACITY);
-        // Projected constructor: allocates buffers only for projected_cols; other columns
-        // are placeholders (no buffer) so that column indices stay stable for downstream operators.
-        data_chunk_t(std::pmr::memory_resource* resource,
-                     const std::pmr::vector<types::complex_logical_type>& all_types,
-                     const std::vector<size_t>& projected_cols,
-                     uint64_t capacity);
         data_chunk_t(const data_chunk_t&) = delete;
         data_chunk_t& operator=(const data_chunk_t&) = delete;
         data_chunk_t(data_chunk_t&&) noexcept;
@@ -34,11 +27,6 @@ namespace components::vector {
         }
         void set_capacity(uint64_t capacity) { capacity_ = capacity; }
 
-        types::logical_value_t value(uint64_t col_idx, uint64_t index) const;
-        types::logical_value_t value(const std::pmr::vector<size_t>& col_path, uint64_t index) const;
-        void set_value(uint64_t col_idx, uint64_t index, const types::logical_value_t& val);
-        void set_value(const std::pmr::vector<size_t>& col_path, uint64_t index, const types::logical_value_t& val);
-
         bool is_null(uint64_t col_idx, uint64_t index) const;
         bool is_null(uint64_t col_idx, const std::pmr::vector<size_t>& path) const;
         void set_null(uint64_t col_idx, const std::pmr::vector<size_t>& path, bool value);
@@ -47,44 +35,14 @@ namespace components::vector {
             return data[col_idx].get_value<T>(index);
         }
         // Forwards plain values, optionals and (optional-of-)struct-tuples to the column vector, which
-        // deduces and routes them. logical_value_t is excluded so it keeps hitting the runtime overload.
+        // deduces and routes them.
         template<typename Arg>
-        requires(!std::is_same_v<std::remove_cvref_t<Arg>, types::logical_value_t>) void set_value(uint64_t col_idx,
-                                                                                                   uint64_t index,
-                                                                                                   Arg&& value) {
+        void set_value(uint64_t col_idx, uint64_t index, Arg&& value) {
             data[col_idx].set_value(index, std::forward<Arg>(value));
         }
 
         vector_t* at(const std::pmr::vector<size_t>& col_path);
         const vector_t* at(const std::pmr::vector<size_t>& col_path) const;
-
-        class at_aligned_t {
-        public:
-            at_aligned_t() = default;
-            explicit at_aligned_t(const vector_t* borrowed)
-                : borrowed_(borrowed) {}
-            explicit at_aligned_t(vector_t&& gathered)
-                : gathered_(std::move(gathered)) {}
-
-            at_aligned_t(const at_aligned_t&) = delete;
-            at_aligned_t& operator=(const at_aligned_t&) = delete;
-            at_aligned_t(at_aligned_t&&) noexcept = default;
-            at_aligned_t& operator=(at_aligned_t&&) noexcept = default;
-
-            const vector_t* get() const noexcept { return gathered_ ? &gathered_.value() : borrowed_; }
-            const vector_t& operator*() const noexcept { return *get(); }
-            const vector_t* operator->() const noexcept { return get(); }
-            explicit operator bool() const noexcept { return get() != nullptr; }
-
-        private:
-            const vector_t* borrowed_ = nullptr;
-            std::optional<vector_t> gathered_;
-        };
-
-        // at(), row-aligned index i is row i
-        at_aligned_t at_aligned(const std::pmr::vector<size_t>& col_path, std::pmr::memory_resource* resource) const;
-
-        uint64_t allocation_size() const;
 
         bool all_constant() const;
 
@@ -117,12 +75,6 @@ namespace components::vector {
 
         void reset();
 
-        // Drop unprojected placeholder columns in-place (data() == nullptr &&
-        // auxiliary() == nullptr) so user-visible iteration sees only real
-        // data. Used at the cursor boundary where placeholder stability for
-        // downstream operators is no longer needed.
-        void drop_unprojected_placeholders();
-
         void hash(vector_t& result);
         void hash(std::vector<uint64_t>& column_ids, vector_t& result);
         void resize(uint64_t new_size);
@@ -149,11 +101,19 @@ namespace components::vector {
     };
 
     // Sub-query result compacters: fold ALL of a cursor's chunks (not just the first) into one bound
-    // parameter value, so a >1024-row or multi-branch result is not silently truncated.
-    core::result_wrapper_t<types::logical_value_t> compact_to_bool_value(const std::pmr::vector<data_chunk_t>& chunks);
-    core::result_wrapper_t<types::logical_value_t>
-    compact_to_single_value(const std::pmr::vector<data_chunk_t>& chunks);
-    core::result_wrapper_t<types::logical_value_t> compact_to_array_value(const std::pmr::vector<data_chunk_t>& chunks);
-    core::result_wrapper_t<types::logical_value_t> compact_to_row_value(const std::pmr::vector<data_chunk_t>& chunks);
+    // parameter value, so a >1024-row or multi-branch result is not silently truncated. `result_type` is the
+    // type of that value, from the sub-query's schema: what a result of no row takes.
+    // EXISTS: whether there is a row
+    core::result_wrapper_t<vector_t> compact_to_bool_value(std::pmr::memory_resource* resource,
+                                                           const std::pmr::vector<data_chunk_t>& chunks,
+                                                           const types::complex_logical_type& result_type);
+    // A scalar sub-query: its one cell, NULL for no row
+    core::result_wrapper_t<vector_t> compact_to_single_value(std::pmr::memory_resource* resource,
+                                                             const std::pmr::vector<data_chunk_t>& chunks,
+                                                             const types::complex_logical_type& result_type);
+    // IN / ANY / ALL and ARRAY(SELECT ...): every row, in order, as one LIST
+    core::result_wrapper_t<vector_t> compact_to_list_value(std::pmr::memory_resource* resource,
+                                                           const std::pmr::vector<data_chunk_t>& chunks,
+                                                           const types::complex_logical_type& result_type);
 
 } // namespace components::vector

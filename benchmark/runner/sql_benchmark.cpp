@@ -7,6 +7,7 @@
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <cstring>
 
 namespace otterbrix::benchmark {
 
@@ -487,7 +488,11 @@ std::string sql_benchmark_t::explain(benchmark_state_t& state) {
     // EXPLAIN returns the plan as one text line per row in column 0.
     std::string plan;
     for (size_t r = 0; r < cursor->size(); ++r) {
-        plan += std::string(cursor->value(0, r).value<std::string_view>());
+        auto line = cursor->get<std::string_view>(0, r);
+        if (line.has_error()) {
+            return std::string("EXPLAIN error: ") + line.error().what.c_str();
+        }
+        plan += std::string(line.value());
         plan += '\n';
     }
     return plan;

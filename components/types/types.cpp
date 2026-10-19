@@ -1,5 +1,4 @@
 #include "types.hpp"
-#include "logical_value.hpp"
 
 #include <cassert>
 
@@ -579,7 +578,7 @@ namespace components::types {
     }
 
     complex_logical_type
-    complex_logical_type::create_enum(std::string name, std::vector<logical_value_t> entries, std::string alias) {
+    complex_logical_type::create_enum(std::string name, std::vector<enum_entry_t> entries, std::string alias) {
         return complex_logical_type(logical_type::ENUM,
                                     std::make_unique<enum_logical_type_extension>(std::move(name), std::move(entries)),
                                     std::move(alias));
@@ -803,13 +802,21 @@ namespace components::types {
         return raw >= positive_infinity(stored_as) || raw <= not_a_number(stored_as);
     }
 
-    enum_logical_type_extension::enum_logical_type_extension(std::string name, std::vector<logical_value_t> entries)
+    enum_logical_type_extension::enum_logical_type_extension(std::string name, std::vector<enum_entry_t> entries)
         : logical_type_extension(extension_type::ENUM)
         , type_name_(std::move(name))
         , entries_(std::move(entries)) {}
 
     bool enum_logical_type_extension::operator==(const enum_logical_type_extension& rhs) const {
-        return type_name_ == rhs.type_name_ && entries_ == rhs.entries_;
+        if (type_name_ != rhs.type_name_ || entries_.size() != rhs.entries_.size()) {
+            return false;
+        }
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            if (entries_[i].value != rhs.entries_[i].value) {
+                return false;
+            }
+        }
+        return true;
     }
 
     function_logical_type_extension::function_logical_type_extension(complex_logical_type return_type,

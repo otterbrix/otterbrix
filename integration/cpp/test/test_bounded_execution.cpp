@@ -65,9 +65,15 @@ TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", 
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == kNumGroups);
         for (unsigned g = 0; g < kNumGroups; ++g) {
-            REQUIRE(cur->value(0, g).value<int64_t>() == static_cast<int64_t>(g));
-            REQUIRE(cur->value(1, g).value<int64_t>() == expected_sum[g]);
-            REQUIRE(cur->value(2, g).value<uint64_t>() == expected_count[g]);
+            auto cell0 = cur->get<int64_t>(0, g);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == static_cast<int64_t>(g));
+            auto cell1 = cur->get<int64_t>(1, g);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == expected_sum[g]);
+            auto cell2 = cur->get<uint64_t>(2, g);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == expected_count[g]);
         }
     }
 
@@ -80,7 +86,11 @@ TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", 
         INFO("scalar aggregate error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == expected_total_sum);
-        REQUIRE(cur->value(1, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
+        auto cell3 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == expected_total_sum);
+        auto cell4 = cur->get<uint64_t>(1, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == static_cast<uint64_t>(kRowCount));
     }
 }

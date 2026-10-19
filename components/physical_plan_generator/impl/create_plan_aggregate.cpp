@@ -222,7 +222,7 @@ namespace services::planner::impl {
             ce::compare_expression_ptr where_expr; // null == no WHERE
             std::vector<size_t> projected_cols;
             if (match_child != nullptr) {
-                auto m = create_plan_match(context, *match_child, lp::limit_t::unlimit(), base_projected_cols);
+                auto m = create_plan_match(context, *match_child, lp::row_cap_t::uncapped(), base_projected_cols);
                 // A refused WHERE is reported by the coordinator chain, which lowers it again.
                 if (m.has_error() || m.value()->type() != ops::operator_type::full_scan) {
                     return nullptr; // index_scan / operator_match / transfer_scan — not pushable
@@ -282,11 +282,9 @@ namespace services::planner::impl {
         const auto& projected_cols = agg_node->projected_cols();
 
         // operator_limit is the single authoritative limiter; sources below only get an advisory read-cap.
-        const bool limit_effective =
-            limit.limit() != components::logical_plan::limit_t::unlimit().limit() || limit.offset() != 0;
 
         auto wrap_limit = [&](components::operators::operator_ptr op) -> components::operators::operator_ptr {
-            if (!limit_effective) {
+            if (!limit.is_effective()) {
                 return op;
             }
             auto limit_op = boost::intrusive_ptr(
@@ -343,6 +341,7 @@ namespace services::planner::impl {
 
         components::operators::operator_ptr match_op;
         components::operators::operator_ptr group_op;
+        const components::logical_plan::node_t* group_node = nullptr;
         components::operators::operator_ptr having_op;
         components::operators::operator_ptr sort_op;
         components::operators::operator_ptr select_op;
@@ -365,11 +364,12 @@ namespace services::planner::impl {
                     break;
                 }
                 case node_type::group_t: {
+                    group_node = child.get();
                     VALUE_OR_RETURN(group_op,
                                     create_plan(context,
                                                 function_registry,
                                                 child,
-                                                components::logical_plan::limit_t::unlimit(),
+                                                components::logical_plan::limit_t::all(),
                                                 params));
                     break;
                 }
@@ -396,7 +396,7 @@ namespace services::planner::impl {
                                     create_plan(context,
                                                 function_registry,
                                                 child,
-                                                components::logical_plan::limit_t::unlimit(),
+                                                components::logical_plan::limit_t::all(),
                                                 params));
                     break;
                 }
@@ -444,8 +444,9 @@ namespace services::planner::impl {
         }
         if (group_op) {
             // Forwarded so zero input rows still build correctly-typed results (PostgreSQL TupleDesc model).
-            if (node->has_output_types()) {
-                group_op->set_output_types(node->output_types());
+            const auto* typed = group_node->has_output_types() ? group_node : node.get();
+            if (typed->has_output_types()) {
+                group_op->set_output_types(typed->output_types());
             }
             group_op->set_children(std::move(executor));
             executor = std::move(group_op);

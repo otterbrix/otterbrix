@@ -4,6 +4,7 @@
 #include <components/table/storage/buffer_pool.hpp>
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/file/local_file_system.hpp>
 #include <cstdio>
 #include <string>
@@ -220,7 +221,7 @@ namespace {
         columns.emplace_back("b", complex_logical_type(logical_type::BIGINT));
         columns.emplace_back("c",
                              complex_logical_type(logical_type::BIGINT),
-                             logical_value_t(&env.resource, int64_t{kDefault}));
+                             components::vector::make_scalar(&env.resource, int64_t{kDefault}));
         return std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "test");
     }
 
@@ -266,7 +267,7 @@ TEST_CASE("components::table::column_visibility::widen") {
             CHECK(chunk.data[0].data<int64_t>()[1] == 11);
             CHECK(chunk.data[1].data<int64_t>()[1] == 11);
             for (uint64_t row = 0; row < kRows; row++) {
-                CHECK(chunk.data[2].value(row).value<int64_t>() == kDefault);
+                CHECK(chunk.data[2].get_value<int64_t>(row) == kDefault);
             }
         }
 
@@ -285,7 +286,7 @@ TEST_CASE("components::table::column_visibility::widen") {
             INFO("not the default and not NULL: the old row's own value, row by row in request order");
             for (uint64_t row = 0; row < kRows; row++) {
                 CHECK(chunk.data[0].data<int64_t>()[row] == 90 + static_cast<int64_t>(row));
-                CHECK(chunk.data[2].value(row).value<int64_t>() == 50 + static_cast<int64_t>(kRows - 1 - row));
+                CHECK(chunk.data[2].get_value<int64_t>(row) == 50 + static_cast<int64_t>(kRows - 1 - row));
             }
         }
 
@@ -310,7 +311,7 @@ TEST_CASE("components::table::column_visibility::widen") {
             for (uint64_t row = 0; row < kRows; row++) {
                 CHECK(chunk.data[0].data<int64_t>()[row] == 10 + static_cast<int64_t>(row));
                 CHECK(chunk.data[1].data<int64_t>()[row] == 700 + static_cast<int64_t>(row));
-                CHECK(chunk.data[2].value(row).value<int64_t>() == kDefault);
+                CHECK(chunk.data[2].get_value<int64_t>(row) == kDefault);
             }
         }
     }

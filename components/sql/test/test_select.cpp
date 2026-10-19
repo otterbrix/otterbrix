@@ -1,3 +1,4 @@
+#include "parameter_equals.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/function_expression.hpp>
@@ -10,8 +11,9 @@
 using namespace components::sql;
 using namespace components::sql::transform;
 
-using v = components::types::logical_value_t;
-using vec = std::vector<v>;
+using components::vector::make_null;
+using components::vector::make_scalar;
+using vec = std::vector<components::vector::vector_t>;
 
 // Transformer now wraps SELECT in sequence_t(resolve_*..., aggregate); descend
 // to the aggregate consumer when inspecting its rendered form.
@@ -28,9 +30,9 @@ using vec = std::vector<v>;
             }                                                                                                          \
             auto agg = result.parameters;                                                                              \
             REQUIRE(node->to_string() == RESULT);                                                                      \
-            REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                             \
+            REQUIRE(agg->parameters().size() == PARAMS.size());                                                        \
             for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                               \
-                REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == PARAMS.at(i));                            \
+                REQUIRE(parameter_equals(*agg, core::parameter_id_t(uint32_t(i)), PARAMS.at(i)));                      \
             }                                                                                                          \
         }                                                                                                              \
     }
@@ -46,44 +48,42 @@ TEST_CASE("components::sql::select_from_where") {
                        R"_($aggregate: {$limit: 101})_",
                        vec());
 
-    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection LIMIT ALL;)_",
-                       R"_($aggregate: {$limit: -1})_",
-                       vec());
+    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection LIMIT ALL;)_", R"_($aggregate: {})_", vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM UID.TestDatabase.TestSchema.TestCollection;)_", R"_($aggregate: {})_", vec());
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10;)_",
                        R"_($aggregate: {$match: {"number": {$eq: #0}}})_",
-                       vec({v(&resource, 10l)}));
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 AND name = 'doc 10' AND "count" = 2;)_",
         R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #2}]}})_",
-        vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
+        vec({make_scalar(&resource, 10l), make_scalar(&resource, "doc 10"), make_scalar(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE ((((number = 10 AND name = 'doc 10'))));)_",
                        R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}]}})_",
-                       vec({v(&resource, 10l), v(&resource, "doc 10")}));
+                       vec({make_scalar(&resource, 10l), make_scalar(&resource, "doc 10")}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 OR name = 'doc 10' OR "count" = 2;)_",
         R"_($aggregate: {$match: {$or: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #2}]}})_",
-        vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
+        vec({make_scalar(&resource, 10l), make_scalar(&resource, "doc 10"), make_scalar(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 AND name = 'doc 10' OR "count" = 2;)_",
         R"_($aggregate: {$match: {$or: [$and: ["number": {$eq: #0}, "name": {$eq: #1}], "count": {$eq: #2}]}})_",
-        vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
+        vec({make_scalar(&resource, 10l), make_scalar(&resource, "doc 10"), make_scalar(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE (number = 10 AND name = 'doc 10') OR "count" = 2;)_",
         R"_($aggregate: {$match: {$or: [$and: ["number": {$eq: #0}, "name": {$eq: #1}], "count": {$eq: #2}]}})_",
-        vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
+        vec({make_scalar(&resource, 10l), make_scalar(&resource, "doc 10"), make_scalar(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = 10 AND (name = 'doc 10' OR "count" = 2);)_",
         R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, $or: ["name": {$eq: #1}, "count": {$eq: #2}]]}})_",
-        vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
+        vec({make_scalar(&resource, 10l), make_scalar(&resource, "doc 10"), make_scalar(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE ((number = 10 AND name = 'doc 10') OR "count" = 2) AND )_"
@@ -94,66 +94,66 @@ TEST_CASE("components::sql::select_from_where") {
         R"_($or: [$and: ["number": {$eq: #3}, "name": {$eq: #4}], "count": {$eq: #5}], )_"
         R"_($or: [$and: ["number": {$eq: #6}, "name": {$eq: #7}], "count": {$eq: #8}])_"
         R"_(]}})_",
-        vec({v(&resource, 10l),
-             v(&resource, "doc 10"),
-             v(&resource, 2l),
-             v(&resource, 10l),
-             v(&resource, "doc 10"),
-             v(&resource, 2l),
-             v(&resource, 10l),
-             v(&resource, "doc 10"),
-             v(&resource, 2l)}));
+        vec({make_scalar(&resource, 10l),
+             make_scalar(&resource, "doc 10"),
+             make_scalar(&resource, 2l),
+             make_scalar(&resource, 10l),
+             make_scalar(&resource, "doc 10"),
+             make_scalar(&resource, 2l),
+             make_scalar(&resource, 10l),
+             make_scalar(&resource, "doc 10"),
+             make_scalar(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number == 10;)_",
                        R"_($aggregate: {$match: {"number": {$eq: #0}}})_",
-                       vec({v(&resource, 10l)}));
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number != 10;)_",
                        R"_($aggregate: {$match: {"number": {$ne: #0}}})_",
-                       vec({v(&resource, 10l)}));
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number <> 10;)_",
                        R"_($aggregate: {$match: {"number": {$ne: #0}}})_",
-                       vec({v(&resource, 10l)}));
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number < 10;)_",
                        R"_($aggregate: {$match: {"number": {$lt: #0}}})_",
-                       vec({v(&resource, 10l)}));
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number <= 10;)_",
                        R"_($aggregate: {$match: {"number": {$lte: #0}}})_",
-                       vec({v(&resource, 10l)}));
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number > 10;)_",
                        R"_($aggregate: {$match: {"number": {$gt: #0}}})_",
-                       vec({v(&resource, 10l)}));
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number >= 10;)_",
                        R"_($aggregate: {$match: {"number": {$gte: #0}}})_",
-                       vec({v(&resource, 10l)}));
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE NOT(number >= 10);)_",
                        R"_($aggregate: {$match: {$not: ["number": {$gte: #0}]}})_",
-                       vec({v(&resource, 10l)}));
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE NOT number >= 10;)_",
                        R"_($aggregate: {$match: {$not: ["number": {$gte: #0}]}})_",
-                       vec({v(&resource, 10l)}));
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE NOT (number = 10) AND NOT(name = 'doc 10' OR "count" = 2);)_",
         R"_($aggregate: {$match: {$and: [$not: ["number": {$eq: #0}], )_"
         R"_($not: [$or: ["name": {$eq: #1}, "count": {$eq: #2}]]]}})_",
-        vec({v(&resource, 10l), v(&resource, "doc 10"), v(&resource, 2l)}));
+        vec({make_scalar(&resource, 10l), make_scalar(&resource, "doc 10"), make_scalar(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pattern';)_",
                        R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0, #1}}}})_",
-                       vec({v(&resource, "pattern"), v(&resource, "l")}));
+                       vec({make_scalar(&resource, "pattern"), make_scalar(&resource, "l")}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT (column_name).field FROM TestCollection WHERE (column_name).field > 9.99;)_",
         R"_($aggregate: {$match: {"column_name/field": {$gt: #0}}, $group: {column_name/field}, $select: {}})_",
-        vec({v(&resource, 9.99)}));
+        vec({make_scalar(&resource, 9.99)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT ((column_name).sub_type).* FROM TestCollection WHERE ((column_name).sub_type).field1 > ((column_name).sub_type).field2;)_",
@@ -163,46 +163,46 @@ TEST_CASE("components::sql::select_from_where") {
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestCollection WHERE array_field[1] = 10;)_",
                        R"_($aggregate: {$match: {"array_field/1": {$eq: #0}}})_",
-                       vec({v(&resource, 10l)}));
+                       vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NULL;)_",
         R"_($aggregate: {$match: {"name": {$is_null: #0}}})_",
-        vec({v(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
+        vec({make_null(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NOT NULL;)_",
         R"_($aggregate: {$match: {"name": {$is_not_null: #0}}})_",
-        vec({v(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
+        vec({make_null(&resource, components::types::complex_logical_type{components::types::logical_type::NA})}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE count IN (1, 2, 3);)_",
                        R"_($aggregate: {$match: {$or: ["count": {$eq: #0}, "count": {$eq: #1}, "count": {$eq: #2}]}})_",
-                       vec({v(&resource, 1l), v(&resource, 2l), v(&resource, 3l)}));
+                       vec({make_scalar(&resource, 1l), make_scalar(&resource, 2l), make_scalar(&resource, 3l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE count NOT IN (1, 2);)_",
                        R"_($aggregate: {$match: {$and: ["count": {$ne: #0}, "count": {$ne: #1}]}})_",
-                       vec({v(&resource, 1l), v(&resource, 2l)}));
+                       vec({make_scalar(&resource, 1l), make_scalar(&resource, 2l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE '%test%';)_",
                        R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0, #1}}}})_",
-                       vec({v(&resource, "%test%"), v(&resource, "l")}));
+                       vec({make_scalar(&resource, "%test%"), make_scalar(&resource, "l")}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pre_fix';)_",
                        R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0, #1}}}})_",
-                       vec({v(&resource, "pre_fix"), v(&resource, "l")}));
+                       vec({make_scalar(&resource, "pre_fix"), make_scalar(&resource, "l")}));
 
     // NULL NOT LIKE p is UNKNOWN: the match itself inverts, and a NULL subject never reaches it, so
     // the negated form is the same call with an 'n' flag — no union_not, no is_not_null guard.
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name NOT LIKE '%test%';)_",
                        R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0, #1}}}})_",
-                       vec({v(&resource, "%test%"), v(&resource, "ln")}));
+                       vec({make_scalar(&resource, "%test%"), make_scalar(&resource, "ln")}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NOT NULL AND count IN (1, 2);)_",
         R"_($aggregate: {$match: {$and: ["name": {$is_not_null: #0}, $or: ["count": {$eq: #1}, "count": {$eq: #2}]]}})_",
-        vec({v(&resource, components::types::complex_logical_type{components::types::logical_type::NA}),
-             v(&resource, 1l),
-             v(&resource, 2l)}));
+        vec({make_null(&resource, components::types::complex_logical_type{components::types::logical_type::NA}),
+             make_scalar(&resource, 1l),
+             make_scalar(&resource, 2l)}));
 }
 
 TEST_CASE("components::sql::select_from_order_by") {
@@ -241,7 +241,7 @@ TEST_CASE("components::sql::select_from_order_by") {
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number > 10 ORDER BY number ASC, name DESC;)_",
         R"_($aggregate: {$match: {"number": {$gt: #0}}, $sort: {number: 1, name: -1}})_",
-        vec({v(&resource, 10l)}));
+        vec({make_scalar(&resource, 10l)}));
 
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestCollection ORDER BY (struct_type).field1 DESC;)_",
                        R"_($aggregate: {$sort: {struct_type/field1: -1}})_",
@@ -264,7 +264,7 @@ TEST_CASE("components::sql::group_by") {
     TEST_SIMPLE_SELECT(
         R"_(SELECT name, name1, 9.99 FROM TestCollection GROUP BY name, name1;)_",
         R"_($aggregate: {$group: {group_by: name, group_by: name1, name, name1, {$constant: #0}}, $select: {}})_",
-        vec({v(&resource, 9.99)}));
+        vec({make_scalar(&resource, 9.99)}));
 }
 
 TEST_CASE("components::sql::select_from_fields") {
@@ -304,7 +304,10 @@ TEST_CASE("components::sql::select_from_fields") {
         R"_(SELECT number, 10 size, 'title' title, true "on", false "off" FROM TestDatabase.TestCollection;)_",
         R"_($aggregate: {$group: {number, size: {$constant: #0}, title: {$constant: #1}, )_"
         R"_(on: {$constant: #2}, off: {$constant: #3}}, $select: {}})_",
-        vec({v(&resource, 10l), v(&resource, "title"), v(&resource, true), v(&resource, false)}));
+        vec({make_scalar(&resource, 10l),
+             make_scalar(&resource, "title"),
+             make_scalar(&resource, true),
+             make_scalar(&resource, false)}));
 }
 
 TEST_CASE("components::sql::select_with_subquery") {
@@ -315,7 +318,9 @@ TEST_CASE("components::sql::select_with_subquery") {
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE col1 IN (SELECT col2 FROM TestDatabase2.TestCollection2);)_",
         R"_($aggregate: {$match: {"col1": {$any: #0}}})_",
-        vec({v(&resource, nullptr)}));
+        vec({make_null(&resource,
+                       components::types::complex_logical_type::create_list(
+                           components::types::complex_logical_type{components::types::logical_type::NA}))}));
 }
 // DISTINCT on an aggregate call must survive every arm that builds one — transform_select,
 // resolve_having_operand, transform_a_expr_func — not just the select list.

@@ -1,7 +1,5 @@
 #include "bitcask_index_agent.hpp"
 
-#include <components/index/logical_value_binary_codec.hpp>
-
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
@@ -10,8 +8,6 @@
 namespace services::index {
 
     namespace {
-
-        namespace codec = components::index::codec;
 
         // Byte equality, not value equality, so -0.0 and +0.0 don't collide across halves.
         bool key_satisfies(std::string_view stored, std::string_view probe) { return stored == probe; }
@@ -310,7 +306,7 @@ namespace services::index {
     bitcask_index_agent_t::unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
     bitcask_index_agent_t::read_rows(session_id_t session,
                                      components::expressions::compare_type compare,
-                                     value_t key,
+                                     components::vector::vector_t key,
                                      uint64_t txn_id) {
         trace(log_, "bitcask_index_agent_t::read_rows, session: {}", session.data());
         if (is_dropped_) {
@@ -321,27 +317,35 @@ namespace services::index {
         }
 
         using components::expressions::compare_type;
+        const bool is_null_test = compare == compare_type::is_null;
         const bool is_not_null_test = compare == compare_type::is_not_null;
-        const value_t probe_key =
-            (compare == compare_type::is_null || is_not_null_test)
-                ? value_t(resource(), components::types::complex_logical_type{components::types::logical_type::NA})
-                : key;
-        assert((compare == compare_type::eq || compare == compare_type::is_null || is_not_null_test) &&
+        assert((compare == compare_type::eq || is_null_test || is_not_null_test) &&
                "bitcask_index_agent_t::read_rows: a hashed index has no ordering to answer a range predicate with");
-        // find() unrolls the whole row list; the keydir alone keeps only `rows.back()` per key.
         std::pmr::vector<int64_t> rows(resource());
+        if (!is_null_test && !is_not_null_test && key_is_null(key)) {
+            co_return std::move(rows);
+        }
+        // Keys compare encoded, so a staged key matches exactly when the store would match it.
+        auto probe_result = [&]() -> core::result_wrapper_t<bitcask_key_t> {
+            if (is_null_test || is_not_null_test) {
+                return null_key(resource(), store_.hash_seed());
+            }
+            return key_of(resource(), key, store_.hash_seed());
+        }();
+        if (probe_result.has_error()) {
+            co_return probe_result.error();
+        }
+        const auto& probe = probe_result.value();
+        // find() unrolls the whole row list; the keydir alone keeps only `rows.back()` per key.
         // A committed half that could not be read is not an empty one, so the reason travels instead.
         if (is_not_null_test) {
             if (auto read_error = store_.find_not_null(rows); read_error.contains_error()) {
                 co_return read_error;
             }
-        } else if (auto read_error = store_.find(probe_key, rows); read_error.contains_error()) {
+        } else if (auto read_error = store_.find(probe.hash, probe.bytes, rows); read_error.contains_error()) {
             co_return read_error;
         }
 
-        // Keys compare encoded, so a staged key matches exactly when the store would match it.
-        std::pmr::string probe(resource());
-        codec::append_logical_value(probe, probe_key);
         std::pmr::string key_buffer(resource());
 
         const auto for_each_match = [&](const key_batch_t& bucket, auto&& on_match) -> core::error_t {
@@ -351,7 +355,7 @@ namespace services::index {
                 offset += rows;
                 RETURN_IF_ERROR(
                     for_each_key_bytes(keys, rows, &key_buffer, [&](size_t row, std::string_view staged_key) {
-                        if (key_satisfies(staged_key, probe) != is_not_null_test) {
+                        if (key_satisfies(staged_key, probe.bytes) != is_not_null_test) {
                             on_match(ids[row]);
                         }
                         return core::error_t::no_error();

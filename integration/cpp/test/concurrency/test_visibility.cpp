@@ -368,9 +368,9 @@ TEST_CASE("integration::cpp::concurrency::visibility::parallel", "[parallel]") {
                         }
                         bool whole = read->size() % 7 == 0;
                         for (std::size_t row = 0; row < read->size() && whole; ++row) {
-                            int64_t id = read->value(0, row).value<int64_t>();
-                            int64_t number = type.decode(read->value(1, row));
-                            whole = number == id || number == id + 1;
+                            const auto id = read->get<int64_t>(0, row);
+                            const int64_t number = type.decode(cell_t{read.get(), 1, row, {}});
+                            whole = !id.has_error() && (number == id.value() || number == id.value() + 1);
                         }
                         torn_reads += whole ? 0 : 1;
                     }

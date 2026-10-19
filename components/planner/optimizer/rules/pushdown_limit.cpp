@@ -19,11 +19,7 @@ namespace components::planner::optimizer {
                     return static_cast<const lp::node_limit_t*>(child.get())->limit();
                 }
             }
-            return lp::limit_t::unlimit();
-        }
-
-        bool is_effective(const lp::limit_t& limit) noexcept {
-            return limit.limit() != lp::limit_t::unlimit().limit() || limit.offset() != 0;
+            return lp::limit_t::all();
         }
 
         // If `node` is a limit-carrying aggregate, stamp the one eligible
@@ -35,7 +31,7 @@ namespace components::planner::optimizer {
                 return;
             }
             const lp::limit_t limit = aggregate_limit(node);
-            if (!is_effective(limit)) {
+            if (!limit.is_effective()) {
                 return;
             }
             auto* aggregate = static_cast<lp::node_aggregate_t*>(node.get());
@@ -43,7 +39,7 @@ namespace components::planner::optimizer {
             // DISTINCT is a FLAG on the aggregate and operator_distinct is layered
             // ABOVE the terminal scan — capping any source below would dedup too few
             // rows and drop distinct values operator_limit can never recover. Stamp
-            // nothing: every source stays unlimit, operator_limit windows after dedup.
+            // nothing: no source gets a cap, operator_limit windows after dedup.
             if (aggregate->is_distinct()) {
                 return;
             }
@@ -72,10 +68,10 @@ namespace components::planner::optimizer {
                 }
             }
 
-            const lp::limit_t read_cap{limit.head_cap(), 0};
+            const lp::row_cap_t read_cap = limit.read_cap();
 
             // ORDER BY: the FULL blocking sort's OUTPUT is the final ordered set — cap
-            // it to limit+offset; everything below (group/match/scan) stays unlimit.
+            // it to limit+offset; everything below (group/match/scan) stays uncapped.
             // The sort sits above any GROUP BY, so it is the single cardinality-
             // preserving cap point below operator_limit (only when NO DISTINCT, which
             // is excluded above).

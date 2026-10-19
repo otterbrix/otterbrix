@@ -107,13 +107,23 @@ namespace concurrency {
         std::vector<T> values;
         values.reserve(cursor->size());
         for (std::size_t row = 0; row < cursor->size(); ++row) {
-            values.push_back(cursor->value(index, row).template value<T>());
+            auto cell = cursor->template get<T>(index, row);
+            REQUIRE_FALSE(cell.has_error());
+            values.push_back(cell.value());
         }
         return values;
     }
 
     // Rows (id, v) = (i, i) for i in [0, count), in INSERTs of a bounded size.
     void insert_numbered_rows(session_t& session, const std::string& table, int64_t count);
+
+    // One cell of a result: a column of a row, or an element of a list, array or struct inside it.
+    struct cell_t {
+        const components::cursor::cursor_t* cursor;
+        std::size_t column;
+        std::size_t row;
+        std::vector<std::size_t> path;
+    };
 
     // A column type whose every cell encodes one number, so a reader can tell the exact version it got.
     struct column_type_t {
@@ -122,7 +132,7 @@ namespace concurrency {
         // The statement creating sql_type; empty for a built-in one.
         std::string setup;
         std::function<std::string(int64_t)> literal;
-        std::function<int64_t(const components::types::logical_value_t&)> decode;
+        std::function<int64_t(const cell_t&)> decode;
     };
 
     // What decode returns for a cell that is torn, mixed from two versions, or of the wrong shape.

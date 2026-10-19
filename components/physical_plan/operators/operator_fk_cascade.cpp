@@ -7,7 +7,6 @@
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -271,7 +270,7 @@ namespace components::operators {
                         mark_failed();
                         co_return;
                     }
-                    std::optional<types::logical_value_t> default_val;
+                    std::optional<vector::vector_t> default_val;
                     if (!is_set_null && ci < fk_.child_col_default_specs.size() &&
                         !fk_.child_col_default_specs[ci].empty() && !fetched.empty() &&
                         schema_idx < fetched.front().column_count()) {
@@ -285,7 +284,7 @@ namespace components::operators {
                             mark_failed();
                             co_return;
                         }
-                        if (default_val.has_value() && default_val->is_null()) {
+                        if (default_val.has_value() && default_val->is_null(0)) {
                             default_val.reset();
                         }
                     }
@@ -300,10 +299,10 @@ namespace components::operators {
                             mark_failed();
                             co_return;
                         }
-                        for (uint64_t r = 0; r < chunk.size(); ++r) {
-                            if (!is_set_null && default_val.has_value()) {
-                                chunk.set_value(schema_idx, r, *default_val);
-                            } else {
+                        if (!is_set_null && default_val.has_value()) {
+                            vector::vector_ops::copy(*default_val, chunk.data[schema_idx], chunk.size(), 0, 0);
+                        } else {
+                            for (uint64_t r = 0; r < chunk.size(); ++r) {
                                 chunk.data[schema_idx].validity().set_invalid(r);
                             }
                         }

@@ -32,11 +32,15 @@ namespace components::logical_plan {
         stream << "$update: <oid:" << static_cast<std::uint64_t>(table_oid()) << "> {";
         bool is_first = true;
         for (const auto& child : children()) {
+            const auto text = child->to_string();
+            if (text.empty()) { // an unlimited limit has no text, as PostgreSQL shows no Limit node for it
+                continue;
+            }
             if (!is_first) {
                 stream << ", ";
             }
             is_first = false;
-            stream << child->to_string();
+            stream << text;
         }
         stream << "}";
         return stream.str();

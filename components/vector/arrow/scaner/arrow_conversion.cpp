@@ -1,6 +1,9 @@
 #include "arrow_conversion.hpp"
 
 #include <components/vector/arrow/arrow_string_view.hpp>
+#include <components/vector/vector_builders.hpp>
+#include <components/vector/vector_operations.hpp>
+#include <cstring>
 
 namespace components::vector::arrow::scaner {
 
@@ -777,8 +780,7 @@ namespace components::vector::arrow::scaner {
         }
         switch (vector.type().type()) {
             case types::logical_type::NA:
-                vector.reference(
-                    types::logical_value_t(vector.resource(), types::complex_logical_type{types::logical_type::NA}));
+                vector.reference(make_null(vector.resource(), types::complex_logical_type{types::logical_type::NA}));
                 break;
             case types::logical_type::BOOLEAN: {
                 auto effective_offset =
@@ -1344,6 +1346,13 @@ namespace components::vector::arrow::scaner {
                     children.push_back(std::move(child));
                 }
 
+                // The tag is entries()[0]; every member vector is filled whole and then invalidated on the rows
+                // whose tag selects another member. A row whose active member is NULL is a NULL union (tag invalid).
+                auto& tag_vector = *vector.entries()[0];
+                auto* tag_data = tag_vector.data<uint8_t>();
+                for (size_t member = 0; member < children.size(); member++) {
+                    vector_ops::copy(children[member], *vector.entries()[member + 1], size, 0, 0);
+                }
                 for (size_t row_idx = 0; row_idx < size; row_idx++) {
                     auto tag = static_cast<uint8_t>(type_ids[row_idx]);
 
@@ -1353,12 +1362,17 @@ namespace components::vector::arrow::scaner {
                                              std::pmr::string("Arrow union tag out of range", vector.resource()));
                     }
 
-                    const types::logical_value_t& value = children[tag].value(row_idx);
-                    vector.set_value(
-                        row_idx,
-                        value.is_null() ? types::logical_value_t(vector.resource(),
-                                                                 types::complex_logical_type{types::logical_type::NA})
-                                        : types::logical_value_t::create_union(vector.resource(), members, tag, value));
+                    tag_data[row_idx] = tag;
+                    const bool row_is_null = children[tag].is_null(row_idx);
+                    tag_vector.set_null(row_idx, row_is_null);
+                    if (row_is_null) {
+                        vector.set_null(row_idx, true);
+                    }
+                    for (size_t member = 0; member < children.size(); member++) {
+                        if (member != tag) {
+                            vector.entries()[member + 1]->set_null(row_idx, true);
+                        }
+                    }
                 }
 
                 break;

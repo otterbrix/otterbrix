@@ -3,6 +3,7 @@
 #include <services/dispatcher/resolve_arithmetic.hpp>
 #include <services/dispatcher/resolve_function.hpp>
 
+#include <components/catalog/type_display.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -10,6 +11,7 @@
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
+#include <components/vector/operations/apply_quantified.hpp>
 
 #include <algorithm>
 #include <source_location>
@@ -80,12 +82,8 @@ namespace services::dispatcher::validation {
                     return invalid_type;
                 }
                 if (is_parameter(operand)) {
-                    auto bound = context_.parameters.parameters.find(as_parameter(operand));
-                    if (bound == context_.parameters.parameters.end()) {
-                        return fail(core::error_code_t::invalid_parameter, "unbound parameter in expression");
-                    }
                     last_cardinality_ = cardinality_t::constant;
-                    return bound->second.type();
+                    return context_.parameters.type(as_parameter(operand));
                 }
                 if (std::holds_alternative<components::expressions::key_t>(operand)) {
                     return column(std::get<components::expressions::key_t>(operand), inside_aggregate);
@@ -216,7 +214,7 @@ namespace services::dispatcher::validation {
                     }
                     if (!components::expressions::same_computation(expression,
                                                                    candidate.expression,
-                                                                   context_.parameters.parameters)) {
+                                                                   context_.parameters)) {
                         continue;
                     }
                     auto reference =
@@ -272,6 +270,113 @@ namespace services::dispatcher::validation {
                 comparison->set_function(resolved_copy(resolved.value().pin));
             }
 
+            static const char* operator_symbol(compare_type op) {
+                switch (op) {
+                    case compare_type::eq:
+                        return "=";
+                    case compare_type::ne:
+                        return "<>";
+                    case compare_type::lt:
+                        return "<";
+                    case compare_type::lte:
+                        return "<=";
+                    case compare_type::gt:
+                        return ">";
+                    case compare_type::gte:
+                        return ">=";
+                    case compare_type::regex:
+                        return "~~";
+                    default:
+                        return "?";
+                }
+            }
+
+            // `probe <op> ANY|ALL (set)`: the set is a LIST or an ARRAY
+            void resolve_quantified(compare_expression_t* comparison, bool inside_aggregate) {
+                const auto probe = slot(comparison->left(), inside_aggregate);
+                if (error_.contains_error()) {
+                    return;
+                }
+                auto combined = last_cardinality_;
+                const auto set = slot(comparison->right(), inside_aggregate);
+                if (error_.contains_error()) {
+                    return;
+                }
+                combined = combine(combined, last_cardinality_);
+                const bool match = comparison->inner_op() == compare_type::regex;
+                if (!match &&
+                    !components::vector::operations::is_quantifiable(to_operator_code(comparison->inner_op()))) {
+                    fail(core::error_code_t::invalid_parameter,
+                         message(context_.resource,
+                                 to_string(comparison->inner_op()),
+                                 " cannot be quantified with ",
+                                 to_string(comparison->type())));
+                    return;
+                }
+                comparison->set_result_type(boolean_type);
+                last_cardinality_ = combined;
+                if (set.type() == logical_type::NA) {
+                    return;
+                }
+                if (set.type() != logical_type::LIST && set.type() != logical_type::ARRAY) {
+                    fail(core::error_code_t::invalid_parameter,
+                         message(context_.resource,
+                                 "op ANY/ALL (array) requires array on right side, not ",
+                                 components::catalog::format_type_be(set, false)));
+                    return;
+                }
+                const auto& element = set.child_type();
+                auto no_operator = [&](const complex_logical_type& left, const complex_logical_type& right) {
+                    fail(core::error_code_t::invalid_parameter,
+                         message(context_.resource,
+                                 "operator does not exist: ",
+                                 components::catalog::format_type_be(left, false),
+                                 " ",
+                                 operator_symbol(comparison->inner_op()),
+                                 " ",
+                                 components::catalog::format_type_be(right, false)));
+                };
+                if (element.type() == logical_type::NA) {
+                    // PostgreSQL resolves an untyped NULL column of a sub-select as text
+                    if (probe.type() != logical_type::STRING_LITERAL) {
+                        no_operator(probe, complex_logical_type{logical_type::STRING_LITERAL});
+                    }
+                    return;
+                }
+                if (match) {
+                    if ((probe.type() != logical_type::STRING_LITERAL && probe.type() != logical_type::NA) ||
+                        element.type() != logical_type::STRING_LITERAL) {
+                        no_operator(probe, element);
+                    }
+                    return;
+                }
+                if (element == probe) {
+                    return;
+                }
+                auto common = context_.cast_registry.find_best_common_type(probe, element);
+                if (!common.has_value()) {
+                    no_operator(probe, element);
+                    return;
+                }
+                splice_cast(context_.resource, comparison->left(), common->type, common->left_cast);
+                if (common->type == element) {
+                    return;
+                }
+                const auto target =
+                    set.type() == logical_type::LIST
+                        ? complex_logical_type::create_list(common->type)
+                        : complex_logical_type::create_array(
+                              common->type,
+                              static_cast<const components::types::array_logical_type_extension*>(set.extension())
+                                  ->size());
+                auto cast = context_.cast_registry.resolve(set, target, components::casts::cast_type::implicit);
+                if (!cast.has_value()) {
+                    no_operator(probe, element);
+                    return;
+                }
+                splice_cast(context_.resource, comparison->right(), target, *cast);
+            }
+
             void resolve_compare(compare_expression_t* comparison, bool inside_aggregate) {
                 switch (comparison->type()) {
                     case compare_type::invalid:
@@ -311,20 +416,14 @@ namespace services::dispatcher::validation {
                     }
                     case compare_type::any:
                     case compare_type::all:
+                        resolve_quantified(comparison, inside_aggregate);
+                        return;
                     case compare_type::is_null:
                     case compare_type::is_not_null: {
-                        // Unary in shape: the right slot is a sentinel. ANY/ALL carry the element
-                        // match in inner_op(); a LIKE ANY matches each element with the same call
-                        // the scalar form uses, over strings whatever set they came from.
-                        const auto subject = slot(comparison->left(), inside_aggregate);
+                        // Unary in shape: the right slot is a sentinel.
+                        slot(comparison->left(), inside_aggregate);
                         if (error_.contains_error()) {
                             return;
-                        }
-                        if (comparison->inner_op() == compare_type::regex) {
-                            resolve_regex_uid(comparison, subject, complex_logical_type{logical_type::STRING_LITERAL});
-                            if (error_.contains_error()) {
-                                return;
-                            }
                         }
                         comparison->set_result_type(boolean_type);
                         return;
@@ -409,7 +508,7 @@ namespace services::dispatcher::validation {
                     fail(core::error_code_t::schema_error,
                          message(context_.resource,
                                  "type ",
-                                 describe_type(conversion->result_type()),
+                                 components::catalog::describe_type(conversion->result_type()),
                                  " is not supported"));
                     return;
                 }
@@ -420,9 +519,9 @@ namespace services::dispatcher::validation {
                     fail(core::error_code_t::invalid_parameter,
                          message(context_.resource,
                                  "no cast from ",
-                                 describe_type(source),
+                                 components::catalog::describe_type(source),
                                  " to ",
-                                 describe_type(conversion->result_type())));
+                                 components::catalog::describe_type(conversion->result_type())));
                     return;
                 }
                 conversion->set_cast(std::move(*resolved));
@@ -690,7 +789,7 @@ namespace services::dispatcher::validation {
                                  "operator ",
                                  to_string(scalar->type()),
                                  " is not defined for type ",
-                                 describe_type(operand)));
+                                 components::catalog::describe_type(operand)));
                     return;
                 }
                 scalar->set_result_type(resolved.op.result);
@@ -726,9 +825,9 @@ namespace services::dispatcher::validation {
                                  "operator ",
                                  to_string(scalar->type()),
                                  " is not defined for types ",
-                                 describe_type(left),
+                                 components::catalog::describe_type(left),
                                  " and ",
-                                 describe_type(right)));
+                                 components::catalog::describe_type(right)));
                     return;
                 }
                 scalar->set_result_type(resolved.op.result);
@@ -758,9 +857,9 @@ namespace services::dispatcher::validation {
                          message(context_.resource,
                                  what,
                                  " must be ",
-                                 describe_type(wanted),
+                                 components::catalog::describe_type(wanted),
                                  ", not ",
-                                 describe_type(actual)));
+                                 components::catalog::describe_type(actual)));
                     return false;
                 }
                 splice_cast(context_.resource, operand, wanted, *cast);

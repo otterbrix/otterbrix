@@ -38,9 +38,8 @@ namespace components::types {
     // Lift a nullable boolean — the one named seam between the engine's (value, validity)
     // representation and three-valued logic: NULL is UNKNOWN, a present value lifts its truth.
     // An ordinary function, so `value` is evaluated even when `is_null` is true: use it only
-    // where that read is defined regardless of nullness (e.g. a NULL logical_value_t's payload
-    // is a zeroed member); keep an explicit short-circuiting guard where the value read itself
-    // is only valid for non-NULL data (e.g. a vector slot whose row is invalid).
+    // where that read is defined regardless of nullness; keep an explicit short-circuiting guard where
+    // the value read itself is only valid for non-NULL data (e.g. a vector slot whose row is invalid).
     constexpr tri_bool_t tri_of(bool value, bool is_null) noexcept {
         return is_null ? tri_bool_t::unknown : tri_of(value);
     }

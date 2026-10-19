@@ -16,7 +16,7 @@
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/executor.hpp>
@@ -41,7 +41,7 @@
 using components::expressions::compare_type;
 using components::session::session_id_t;
 using components::table::TRANSACTION_ID_START;
-using components::types::logical_value_t;
+using components::vector::make_scalar;
 using services::index::index_agent_contract;
 using services::index::manager_index_t;
 using services::index::tests::index_fixture_path;
@@ -512,7 +512,7 @@ TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not 
         auto answer = ask<&index_agent_contract::read_rows>(agent,
                                                             session,
                                                             compare_type::gte,
-                                                            logical_value_t(&resource, int64_t{10}),
+                                                            make_scalar(&resource, int64_t{10}),
                                                             reader_txn);
         REQUIRE_FALSE(answer.has_error());
         auto rows = std::move(answer.value());

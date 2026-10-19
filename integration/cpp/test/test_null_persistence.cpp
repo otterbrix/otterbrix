@@ -39,13 +39,17 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and
             auto cur = exec("SELECT id FROM b.t WHERE v IS NULL;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+            auto cell0 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == 2);
         }
         {
             auto cur = exec("SELECT v FROM b.t ORDER BY id;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 3);
-            REQUIRE(cur->value(0, 1).is_null());
+            auto cell1 = cur->is_null(0, 1);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value());
         }
         REQUIRE(exec("CHECKPOINT;")->is_success());
     }
@@ -76,7 +80,9 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and
             INFO("the read-back cell itself must report null");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 3);
-            CHECK(cur->value(0, 1).is_null());
+            auto cell2 = cur->is_null(0, 1);
+            REQUIRE_FALSE(cell2.has_error());
+            CHECK(cell2.value());
         }
         {
             auto cur = exec("SELECT id FROM b.t WHERE s IS NULL;");
@@ -90,7 +96,9 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and
             INFO("COUNT(v) must skip the NULL row");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            CHECK(cur->value(0, 0).value<int64_t>() == 2);
+            auto cell3 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell3.has_error());
+            CHECK(cell3.value() == 2);
         }
     }
 }
@@ -130,31 +138,45 @@ TEST_CASE("integration::cpp::test_null_persistence::nested_nulls_survive_checkpo
             auto cur = exec("SELECT id FROM b.n WHERE l IS NULL;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+            auto cell4 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell4.has_error());
+            REQUIRE(cell4.value() == 2);
         }
         {
             auto cur = exec("SELECT l FROM b.n WHERE id = 3;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            auto v = cur->value(0, 0);
-            REQUIRE(v.children().size() == 3);
-            REQUIRE(v.children()[0].value<int64_t>() == 40);
-            REQUIRE(v.children()[1].is_null());
-            REQUIRE(v.children()[2].value<int64_t>() == 60);
+            auto cell15 = cur->list_size(0, 0);
+            REQUIRE_FALSE(cell15.has_error());
+            REQUIRE(cell15.value() == 3);
+            auto cell16 = cur->get<int64_t>(0, 0, {0});
+            REQUIRE_FALSE(cell16.has_error());
+            REQUIRE(cell16.value() == 40);
+            auto cell17 = cur->is_null(0, 0, {1});
+            REQUIRE_FALSE(cell17.has_error());
+            REQUIRE(cell17.value());
+            auto cell18 = cur->get<int64_t>(0, 0, {2});
+            REQUIRE_FALSE(cell18.has_error());
+            REQUIRE(cell18.value() == 60);
         }
         {
             auto cur = exec("SELECT arr FROM b.n WHERE id = 3;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            auto v = cur->value(0, 0);
-            REQUIRE(v.children().size() == 3);
-            REQUIRE(v.children()[1].is_null());
+            auto cell19 = cur->list_size(0, 0);
+            REQUIRE_FALSE(cell19.has_error());
+            REQUIRE(cell19.value() == 3);
+            auto cell20 = cur->is_null(0, 0, {1});
+            REQUIRE_FALSE(cell20.has_error());
+            REQUIRE(cell20.value());
         }
         {
             auto cur = exec("SELECT (p).b FROM b.n WHERE id = 3;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).is_null());
+            auto cell5 = cur->is_null(0, 0);
+            REQUIRE_FALSE(cell5.has_error());
+            REQUIRE(cell5.value());
         }
         REQUIRE(exec("CHECKPOINT;")->is_success());
     }
@@ -196,27 +218,39 @@ TEST_CASE("integration::cpp::test_null_persistence::nested_nulls_survive_checkpo
             INFO("the NULL LIST element must still be NULL after restart");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            auto v = cur->value(0, 0);
-            REQUIRE(v.children().size() == 3);
-            CHECK(v.children()[0].value<int64_t>() == 40);
-            CHECK(v.children()[1].is_null());
-            CHECK(v.children()[2].value<int64_t>() == 60);
+            auto cell21 = cur->list_size(0, 0);
+            REQUIRE_FALSE(cell21.has_error());
+            REQUIRE(cell21.value() == 3);
+            auto cell22 = cur->get<int64_t>(0, 0, {0});
+            REQUIRE_FALSE(cell22.has_error());
+            CHECK(cell22.value() == 40);
+            auto cell23 = cur->is_null(0, 0, {1});
+            REQUIRE_FALSE(cell23.has_error());
+            CHECK(cell23.value());
+            auto cell24 = cur->get<int64_t>(0, 0, {2});
+            REQUIRE_FALSE(cell24.has_error());
+            CHECK(cell24.value() == 60);
         }
         {
             auto cur = exec("SELECT arr FROM b.n WHERE id = 3;");
             INFO("the NULL ARRAY element must still be NULL after restart");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            auto v = cur->value(0, 0);
-            REQUIRE(v.children().size() == 3);
-            CHECK(v.children()[1].is_null());
+            auto cell25 = cur->list_size(0, 0);
+            REQUIRE_FALSE(cell25.has_error());
+            REQUIRE(cell25.value() == 3);
+            auto cell26 = cur->is_null(0, 0, {1});
+            REQUIRE_FALSE(cell26.has_error());
+            CHECK(cell26.value());
         }
         {
             auto cur = exec("SELECT (p).b FROM b.n WHERE id = 3;");
             INFO("the NULL STRUCT field must still be NULL after restart");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            CHECK(cur->value(0, 0).is_null());
+            auto cell6 = cur->is_null(0, 0);
+            REQUIRE_FALSE(cell6.has_error());
+            CHECK(cell6.value());
         }
         {
             // (p).b is NULL for id=2 (whole struct NULL) AND id=3 (field NULL).
@@ -271,7 +305,9 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_past_first_row
         {
             auto cur = exec("SELECT COUNT(*) FROM b.big WHERE v IS NULL;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->value(0, 0).value<int64_t>() == NULLS);
+            auto cell7 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell7.has_error());
+            REQUIRE(cell7.value() == NULLS);
         }
         REQUIRE(exec("CHECKPOINT;")->is_success());
     }
@@ -288,46 +324,60 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_past_first_row
         {
             auto cur = exec("SELECT COUNT(*) FROM b.big;");
             REQUIRE(cur->is_success());
-            REQUIRE(cur->value(0, 0).value<int64_t>() == ROWS);
+            auto cell8 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell8.has_error());
+            REQUIRE(cell8.value() == ROWS);
         }
         {
             auto cur = exec("SELECT COUNT(*) FROM b.big WHERE v IS NULL;");
             INFO("every 100th BIGINT must still be NULL, across all three row groups");
             REQUIRE(cur->is_success());
-            CHECK(cur->value(0, 0).value<int64_t>() == NULLS);
+            auto cell9 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell9.has_error());
+            CHECK(cell9.value() == NULLS);
         }
         {
             auto cur = exec("SELECT COUNT(*) FROM b.big WHERE s IS NULL;");
             INFO("every 100th STRING must still be NULL, across all three row groups");
             REQUIRE(cur->is_success());
-            CHECK(cur->value(0, 0).value<int64_t>() == NULLS);
+            auto cell10 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell10.has_error());
+            CHECK(cell10.value() == NULLS);
         }
         {
             // Rows past the second row-group boundary (id > 2048).
             auto cur = exec("SELECT COUNT(*) FROM b.big WHERE v IS NULL AND id > 2048;");
             INFO("NULLs past row 2048 (third row group) must survive");
             REQUIRE(cur->is_success());
-            CHECK(cur->value(0, 0).value<int64_t>() == (ROWS - 2100) / NULL_STEP + 1); // ids 2100..3000
+            auto cell11 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell11.has_error());
+            CHECK(cell11.value() == (ROWS - 2100) / NULL_STEP + 1); // ids 2100..3000
         }
         {
             auto cur = exec("SELECT v FROM b.big WHERE id = 2900;");
             INFO("a specific NULL cell in the third row group reads back as NULL");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            CHECK(cur->value(0, 0).is_null());
+            auto cell12 = cur->is_null(0, 0);
+            REQUIRE_FALSE(cell12.has_error());
+            CHECK(cell12.value());
         }
         {
             auto cur = exec("SELECT v FROM b.big WHERE id = 2901;");
             INFO("its non-NULL neighbour keeps its value");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            CHECK(cur->value(0, 0).value<int64_t>() == 5802);
+            auto cell13 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell13.has_error());
+            CHECK(cell13.value() == 5802);
         }
         {
             auto cur = exec("SELECT COUNT(v) FROM b.big;");
             INFO("COUNT(v) must skip every NULL in every row group");
             REQUIRE(cur->is_success());
-            CHECK(cur->value(0, 0).value<int64_t>() == ROWS - NULLS);
+            auto cell14 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell14.has_error());
+            CHECK(cell14.value() == ROWS - NULLS);
         }
     }
 }

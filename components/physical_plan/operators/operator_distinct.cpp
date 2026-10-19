@@ -54,8 +54,10 @@ namespace components::operators {
             retained_fill_ = 0;
         }
         auto& dst = retained_.back();
+        uint64_t at = row;
+        const vector::indexing_vector_t one_row(res, &at);
         for (size_t j = 0; j < chunk.column_count(); ++j) {
-            dst.set_value(j, retained_fill_, chunk.value(j, row));
+            vector::vector_ops::copy(chunk.data[j], dst.data[j], one_row, 1, 0, retained_fill_);
         }
         dst.set_cardinality(retained_fill_ + 1);
         seen_[hash].push_back(retained_row_ref_t{retained_.size() - 1, retained_fill_});
@@ -124,8 +126,10 @@ namespace components::operators {
                 if (filled == vector::DEFAULT_VECTOR_CAPACITY) {
                     flush();
                 }
+                uint64_t at = i;
+                const vector::indexing_vector_t one_row(res, &at);
                 for (size_t j = 0; j < chunk.column_count(); j++) {
-                    cur.set_value(j, filled, chunk.value(j, i));
+                    vector::vector_ops::copy(chunk.data[j], cur.data[j], one_row, 1, 0, filled);
                 }
                 ++filled;
             }

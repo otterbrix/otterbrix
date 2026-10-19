@@ -3,7 +3,6 @@
 #include "disk_hash_table.hpp"
 #include "index_types.hpp"
 
-#include <components/types/logical_value.hpp>
 #include <core/file/file_handle.hpp>
 #include <core/file/local_file_system.hpp>
 #include <core/result_wrapper.hpp>
@@ -35,10 +34,21 @@ namespace services::index {
     bitcask_file_interposer_t* dev_bitcask_file_interposer();
 #endif
 
+    // What a lookup meets in the store: the bytes for_each_key_bytes writes and the hash32 of the same key.
+    struct bitcask_key_t {
+        uint32_t hash;
+        std::pmr::string bytes;
+    };
+
+    // `key` is read at row 0; a NULL row comes back as the single NA byte. Not for an NA-typed vector, which
+    // has no encoding: use null_key().
+    [[nodiscard]] core::result_wrapper_t<bitcask_key_t>
+    key_of(std::pmr::memory_resource* resource, const components::vector::vector_t& key, uint32_t seed);
+    [[nodiscard]] bitcask_key_t null_key(std::pmr::memory_resource* resource, uint32_t seed);
+
     // No base class: backend questions resolve by concrete type, not virtual dispatch.
     class bitcask_index_disk_t final {
     public:
-        using value_t = components::types::logical_value_t;
         using path_t = std::filesystem::path;
         using result = std::pmr::vector<int64_t>;
 
@@ -76,21 +86,9 @@ namespace services::index {
         using entry_t = std::pair<std::pmr::string, int64_t>;
         using entries_t = std::pmr::vector<entry_t>;
 
-        void insert(const value_t& key, int64_t row_id);
-        void remove(const value_t& key);
-        void remove(const value_t& key, int64_t row_id);
-
         // Equality only — no scan_range; a range predicate is refused one level up in
         // bitcask_index_agent_t::read_rows. Refuses outright on a partial keydir walk, never a truncated set.
-        [[nodiscard]] core::error_t find(const value_t& value, result& res) const;
-
-        [[nodiscard]] core::result_wrapper_t<result> find(const value_t& value) const {
-            result res(resource_);
-            if (auto read_error = find(value, res); read_error.contains_error()) {
-                return read_error;
-            }
-            return res;
-        }
+        [[nodiscard]] core::error_t find(uint32_t key_hash, std::string_view key_bytes, result& res) const;
 
         [[nodiscard]] core::error_t find_not_null(result& res) const;
 
@@ -108,9 +106,8 @@ namespace services::index {
         // internal implementation, but they are used by the index agent
         [[nodiscard]] core::error_t apply_inserts(key_batch_t& values);
         [[nodiscard]] core::error_t apply_deletes(key_batch_t& values);
-        void insert_bulk_unchecked(const value_t& key, int64_t row_id);
-        void remove_bulk_unchecked(const value_t& key, int64_t row_id);
 
+        [[nodiscard]] uint32_t hash_seed() const noexcept { return hash_index_->hash_seed(); }
         [[nodiscard]] const disk_hash_table_t& hash_storage() const noexcept { return *hash_index_; }
         [[nodiscard]] disk_hash_table_t& hash_storage() noexcept { return *hash_index_; }
 
@@ -139,11 +136,6 @@ namespace services::index {
 
         using row_ids_t = std::pmr::vector<int64_t>;
 
-        struct owned_key_t {
-            uint32_t hash;
-            std::pmr::string bytes;
-        };
-        [[nodiscard]] owned_key_t encode_key(const value_t& key) const;
         [[nodiscard]] core::result_wrapper_t<uint32_t> hash_key_bytes(std::string_view key_bytes) const;
 
         [[nodiscard]] core::error_t initialize_storage();

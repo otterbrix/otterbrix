@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/vector/vector_builders.hpp>
 
 #include <components/casts/default_casts.hpp>
 #include <components/expressions/aggregate_expression.hpp>
@@ -305,10 +306,14 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
     auto params = make_parameter_node(res);
-    auto p_creg = params->add_parameter(int64_t(1));
-    auto p_sreg = params->add_parameter(int64_t(1));
-    auto p_mfgr1 = params->add_parameter(int64_t(1));
-    auto p_mfgr2 = params->add_parameter(int64_t(2));
+    auto p_creg = params->add_parameter(components::vector::make_scalar(res, int64_t(1)),
+                                        components::vector::parameter_kind::literal);
+    auto p_sreg = params->add_parameter(components::vector::make_scalar(res, int64_t(1)),
+                                        components::vector::parameter_kind::literal);
+    auto p_mfgr1 = params->add_parameter(components::vector::make_scalar(res, int64_t(1)),
+                                         components::vector::parameter_kind::literal);
+    auto p_mfgr2 = params->add_parameter(components::vector::make_scalar(res, int64_t(2)),
+                                         components::vector::parameter_kind::literal);
 
     auto s = make_ssb_leaves(res);
     auto source = cross_chain(res, s.from_order());
@@ -599,9 +604,12 @@ TEST_CASE("optimizer::promote_star::no_group_select_case_condition_remapped") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
     auto params = make_parameter_node(res);
-    auto p_hi = params->add_parameter(int64_t(1000));
-    auto p_then = params->add_parameter(int64_t(1));
-    auto p_else = params->add_parameter(int64_t(0));
+    auto p_hi = params->add_parameter(components::vector::make_scalar(res, int64_t(1000)),
+                                      components::vector::parameter_kind::literal);
+    auto p_then = params->add_parameter(components::vector::make_scalar(res, int64_t(1)),
+                                        components::vector::parameter_kind::literal);
+    auto p_else = params->add_parameter(components::vector::make_scalar(res, int64_t(0)),
+                                        components::vector::parameter_kind::literal);
 
     auto s = make_ssb_leaves(res);
     auto source = cross_chain(res, s.from_order());

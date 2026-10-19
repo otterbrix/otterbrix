@@ -2,7 +2,7 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/results/resolve_result.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/result_wrapper.hpp>
 

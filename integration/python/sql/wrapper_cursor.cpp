@@ -1,5 +1,5 @@
 #include "wrapper_cursor.hpp"
-#include <components/types/logical_value.hpp>
+#include <components/vector/vector.hpp>
 #include <util/util.hpp>
 
 // The bug related to the use of RTTI by the pybind11 library has been fixed: a
@@ -7,82 +7,111 @@
 PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
 
 namespace {
-    py::object from_value(const components::types::logical_value_t& value) {
+    using components::vector::vector_t;
+
+    core::result_wrapper_t<py::object> from_value(const vector_t& column, uint64_t row) {
         using namespace components::types;
 
-        if (value.is_null()) {
-            return py::none();
+        const auto element = column.resolve_nested_element(row, std::span<const size_t>{}, 0);
+        const auto& leaf = *element.leaf;
+        const auto index = element.index;
+        if (element.is_null || leaf.type().type() == logical_type::NA) {
+            return py::object(py::none());
         }
 
-        auto phys_type = value.type().to_physical_type();
-        switch (phys_type) {
+        switch (leaf.type().type()) {
+            case logical_type::UUID:
+            case logical_type::BLOB:
+            case logical_type::BIT:
+                return core::error_t{core::error_code_t::other_error,
+                                     std::pmr::string{"Unimplemented type for value access", leaf.resource()}};
+            default:
+                break;
+        }
+
+        switch (leaf.type().to_physical_type()) {
             case physical_type::BOOL:
-                return py::bool_(value.value<bool>());
+                return py::object(py::bool_(leaf.data<bool>()[index]));
             case physical_type::INT8:
-                return py::int_(value.value<int8_t>());
+                return py::object(py::int_(leaf.data<int8_t>()[index]));
             case physical_type::INT16:
-                return py::int_(value.value<int16_t>());
+                return py::object(py::int_(leaf.data<int16_t>()[index]));
             case physical_type::INT32:
-                return py::int_(value.value<int32_t>());
+                return py::object(py::int_(leaf.data<int32_t>()[index]));
             case physical_type::INT64:
-                return py::int_(value.value<int64_t>());
+                return py::object(py::int_(leaf.data<int64_t>()[index]));
             case physical_type::UINT8:
-                return py::int_(value.value<uint8_t>());
+                return py::object(py::int_(leaf.data<uint8_t>()[index]));
             case physical_type::UINT16:
-                return py::int_(value.value<uint16_t>());
+                return py::object(py::int_(leaf.data<uint16_t>()[index]));
             case physical_type::UINT32:
-                return py::int_(value.value<uint32_t>());
+                return py::object(py::int_(leaf.data<uint32_t>()[index]));
             case physical_type::UINT64:
-                return py::int_(value.value<uint64_t>());
+                return py::object(py::int_(leaf.data<uint64_t>()[index]));
             case physical_type::FLOAT:
-                return py::float_(value.value<float>());
+                return py::object(py::float_(leaf.data<float>()[index]));
             case physical_type::DOUBLE:
-                return py::float_(value.value<double>());
+                return py::object(py::float_(leaf.data<double>()[index]));
             case physical_type::STRING:
-                return py::str(std::string(value.value<std::string_view>()));
+                return py::object(py::str(std::string(leaf.data<std::string_view>()[index])));
             case physical_type::LIST: {
+                const auto entry = leaf.data<list_entry_t>()[index];
                 py::list result;
-                for (const auto& child : value.children()) {
-                    result.append(from_value(child));
+                for (uint64_t i = entry.offset; i < entry.offset + entry.length; ++i) {
+                    VALUE_OR_RETURN(auto child, from_value(leaf.entry(), i));
+                    result.append(child);
                 }
-                return result;
+                return py::object(std::move(result));
             }
             case physical_type::STRUCT: {
                 py::dict result;
-                const auto& children = value.children();
-                const auto& child_types = value.type().child_types();
+                const auto& children = leaf.entries();
+                const auto& child_types = leaf.type().child_types();
                 for (size_t i = 0; i < children.size() && i < child_types.size(); ++i) {
-                    result[py::str(child_types[i].alias())] = from_value(children[i]);
+                    VALUE_OR_RETURN(auto child, from_value(*children[i], index));
+                    result[py::str(child_types[i].alias())] = child;
                 }
-                return result;
+                return py::object(std::move(result));
             }
             default:
-                return py::none();
+                return py::object(py::none());
         }
     }
 
-    // Take the cursor (not a single chunk): value() spans the result batch, so rows
+    py::object cell_value(const vector_t& column, uint64_t row) {
+        auto result = from_value(column, row);
+        if (result.has_error()) {
+            throw std::runtime_error(std::string(result.error().what));
+        }
+        return std::move(result.value());
+    }
+
+    // Take the cursor (not a single chunk): the row is global over the result batch, so rows
     // beyond the first chunk are addressed correctly.
     py::tuple row_to_tuple(const components::cursor::cursor_t& cursor, uint64_t row_idx) {
+        const auto location = otterbrix::util::locate_row(cursor, row_idx);
+        const auto& columns = cursor.chunks()[location.chunk].data;
         const auto cols = cursor.column_count();
         py::tuple result(cols);
         for (uint64_t col = 0; col < cols; ++col) {
-            result[col] = from_value(cursor.value(col, row_idx));
+            result[col] = cell_value(columns[col], location.row);
         }
         return result;
     }
 
     py::dict row_to_dict(const components::cursor::cursor_t& cursor, uint64_t row_idx) {
+        const auto location = otterbrix::util::locate_row(cursor, row_idx);
+        const auto& columns = cursor.chunks()[location.chunk].data;
         py::dict result;
         const auto& types = cursor.type_data();
         for (uint64_t col = 0; col < cursor.column_count(); ++col) {
-            auto value = cursor.value(col, row_idx);
+            auto value = cell_value(columns[col], location.row);
             if (col < types.size()) {
                 auto col_name = types[col].alias();
                 if (!col_name.empty()) {
-                    result[py::str(col_name)] = from_value(value);
+                    result[py::str(col_name)] = value;
                 } else {
-                    result[py::int_(col)] = from_value(value);
+                    result[py::int_(col)] = value;
                 }
             }
         }
@@ -198,7 +227,8 @@ py::object wrapper_cursor::get_(const std::string& key) const {
     const auto& types = ptr_->type_data();
     for (uint64_t col = 0; col < ptr_->column_count(); ++col) {
         if (col < types.size() && types[col].alias() == key) {
-            return from_value(ptr_->value(col, static_cast<uint64_t>(row)));
+            const auto location = otterbrix::util::locate_row(*ptr_, static_cast<uint64_t>(row));
+            return cell_value(ptr_->chunks()[location.chunk].data[col], location.row);
         }
     }
     return py::none();

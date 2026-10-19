@@ -32,8 +32,9 @@ namespace {
     std::string plan_text(const cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            auto v = cur->value(0, r);
-            out += std::string(v.value<std::string_view>());
+            auto cell0 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            out += std::string(cell0.value());
             out += '\n';
         }
         return out;

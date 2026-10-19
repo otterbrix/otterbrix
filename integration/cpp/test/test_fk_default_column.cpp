@@ -32,7 +32,9 @@ namespace {
         auto cur = exec(sql);                                                                                          \
         REQUIRE(cur->is_success());                                                                                    \
         REQUIRE(cur->size() == 1);                                                                                     \
-        return cur->value(0, 0).value<std::uint64_t>();                                                                \
+        auto answer = cur->get<std::uint64_t>(0, 0);                                                                   \
+        REQUIRE_FALSE(answer.has_error());                                                                             \
+        return answer.value();                                                                                         \
     };                                                                                                                 \
     REQUIRE(exec("CREATE DATABASE f;")->is_success());                                                                 \
     REQUIRE(exec("CREATE TABLE f.parent (id bigint, val text);")->is_success());                                       \

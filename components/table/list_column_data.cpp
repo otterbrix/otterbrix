@@ -198,10 +198,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool>
-    list_column_data_t::append(column_append_state& state,
-                               vector::vector_t& vector,
-                               uint64_t offset,
-                               uint64_t count) {
+    list_column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t offset, uint64_t count) {
         assert(count > 0);
         vector::unified_vector_format list_data(vector.resource(), offset + count);
         vector.to_unified_format(offset + count, list_data);
@@ -296,75 +293,12 @@ namespace components::table {
     uint64_t list_column_data_t::fetch(column_scan_state& state, int64_t, vector::vector_t&) {
         // Point fetch of a whole LIST cell is not implemented (base column_data_t::fetch would
         // scan this node's own segments -- cumulative ELEMENT OFFSETS -- into a LIST-typed
-        // result). Unreachable in practice: whole-list reads go through scan_count, and the
-        // in-place LIST update builds its pre-image per element in gather_child_update. Refusal
+        // result). Unreachable in practice: whole-list reads go through scan_count. Refusal
         // rides state.scan_error rather than throwing.
         state.scan_error =
             core::error_t(core::error_code_t::unimplemented_yet,
                           std::pmr::string("point fetch of a whole LIST cell is not implemented", resource_));
         return 0;
-    }
-
-    core::result_wrapper_t<std::pmr::vector<int64_t>>
-    list_column_data_t::gather_child_update(vector::vector_t& update_vector,
-                                            int64_t* row_ids,
-                                            uint64_t update_count,
-                                            vector::vector_t& child_update_out) {
-        update_vector.flatten(update_count);
-        const auto* update_entries = update_vector.data<types::list_entry_t>();
-        auto& update_validity = update_vector.validity();
-
-        std::pmr::vector<int64_t> child_ids(resource_);
-        uint64_t total = 0;
-        for (uint64_t r = 0; r < update_count; ++r) {
-            const auto row_id = row_ids[r];
-            uint64_t start_offset = 0;
-            if (row_id != start_) {
-                auto so = fetch_list_offset(row_id - 1);
-                if (so.has_error()) {
-                    return so.convert_error<std::pmr::vector<int64_t>>();
-                }
-                start_offset = so.value();
-            }
-            auto eo = fetch_list_offset(row_id);
-            if (eo.has_error()) {
-                return eo.convert_error<std::pmr::vector<int64_t>>();
-            }
-            const auto stored_length = eo.value() - start_offset;
-            const auto new_length = update_validity.row_is_valid(r) ? update_entries[r].length : 0;
-            if (new_length != stored_length) {
-                // In-place update writes each element over the one the row already owns, so it
-                // cannot move neighbours to make room. A length change is a real statement-level
-                // refusal (this path is WAL replay, so the length comes from a journal on disk).
-                return core::error_t(
-                    core::error_code_t::unimplemented_yet,
-                    std::pmr::string("in-place LIST update cannot change a row's list length", resource_));
-            }
-            total += stored_length;
-        }
-
-        child_ids.reserve(total);
-        child_update_out = vector::vector_t(resource_, type_.child_type(), total == 0 ? 1 : total);
-        auto& update_child = update_vector.entry();
-        uint64_t k = 0;
-        for (uint64_t r = 0; r < update_count; ++r) {
-            const auto row_id = row_ids[r];
-            uint64_t start_offset = 0;
-            if (row_id != start_) {
-                auto so = fetch_list_offset(row_id - 1);
-                if (so.has_error()) {
-                    return so.convert_error<std::pmr::vector<int64_t>>();
-                }
-                start_offset = so.value();
-            }
-            const auto length = update_entries[r].length;
-            for (uint64_t j = 0; j < length; ++j) {
-                child_update_out.set_value(k, update_child.value(update_entries[r].offset + j));
-                child_ids.push_back(start_ + static_cast<int64_t>(start_offset + j));
-                ++k;
-            }
-        }
-        return child_ids;
     }
 
     void list_column_data_t::fetch_row(column_fetch_state& state,

@@ -8,7 +8,7 @@
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/pmr.hpp>
 #include <core/regex/like_to_regex.hpp>
 
@@ -16,6 +16,101 @@ using namespace components::expressions;
 
 namespace components::sql::transform {
     namespace {
+        [[nodiscard]] bool is_row_comparison(compare_type type, const A_Expr* node) {
+            switch (type) {
+                case compare_type::eq:
+                case compare_type::ne:
+                case compare_type::lt:
+                case compare_type::lte:
+                case compare_type::gt:
+                case compare_type::gte:
+                    return node->lexpr && node->rexpr && nodeTag(node->lexpr) == T_RowExpr &&
+                           nodeTag(node->rexpr) == T_RowExpr;
+                default:
+                    return false;
+            }
+        }
+
+        // ROW(..) op ROW(..) is rewritten pairwise as PostgreSQL does (parse_expr.c make_row_comparison_op):
+        // `=` is the AND and `<>` the OR of the pairwise operators; an ordering operator is the chain
+        // `a1 < b1 OR (a1 = b1 AND a2 < b2) OR ...` whose last link keeps the operator itself. Under
+        // three-valued logic that chain is NULL at the first NULL pair that no earlier pair settled,
+        // which is EEOP_ROWCOMPARE_STEP (execExprInterp.c).
+        template<typename Operand>
+        core::result_wrapper_t<compare_expression_ptr> lower_row_comparison(std::pmr::memory_resource* resource,
+                                                                            compare_type type,
+                                                                            const A_Expr* node,
+                                                                            Operand&& operand) {
+            const auto& left = pg_ptr_cast<RowExpr>(node->lexpr)->args->lst;
+            const auto& right = pg_ptr_cast<RowExpr>(node->rexpr)->args->lst;
+            if (left.size() != right.size()) {
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"unequal number of entries in row expressions", resource});
+            }
+            if (left.empty()) {
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"cannot compare rows of zero length", resource});
+            }
+            std::pmr::vector<param_storage> lefts(resource);
+            std::pmr::vector<param_storage> rights(resource);
+            for (auto l = left.begin(), r = right.begin(); l != left.end(); ++l, ++r) {
+                VALUE_OR_RETURN(auto lhs, operand(pg_ptr_cast<Node>(l->data)));
+                VALUE_OR_RETURN(auto rhs, operand(pg_ptr_cast<Node>(r->data)));
+                lefts.push_back(std::move(lhs));
+                rights.push_back(std::move(rhs));
+            }
+            // Later passes rewrite expression nodes in place, so a node serves one comparison only: the first
+            // use takes the original, every further use a deep copy.
+            std::pmr::vector<bool> taken(lefts.size(), false, resource);
+            const auto operand_copy = [&](const param_storage& param, bool again) -> param_storage {
+                if (!again) {
+                    return param;
+                }
+                if (const auto* nested = std::get_if<expression_ptr>(&param)) {
+                    return param_storage{clone_expression(resource, *nested)};
+                }
+                return param;
+            };
+            const auto pair = [&](compare_type pair_type, size_t i) {
+                const bool again = taken[i];
+                taken[i] = true;
+                return make_compare_expression(resource,
+                                               pair_type,
+                                               operand_copy(lefts[i], again),
+                                               operand_copy(rights[i], again));
+            };
+            const auto union_of = [&](compare_type union_type) {
+                return make_compare_union_expression(resource, union_type);
+            };
+            if (lefts.size() == 1) {
+                return pair(type, 0);
+            }
+            if (type == compare_type::eq || type == compare_type::ne) {
+                auto joined = union_of(type == compare_type::eq ? compare_type::union_and : compare_type::union_or);
+                for (size_t i = 0; i < lefts.size(); i++) {
+                    joined->append_child(pair(type, i));
+                }
+                return joined;
+            }
+            const auto strict =
+                (type == compare_type::lt || type == compare_type::lte) ? compare_type::lt : compare_type::gt;
+            auto chain = union_of(compare_type::union_or);
+            for (size_t k = 0; k < lefts.size(); k++) {
+                const auto link = k + 1 == lefts.size() ? type : strict;
+                if (k == 0) {
+                    chain->append_child(pair(link, 0));
+                    continue;
+                }
+                auto term = union_of(compare_type::union_and);
+                for (size_t j = 0; j < k; j++) {
+                    term->append_child(pair(compare_type::eq, j));
+                }
+                term->append_child(pair(link, k));
+                chain->append_child(term);
+            }
+            return chain;
+        }
+
         // Matches qualifier and DISTINCT flag too: ignoring either would bind `HAVING d.count(x)` or
         // `HAVING count(DISTINCT x)` to a plain count(x).
         const expressions::expression_i* find_call(const expressions::expression_i* expr,
@@ -126,6 +221,26 @@ namespace components::sql::transform {
                     return compare_type::invalid;
             }
         }
+
+        // The comparison an ANY / ALL quantifies; a match carries regexp_like's flags as well
+        struct quantified_op_t {
+            compare_type op;
+            std::string flags;
+        };
+
+        quantified_op_t quantified_op(std::string_view op_str) {
+            if (op_str == "~~" || op_str == "~~*" || op_str == "!~~" || op_str == "!~~*") {
+                std::string flags{"l"};
+                if (op_str == "~~*" || op_str == "!~~*") {
+                    flags += 'i';
+                }
+                if (op_str == "!~~" || op_str == "!~~*") {
+                    flags += 'n';
+                }
+                return {compare_type::regex, std::move(flags)};
+            }
+            return {get_compare_type(op_str), {}};
+        }
     } // namespace
 
     core::result_wrapper_t<expression_ptr>
@@ -202,7 +317,7 @@ namespace components::sql::transform {
             return operand;
         }
         const auto& produced = expressions::as_expr(operand);
-        const auto& parameters = context.plan->parameters->parameters().parameters;
+        const auto& parameters = context.plan->parameters->parameters();
         for (size_t index = 0; index < context.group_keys->size(); index++) {
             const auto& key = (*context.group_keys)[index];
             if (!expressions::same_computation(produced, key, parameters)) {
@@ -337,7 +452,7 @@ namespace components::sql::transform {
                 if (nodeTag(cast->arg) == T_A_Const) {
                     VALUE_OR_RETURN(auto value, get_value(resource_, node));
                     const bool converts = value.type() != target_type;
-                    param_storage bound{params->add_parameter(std::move(value))};
+                    param_storage bound{params->add_parameter(std::move(value), vector::parameter_kind::literal)};
                     if (!converts) {
                         return bound;
                     }
@@ -386,6 +501,11 @@ namespace components::sql::transform {
                     }
                     if (auto compare_op = get_compare_type(sub_op);
                         compare_op != compare_type::invalid && compare_op != compare_type::regex && sub->lexpr) {
+                        if (is_row_comparison(compare_op, sub)) {
+                            VALUE_OR_RETURN(auto rewritten, lower_row_comparison(resource_, compare_op, sub, recurse));
+                            rewritten->set_key(expressions::key_t{resource_, std::string{sub_op}});
+                            return param_storage{expression_ptr{rewritten}};
+                        }
                         VALUE_OR_RETURN(auto lhs, recurse(sub->lexpr));
                         VALUE_OR_RETURN(auto rhs, recurse(sub->rexpr));
                         auto compare = make_compare_expression(resource_, compare_op, lhs, rhs);
@@ -474,8 +594,9 @@ namespace components::sql::transform {
             }
             case T_SubLink: {
                 auto* sub = pg_ptr_cast<SubLink>(node);
-                auto param_id =
-                    context.plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                auto param_id = context.plan->parameters->add_parameter(
+                    vector::make_null(resource_, sub_query_placeholder(sub->subLinkType)),
+                    vector::parameter_kind::execution);
                 auto transform_inner = [&]() {
                     auto prev_pending = std::move(pending_internal_aggs_);
                     pending_internal_aggs_.clear();
@@ -513,10 +634,8 @@ namespace components::sql::transform {
                         if (inner.has_error()) {
                             return inner.error();
                         }
-                        context.plan->sub_query_results.push_back({&vector::compact_to_array_value,
-                                                                   param_id,
-                                                                   /*boolean_required=*/false,
-                                                                   /*array_equality=*/true});
+                        context.plan->sub_query_results.push_back(
+                            {&vector::compact_to_list_value, param_id, /*boolean_required=*/false, /*ordered=*/true});
                         context.plan->sub_queries.emplace_back(std::move(inner.value()));
                         if (context.array_operand) {
                             *context.array_operand = true;
@@ -581,7 +700,8 @@ namespace components::sql::transform {
             VALUE_OR_RETURN(auto rhs, resolve_select_operand(node->rexpr, names, plan, group));
             expr->append_param(std::move(rhs));
         } else if (op_str == "+") {
-            auto zero_id = plan->parameters->add_parameter(types::logical_value_t(resource_, int64_t(0)));
+            auto zero_id = plan->parameters->add_parameter(vector::make_scalar(resource_, int64_t(0)),
+                                                           vector::parameter_kind::literal);
             expr = make_scalar_expression(resource_,
                                           scalar_type::add,
                                           expressions::key_t{resource_, std::move(expr_name)});
@@ -677,7 +797,8 @@ namespace components::sql::transform {
             return it->second;
         }
         auto param_id = lateral_plan_->parameters->add_parameter(
-            types::logical_value_t{resource_, types::complex_logical_type{types::logical_type::NA}});
+            vector::make_null(resource_, types::complex_logical_type{types::logical_type::NA}),
+            vector::parameter_kind::execution);
         lateral_join_->add_correlation(param_id, outer_col.field);
         lateral_correlation_map_.emplace(dedup_key, param_id);
         return param_id;
@@ -701,14 +822,15 @@ namespace components::sql::transform {
                 return it->second;
             } else {
                 auto id = params->add_parameter(
-                    types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
+                    vector::make_null(resource_, types::complex_logical_type{types::logical_type::NA}),
+                    vector::parameter_kind::external);
                 parameter_map_.emplace(ref->number, id);
                 return id;
             }
         }
 
         VALUE_OR_RETURN(auto res, get_value(resource_, node));
-        return params->add_parameter(std::move(res));
+        return params->add_parameter(std::move(res), vector::parameter_kind::literal);
     }
 
     core::result_wrapper_t<expression_ptr>
@@ -793,7 +915,7 @@ namespace components::sql::transform {
                                              std::pmr::string{"LIKE: left side must be a column reference", resource_});
                     }
                     VALUE_OR_RETURN(auto raw_val, get_value(resource_, node->rexpr));
-                    if (raw_val.is_null()) {
+                    if (raw_val.is_null(0)) {
                         // Must not be wrapped in union_not, or match-nothing becomes match-everything.
                         return make_compare_expression(resource_, compare_type::all_false);
                     }
@@ -801,8 +923,8 @@ namespace components::sql::transform {
                         return core::error_t(core::error_code_t::sql_parse_error,
                                              std::pmr::string{"LIKE: right side must be a string", resource_});
                     }
-                    auto pattern = std::string(raw_val.value<std::string_view>());
-                    auto param_id = plan->parameters->add_parameter(types::logical_value_t(resource_, pattern));
+                    auto param_id =
+                        plan->parameters->add_parameter(std::move(raw_val), vector::parameter_kind::literal);
                     const bool icase = (op_str == "~~*" || op_str == "!~~*");
                     const bool negate = (op_str == "!~~" || op_str == "!~~*");
 
@@ -817,7 +939,8 @@ namespace components::sql::transform {
                     std::pmr::vector<expressions::param_storage> args{resource_};
                     args.emplace_back(key_left.field);
                     args.emplace_back(param_id);
-                    args.emplace_back(plan->parameters->add_parameter(types::logical_value_t(resource_, flags)));
+                    args.emplace_back(plan->parameters->add_parameter(vector::make_scalar(resource_, flags),
+                                                                      vector::parameter_kind::literal));
                     return make_function_expression(resource_,
                                                     function_qualified_name_t{core::function_name_t{"regexp_like"}},
                                                     std::move(args));
@@ -840,6 +963,10 @@ namespace components::sql::transform {
                 operand_context.array_operand = &array_operand;
                 auto get_arg = [&](Node* operand) { return transform_expression(operand, operand_context); };
 
+                if (is_row_comparison(comp_type, node)) {
+                    VALUE_OR_RETURN(auto rewritten, lower_row_comparison(resource_, comp_type, node, get_arg));
+                    return rewritten;
+                }
                 VALUE_OR_RETURN(auto left, get_arg(node->lexpr));
                 VALUE_OR_RETURN(auto right, get_arg(node->rexpr));
                 auto cmp = make_compare_expression(resource_, comp_type, left, right);
@@ -890,6 +1017,31 @@ namespace components::sql::transform {
                 }
                 auto expr = make_compare_union_expression(resource_, compare_type::union_not);
                 expr->append_child(right);
+                return expr;
+            }
+            case AEXPR_OP_ANY:
+            case AEXPR_OP_ALL: {
+                auto op_str = std::string_view(strVal(node->name->lst.back().data));
+                auto inner = quantified_op(op_str);
+                if (inner.op == compare_type::invalid) {
+                    return core::error_t(core::error_code_t::unimplemented_yet,
+                                         std::pmr::string{"operator " + std::string(op_str) +
+                                                              " is not supported with ANY / ALL over an array",
+                                                          resource_});
+                }
+                expression_context_t operand_context{names, plan};
+                operand_context.cast_annotates_key = true;
+                VALUE_OR_RETURN(auto probe, transform_expression(node->lexpr, operand_context));
+                VALUE_OR_RETURN(auto set, transform_expression(node->rexpr, operand_context));
+                auto expr = make_compare_expression(resource_,
+                                                    node->kind == AEXPR_OP_ANY ? compare_type::any : compare_type::all,
+                                                    probe,
+                                                    set);
+                expr->set_inner_op(inner.op);
+                if (inner.op == compare_type::regex) {
+                    expr->set_regex_flags(plan->parameters->add_parameter(vector::make_scalar(resource_, inner.flags),
+                                                                          vector::parameter_kind::literal));
+                }
                 return expr;
             }
             case AEXPR_IN: {
@@ -968,9 +1120,11 @@ namespace components::sql::transform {
                                                                                logical_plan::execution_plan_t* plan) {
         switch (node->subLinkType) {
             case EXISTS_SUBLINK: {
-                auto param_id1 = plan->parameters->add_parameter(types::logical_value_t{resource_, true});
+                auto param_id1 = plan->parameters->add_parameter(vector::make_scalar(resource_, true),
+                                                                 vector::parameter_kind::literal);
                 auto param_id2 =
-                    plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                    plan->parameters->add_parameter(vector::make_null(resource_, sub_query_placeholder(EXISTS_SUBLINK)),
+                                                    vector::parameter_kind::execution);
                 // Transform before appending so nested sub_queries come first; save/restore the pending-
                 // aggregate stash so the inner epilogue doesn't steal this level's own.
                 auto prev_pending = std::move(pending_internal_aggs_);
@@ -998,25 +1152,15 @@ namespace components::sql::transform {
                 VALUE_OR_RETURN(auto key, node_to_field(resource_, node->testexpr, names));
                 auto op_str = std::string_view(strVal(node->operName->lst.back().data));
                 // An unmapped operator is rejected here, never silently treated as `=`.
-                compare_type inner_op;
-                bool re_like = false;
-                bool re_icase = false;
-                bool re_negate = false;
-                if (op_str == "~~" || op_str == "~~*" || op_str == "!~~" || op_str == "!~~*") {
-                    inner_op = compare_type::regex;
-                    re_like = true;
-                    re_icase = (op_str == "~~*" || op_str == "!~~*");
-                    re_negate = (op_str == "!~~" || op_str == "!~~*");
-                } else {
-                    inner_op = get_compare_type(op_str);
-                    if (inner_op == compare_type::invalid) {
-                        return core::error_t(
-                            core::error_code_t::sql_parse_error,
-                            std::pmr::string{"unsupported operator in ANY/ALL subquery comparison", resource_});
-                    }
+                auto inner = quantified_op(op_str);
+                if (inner.op == compare_type::invalid) {
+                    return core::error_t(
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"unsupported operator in ANY/ALL subquery comparison", resource_});
                 }
                 auto param_id =
-                    plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                    plan->parameters->add_parameter(vector::make_null(resource_, sub_query_placeholder(ANY_SUBLINK)),
+                                                    vector::parameter_kind::execution);
                 auto prev_pending = std::move(pending_internal_aggs_);
                 pending_internal_aggs_.clear();
                 auto sub_node = transform(*node->subselect, plan);
@@ -1024,31 +1168,24 @@ namespace components::sql::transform {
                 if (sub_node.has_error()) {
                     return sub_node.error();
                 }
-                plan->sub_query_results.push_back({&vector::compact_to_array_value, param_id});
+                plan->sub_query_results.push_back({&vector::compact_to_list_value, param_id});
                 plan->sub_queries.emplace_back(std::move(sub_node.value()));
                 auto ctype = node->subLinkType == ANY_SUBLINK ? compare_type::any : compare_type::all;
                 auto expr = make_compare_expression(resource_, ctype, key.field, param_id);
-                expr->set_inner_op(inner_op);
-                if (inner_op == compare_type::regex) {
-                    std::string flags;
-                    if (re_like) {
-                        flags += 'l';
-                    }
-                    if (re_icase) {
-                        flags += 'i';
-                    }
-                    if (re_negate) {
-                        flags += 'n';
-                    }
-                    expr->set_regex_flags(plan->parameters->add_parameter(types::logical_value_t(resource_, flags)));
+                expr->set_inner_op(inner.op);
+                if (inner.op == compare_type::regex) {
+                    expr->set_regex_flags(plan->parameters->add_parameter(vector::make_scalar(resource_, inner.flags),
+                                                                          vector::parameter_kind::literal));
                 }
                 return expr;
             }
             case EXPR_SUBLINK: {
                 // PostgreSQL allows this bare `WHERE (SELECT flag ...)`; >1 row errors, as PostgreSQL does.
-                auto param_true = plan->parameters->add_parameter(types::logical_value_t{resource_, true});
+                auto param_true = plan->parameters->add_parameter(vector::make_scalar(resource_, true),
+                                                                  vector::parameter_kind::literal);
                 auto param_result =
-                    plan->parameters->add_parameter(types::logical_value_t{resource_, types::logical_type::NA});
+                    plan->parameters->add_parameter(vector::make_null(resource_, sub_query_placeholder(EXPR_SUBLINK)),
+                                                    vector::parameter_kind::execution);
                 auto prev_pending = std::move(pending_internal_aggs_);
                 pending_internal_aggs_.clear();
                 auto sub_node = transform(*node->subselect, plan);
@@ -1318,7 +1455,8 @@ namespace components::sql::transform {
             // A key naming no column is legally absent (yields false), not a hard error.
             key.set_absent_ok(true);
             auto dummy = params->add_parameter(
-                types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
+                vector::make_null(resource_, types::complex_logical_type{types::logical_type::NA}),
+                vector::parameter_kind::literal);
             return make_compare_expression(params->parameters().resource(), compare_type::is_not_null, key, dummy);
         };
         if (keys.size() == 1) {
@@ -1360,8 +1498,9 @@ namespace components::sql::transform {
             for (const auto& arg : func_call->args->lst) {
                 if (nodeTag(arg.data) == T_ColumnRef) {
                     VALUE_OR_RETURN(auto key, columnref_to_field(resource_, pg_ptr_cast<ColumnRef>(arg.data), names));
-                    auto param_id =
-                        plan->parameters->add_parameter(types::logical_value_t{resource_, static_cast<int64_t>(0)});
+                    auto param_id = plan->parameters->add_parameter(
+                        vector::make_null(resource_, types::complex_logical_type{types::logical_type::NA}),
+                        vector::parameter_kind::execution);
                     node_join->add_correlation(param_id, key.field);
                     node_join->set_lateral(true);
                     args.emplace_back(param_id);
@@ -1471,7 +1610,8 @@ namespace components::sql::transform {
 
         if (args.empty()) {
             // count(*) counts the rows where p by counting the non-NULL results of CASE WHEN p THEN 1 END.
-            auto one = plan->parameters->add_parameter(static_cast<int64_t>(1));
+            auto one = plan->parameters->add_parameter(vector::make_scalar(resource_, int64_t(1)),
+                                                       vector::parameter_kind::literal);
             VALUE_OR_RETURN(auto wrapped, wrap(one));
             std::pmr::vector<param_storage> filtered(resource_);
             filtered.emplace_back(std::move(wrapped));
@@ -1549,8 +1689,9 @@ namespace components::sql::transform {
         auto* params = context.plan->parameters.get();
         auto cmp = node->nulltesttype == IS_NULL ? compare_type::is_null : compare_type::is_not_null;
         // is_null/is_not_null don't need a value, use a dummy parameter
-        auto param_id = params->add_parameter(
-            types::logical_value_t(resource_, types::complex_logical_type{types::logical_type::NA}));
+        auto param_id =
+            params->add_parameter(vector::make_null(resource_, types::complex_logical_type{types::logical_type::NA}),
+                                  vector::parameter_kind::literal);
 
         if (nodeTag(node->arg) == T_ColumnRef || nodeTag(node->arg) == T_A_Indirection) {
             VALUE_OR_RETURN(auto key, node_to_field(resource_, pg_ptr_cast<Node>(node->arg), context.names));

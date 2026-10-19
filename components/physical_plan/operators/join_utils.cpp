@@ -5,8 +5,6 @@
 
 namespace components::operators::join_detail {
 
-    bool is_placeholder(const vector::vector_t& v) noexcept { return v.data() == nullptr && v.auxiliary() == nullptr; }
-
     vector::vector_t broadcast_row(std::pmr::memory_resource* resource, const vector::vector_t& source, uint64_t row) {
         vector::vector_t value(resource, source.type(), 1);
         // copy's third argument is the END index in the source, not a length
@@ -81,34 +79,14 @@ namespace components::operators::join_detail {
         }
     }
 
-    void compute_active_indices(const vector::data_chunk_t& left_front,
-                                const vector::data_chunk_t& right_front,
-                                const std::vector<size_t>& indices_left,
-                                const std::vector<size_t>& indices_right,
-                                std::vector<size_t>* active_indices) {
-        active_indices->clear();
-        for (size_t column = 0; column < left_front.column_count(); ++column) {
-            if (!is_placeholder(left_front.data[column])) {
-                active_indices->push_back(indices_left[column]);
-            }
-        }
-        for (size_t column = 0; column < right_front.column_count(); ++column) {
-            if (!is_placeholder(right_front.data[column])) {
-                active_indices->push_back(indices_right[column]);
-            }
-        }
-    }
-
     join_builder::join_builder(std::pmr::memory_resource* resource,
                                const std::pmr::vector<types::complex_logical_type>& out_types,
                                const std::vector<size_t>& indices_left,
-                               const std::vector<size_t>& indices_right,
-                               const std::vector<size_t>& active_indices)
+                               const std::vector<size_t>& indices_right)
         : resource_(resource)
         , out_types_(out_types)
         , indices_left_(indices_left)
         , indices_right_(indices_right)
-        , active_indices_(active_indices)
         , pending_(resource)
         , buf_left_rows_(resource)
         , buf_right_chunks_(resource)
@@ -118,7 +96,6 @@ namespace components::operators::join_detail {
         , group_start_(resource)
         , order_(resource)
         , cursor_(resource)
-        , slot_live_(resource)
         , indexing_(resource, uint64_t{vector::DEFAULT_VECTOR_CAPACITY}) {}
 
     void
@@ -181,7 +158,6 @@ namespace components::operators::join_detail {
         buf_left_rows_.clear();
         buf_right_chunks_.clear();
         buf_right_rows_.clear();
-        slots_ready_ = false;
     }
 
     // Bounds the index buffers. Mid-batch, so the sources are still alive.
@@ -191,23 +167,11 @@ namespace components::operators::join_detail {
         }
     }
 
-    void join_builder::ensure_slots_() {
-        if (slots_ready_) {
-            return;
-        }
-        slot_live_.assign(out_types_.size(), 0);
-        for (size_t slot : active_indices_) {
-            slot_live_[slot] = 1;
-        }
-        slots_ready_ = true;
-    }
-
     void join_builder::ensure_pending_() {
         if (!pending_.empty()) {
             return;
         }
-        ensure_slots_();
-        pending_.emplace_back(resource_, out_types_, active_indices_, vector::DEFAULT_VECTOR_CAPACITY);
+        pending_.emplace_back(resource_, out_types_, vector::DEFAULT_VECTOR_CAPACITY);
         pending_rows_ = 0;
     }
 
@@ -273,13 +237,7 @@ namespace components::operators::join_detail {
                 indexing_.set_index(slot, buf_left_rows_[begin + order_[slot]]);
             }
             for (size_t column = 0; column < left_chunk_->column_count(); ++column) {
-                if (is_placeholder(left_chunk_->data[column])) {
-                    continue;
-                }
                 const size_t out_slot = indices_left_[column];
-                if (!slot_live_[out_slot]) {
-                    continue;
-                }
                 vector::vector_ops::copy(left_chunk_->data[column],
                                          dst.data[out_slot],
                                          indexing_,
@@ -292,9 +250,6 @@ namespace components::operators::join_detail {
             // Drain mode: every row is right-only → NULL-pad the left columns.
             for (size_t column = 0; column < indices_left_.size(); ++column) {
                 const size_t out_slot = indices_left_[column];
-                if (!slot_live_[out_slot]) {
-                    continue;
-                }
                 for (uint64_t slot = 0; slot < count; ++slot) {
                     dst.data[out_slot].validity().set_invalid(dst_offset + slot);
                 }
@@ -314,9 +269,6 @@ namespace components::operators::join_detail {
                 // left-only rows → NULL-pad all right columns over the run.
                 for (size_t column = 0; column < indices_right_.size(); ++column) {
                     const size_t out_slot = indices_right_[column];
-                    if (!slot_live_[out_slot]) {
-                        continue;
-                    }
                     for (uint64_t slot = start; slot < stop; ++slot) {
                         dst.data[out_slot].validity().set_invalid(dst_offset + slot);
                     }
@@ -327,13 +279,7 @@ namespace components::operators::join_detail {
                 indexing_.set_index(i, buf_right_rows_[begin + order_[start + i]]);
             }
             for (size_t column = 0; column < right_chunk->column_count(); ++column) {
-                if (is_placeholder(right_chunk->data[column])) {
-                    continue;
-                }
                 const size_t out_slot = indices_right_[column];
-                if (!slot_live_[out_slot]) {
-                    continue;
-                }
                 vector::vector_ops::copy(right_chunk->data[column],
                                          dst.data[out_slot],
                                          indexing_,
@@ -387,9 +333,6 @@ namespace components::operators::join_detail {
         idx1_.set_index(0, srow);
         const size_t cols = src.column_count();
         for (size_t c = 0; c < cols; ++c) {
-            if (is_placeholder(src.data[c])) {
-                continue;
-            }
             vector::vector_ops::copy(src.data[c], cur_.data[slots[c]], idx1_, 1, 0, filled_, 1);
         }
     }

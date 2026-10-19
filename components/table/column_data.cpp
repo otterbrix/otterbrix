@@ -63,7 +63,7 @@ namespace components::table {
         if (!statistics_.has_stats()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
-        if (statistics_.min_value().is_null() || statistics_.max_value().is_null()) {
+        if (!statistics_.has_bounds()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
         // Pruning needs a constant filter's (column, op, constant); a filter graph doesn't expose one.
@@ -75,7 +75,7 @@ namespace components::table {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
         auto& seg_stats = state.current->segment_statistics();
-        if (!seg_stats.has_stats() || seg_stats.min_value().is_null() || seg_stats.max_value().is_null()) {
+        if (!seg_stats.has_stats() || !seg_stats.has_bounds()) {
             return filter_propagate_result_t::NO_PRUNING_POSSIBLE;
         }
         return filter_propagate_result_t::NO_PRUNING_POSSIBLE;

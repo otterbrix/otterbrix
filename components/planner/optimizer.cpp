@@ -29,10 +29,9 @@ namespace components::planner {
     logical_plan::node_ptr optimize(std::pmr::memory_resource* resource,
                                     logical_plan::node_ptr node,
                                     logical_plan::parameter_node_t* parameters,
-                                    const logical_plan::catalog_resolves_t* resolves,
+                                    const graph_execution_context& ctx,
                                     bool can_push_to_agent,
-                                    std::span<const optimizer_rule_t> host_rules,
-                                    const std::pmr::set<core::parameter_id_t>* deferred_parameters) {
+                                    std::span<const optimizer_rule_t> host_rules) {
         if (!node) {
             return nullptr;
         }
@@ -43,7 +42,7 @@ namespace components::planner {
         // DML on top and lowers DDL to sequences, leaving the
         // match_t/join_t/aggregate_t these rules target intact.
         if (parameters) {
-            optimizer::fold_constants(resource, node, parameters, deferred_parameters);
+            optimizer::fold_constants(resource, node, parameters, ctx);
         }
         // Clear a DISTINCT that a GROUP BY already makes redundant (group keys ⊆
         // projection / DISTINCT ON columns) so no operator_distinct "Unique" pass is
@@ -111,12 +110,10 @@ namespace components::planner {
         // single-table filters below the join and rewrite_hash_joins has settled the
         // join shape (equi-key stamp + localized ON keys). Running it earlier would
         // race those restructurings, which shift merged schemas and the per-side
-        // column indices this rule splits on. At this
-        // point key.side()/key.path() are final, so process_join's per-side split and
-        // ON-key remap read the same localized indices rewrite_hash_joins detected.
-        // UNGATED: projected_cols is a scan projection HINT (empty = read all) — it needs
-        // no owning agent, only the resolved paths.
-        optimizer::prune_columns(node, resolves);
+        // column indices this rule rewrites. At this point key.side()/key.path() are
+        // final, so the narrowed scans and the keys rebased onto them stay consistent.
+        // UNGATED: it needs no owning agent, only the resolved paths.
+        optimizer::prune_columns(node);
 
         return run_stage(resource, std::move(node), host_rules, optimizer_stage::last);
     }

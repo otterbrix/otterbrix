@@ -1,10 +1,12 @@
 #include "execution_dag.hpp"
 
+#include <components/vector/cell_equal.hpp>
 #include <components/vector/operations/apply_operator.hpp>
 #include <components/vector/vector_operations.hpp>
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 
 namespace components::execution_dag {
 
@@ -76,7 +78,15 @@ namespace components::execution_dag {
         , kind_(kind) {}
 
     core::error_t cast_node_t::process(const graph_execution_context& context, uint64_t count) {
-        return cast_(kind_, input(0), &output(0), context, count);
+        // Composite casts walk the raw offsets and children, which only a flat vector lays out by row.
+        const vector::vector_t& source = input(0);
+        if (source.type().is_nested() && source.get_vector_type() != vector::vector_type::FLAT) {
+            vector::vector_t flat(resource(), source.type(), false, false, 0);
+            flat.reference(source);
+            flat.flatten(count);
+            return cast_(kind_, flat, &output(0), context, count);
+        }
+        return cast_(kind_, source, &output(0), context, count);
     }
 
     core::error_t cast_node_t::validate() const {
@@ -91,8 +101,7 @@ namespace components::execution_dag {
         return core::error_t::no_error();
     }
 
-    core::result_wrapper_t<uint64_t> function_node_t::select_distinct(const vector::data_chunk_t& arguments,
-                                                                      uint64_t count) {
+    core::result_wrapper_t<uint64_t> function_node_t::select_distinct(vector::data_chunk_t& arguments, uint64_t count) {
         if (!distinct_states_) {
             distinct_states_.emplace(resource(), compute::aggregate_state_of<value_set_t>());
         }
@@ -100,12 +109,30 @@ namespace components::execution_dag {
         auto sets = distinct_states_->states();
         distinct_groups_.clear();
         distinct_groups_.reserve(count);
+        vector::vector_ops::hash(arguments.data.front(), distinct_hashes_, count);
+        for (size_t position = 1; position < arguments.column_count(); position++) {
+            vector::vector_ops::combine_hash(distinct_hashes_, arguments.data[position], count);
+        }
+        const auto* hash_data = distinct_hashes_.data<uint64_t>();
+        // Rows kept by this call are not stored yet: they sit at distinct_values_.size() and are read
+        // back from the arguments through distinct_rows_.
+        const uint64_t pending_chunk = distinct_values_.size();
         uint64_t kept = 0;
         for (uint64_t row = 0; row < count; row++) {
             const uint32_t group = group_ids_[row];
-            if (!sets.at<value_set_t>(group).insert(arguments.data.front().value(row)).second) {
+            auto& set = sets.at<value_set_t>(group);
+            const auto range = set.equal_range(hash_data[row]);
+            bool seen = false;
+            for (auto it = range.first; it != range.second && !seen; ++it) {
+                const auto& ref = it->second;
+                seen = ref.chunk == pending_chunk
+                           ? vector::rows_equal(arguments, distinct_rows_.get_index(ref.row), arguments, row)
+                           : vector::rows_equal(distinct_values_[ref.chunk], ref.row, arguments, row);
+            }
+            if (seen) {
                 continue;
             }
+            set.emplace(hash_data[row], kept_row_t{pending_chunk, kept});
             distinct_rows_.set_index(kept, row);
             distinct_groups_.push_back(group);
             kept++;
@@ -114,14 +141,12 @@ namespace components::execution_dag {
     }
 
     vector::data_chunk_t function_node_t::argument_chunk(uint64_t count) const {
-        std::pmr::vector<types::complex_logical_type> argument_types(resource());
-        argument_types.reserve(input_indices_.size());
+        vector::data_chunk_t arguments(resource(),
+                                       std::pmr::vector<types::complex_logical_type>{resource()},
+                                       count > 0 ? count : 1);
+        arguments.data.reserve(input_indices_.size());
         for (size_t position = 0; position < input_indices_.size(); position++) {
-            argument_types.push_back(input(position).type());
-        }
-        vector::data_chunk_t arguments(resource(), argument_types, std::vector<size_t>{}, count > 0 ? count : 1);
-        for (size_t position = 0; position < input_indices_.size(); position++) {
-            arguments.data[position].reference(input(position));
+            arguments.data.emplace_back(input(position));
         }
         arguments.set_cardinality(count);
         // TODO: function kernel accept only flat vectors for now
@@ -462,7 +487,9 @@ namespace components::execution_dag {
         , distinct_(distinct)
         , reduces_(reduces)
         , distinct_rows_(resource, vector::DEFAULT_VECTOR_CAPACITY)
-        , distinct_groups_(resource) {}
+        , distinct_groups_(resource)
+        , distinct_hashes_(resource, types::logical_type::UBIGINT, distinct ? vector::DEFAULT_VECTOR_CAPACITY : 1)
+        , distinct_values_(resource) {}
 
     core::error_t function_node_t::process(const graph_execution_context&, uint64_t count) {
         auto arguments = argument_chunk(count);
@@ -491,7 +518,14 @@ namespace components::execution_dag {
             vector::data_chunk_t unique(resource(), arguments.types(), kept.value() > 0 ? kept.value() : 1);
             arguments.copy(unique, distinct_rows_, kept.value(), 0);
             unique.set_cardinality(kept.value());
-            return executor_->update(unique, {distinct_groups_.data(), kept.value()}, states_->states());
+            if (auto error = executor_->update(unique, {distinct_groups_.data(), kept.value()}, states_->states());
+                error.contains_error()) {
+                return error;
+            }
+            if (kept.value() > 0) {
+                distinct_values_.push_back(std::move(unique));
+            }
+            return core::error_t::no_error();
         }
         auto result = executor_->execute(arguments);
         if (result.has_error()) {
@@ -539,20 +573,66 @@ namespace components::execution_dag {
             return core::error_t(core::error_code_t::invalid_parameter,
                                  std::pmr::string{"execution graph: parameters are not bound", resource()});
         }
-        auto value = parameters_->find(id_);
-        if (value == parameters_->end()) {
+        const auto& value = parameters_->at(id_);
+        // vector_t::reference asserts the type only in Debug, and a slot built for another type would read
+        // the parameter's buffer with the wrong layout.
+        if (output(0).type() != value.type()) {
             return core::error_t(
                 core::error_code_t::invalid_parameter,
-                std::pmr::string{"execution graph: parameter is not in the bound parameter map", resource()});
+                std::pmr::string{"execution graph: parameter type differs from its slot's", resource()});
         }
-        output(0).reference(value->second);
+        output(0).reference(value);
         placed_ = true;
         return core::error_t::no_error();
     }
 
-    void parameter_node_t::set_parameters(const parameter_map_t* parameters) noexcept {
+    void parameter_node_t::set_parameters(const storage_parameters* parameters) noexcept {
         parameters_ = parameters;
         placed_ = false;
+    }
+
+    membership_node_t::membership_node_t(std::pmr::memory_resource* resource,
+                                         operators::operator_code op,
+                                         vector::operations::quantifier kind,
+                                         bool is_constant_set,
+                                         slot_list_t inputs,
+                                         slot_id_t output)
+        : execution_node_t(resource, std::move(inputs), slot_list_t({output}, resource))
+        , op_(op)
+        , kind_(kind)
+        , is_constant_set_(is_constant_set)
+        , prepared_(resource) {}
+
+    core::error_t membership_node_t::validate() const {
+        auto error = execution_node_t::validate();
+        if (error.contains_error()) {
+            return error;
+        }
+        bool match = input_indices_.size() == 3 && op_ == operators::operator_code::invalid;
+        bool comparison = input_indices_.size() == 2 && vector::operations::is_quantifiable(op_);
+        if (output_indices_.size() != 1 || (!match && !comparison)) {
+            return core::error_t(
+                core::error_code_t::schema_error,
+                std::pmr::string{"execution graph: membership node needs a probe, a set and a comparison or flags",
+                                 resource()});
+        }
+        return core::error_t::no_error();
+    }
+
+    void membership_node_t::set_parameters(const storage_parameters*) noexcept { prepared_.reset(); }
+
+    core::error_t membership_node_t::process(const graph_execution_context&, uint64_t count) {
+        auto test = input_indices_.size() == 3 ? vector::operations::element_test_t{vector::operations::match_flags_of(
+                                                     input(2).get_value<std::string_view>(0))}
+                                               : vector::operations::element_test_t{op_};
+        return vector::operations::apply_quantified(test,
+                                                    kind_,
+                                                    input(0),
+                                                    input(1),
+                                                    &output(0),
+                                                    count,
+                                                    active_rows(),
+                                                    is_constant_set_ ? &prepared_ : nullptr);
     }
 
     execution_dag_t::execution_dag_t(std::pmr::memory_resource* resource, uint64_t capacity)
@@ -631,7 +711,62 @@ namespace components::execution_dag {
     node_id_t execution_dag_t::add_parameter(core::parameter_id_t id) {
         auto output = declare_slot();
         slots_[output].constant = true;
+        slots_[output].parameter = true;
         return append(new parameter_node_t(resource_, id, output));
+    }
+
+    node_id_t execution_dag_t::add_membership(operators::operator_code op,
+                                              vector::operations::quantifier kind,
+                                              slot_id_t probe,
+                                              slot_id_t set) {
+        auto output = declare_slot();
+        set_slot_type(output, types::complex_logical_type{types::logical_type::BOOLEAN});
+        return append(new membership_node_t(resource_,
+                                            op,
+                                            kind,
+                                            !varies_by_row(set),
+                                            slot_list_t({probe, set}, resource_),
+                                            output));
+    }
+
+    node_id_t execution_dag_t::add_membership_match(vector::operations::quantifier kind,
+                                                    slot_id_t probe,
+                                                    slot_id_t set,
+                                                    slot_id_t flags) {
+        auto output = declare_slot();
+        set_slot_type(output, types::complex_logical_type{types::logical_type::BOOLEAN});
+        return append(new membership_node_t(resource_,
+                                            operators::operator_code::invalid,
+                                            kind,
+                                            !varies_by_row(set),
+                                            slot_list_t({probe, set, flags}, resource_),
+                                            output));
+    }
+
+    bool execution_dag_t::varies_by_row(slot_id_t slot) const {
+        if (slots_[slot].bound) {
+            return true;
+        }
+        if (slots_[slot].parameter) {
+            return false;
+        }
+        for (const auto& node : nodes_) {
+            const auto& outputs = node->output_indices();
+            if (std::find(outputs.begin(), outputs.end(), slot) == outputs.end()) {
+                continue;
+            }
+            if (node->reduces() || node->input_indices().empty()) {
+                return true;
+            }
+            for (auto input : node->input_indices()) {
+                if (varies_by_row(input)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        // Not made by any node yet: nothing says it holds still
+        return true;
     }
 
     node_id_t execution_dag_t::add_blend(blend_node_t::blend_kind kind, const slot_list_t& inputs) {
@@ -850,7 +985,7 @@ namespace components::execution_dag {
         output_slots_.assign(selected.begin(), selected.end());
     }
 
-    void execution_dag_t::set_parameters(const parameter_map_t* parameters) {
+    void execution_dag_t::set_parameters(const storage_parameters* parameters) {
         parameters_ = parameters;
         for (auto& node : nodes_) {
             node->set_parameters(parameters);
@@ -871,7 +1006,7 @@ namespace components::execution_dag {
         slot_sizes_.assign(slots_.size(), 0);
         for (const auto& slot : slots_) {
             // a bound slot is referenced from the input chunk, so it needs no buffer of its own
-            data_storage_.emplace_back(resource_, slot.type, !slot.bound, false, capacity_);
+            data_storage_.emplace_back(resource_, slot.type, !slot.bound && !slot.parameter, false, capacity_);
         }
         reduction_nodes_.clear();
         for (node_id_t id{0}; id < nodes_.size(); id++) {
@@ -1190,14 +1325,10 @@ namespace components::execution_dag {
             return error;
         }
         const uint64_t rows = emitted_rows(ambient);
-        std::pmr::vector<types::complex_logical_type> output_types(resource_);
-        output_types.reserve(output_slots_.size());
+        vector::data_chunk_t result(resource_, std::pmr::vector<types::complex_logical_type>{resource_}, capacity_);
+        result.data.reserve(output_slots_.size());
         for (auto slot : output_slots_) {
-            output_types.push_back(slots_[slot].type);
-        }
-        vector::data_chunk_t result(resource_, output_types, std::vector<size_t>{}, capacity_);
-        for (size_t index = 0; index < output_slots_.size(); index++) {
-            result.data[index].reference(data_storage_[output_slots_[index]]);
+            result.data.emplace_back(data_storage_[slot]);
         }
         result.set_cardinality(rows);
         return result;

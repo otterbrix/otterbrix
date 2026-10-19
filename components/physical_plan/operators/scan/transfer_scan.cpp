@@ -10,11 +10,11 @@ namespace components::operators {
 
     transfer_scan::transfer_scan(std::pmr::memory_resource* resource,
                                  components::catalog::oid_t table_oid,
-                                 logical_plan::limit_t limit,
+                                 logical_plan::row_cap_t cap,
                                  std::vector<size_t> projected_cols)
         : read_only_operator_t(resource, log_t{}, operator_type::transfer_scan)
         , table_oid_(table_oid)
-        , limit_(limit)
+        , cap_(cap)
         , projected_cols_(std::move(projected_cols)) {}
 
     // --- Push-based streaming pipeline source (PER-BATCH FETCH-NEXT, bounded) ---
@@ -58,10 +58,9 @@ namespace components::operators {
 
         if (!opened_) {
             opened_ = true;
-            // The read-cap (offset+limit head cap) is pushed down as the scan's row-count cap.
-            // SELECT OFFSET is applied by operator_limit above, so every scan receives offset()==0
-            // and head_cap() == limit here.
-            const int64_t scan_limit = limit_.head_cap();
+            // The read-cap (offset+limit) is pushed down as the scan's row-count cap.
+            // SELECT OFFSET is applied by operator_limit above.
+            const int64_t scan_limit = cap_.to_disk();
             auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                         &services::disk::manager_disk_t::storage_fetch_next_batch,
                                                         ctx->session,
@@ -125,7 +124,7 @@ namespace components::operators {
 
     // The drained empty-guard for one fetched batch. transfer_scan fetches the guard schema lazily
     // (storage_types) only on the drained-with-zero-rows path (it has no upfront filter to type).
-    // (OFFSET is applied by operator_limit above; every scan receives offset()==0, so no skip.)
+    // (OFFSET is applied by operator_limit above; a scan never skips rows.)
     actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
     transfer_scan::emit_or_skip(pipeline::context_t* ctx, std::unique_ptr<vector::data_chunk_t> batch) {
         const uint64_t sz = batch ? batch->size() : 0;

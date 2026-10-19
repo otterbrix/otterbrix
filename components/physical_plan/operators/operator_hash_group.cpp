@@ -72,7 +72,7 @@ namespace components::operators {
                                                        vector::DEFAULT_VECTOR_CAPACITY);
             }
         }
-        computed_keys_graph_->set_parameters(&pipeline_context->parameters.parameters);
+        computed_keys_graph_->set_parameters(&pipeline_context->parameters);
         if (auto error = computed_keys_graph_->process(*chunk, pipeline_context->execution_context);
             error.contains_error()) {
             return error;
@@ -117,10 +117,8 @@ namespace components::operators {
             }
             auto expression =
                 expressions::make_scalar_expression(resource_, expressions::scalar_type::get_field, field);
-            auto slot = expressions::build_expression(graph_.get(),
-                                                      pipeline_context->parameters.parameters,
-                                                      expression.get(),
-                                                      types);
+            auto slot =
+                expressions::build_expression(graph_.get(), pipeline_context->parameters, expression.get(), types);
             if (slot.has_error()) {
                 return slot.error();
             }
@@ -131,17 +129,14 @@ namespace components::operators {
         execution_dag::slot_list_t outputs(resource_);
         outputs.reserve(outputs_.size());
         for (const auto& output : outputs_) {
-            auto slot = expressions::build_expression(graph_.get(),
-                                                      pipeline_context->parameters.parameters,
-                                                      output.get(),
-                                                      types);
+            auto slot = expressions::build_expression(graph_.get(), pipeline_context->parameters, output.get(), types);
             if (slot.has_error()) {
                 return slot.error();
             }
             outputs.push_back(slot.value());
         }
         graph_->set_output(outputs);
-        graph_->set_parameters(&pipeline_context->parameters.parameters);
+        graph_->set_parameters(&pipeline_context->parameters);
         if (auto error = graph_->prepare(); error.contains_error()) {
             return error;
         }
@@ -156,14 +151,6 @@ namespace components::operators {
             }
         }
 
-        // The per-chunk scratch is built once here: the probe chunk only REFERENCES the key slots
-        // the graph writes, so a chunk costs no allocation at all.
-        std::pmr::vector<types::complex_logical_type> key_types(resource_);
-        key_types.reserve(key_slots_.size());
-        for (auto slot : key_slots_) {
-            key_types.push_back(graph_->slot_type(slot));
-        }
-        key_probe_.emplace_back(resource_, key_types, std::vector<size_t>{}, vector::DEFAULT_VECTOR_CAPACITY);
         hashes_.emplace_back(resource_, types::logical_type::UBIGINT, vector::DEFAULT_VECTOR_CAPACITY);
         key_columns_.resize(key_slots_.size());
         for (size_t key = 0; key < key_slots_.size(); key++) {
@@ -180,12 +167,7 @@ namespace components::operators {
     bool operator_hash_group_t::keys_equal(const vector::data_chunk_t& keys, uint64_t row, uint32_t group) const {
         const auto& block = key_blocks_[group / vector::DEFAULT_VECTOR_CAPACITY];
         const uint64_t block_row = group % vector::DEFAULT_VECTOR_CAPACITY;
-        for (size_t key = 0; key < keys.column_count(); key++) {
-            if (!vector::cells_equal(keys.data[key], row, block.data[key], block_row)) {
-                return false;
-            }
-        }
-        return true;
+        return vector::rows_equal(keys, row, block, block_row);
     }
 
     void operator_hash_group_t::grow_index() {
@@ -295,11 +277,23 @@ namespace components::operators {
 
         // The key values the graph just wrote. The probe only references them — a key slot may be
         // an input column bound straight to the chunk, or a computed slot, and either way this
-        // copies nothing.
-        auto& keys = key_probe_.front();
-        for (size_t key = 0; key < key_slots_.size(); key++) {
-            keys.data[key].reference(graph_->key_values(key));
+        // copies nothing. Built on the first chunk and re-pointed on every later one, so a chunk
+        // costs no allocation.
+        if (key_probe_.empty()) {
+            vector::data_chunk_t probe(resource_,
+                                       std::pmr::vector<types::complex_logical_type>{resource_},
+                                       vector::DEFAULT_VECTOR_CAPACITY);
+            probe.data.reserve(key_slots_.size());
+            for (size_t key = 0; key < key_slots_.size(); key++) {
+                probe.data.emplace_back(graph_->key_values(key));
+            }
+            key_probe_.push_back(std::move(probe));
+        } else {
+            for (size_t key = 0; key < key_slots_.size(); key++) {
+                key_probe_.front().data[key].reference(graph_->key_values(key));
+            }
         }
+        auto& keys = key_probe_.front();
         keys.set_cardinality(input.size());
 
         if (auto error = resolve_groups(keys); error.contains_error()) {

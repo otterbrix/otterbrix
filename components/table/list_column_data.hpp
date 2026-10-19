@@ -59,13 +59,6 @@ namespace components::table {
         // The cumulative child offset stored for `row_idx`. Forwards the fetch state's pin/read
         // refusal: a bare uint64_t return would drop it, answering with a GARBAGE offset instead.
         [[nodiscard]] core::result_wrapper_t<uint64_t> fetch_list_offset(int64_t row_idx);
-        // The per-element row ids an in-place LIST update writes, or a refusal when the new
-        // cell's length differs from the stored one (in-place can't move neighbours aside).
-        [[nodiscard]] core::result_wrapper_t<std::pmr::vector<int64_t>>
-        gather_child_update(vector::vector_t& update_vector,
-                            int64_t* row_ids,
-                            uint64_t update_count,
-                            vector::vector_t& child_update_out);
     };
 
 } // namespace components::table

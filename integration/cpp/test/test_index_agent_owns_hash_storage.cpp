@@ -22,7 +22,9 @@ namespace {
         std::vector<int64_t> out;
         out.reserve(cur->size());
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            out.push_back(cur->value(0, r).value<int64_t>());
+            auto cell0 = cur->get<int64_t>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            out.push_back(cell0.value());
         }
         std::sort(out.begin(), out.end());
         return out;
@@ -62,7 +64,9 @@ TEST_CASE("integration::cpp::index_agent_owns_hash_storage::existing_hash_index_
         REQUIRE(plan->is_success());
         std::string text;
         for (std::size_t r = 0; r < plan->size(); ++r) {
-            text += std::string(plan->value(0, r).value<std::string_view>());
+            auto cell1 = plan->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell1.has_error());
+            text += std::string(cell1.value());
             text += '\n';
         }
         INFO("plan:\n" << text);

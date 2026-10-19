@@ -4,11 +4,13 @@
 #include <cassert>
 #include <cstdint>
 #include <memory_resource>
+#include <vector>
 
 #include <components/context/context.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
 #include <components/table/transaction.hpp>
 #include <components/vector/data_chunk.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <core/result_wrapper.hpp>
 
 // Shared per-flush bookkeeping for the bounded DML sinks (insert / update / delete).
@@ -35,6 +37,73 @@ namespace components::operators::dml_detail {
             return static_cast<int64_t>(chunk.data.front().indexing().get_index(row));
         }
         return chunk.row_ids.data<int64_t>()[row];
+    }
+
+    // The selected rows of `source` as a slice over its columns: no cell is copied. The row ids are left unfilled.
+    inline vector::data_chunk_t sliced_rows(std::pmr::memory_resource* resource,
+                                            const vector::data_chunk_t& source,
+                                            const vector::indexing_vector_t& selection,
+                                            uint64_t count) {
+        vector::data_chunk_t sliced(resource, std::pmr::vector<types::complex_logical_type>{resource}, count);
+        sliced.data.reserve(source.column_count());
+        for (const auto& column : source.data) {
+            sliced.data.emplace_back(column);
+        }
+        sliced.slice(selection, count);
+        return sliced;
+    }
+
+    // Matched rows of `source` as a slice. The row ids are gathered into an owned vector, since the storage sink
+    // overwrites them in place.
+    inline vector::data_chunk_t slice_matched(std::pmr::memory_resource* resource,
+                                              const vector::data_chunk_t& source,
+                                              const vector::indexing_vector_t& selection,
+                                              uint64_t count) {
+        auto sliced = sliced_rows(resource, source, selection, count);
+        vector::vector_ops::copy(source.row_ids, sliced.row_ids, selection, count, 0, 0);
+        return sliced;
+    }
+
+    // Slices keep their whole source buffers alive, so staged and returned rows are slices only while they are at
+    // least this share (1 in N) of its capacity; sparser matches are copied out once and the source is released.
+    inline constexpr uint64_t slice_min_share = 8;
+
+    inline bool returning_keeps_slice(uint64_t matched, uint64_t source_capacity) {
+        return matched * slice_min_share >= source_capacity;
+    }
+
+    inline vector::data_chunk_t stage_matched(std::pmr::memory_resource* resource,
+                                              const vector::data_chunk_t& source,
+                                              const vector::indexing_vector_t& selection,
+                                              uint64_t count) {
+        if (returning_keeps_slice(count, source.capacity())) {
+            return slice_matched(resource, source, selection, count);
+        }
+        vector::data_chunk_t owned(resource, source.types(), count);
+        source.copy(owned, selection, count);
+        return owned;
+    }
+
+    inline vector::data_chunk_t gather_rows(std::pmr::memory_resource* resource, const vector::data_chunk_t& chunk) {
+        vector::data_chunk_t owned(resource, chunk.types(), chunk.size());
+        chunk.copy(owned, 0);
+        return owned;
+    }
+
+    // Does any column of `result` still point into a column of `source`?
+    inline bool references_columns_of(const vector::data_chunk_t& result, const vector::data_chunk_t& source) {
+        for (const auto& column : result.data) {
+            const auto* auxiliary = column.auxiliary().get();
+            if (auxiliary == nullptr) {
+                continue;
+            }
+            for (const auto& origin : source.data) {
+                if (origin.auxiliary().get() == auxiliary) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     // Normalized result of one operator storage op, handed to record_flush().

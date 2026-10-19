@@ -24,8 +24,9 @@ namespace {
     std::string plan_text(const cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            auto v = cur->value(0, r);
-            out += std::string(v.value<std::string_view>());
+            auto cell0 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            out += std::string(cell0.value());
             out += '\n';
         }
         return out;
@@ -146,6 +147,8 @@ TEST_CASE("integration::cpp::index_oid_selection::each_table_uses_its_own_index"
                          "FROM oiddb.ta WHERE ka = 3;");
         REQUIRE(rows->is_success());
         REQUIRE(rows->size() == 1);
-        REQUIRE(rows->value(0, 0).value<int64_t>() == 3);
+        auto cell1 = rows->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == 3);
     }
 }

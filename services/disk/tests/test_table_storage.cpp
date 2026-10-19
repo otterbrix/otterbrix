@@ -161,8 +161,7 @@ TEST_CASE("services::disk::table_storage::append_and_scan") {
     REQUIRE(result.size() == 100);
 
     for (uint64_t i = 0; i < result.size(); i++) {
-        auto val = result.data[0].value(i);
-        REQUIRE(val.value<int64_t>() == static_cast<int64_t>(i));
+        REQUIRE(result.data[0].get_value<int64_t>(i) == static_cast<int64_t>(i));
     }
 
     cleanup_test_dir();
@@ -205,8 +204,7 @@ TEST_CASE("services::disk::table_storage::disk_checkpoint_and_load") {
         REQUIRE(result.size() == static_cast<uint64_t>(std::min(NUM_ROWS, uint64_t(DEFAULT_VECTOR_CAPACITY))));
 
         for (uint64_t i = 0; i < result.size(); i++) {
-            auto val = result.data[0].value(i);
-            REQUIRE(val.value<int64_t>() == static_cast<int64_t>(i));
+            REQUIRE(result.data[0].get_value<int64_t>(i) == static_cast<int64_t>(i));
         }
     }
 
@@ -306,10 +304,8 @@ TEST_CASE("services::disk::table_storage::checkpoint_preserves_multi_column") {
         REQUIRE(result.size() == NUM_ROWS);
 
         for (uint64_t i = 0; i < result.size(); i++) {
-            auto id_val = result.data[0].value(i);
-            auto score_val = result.data[1].value(i);
-            REQUIRE(id_val.value<int64_t>() == static_cast<int64_t>(i));
-            REQUIRE(score_val.value<double>() == Catch::Approx(static_cast<double>(i) * 1.5));
+            REQUIRE(result.data[0].get_value<int64_t>(i) == static_cast<int64_t>(i));
+            REQUIRE(result.data[1].get_value<double>(i) == Catch::Approx(static_cast<double>(i) * 1.5));
         }
     }
 

@@ -379,8 +379,8 @@ TEST_CASE("components::compute::expand::generate_series") {
     arg_types.emplace_back(logical_type::BIGINT);
     arg_types.emplace_back(logical_type::BIGINT);
     data_chunk_t args(&resource, arg_types, 1);
-    args.set_value(0, 0, logical_value_t(&resource, static_cast<int64_t>(1)));
-    args.set_value(1, 0, logical_value_t(&resource, static_cast<int64_t>(5)));
+    args.set_value(0, 0, static_cast<int64_t>(1));
+    args.set_value(1, 0, static_cast<int64_t>(5));
     args.set_cardinality(1);
 
     auto kres = fn->dispatch_exact(&resource, arg_types);
@@ -401,7 +401,7 @@ TEST_CASE("components::compute::expand::generate_series") {
     int64_t expected = 1;
     for (const auto& chunk : outputs) {
         for (uint64_t i = 0; i < chunk.size(); ++i) {
-            REQUIRE(chunk.value(0, i).value<int64_t>() == expected);
+            REQUIRE(chunk.data[0].get_value<int64_t>(i) == expected);
             ++expected;
         }
     }
@@ -464,7 +464,7 @@ TEST_CASE("components::compute::errors") {
         REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
         data_chunk_t try_chunk(&resource, {logical_type::STRING_LITERAL});
-        try_chunk.set_value(0, 0, logical_value_t(chunk.resource(), "oops"));
+        try_chunk.set_value(0, 0, std::string_view{"oops"});
         try_chunk.set_cardinality(1);
 
         auto res = fn->execute(try_chunk, nullptr, ctx);

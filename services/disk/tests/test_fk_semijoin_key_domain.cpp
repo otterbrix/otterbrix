@@ -74,7 +74,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::a_fractional_key_matches_no_integer
         data_chunk_t chunk(&resource, types, 3);
         chunk.set_cardinality(3);
         for (uint64_t i = 0; i < 3; ++i) {
-            chunk.set_value(0, i, logical_value_t{&resource, ids[i]});
+            chunk.set_value(0, i, ids[i]);
         }
         append_chunk(ts.table(), chunk);
     }
@@ -85,9 +85,9 @@ TEST_CASE("services::disk::fk_hash_semijoin::a_fractional_key_matches_no_integer
     ktypes.emplace_back(logical_type::DOUBLE);
     data_chunk_t keys(&resource, ktypes, 3);
     keys.set_cardinality(3);
-    keys.set_value(0, 0, logical_value_t{&resource, double{1.5}});
-    keys.set_value(0, 1, logical_value_t{&resource, double{2.0}});
-    keys.set_value(0, 2, logical_value_t{&resource, double{3.25}});
+    keys.set_value(0, 0, double{1.5});
+    keys.set_value(0, 1, double{2.0});
+    keys.set_value(0, 2, double{3.25});
 
     auto kidx = key_indices(&resource, {0});
     auto res_r = services::disk::fk_hash_semijoin(&resource, adapter, kidx, keys, transaction_data::committed());
@@ -118,7 +118,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead
         data_chunk_t chunk(&resource, types, 3);
         chunk.set_cardinality(3);
         for (uint64_t i = 0; i < 3; ++i) {
-            chunk.set_value(0, i, logical_value_t{&resource, ids[i]});
+            chunk.set_value(0, i, ids[i]);
         }
         append_chunk(ts.table(), chunk);
     }
@@ -131,9 +131,9 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead
     ktypes.emplace_back(logical_type::BIGINT);
     data_chunk_t keys(&resource, ktypes, 3);
     keys.set_cardinality(3);
-    keys.set_value(0, 0, logical_value_t{&resource, int64_t{70000}});
-    keys.set_value(0, 1, logical_value_t{&resource, int64_t{20}});
-    keys.set_value(0, 2, logical_value_t{&resource, int64_t{-70000}});
+    keys.set_value(0, 0, int64_t{70000});
+    keys.set_value(0, 1, int64_t{20});
+    keys.set_value(0, 2, int64_t{-70000});
 
     auto kidx = key_indices(&resource, {0});
     auto res_r = services::disk::fk_hash_semijoin(&resource, adapter, kidx, keys, transaction_data::committed());
@@ -163,8 +163,8 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_uncomparable_type_pair_refuses_i
         auto types = ts.table().copy_types();
         data_chunk_t chunk(&resource, types, 2);
         chunk.set_cardinality(2);
-        chunk.set_value(0, 0, logical_value_t{&resource, int64_t{10}});
-        chunk.set_value(0, 1, logical_value_t{&resource, int64_t{20}});
+        chunk.set_value(0, 0, int64_t{10});
+        chunk.set_value(0, 1, int64_t{20});
         append_chunk(ts.table(), chunk);
     }
 
@@ -174,8 +174,8 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_uncomparable_type_pair_refuses_i
     ktypes.emplace_back(logical_type::STRING_LITERAL);
     data_chunk_t keys(&resource, ktypes, 2);
     keys.set_cardinality(2);
-    keys.set_value(0, 0, logical_value_t{&resource, std::string_view{"10"}});
-    keys.set_value(0, 1, logical_value_t{&resource, std::string_view{"nope"}});
+    keys.set_value(0, 0, std::string_view{"10"});
+    keys.set_value(0, 1, std::string_view{"nope"});
 
     auto kidx = key_indices(&resource, {0});
     auto res_r = services::disk::fk_hash_semijoin(&resource, adapter, kidx, keys, transaction_data::committed());

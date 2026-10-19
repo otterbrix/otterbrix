@@ -87,7 +87,7 @@ namespace services::disk {
         }
         for (auto& chunk : batches_r.value()) {
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (!str_equals(chunk.value(1, i), name))
+                if (chunk.is_null(1, i) || chunk.get_value<std::string_view>(1, i) != name)
                     continue;
                 out.push_back(components::catalog::decode_pg_proc_row(chunk, i));
             }
@@ -216,7 +216,7 @@ namespace services::disk {
                                        components::vector::data_chunk_t keys,
                                        std::pmr::vector<std::uint64_t> projected_cols) {
         // Thin router: the caller passes storage column ordinals straight to read_chunks_by_key_inner
-        // (no row-major flatten, no name-resolution hop); callers read cells via chunk.value(col, row).
+        // (no row-major flatten, no name-resolution hop); callers read cells via chunk.data[col].get_value<T>(row).
         // It must not return an empty vector on failure: resolve operators read that as "no such row",
         // so a misrouted or agent-less read would surface as "Database does not exist" instead.
         if (key_col_indices.empty()) {

@@ -359,10 +359,14 @@ TEST_CASE("integration::cpp::select_rework::star expands in place among computed
     REQUIRE(cursor->size() == 1);
     REQUIRE(column_count(cursor) == 5);
     const auto& chunk = cursor->chunks().front();
-    const std::vector<int32_t> expected{1, 20, 2, 1, 20};
+    const std::vector<int64_t> expected{1, 20, 2, 1, 20};
     for (size_t column = 0; column < expected.size(); column++) {
         INFO("column " << column);
-        CHECK(chunk.data[column].get_value<int32_t>(0) == expected[column]);
+        const auto& data = chunk.data[column];
+        const int64_t got = data.type().type() == components::types::logical_type::BIGINT
+                                ? data.get_value<int64_t>(0)
+                                : int64_t{data.get_value<int32_t>(0)};
+        CHECK(got == expected[column]);
     }
     const std::vector<std::string> expected_names{"a", "b", "plus", "a", "b"};
     for (size_t column = 0; column < expected_names.size(); column++) {
@@ -800,7 +804,7 @@ TEST_CASE("integration::cpp::select_rework::having filters groups") {
     REQUIRE(cursor->size() == 1);
     REQUIRE(column_count(cursor) == 2);
     CHECK(cursor->chunks().front().data[0].get_value<int32_t>(0) == 1);
-    CHECK(cursor->chunks().front().data[1].get_value<int32_t>(0) == 30);
+    CHECK(cursor->chunks().front().data[1].get_value<int64_t>(0) == 30);
 }
 
 TEST_CASE("integration::cpp::select_rework::grouped operator over a call and a cast") {

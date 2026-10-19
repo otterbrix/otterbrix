@@ -1,9 +1,11 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <components/casts/default_casts.hpp>
 #include <components/compute/function.hpp>
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/cast_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
@@ -11,7 +13,9 @@
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_cte_scan.hpp>
 #include <components/logical_plan/node_data.hpp>
+#include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_extension.hpp>
+#include <components/logical_plan/node_fk_cascade.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -31,6 +35,7 @@
 #include <components/planner/optimizer/rules/pushdown_filter.hpp>
 #include <components/tests/generaty.hpp>
 #include <components/types/types.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <services/collection/context_storage.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 
@@ -44,6 +49,11 @@ namespace {
             return r;
         }();
         return &registry;
+    }
+
+    const components::graph_execution_context& test_execution_context() {
+        static const components::graph_execution_context execution_context{};
+        return execution_context;
     }
 
     services::dispatcher::validation::validation_context_t
@@ -74,10 +84,13 @@ static node_ptr make_match_with_expr(std::pmr::memory_resource* r, const express
 TEST_CASE("optimizer::scalar_fold_add") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(2));
-    auto id1 = params->add_parameter(int64_t(3));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(2)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
 
     auto scalar = make_scalar_expression(&resource, scalar_type::add);
+    scalar->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
     scalar->append_param(id0);
     scalar->append_param(id1);
 
@@ -87,22 +100,29 @@ TEST_CASE("optimizer::scalar_fold_add") {
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
 
-    auto result = components::planner::optimize(&resource, node, params.get());
+    auto result = components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
     REQUIRE(std::holds_alternative<core::parameter_id_t>(s->params()[0]));
     auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 5);
+    REQUIRE(new_id != id0);
+    REQUIRE(new_id != id1);
+    REQUIRE(params->parameter(id0).get_value<int64_t>(0) == 2);
+    REQUIRE(params->parameter(id1).get_value<int64_t>(0) == 3);
+    REQUIRE(params->parameter(new_id).get_value<int64_t>(0) == 5);
 }
 
 TEST_CASE("optimizer::scalar_fold_subtract") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(10));
-    auto id1 = params->add_parameter(int64_t(3));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
 
     auto scalar = make_scalar_expression(&resource, scalar_type::subtract);
+    scalar->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
     scalar->append_param(id0);
     scalar->append_param(id1);
 
@@ -111,21 +131,28 @@ TEST_CASE("optimizer::scalar_fold_subtract") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
     auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 7);
+    REQUIRE(new_id != id0);
+    REQUIRE(new_id != id1);
+    REQUIRE(params->parameter(id0).get_value<int64_t>(0) == 10);
+    REQUIRE(params->parameter(id1).get_value<int64_t>(0) == 3);
+    REQUIRE(params->parameter(new_id).get_value<int64_t>(0) == 7);
 }
 
 TEST_CASE("optimizer::scalar_fold_multiply") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(4));
-    auto id1 = params->add_parameter(int64_t(5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(4)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
 
     auto scalar = make_scalar_expression(&resource, scalar_type::multiply);
+    scalar->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
     scalar->append_param(id0);
     scalar->append_param(id1);
 
@@ -134,21 +161,28 @@ TEST_CASE("optimizer::scalar_fold_multiply") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
     auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 20);
+    REQUIRE(new_id != id0);
+    REQUIRE(new_id != id1);
+    REQUIRE(params->parameter(id0).get_value<int64_t>(0) == 4);
+    REQUIRE(params->parameter(id1).get_value<int64_t>(0) == 5);
+    REQUIRE(params->parameter(new_id).get_value<int64_t>(0) == 20);
 }
 
 TEST_CASE("optimizer::scalar_fold_divide") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(10));
-    auto id1 = params->add_parameter(int64_t(3));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
 
     auto scalar = make_scalar_expression(&resource, scalar_type::divide);
+    scalar->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
     scalar->append_param(id0);
     scalar->append_param(id1);
 
@@ -157,21 +191,28 @@ TEST_CASE("optimizer::scalar_fold_divide") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
     auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 3);
+    REQUIRE(new_id != id0);
+    REQUIRE(new_id != id1);
+    REQUIRE(params->parameter(id0).get_value<int64_t>(0) == 10);
+    REQUIRE(params->parameter(id1).get_value<int64_t>(0) == 3);
+    REQUIRE(params->parameter(new_id).get_value<int64_t>(0) == 3);
 }
 
 TEST_CASE("optimizer::scalar_fold_mod") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(10));
-    auto id1 = params->add_parameter(int64_t(3));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
 
     auto scalar = make_scalar_expression(&resource, scalar_type::mod);
+    scalar->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
     scalar->append_param(id0);
     scalar->append_param(id1);
 
@@ -180,37 +221,77 @@ TEST_CASE("optimizer::scalar_fold_mod") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
     auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 1);
+    REQUIRE(new_id != id0);
+    REQUIRE(new_id != id1);
+    REQUIRE(params->parameter(id0).get_value<int64_t>(0) == 10);
+    REQUIRE(params->parameter(id1).get_value<int64_t>(0) == 3);
+    REQUIRE(params->parameter(new_id).get_value<int64_t>(0) == 1);
 }
 
 TEST_CASE("optimizer::compare_fold_eq_true") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(5));
-    auto id1 = params->add_parameter(int64_t(5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::eq, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
 }
 
+// An execution-kind slot (a sub-query result, a LATERAL outer cell) is written while the statement runs, so
+// nothing reading it may fold, whatever it holds at optimization time.
+TEST_CASE("optimizer::execution_slot_is_not_folded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::execution);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
+
+    SECTION("a comparison") {
+        auto comp = make_compare_expression(&resource, compare_type::eq, id0, id1);
+        auto node = make_match_with_expr(&resource, comp);
+        components::planner::optimize(&resource, node, params.get(), test_execution_context());
+        REQUIRE(static_cast<compare_expression_t*>(comp.get())->type() == compare_type::eq);
+    }
+
+    SECTION("an arithmetic expression") {
+        auto scalar = make_scalar_expression(&resource, scalar_type::add);
+        scalar->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
+        scalar->append_param(id0);
+        scalar->append_param(id1);
+        auto comp = make_compare_expression(&resource,
+                                            compare_type::eq,
+                                            key(&resource, "field", side_t::left),
+                                            expression_ptr(scalar));
+        auto node = make_match_with_expr(&resource, comp);
+        components::planner::optimize(&resource, node, params.get(), test_execution_context());
+        REQUIRE(static_cast<scalar_expression_t*>(scalar.get())->params().size() == 2);
+    }
+}
+
 TEST_CASE("optimizer::compare_fold_eq_false") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(5));
-    auto id1 = params->add_parameter(int64_t(7));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(7)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::eq, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -219,12 +300,14 @@ TEST_CASE("optimizer::compare_fold_eq_false") {
 TEST_CASE("optimizer::compare_fold_gt_true") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(10));
-    auto id1 = params->add_parameter(int64_t(5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::gt, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -233,12 +316,14 @@ TEST_CASE("optimizer::compare_fold_gt_true") {
 TEST_CASE("optimizer::compare_fold_lt_false") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(10));
-    auto id1 = params->add_parameter(int64_t(5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::lt, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -247,12 +332,14 @@ TEST_CASE("optimizer::compare_fold_lt_false") {
 TEST_CASE("optimizer::compare_fold_ne_true") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(5));
-    auto id1 = params->add_parameter(int64_t(7));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(7)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::ne, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -261,12 +348,14 @@ TEST_CASE("optimizer::compare_fold_ne_true") {
 TEST_CASE("optimizer::compare_fold_ne_false") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(5));
-    auto id1 = params->add_parameter(int64_t(5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::ne, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -275,12 +364,14 @@ TEST_CASE("optimizer::compare_fold_ne_false") {
 TEST_CASE("optimizer::compare_fold_gte_true_equal") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(5));
-    auto id1 = params->add_parameter(int64_t(5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::gte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -289,12 +380,14 @@ TEST_CASE("optimizer::compare_fold_gte_true_equal") {
 TEST_CASE("optimizer::compare_fold_gte_true_greater") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(10));
-    auto id1 = params->add_parameter(int64_t(5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::gte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -303,12 +396,14 @@ TEST_CASE("optimizer::compare_fold_gte_true_greater") {
 TEST_CASE("optimizer::compare_fold_gte_false") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(3));
-    auto id1 = params->add_parameter(int64_t(5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::gte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -317,12 +412,14 @@ TEST_CASE("optimizer::compare_fold_gte_false") {
 TEST_CASE("optimizer::compare_fold_lte_true_equal") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(5));
-    auto id1 = params->add_parameter(int64_t(5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::lte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -331,12 +428,14 @@ TEST_CASE("optimizer::compare_fold_lte_true_equal") {
 TEST_CASE("optimizer::compare_fold_lte_true_less") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(3));
-    auto id1 = params->add_parameter(int64_t(5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::lte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -345,12 +444,14 @@ TEST_CASE("optimizer::compare_fold_lte_true_less") {
 TEST_CASE("optimizer::compare_fold_lte_false") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(10));
-    auto id1 = params->add_parameter(int64_t(5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::lte, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -359,12 +460,14 @@ TEST_CASE("optimizer::compare_fold_lte_false") {
 TEST_CASE("optimizer::compare_fold_lt_true") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(3));
-    auto id1 = params->add_parameter(int64_t(10));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::lt, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -373,11 +476,12 @@ TEST_CASE("optimizer::compare_fold_lt_true") {
 TEST_CASE("optimizer::no_fold_key_param") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::eq, key(&resource, "field", side_t::left), id0);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::eq);
@@ -386,10 +490,12 @@ TEST_CASE("optimizer::no_fold_key_param") {
 TEST_CASE("optimizer::no_fold_null_param") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(components::types::logical_value_t{
-        &resource,
-        components::types::complex_logical_type{components::types::logical_type::NA}});
-    auto id1 = params->add_parameter(int64_t(3));
+    auto id0 = params->add_parameter(
+        components::vector::make_null(&resource,
+                                      components::types::complex_logical_type{components::types::logical_type::NA}),
+        components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
 
     auto scalar = make_scalar_expression(&resource, scalar_type::add);
     scalar->append_param(id0);
@@ -400,7 +506,7 @@ TEST_CASE("optimizer::no_fold_null_param") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 2);
@@ -409,8 +515,10 @@ TEST_CASE("optimizer::no_fold_null_param") {
 TEST_CASE("optimizer::no_fold_group_node") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(2));
-    auto id1 = params->add_parameter(int64_t(3));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(2)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
 
     auto scalar = make_scalar_expression(&resource, scalar_type::add, key(&resource, "result"));
     scalar->append_param(id0);
@@ -420,7 +528,7 @@ TEST_CASE("optimizer::no_fold_group_node") {
     expressions.emplace_back(std::move(scalar));
     auto group_node = make_node_group(&resource, expressions);
 
-    components::planner::optimize(&resource, group_node, params.get());
+    components::planner::optimize(&resource, group_node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(group_node->expressions()[0].get());
     REQUIRE(s->params().size() == 2);
@@ -429,10 +537,13 @@ TEST_CASE("optimizer::no_fold_group_node") {
 TEST_CASE("optimizer::nested_scalar_in_compare") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(2));
-    auto id1 = params->add_parameter(int64_t(3));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(2)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
 
     auto scalar = make_scalar_expression(&resource, scalar_type::add);
+    scalar->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
     scalar->append_param(id0);
     scalar->append_param(id1);
 
@@ -441,12 +552,16 @@ TEST_CASE("optimizer::nested_scalar_in_compare") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
     auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 5);
+    REQUIRE(new_id != id0);
+    REQUIRE(new_id != id1);
+    REQUIRE(params->parameter(id0).get_value<int64_t>(0) == 2);
+    REQUIRE(params->parameter(id1).get_value<int64_t>(0) == 3);
+    REQUIRE(params->parameter(new_id).get_value<int64_t>(0) == 5);
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::eq);
@@ -455,10 +570,13 @@ TEST_CASE("optimizer::nested_scalar_in_compare") {
 TEST_CASE("optimizer::div_by_zero_skip") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(10));
-    auto id1 = params->add_parameter(int64_t(0));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(0)),
+                                     components::vector::parameter_kind::literal);
 
     auto scalar = make_scalar_expression(&resource, scalar_type::divide);
+    scalar->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
     scalar->append_param(id0);
     scalar->append_param(id1);
 
@@ -467,19 +585,260 @@ TEST_CASE("optimizer::div_by_zero_skip") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
-    // Division by zero may fold, throw, or otherwise stay valid; either is acceptable here.
-    REQUIRE((s->params().size() == 1 || s->params().size() == 2));
+    // The kernel refuses a zero divisor, so the runtime keeps the error.
+    REQUIRE(s->params().size() == 2);
+    REQUIRE(params->parameters().size() == 2);
+}
+
+namespace {
+    components::types::complex_logical_type bigint_type() {
+        return components::types::complex_logical_type(components::types::logical_type::BIGINT);
+    }
+
+    components::types::complex_logical_type double_type() {
+        return components::types::complex_logical_type(components::types::logical_type::DOUBLE);
+    }
+
+    components::casts::cast_t test_cast(const components::types::complex_logical_type& from,
+                                        const components::types::complex_logical_type& to) {
+        auto cast = test_cast_registry()->resolve(from, to, components::casts::cast_type::explicit_only);
+        REQUIRE(cast.has_value());
+        return *cast;
+    }
+
+} // namespace
+
+TEST_CASE("optimizer::cast_of_a_constant_folds_into_a_new_id") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
+
+    const components::types::complex_logical_type target(components::types::logical_type::DOUBLE);
+    auto cast = make_cast_expression(&resource,
+                                     id0,
+                                     target,
+                                     test_cast(bigint_type(), double_type()),
+                                     components::casts::cast_kind::cast);
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
+                                        expression_ptr(cast));
+    auto node = make_match_with_expr(&resource, comp);
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+
+    auto* c = static_cast<compare_expression_t*>(comp.get());
+    REQUIRE(std::holds_alternative<core::parameter_id_t>(c->right()));
+    const auto new_id = std::get<core::parameter_id_t>(c->right());
+    REQUIRE(new_id != id0);
+    REQUIRE(params->parameter(id0).get_value<int64_t>(0) == 3);
+    REQUIRE(params->parameter(new_id).type().type() == components::types::logical_type::DOUBLE);
+    REQUIRE(params->parameter(new_id).get_value<double>(0) == Catch::Approx(3.0));
+}
+
+TEST_CASE("optimizer::cast_of_an_execution_slot_is_not_folded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::execution);
+
+    auto cast = make_cast_expression(&resource,
+                                     id0,
+                                     components::types::complex_logical_type(components::types::logical_type::DOUBLE),
+                                     test_cast(bigint_type(), double_type()),
+                                     components::casts::cast_kind::cast);
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
+                                        expression_ptr(cast));
+    auto node = make_match_with_expr(&resource, comp);
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+
+    REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
+    REQUIRE(params->parameters().size() == 1);
+}
+
+TEST_CASE("optimizer::cast_the_kernel_refuses_is_left_for_the_runtime") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(1000)),
+                                     components::vector::parameter_kind::literal);
+
+    auto decimal = components::types::complex_logical_type::create_decimal(&resource, 4, 2);
+    REQUIRE(!decimal.has_error());
+    const components::types::complex_logical_type target = decimal.value();
+    auto cast = make_cast_expression(&resource,
+                                     id0,
+                                     target,
+                                     test_cast(bigint_type(), target),
+                                     components::casts::cast_kind::cast);
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
+                                        expression_ptr(cast));
+    auto node = make_match_with_expr(&resource, comp);
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+
+    REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
+    REQUIRE(params->parameters().size() == 1);
+}
+
+TEST_CASE("optimizer::cast_of_a_null_constant_is_not_folded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(components::vector::make_null(&resource, components::types::logical_type::BIGINT),
+                                     components::vector::parameter_kind::literal);
+
+    auto cast = make_cast_expression(&resource,
+                                     id0,
+                                     components::types::complex_logical_type(components::types::logical_type::DOUBLE),
+                                     test_cast(bigint_type(), double_type()),
+                                     components::casts::cast_kind::cast);
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
+                                        expression_ptr(cast));
+    auto node = make_match_with_expr(&resource, comp);
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+
+    REQUIRE(static_cast<compare_expression_t*>(comp.get())->type() == compare_type::eq);
+    REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
+    REQUIRE(params->parameters().size() == 1);
+}
+
+namespace {
+    // WHERE field = <unary_minus over id>; comp_out is the compare, to see what became of its right side.
+    void unary_minus_in_compare(std::pmr::memory_resource* resource,
+                                components::logical_plan::parameter_node_t* params,
+                                core::parameter_id_t id,
+                                const components::types::complex_logical_type& result_type,
+                                expression_ptr& comp_out) {
+        auto scalar = make_scalar_expression(resource, scalar_type::unary_minus);
+        scalar->set_result_type(result_type);
+        scalar->append_param(id);
+        comp_out = make_compare_expression(resource,
+                                           compare_type::eq,
+                                           key(resource, "field", side_t::left),
+                                           expression_ptr(scalar));
+        auto node = make_match_with_expr(resource, comp_out);
+        components::planner::optimize(resource, node, params, test_execution_context());
+    }
+} // namespace
+
+TEST_CASE("optimizer::unary_minus_the_fold_declines_stays_an_expression") {
+    auto resource = core::pmr::otterbrix_resource();
+    const components::types::complex_logical_type bigint(components::types::logical_type::BIGINT);
+
+    SECTION("an execution slot") {
+        auto params = make_parameter_node(&resource);
+        auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                         components::vector::parameter_kind::execution);
+        expression_ptr comp;
+        unary_minus_in_compare(&resource, params.get(), id0, bigint, comp);
+        REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
+        REQUIRE(params->parameters().size() == 1);
+    }
+
+    SECTION("a result type validation did not stamp") {
+        auto params = make_parameter_node(&resource);
+        auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                         components::vector::parameter_kind::literal);
+        expression_ptr comp;
+        unary_minus_in_compare(&resource,
+                               params.get(),
+                               id0,
+                               components::types::complex_logical_type(components::types::logical_type::INVALID),
+                               comp);
+        REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
+        REQUIRE(params->parameters().size() == 1);
+    }
+
+    SECTION("a NULL operand") {
+        auto params = make_parameter_node(&resource);
+        auto id0 = params->add_parameter(components::vector::make_null(&resource, bigint),
+                                         components::vector::parameter_kind::literal);
+        expression_ptr comp;
+        unary_minus_in_compare(&resource, params.get(), id0, bigint, comp);
+        REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
+        REQUIRE(params->parameters().size() == 1);
+    }
+
+    SECTION("an operand the kernel refuses to negate") {
+        auto params = make_parameter_node(&resource);
+        auto id0 = params->add_parameter(components::vector::make_scalar(&resource, uint64_t(5)),
+                                         components::vector::parameter_kind::literal);
+        expression_ptr comp;
+        unary_minus_in_compare(&resource,
+                               params.get(),
+                               id0,
+                               components::types::complex_logical_type(components::types::logical_type::UBIGINT),
+                               comp);
+        REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
+        REQUIRE(params->parameters().size() == 1);
+    }
+}
+
+TEST_CASE("optimizer::try_cast_that_answers_null_is_not_folded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(100000)),
+                                     components::vector::parameter_kind::literal);
+
+    const components::types::complex_logical_type bigint(components::types::logical_type::BIGINT);
+    const components::types::complex_logical_type smallint(components::types::logical_type::SMALLINT);
+    auto cast = make_cast_expression(&resource,
+                                     id0,
+                                     smallint,
+                                     test_cast(bigint, smallint),
+                                     components::casts::cast_kind::try_cast);
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
+                                        expression_ptr(cast));
+    auto node = make_match_with_expr(&resource, comp);
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+
+    REQUIRE(static_cast<compare_expression_t*>(comp.get())->type() == compare_type::eq);
+    REQUIRE(std::holds_alternative<expression_ptr>(static_cast<compare_expression_t*>(comp.get())->right()));
+    REQUIRE(params->parameters().size() == 1);
+}
+
+TEST_CASE("optimizer::unary_minus_of_a_constant_folds_into_a_new_id") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
+
+    auto scalar = make_scalar_expression(&resource, scalar_type::unary_minus);
+    scalar->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
+    scalar->append_param(id0);
+    auto comp = make_compare_expression(&resource,
+                                        compare_type::eq,
+                                        key(&resource, "field", side_t::left),
+                                        expression_ptr(scalar));
+    auto node = make_match_with_expr(&resource, comp);
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+
+    auto* c = static_cast<compare_expression_t*>(comp.get());
+    REQUIRE(std::holds_alternative<core::parameter_id_t>(c->right()));
+    const auto new_id = std::get<core::parameter_id_t>(c->right());
+    REQUIRE(new_id != id0);
+    REQUIRE(params->parameter(id0).get_value<int64_t>(0) == 3);
+    REQUIRE(params->parameter(new_id).get_value<int64_t>(0) == -3);
 }
 
 TEST_CASE("optimizer::union_and_fold") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(5));
-    auto id1 = params->add_parameter(int64_t(5));
-    auto id2 = params->add_parameter(int64_t(10));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
+    auto id2 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                     components::vector::parameter_kind::literal);
 
     auto child1 = make_compare_expression(&resource, compare_type::eq, id0, id1);
     auto child2 = make_compare_expression(&resource, compare_type::gt, key(&resource, "field", side_t::left), id2);
@@ -489,7 +848,7 @@ TEST_CASE("optimizer::union_and_fold") {
     union_and->append_child(child2);
 
     auto node = make_match_with_expr(&resource, union_and);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c1 = static_cast<compare_expression_t*>(child1.get());
     REQUIRE(c1->type() == compare_type::all_true);
@@ -501,10 +860,14 @@ TEST_CASE("optimizer::union_and_fold") {
 TEST_CASE("optimizer::union_or_fold") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(5));
-    auto id1 = params->add_parameter(int64_t(7));
-    auto id2 = params->add_parameter(int64_t(10));
-    auto id3 = params->add_parameter(int64_t(3));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(7)),
+                                     components::vector::parameter_kind::literal);
+    auto id2 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                     components::vector::parameter_kind::literal);
+    auto id3 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
 
     auto child1 = make_compare_expression(&resource, compare_type::eq, id0, id1);
     auto child2 = make_compare_expression(&resource, compare_type::gt, id2, id3);
@@ -514,7 +877,7 @@ TEST_CASE("optimizer::union_or_fold") {
     union_or->append_child(child2);
 
     auto node = make_match_with_expr(&resource, union_or);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c1 = static_cast<compare_expression_t*>(child1.get());
     REQUIRE(c1->type() == compare_type::all_false);
@@ -526,15 +889,20 @@ TEST_CASE("optimizer::union_or_fold") {
 TEST_CASE("optimizer::deep_nested_scalar") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(2));
-    auto id1 = params->add_parameter(int64_t(3));
-    auto id2 = params->add_parameter(int64_t(4));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(2)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
+    auto id2 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(4)),
+                                     components::vector::parameter_kind::literal);
 
     auto inner = make_scalar_expression(&resource, scalar_type::add);
+    inner->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
     inner->append_param(id0);
     inner->append_param(id1);
 
     auto outer = make_scalar_expression(&resource, scalar_type::multiply);
+    outer->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
     outer->append_param(expression_ptr(inner));
     outer->append_param(id2);
 
@@ -543,31 +911,44 @@ TEST_CASE("optimizer::deep_nested_scalar") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(outer));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(outer.get());
     REQUIRE(s->params().size() == 1);
     auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 20);
+    REQUIRE(new_id != id0);
+    REQUIRE(new_id != id1);
+    REQUIRE(new_id != id2);
+    REQUIRE(params->parameter(id0).get_value<int64_t>(0) == 2);
+    REQUIRE(params->parameter(id1).get_value<int64_t>(0) == 3);
+    REQUIRE(params->parameter(id2).get_value<int64_t>(0) == 4);
+    REQUIRE(params->parameter(new_id).get_value<int64_t>(0) == 20);
 }
 
 TEST_CASE("optimizer::triple_nested_scalar") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(2));
-    auto id1 = params->add_parameter(int64_t(3));
-    auto id2 = params->add_parameter(int64_t(4));
-    auto id3 = params->add_parameter(int64_t(1));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(2)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
+    auto id2 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(4)),
+                                     components::vector::parameter_kind::literal);
+    auto id3 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(1)),
+                                     components::vector::parameter_kind::literal);
 
     auto add_inner = make_scalar_expression(&resource, scalar_type::add);
+    add_inner->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
     add_inner->append_param(id0);
     add_inner->append_param(id1);
 
     auto mul_mid = make_scalar_expression(&resource, scalar_type::multiply);
+    mul_mid->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
     mul_mid->append_param(expression_ptr(add_inner));
     mul_mid->append_param(id2);
 
     auto add_outer = make_scalar_expression(&resource, scalar_type::add);
+    add_outer->set_result_type(components::types::complex_logical_type(components::types::logical_type::BIGINT));
     add_outer->append_param(expression_ptr(mul_mid));
     add_outer->append_param(id3);
 
@@ -576,21 +957,32 @@ TEST_CASE("optimizer::triple_nested_scalar") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(add_outer));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(add_outer.get());
     REQUIRE(s->params().size() == 1);
     auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<int64_t>() == 21);
+    REQUIRE(new_id != id0);
+    REQUIRE(new_id != id1);
+    REQUIRE(new_id != id2);
+    REQUIRE(new_id != id3);
+    REQUIRE(params->parameter(id0).get_value<int64_t>(0) == 2);
+    REQUIRE(params->parameter(id1).get_value<int64_t>(0) == 3);
+    REQUIRE(params->parameter(id2).get_value<int64_t>(0) == 4);
+    REQUIRE(params->parameter(id3).get_value<int64_t>(0) == 1);
+    REQUIRE(params->parameter(new_id).get_value<int64_t>(0) == 21);
 }
 
 TEST_CASE("optimizer::scalar_fold_double") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(double(2.5));
-    auto id1 = params->add_parameter(double(1.5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, double(2.5)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, double(1.5)),
+                                     components::vector::parameter_kind::literal);
 
     auto scalar = make_scalar_expression(&resource, scalar_type::add);
+    scalar->set_result_type(components::types::complex_logical_type(components::types::logical_type::DOUBLE));
     scalar->append_param(id0);
     scalar->append_param(id1);
 
@@ -599,21 +991,30 @@ TEST_CASE("optimizer::scalar_fold_double") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 1);
     auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<double>() == Catch::Approx(4.0));
+    REQUIRE(new_id != id0);
+    REQUIRE(new_id != id1);
+    REQUIRE_THAT(params->parameter(id0).get_value<double>(0), Catch::Matchers::WithinULP(2.5, 0));
+    REQUIRE_THAT(params->parameter(id1).get_value<double>(0), Catch::Matchers::WithinULP(1.5, 0));
+    REQUIRE(params->parameter(new_id).get_value<double>(0) == Catch::Approx(4.0));
 }
 
+// A BIGINT * DOUBLE pair reaches the optimizer only when a cast was not spliced in; the kernel refuses it and
+// the expression stays for the runtime. SQL `3 * 2.5` is 7.5 either way (test_arithmetic.cpp).
 TEST_CASE("optimizer::scalar_fold_mixed_types") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(3));
-    auto id1 = params->add_parameter(double(2.5));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, double(2.5)),
+                                     components::vector::parameter_kind::literal);
 
     auto scalar = make_scalar_expression(&resource, scalar_type::multiply);
+    scalar->set_result_type(components::types::complex_logical_type(components::types::logical_type::DOUBLE));
     scalar->append_param(id0);
     scalar->append_param(id1);
 
@@ -622,23 +1023,24 @@ TEST_CASE("optimizer::scalar_fold_mixed_types") {
                                         key(&resource, "field", side_t::left),
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
-    REQUIRE(s->params().size() == 1);
-    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
-    REQUIRE(params->parameter(new_id).value<double>() == Catch::Approx(7.5));
+    REQUIRE(s->params().size() == 2);
+    REQUIRE(params->parameters().size() == 2);
 }
 
 TEST_CASE("optimizer::compare_fold_double") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(double(3.14));
-    auto id1 = params->add_parameter(double(2.71));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, double(3.14)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, double(2.71)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::gt, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -647,10 +1049,14 @@ TEST_CASE("optimizer::compare_fold_double") {
 TEST_CASE("optimizer::aggregate_match_folds_group_not") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(5));
-    auto id1 = params->add_parameter(int64_t(5));
-    auto id2 = params->add_parameter(int64_t(2));
-    auto id3 = params->add_parameter(int64_t(3));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
+    auto id2 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(2)),
+                                     components::vector::parameter_kind::literal);
+    auto id3 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
 
     auto aggregate =
         make_node_aggregate(&resource,
@@ -669,7 +1075,7 @@ TEST_CASE("optimizer::aggregate_match_folds_group_not") {
     group_exprs.emplace_back(std::move(scalar));
     aggregate->append_child(make_node_group(&resource, group_exprs));
 
-    components::planner::optimize(&resource, aggregate, params.get());
+    components::planner::optimize(&resource, aggregate, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -681,10 +1087,14 @@ TEST_CASE("optimizer::aggregate_match_folds_group_not") {
 TEST_CASE("optimizer::multiple_match_nodes") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(10));
-    auto id1 = params->add_parameter(int64_t(5));
-    auto id2 = params->add_parameter(int64_t(3));
-    auto id3 = params->add_parameter(int64_t(10));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
+    auto id2 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
+    auto id3 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                     components::vector::parameter_kind::literal);
 
     auto aggregate =
         make_node_aggregate(&resource,
@@ -702,7 +1112,7 @@ TEST_CASE("optimizer::multiple_match_nodes") {
                         qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
                         comp2));
 
-    components::planner::optimize(&resource, aggregate, params.get());
+    components::planner::optimize(&resource, aggregate, params.get(), test_execution_context());
 
     auto* c1 = static_cast<compare_expression_t*>(comp1.get());
     REQUIRE(c1->type() == compare_type::all_true);
@@ -777,28 +1187,24 @@ TEST_CASE("optimizer::has_index_on_empty") {
 TEST_CASE("optimizer::param_copy_survives") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(2));
-    auto id1 = params->add_parameter(int64_t(3));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(2)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(3)),
+                                     components::vector::parameter_kind::literal);
 
-    params->set_parameter(id0, components::types::logical_value_t(&resource, int64_t(5)));
-    REQUIRE(params->parameter(id0).value<int64_t>() == 5);
+    params->set_parameter(id0, components::vector::make_scalar(&resource, int64_t(5)));
+    REQUIRE(params->parameter(id0).get_value<int64_t>(0) == 5);
 
-    auto taken = params->take_parameters();
-    REQUIRE(taken.parameters.count(id0) == 1);
-    REQUIRE(taken.parameters.at(id0).value<int64_t>() == 5);
-    REQUIRE(taken.parameters.count(id1) == 1);
+    storage_parameters copy1 = params->parameters().clone(&resource);
+    REQUIRE(copy1.size() == 2);
+    REQUIRE(copy1.at(id0).get_value<int64_t>(0) == 5);
+    REQUIRE(copy1.at(id1).get_value<int64_t>(0) == 3);
 
-    storage_parameters copy1 = taken;
-    REQUIRE(copy1.parameters.count(id0) == 1);
-    REQUIRE(copy1.parameters.at(id0).value<int64_t>() == 5);
-
-    storage_parameters copy2 = copy1;
-    REQUIRE(copy2.parameters.count(id0) == 1);
-    REQUIRE(copy2.parameters.at(id0).value<int64_t>() == 5);
+    storage_parameters copy2 = copy1.clone(&resource);
+    REQUIRE(copy2.at(id0).get_value<int64_t>(0) == 5);
 
     storage_parameters moved = std::move(copy2);
-    REQUIRE(moved.parameters.count(id0) == 1);
-    REQUIRE(moved.parameters.at(id0).value<int64_t>() == 5);
+    REQUIRE(moved.at(id0).get_value<int64_t>(0) == 5);
 }
 
 static services::context_storage_t make_context_with_oid(std::pmr::memory_resource* resource,
@@ -837,7 +1243,8 @@ static void add_single_field_index(services::context_storage_t& ctx,
 TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(int64_t(42));
+    auto pid = params->add_parameter(components::vector::make_scalar(&resource, int64_t(42)),
+                                     components::vector::parameter_kind::literal);
     constexpr auto table_oid = components::catalog::oid_t{777};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
@@ -849,7 +1256,7 @@ TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
     node->set_table_oid(table_oid);
 
     auto op_planned =
-        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::row_cap_t::uncapped());
     REQUIRE_FALSE(op_planned.has_error());
     auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::index_scan);
@@ -861,7 +1268,8 @@ TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
 TEST_CASE("create_plan_match::range_uses_index_scan_single_preferred") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(int64_t(30));
+    auto pid = params->add_parameter(components::vector::make_scalar(&resource, int64_t(30)),
+                                     components::vector::parameter_kind::literal);
     constexpr auto table_oid = components::catalog::oid_t{778};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
@@ -873,7 +1281,7 @@ TEST_CASE("create_plan_match::range_uses_index_scan_single_preferred") {
     node->set_table_oid(table_oid);
 
     auto op_planned =
-        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::row_cap_t::uncapped());
     REQUIRE_FALSE(op_planned.has_error());
     auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::index_scan);
@@ -885,7 +1293,8 @@ TEST_CASE("create_plan_match::range_uses_index_scan_single_preferred") {
 TEST_CASE("create_plan_match::range_with_only_hashed_falls_back_to_full_scan") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(int64_t(30));
+    auto pid = params->add_parameter(components::vector::make_scalar(&resource, int64_t(30)),
+                                     components::vector::parameter_kind::literal);
     constexpr auto table_oid = components::catalog::oid_t{779};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
@@ -897,7 +1306,7 @@ TEST_CASE("create_plan_match::range_with_only_hashed_falls_back_to_full_scan") {
     node->set_table_oid(table_oid);
 
     auto op_planned =
-        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::row_cap_t::uncapped());
     REQUIRE_FALSE(op_planned.has_error());
     auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::full_scan);
@@ -906,7 +1315,8 @@ TEST_CASE("create_plan_match::range_with_only_hashed_falls_back_to_full_scan") {
 TEST_CASE("create_plan_match::key_on_right_mirrors_compare_type_for_index_scan") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(int64_t(30));
+    auto pid = params->add_parameter(components::vector::make_scalar(&resource, int64_t(30)),
+                                     components::vector::parameter_kind::literal);
     constexpr auto table_oid = components::catalog::oid_t{780};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
@@ -918,7 +1328,7 @@ TEST_CASE("create_plan_match::key_on_right_mirrors_compare_type_for_index_scan")
     node->set_table_oid(table_oid);
 
     auto op_planned =
-        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::row_cap_t::uncapped());
     REQUIRE_FALSE(op_planned.has_error());
     auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::index_scan);
@@ -929,7 +1339,8 @@ TEST_CASE("create_plan_match::key_on_right_mirrors_compare_type_for_index_scan")
 TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(int64_t(30));
+    auto pid = params->add_parameter(components::vector::make_scalar(&resource, int64_t(30)),
+                                     components::vector::parameter_kind::literal);
     constexpr auto table_oid = components::catalog::oid_t{781};
 
     auto ctx = make_context_with_oid(&resource, table_oid, params.get());
@@ -944,7 +1355,7 @@ TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
     node->set_table_oid(table_oid);
 
     auto op_planned =
-        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::limit_t::unlimit());
+        services::planner::impl::create_plan_match(ctx, node, components::logical_plan::row_cap_t::uncapped());
     REQUIRE_FALSE(op_planned.has_error());
     auto op = op_planned.value();
     REQUIRE(op->type() == components::operators::operator_type::full_scan);
@@ -959,7 +1370,7 @@ namespace {
 
     static bool run_and_get_pushdown(std::pmr::memory_resource* r, const node_ptr& plan, bool enable) {
         auto params = make_parameter_node(r);
-        auto root = components::planner::optimize(r, plan, params.get(), nullptr, enable);
+        auto root = components::planner::optimize(r, plan, params.get(), test_execution_context(), enable);
         for (const auto& child : root->children()) {
             if (child && child->type() == node_type::group_t) {
                 return static_cast<node_group_t*>(child.get())->pushdown();
@@ -1130,7 +1541,8 @@ namespace {
 TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto lt_param = params->add_parameter(int64_t(5));
+    auto lt_param = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                          components::vector::parameter_kind::literal);
 
     auto scan_a = make_promote_scan(&resource, {"ak", "ap"});
     auto scan_b = make_promote_scan(&resource, {"bk"});
@@ -1207,13 +1619,15 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
 TEST_CASE("optimizer::not_fold_all_false_child") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(1));
-    auto id1 = params->add_parameter(int64_t(2));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(1)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(2)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_union_expression(&resource, compare_type::union_not);
     comp->append_child(make_compare_expression(&resource, compare_type::eq, id0, id1));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_true);
@@ -1223,13 +1637,15 @@ TEST_CASE("optimizer::not_fold_all_false_child") {
 TEST_CASE("optimizer::not_fold_all_true_child") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(int64_t(1));
-    auto id1 = params->add_parameter(int64_t(1));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(1)),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(1)),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_union_expression(&resource, compare_type::union_not);
     comp->append_child(make_compare_expression(&resource, compare_type::eq, id0, id1));
     auto node = make_match_with_expr(&resource, comp);
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* c = static_cast<compare_expression_t*>(comp.get());
     REQUIRE(c->type() == compare_type::all_false);
@@ -1256,167 +1672,188 @@ namespace {
         return expression_ptr(make_scalar_expression(r, scalar_type::get_field, pruned_key(r, name, idx)));
     }
 
-    node_aggregate_ptr make_select_agg(std::pmr::memory_resource* r, oid_t oid, const node_select_ptr& sel) {
-        auto agg = make_node_aggregate(r, qualified_name_t{pdb(), prel()});
-        agg->set_table_oid(oid);
-        agg->append_child(sel);
-        return agg;
-    }
-
-    void add_resolved_table(std::pmr::memory_resource* r,
-                            components::logical_plan::catalog_resolves_t& resolves,
-                            oid_t oid,
-                            const std::string& relname,
-                            size_t ncols) {
-        components::logical_plan::resolve_entry_t entry;
-        entry.dbname = static_cast<const std::string&>(pdb());
-        entry.relname = relname;
+    // A stored table of `ncols` BIGINT columns.
+    components::logical_plan::resolved_table_metadata_t pruned_table(oid_t oid, size_t ncols) {
         components::logical_plan::resolved_table_metadata_t md;
         md.table_oid = oid;
         md.relkind = 'r';
         md.columns.resize(ncols);
-        entry.table_md = std::move(md);
-        resolves.ensure(r, components::logical_plan::resolve_kind::table).add(std::move(entry));
+        return md;
     }
+
+    std::pmr::vector<components::types::complex_logical_type> bigints(std::pmr::memory_resource* r, size_t ncols) {
+        return std::pmr::vector<components::types::complex_logical_type>(
+            ncols,
+            components::types::complex_logical_type{components::types::logical_type::BIGINT},
+            r);
+    }
+
+    node_aggregate_ptr make_scan_agg(std::pmr::memory_resource* r,
+                                     const components::logical_plan::resolved_table_metadata_t& md) {
+        auto agg = make_node_aggregate(r, qualified_name_t{pdb(), prel()});
+        agg->set_table_oid(md.table_oid);
+        agg->set_table_metadata(&md);
+        return agg;
+    }
+
+    size_t own_column(const expression_ptr& expression) { return expression->key().path().front(); }
 } // namespace
 
-TEST_CASE("optimizer::column_pruning::plain_select_projects_single_column") {
+TEST_CASE("optimizer::column_pruning") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto sel = make_node_select(&resource);
-    sel->append_expression(proj_get_field(&resource, "a", 0));
-    auto agg = make_select_agg(&resource, oid_t{9100}, sel);
+    auto pid = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                     components::vector::parameter_kind::literal);
 
-    auto root = components::planner::optimize(&resource, agg, params.get());
-    auto* a = static_cast<node_aggregate_t*>(root.get());
-    REQUIRE(a->projected_cols() == std::vector<size_t>{0});
-}
+    SECTION("plain select") {
+        const auto md = pruned_table(oid_t{9100}, 4);
+        auto sel = make_node_select(&resource);
+        sel->append_expression(proj_get_field(&resource, "a", 0));
+        sel->append_expression(proj_get_field(&resource, "c", 2));
+        auto agg = make_scan_agg(&resource, md);
+        agg->append_child(sel);
 
-TEST_CASE("optimizer::column_pruning::plain_select_two_columns") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto sel = make_node_select(&resource);
-    sel->append_expression(proj_get_field(&resource, "a", 0));
-    sel->append_expression(proj_get_field(&resource, "c", 2));
-    auto agg = make_select_agg(&resource, oid_t{9101}, sel);
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        REQUIRE(agg->projected_cols() == (std::vector<size_t>{0, 2}));
+        REQUIRE(own_column(sel->expressions()[0]) == 0);
+        REQUIRE(own_column(sel->expressions()[1]) == 1);
+    }
 
-    auto root = components::planner::optimize(&resource, agg, params.get());
-    auto* a = static_cast<node_aggregate_t*>(root.get());
-    REQUIRE(a->projected_cols() == (std::vector<size_t>{0, 2}));
-}
+    SECTION("where on an unselected column") {
+        const auto md = pruned_table(oid_t{9102}, 4);
+        auto sel = make_node_select(&resource);
+        sel->append_expression(proj_get_field(&resource, "a", 0));
+        auto where = make_compare_expression(&resource, compare_type::gt, pruned_key(&resource, "c", 2), pid);
+        auto agg = make_scan_agg(&resource, md);
+        agg->append_child(sel);
+        agg->append_child(make_node_match(&resource, qualified_name_t{pdb(), prel()}, where));
 
-TEST_CASE("optimizer::column_pruning::where_column_included_even_if_not_selected") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(int64_t(5));
-    auto sel = make_node_select(&resource);
-    sel->append_expression(proj_get_field(&resource, "a", 0));
-    auto match =
-        make_node_match(&resource,
-                        qualified_name_t{pdb(), prel()},
-                        make_compare_expression(&resource, compare_type::gt, pruned_key(&resource, "b", 1), pid));
-    auto agg = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
-    agg->set_table_oid(oid_t{9102});
-    agg->append_child(sel);
-    agg->append_child(match);
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        REQUIRE(agg->projected_cols() == (std::vector<size_t>{0, 2}));
+        REQUIRE(as_key(static_cast<compare_expression_t*>(where.get())->left()).path().front() == 1);
+    }
 
-    auto root = components::planner::optimize(&resource, agg, params.get());
-    auto* a = static_cast<node_aggregate_t*>(root.get());
-    REQUIRE(a->projected_cols() == (std::vector<size_t>{0, 1}));
-}
+    SECTION("select star") {
+        const auto md = pruned_table(oid_t{9103}, 3);
+        auto sel = make_node_select(&resource);
+        sel->append_expression(
+            expression_ptr(make_scalar_expression(&resource, scalar_type::star_expand, key{&resource})));
+        auto agg = make_scan_agg(&resource, md);
+        agg->append_child(sel);
 
-TEST_CASE("optimizer::column_pruning::select_star_disables_projection") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto sel = make_node_select(&resource);
-    sel->append_expression(expression_ptr(make_scalar_expression(&resource, scalar_type::star_expand, key{&resource})));
-    auto agg = make_select_agg(&resource, oid_t{9103}, sel);
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        REQUIRE(agg->projected_cols().empty());
+    }
 
-    auto root = components::planner::optimize(&resource, agg, params.get());
-    auto* a = static_cast<node_aggregate_t*>(root.get());
-    REQUIRE(a->projected_cols().empty());
-}
+    SECTION("scan without projection") {
+        const auto md = pruned_table(oid_t{9104}, 3);
+        auto where = make_compare_expression(&resource, compare_type::gt, pruned_key(&resource, "c", 2), pid);
+        auto agg = make_scan_agg(&resource, md);
+        agg->append_child(make_node_match(&resource, qualified_name_t{pdb(), prel()}, where));
 
-TEST_CASE("optimizer::column_pruning::select_star_with_where_reads_all") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    auto pid = params->add_parameter(int64_t(5));
-    auto match =
-        make_node_match(&resource,
-                        qualified_name_t{pdb(), prel()},
-                        make_compare_expression(&resource, compare_type::gt, pruned_key(&resource, "a", 0), pid));
-    auto agg = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
-    agg->set_table_oid(oid_t{9104});
-    agg->append_child(match);
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        REQUIRE(agg->projected_cols().empty());
+        REQUIRE(as_key(static_cast<compare_expression_t*>(where.get())->left()).path().front() == 2);
+    }
 
-    auto root = components::planner::optimize(&resource, agg, params.get());
-    auto* a = static_cast<node_aggregate_t*>(root.get());
-    REQUIRE(a->projected_cols().empty());
-}
+    SECTION("group by") {
+        const auto md = pruned_table(oid_t{9105}, 4);
+        std::vector<expression_ptr> group_exprs;
+        group_exprs.push_back(
+            expression_ptr(make_scalar_expression(&resource, scalar_type::group_field, pruned_key(&resource, "k", 1))));
+        auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "sum_x"));
+        sum->append_param(pruned_key(&resource, "x", 3));
+        group_exprs.push_back(expression_ptr(sum));
+        auto group = make_node_group(&resource, group_exprs);
+        group->set_input_types(bigints(&resource, 4));
 
-TEST_CASE("optimizer::column_pruning::group_by_projects_key_and_agg_arg") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    std::vector<expression_ptr> group_exprs;
-    group_exprs.push_back(
-        expression_ptr(make_scalar_expression(&resource, scalar_type::group_field, pruned_key(&resource, "k", 0))));
-    auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "sum_x"));
-    sum->append_param(pruned_key(&resource, "x", 2));
-    group_exprs.push_back(expression_ptr(sum));
-    auto group = make_node_group(&resource, group_exprs);
+        // The group's $select reads the group output, not the scan.
+        auto sel = make_node_select(&resource);
+        sel->append_expression(proj_get_field(&resource, "k", 0));
+        sel->append_expression(proj_get_field(&resource, "sum_x", 1));
 
-    // The group's $select carries output indices, not storage indices; the rule must ignore it.
-    auto sel = make_node_select(&resource);
-    sel->append_expression(proj_get_field(&resource, "k", 0));
-    sel->append_expression(proj_get_field(&resource, "sum_x", 1));
+        auto agg = make_scan_agg(&resource, md);
+        agg->append_child(group);
+        agg->append_child(sel);
 
-    auto agg = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
-    agg->set_table_oid(oid_t{9105});
-    agg->append_child(group);
-    agg->append_child(sel);
+        components::planner::optimize(&resource, agg, params.get(), test_execution_context());
+        REQUIRE(agg->projected_cols() == (std::vector<size_t>{1, 3}));
+        REQUIRE(own_column(group->expressions()[0]) == 0);
+        REQUIRE(as_key(static_cast<aggregate_expression_t*>(sum.get())->params().front()).path().front() == 1);
+        REQUIRE(group->input_types().size() == 2);
+        REQUIRE(own_column(sel->expressions()[0]) == 0);
+        REQUIRE(own_column(sel->expressions()[1]) == 1);
+    }
 
-    auto root = components::planner::optimize(&resource, agg, params.get());
-    auto* a = static_cast<node_aggregate_t*>(root.get());
-    REQUIRE(a->projected_cols() == (std::vector<size_t>{0, 2}));
-}
+    SECTION("inner join") {
+        const auto md1 = pruned_table(oid_t{9110}, 3);
+        const auto md2 = pruned_table(oid_t{9111}, 3);
 
-TEST_CASE("optimizer::column_pruning::inner_join_splits_columns_per_side") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto params = make_parameter_node(&resource);
-    constexpr auto oid1 = oid_t{9110};
-    constexpr auto oid2 = oid_t{9111};
+        auto agg_t1 = make_scan_agg(&resource, md1);
+        agg_t1->set_output_types(bigints(&resource, 3));
+        auto agg_t2 = make_scan_agg(&resource, md2);
+        agg_t2->set_output_types(bigints(&resource, 3));
 
-    auto agg_t1 = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
-    agg_t1->set_table_oid(oid1);
-    auto agg_t2 = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
-    agg_t2->set_table_oid(oid2);
+        // t1 (a, k, z) JOIN t2 (k, y, w) ON t1.k = t2.k
+        auto join = make_node_join(&resource, join_type::inner);
+        join->append_child(agg_t1);
+        join->append_child(agg_t2);
+        auto on = make_compare_expression(&resource,
+                                          compare_type::eq,
+                                          pruned_key(&resource, "k", 1, side_t::left),
+                                          pruned_key(&resource, "k", 0, side_t::right));
+        join->append_expression(on);
+        join->set_output_types(bigints(&resource, 6));
 
-    auto join = make_node_join(&resource, join_type::inner);
-    join->append_child(agg_t1);
-    join->append_child(agg_t2);
-    join->append_expression(make_compare_expression(&resource,
-                                                    compare_type::eq,
-                                                    pruned_key(&resource, "k", 1, side_t::left),
-                                                    pruned_key(&resource, "k", 0, side_t::right)));
+        // SELECT t1.a, t2.y: joined positions 0 and 3 + 1.
+        auto sel = make_node_select(&resource);
+        sel->append_expression(proj_get_field(&resource, "a", 0));
+        sel->append_expression(proj_get_field(&resource, "y", 4));
 
-    auto sel = make_node_select(&resource);
-    sel->append_expression(proj_get_field(&resource, "a", 0));
+        auto parent = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
+        parent->append_child(join);
+        parent->append_child(sel);
 
-    auto parent = make_node_aggregate(&resource, qualified_name_t{pdb(), prel()});
-    parent->append_child(join);
-    parent->append_child(sel);
+        components::planner::optimize(&resource,
+                                      boost::static_pointer_cast<components::logical_plan::node_t>(parent),
+                                      params.get(),
+                                      test_execution_context());
 
-    components::logical_plan::catalog_resolves_t resolves;
-    add_resolved_table(&resource, resolves, oid1, "t1", 2);
-    add_resolved_table(&resource, resolves, oid2, "t2", 2);
+        REQUIRE(agg_t1->projected_cols() == (std::vector<size_t>{0, 1}));
+        REQUIRE(agg_t2->projected_cols() == (std::vector<size_t>{0, 1}));
+        REQUIRE(agg_t1->output_types().size() == 2);
+        REQUIRE(join->output_types().size() == 4);
+        auto* on_compare = static_cast<compare_expression_t*>(on.get());
+        REQUIRE(as_key(on_compare->left()).path().front() == 1);
+        REQUIRE(as_key(on_compare->right()).path().front() == 0);
+        REQUIRE(own_column(sel->expressions()[0]) == 0);
+        REQUIRE(own_column(sel->expressions()[1]) == 3);
+    }
 
-    components::planner::optimize(&resource,
-                                  boost::static_pointer_cast<components::logical_plan::node_t>(parent),
-                                  params.get(),
-                                  &resolves);
+    SECTION("delete") {
+        auto md = pruned_table(oid_t{9120}, 6);
+        md.columns[3].attname = "k";
 
-    REQUIRE(agg_t1->projected_cols() == (std::vector<size_t>{0, 1}));
-    REQUIRE(agg_t2->projected_cols() == std::vector<size_t>{0});
+        // DELETE FROM t (c0..c5) WHERE c4 > 5, an index on c3, an FK whose parent column is c1.
+        auto where = make_compare_expression(&resource, compare_type::gt, pruned_key(&resource, "c4", 4), pid);
+        auto del = make_node_delete(&resource,
+                                    make_node_match(&resource, qualified_name_t{pdb(), prel()}, where),
+                                    make_node_limit(&resource, limit_t::all()));
+        del->set_table_oid(md.table_oid);
+        del->set_table_metadata(&md);
+        del->set_index_key_columns({3});
+        components::catalog::fk_info_t fk;
+        fk.parent_col_indices = {1};
+        del->set_referencing_fks({fk});
+        auto cascade = boost::intrusive_ptr(new node_fk_cascade_t(&resource, core::dbname_t{}, core::relname_t{}, fk));
+        cascade->append_child(del);
+
+        components::planner::optimize(&resource, cascade, params.get(), test_execution_context());
+        REQUIRE(del->projected_cols() == (std::vector<size_t>{1, 3, 4}));
+        REQUIRE(as_key(static_cast<compare_expression_t*>(where.get())->left()).path().front() == 2);
+        REQUIRE(del->referencing_fks().front().parent_col_indices == std::vector<size_t>{0});
+        REQUIRE(cascade->fk().parent_col_indices == std::vector<size_t>{0});
+    }
 }
 
 // A WHERE match above a union is cloned onto each branch via positional identity (output column i == branch
@@ -1460,7 +1897,8 @@ namespace {
 TEST_CASE("optimizer::pushdown_filter::union_all_pushes_into_each_branch") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto gt = params->add_parameter(int64_t(5));
+    auto gt = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
 
     auto where = make_compare_expression(&resource, compare_type::gt, key(&resource, "a"), gt);
     auto outer = build_union_over_where(&resource, params.get(), {"a", "b"}, {"a", "b"}, /*all=*/true, where);
@@ -1484,7 +1922,8 @@ TEST_CASE("optimizer::pushdown_filter::union_all_pushes_into_each_branch") {
 TEST_CASE("optimizer::pushdown_filter::plain_union_pushes_into_each_branch") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto gt = params->add_parameter(int64_t(5));
+    auto gt = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
 
     auto where = make_compare_expression(&resource, compare_type::gt, key(&resource, "a"), gt);
     auto outer = build_union_over_where(&resource, params.get(), {"a", "b"}, {"a", "b"}, /*all=*/false, where);
@@ -1502,8 +1941,10 @@ TEST_CASE("optimizer::pushdown_filter::plain_union_pushes_into_each_branch") {
 TEST_CASE("optimizer::pushdown_filter::union_conjunction_all_mappable") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto gt = params->add_parameter(int64_t(5));
-    auto lt = params->add_parameter(int64_t(10));
+    auto gt = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
+    auto lt = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                    components::vector::parameter_kind::literal);
 
     auto c1 = make_compare_expression(&resource, compare_type::gt, key(&resource, "a"), gt);
     auto c2 = make_compare_expression(&resource, compare_type::lt, key(&resource, "b"), lt);
@@ -1528,8 +1969,10 @@ TEST_CASE("optimizer::pushdown_filter::union_conjunction_all_mappable") {
 TEST_CASE("optimizer::pushdown_filter::union_residual_stays_above_for_non_mappable") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto gt = params->add_parameter(int64_t(5));
-    auto lt = params->add_parameter(int64_t(10));
+    auto gt = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
+    auto lt = params->add_parameter(components::vector::make_scalar(&resource, int64_t(10)),
+                                    components::vector::parameter_kind::literal);
 
     auto c1 = make_compare_expression(&resource, compare_type::gt, key(&resource, "a"), gt);
     auto c2 = make_compare_expression(&resource, compare_type::lt, key(&resource, "b"), lt);
@@ -1582,8 +2025,10 @@ namespace {
 TEST_CASE("optimizer::pushdown_filter::join_shared_column_name_buckets_by_side") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto p5 = params->add_parameter(int64_t(5));
-    auto p7 = params->add_parameter(int64_t(7));
+    auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
+    auto p7 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(7)),
+                                    components::vector::parameter_kind::literal);
 
     auto left = join_scan(&resource, {"id", "k"});
     auto right = join_scan(&resource, {"id", "k"});
@@ -1621,8 +2066,10 @@ TEST_CASE("optimizer::pushdown_filter::join_shared_column_name_buckets_by_side")
 TEST_CASE("optimizer::pushdown_filter::left_join_null_padded_side_filter_stays_residual") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto p5 = params->add_parameter(int64_t(5));
-    auto p7 = params->add_parameter(int64_t(7));
+    auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
+    auto p7 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(7)),
+                                    components::vector::parameter_kind::literal);
 
     auto left = join_scan(&resource, {"id", "k"});
     auto right = join_scan(&resource, {"id", "k"});
@@ -1676,7 +2123,8 @@ TEST_CASE("optimizer::pushdown_filter::left_join_null_padded_side_filter_stays_r
 TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_equi_propagation") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto p5 = params->add_parameter(int64_t(5));
+    auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
 
     auto left = join_scan(&resource, {"a", "k"});
     auto right = join_scan(&resource, {"b", "k2"});
@@ -1729,7 +2177,8 @@ TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_equi_propagation") 
 TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_range_propagation") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto p5 = params->add_parameter(int64_t(5));
+    auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
 
     auto left = join_scan(&resource, {"a", "k"});
     auto right = join_scan(&resource, {"b", "k2"});
@@ -1769,7 +2218,8 @@ TEST_CASE("optimizer::pushdown_filter::inner_join_transitive_range_propagation")
 TEST_CASE("optimizer::pushdown_filter::left_join_no_transitive_propagation") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto p5 = params->add_parameter(int64_t(5));
+    auto p5 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(5)),
+                                    components::vector::parameter_kind::literal);
 
     auto left = join_scan(&resource, {"a", "k"});
     auto right = join_scan(&resource, {"b", "k2"});
@@ -2072,13 +2522,15 @@ TEST_CASE("optimizer::eager_aggregation::cross_side_reference_is_not_pushed") {
 TEST_CASE("optimizer::constant_folding::unfoldable_comparison_kind_is_left_unfolded") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(std::string("abc"));
-    auto id1 = params->add_parameter(std::string("b.*"));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, std::string("abc")),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, std::string("b.*")),
+                                     components::vector::parameter_kind::literal);
 
     auto comp = make_compare_expression(&resource, compare_type::regex, id0, id1);
     auto node = make_match_with_expr(&resource, comp);
 
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     REQUIRE(comp->type() == compare_type::regex);
     REQUIRE(std::holds_alternative<core::parameter_id_t>(comp->left()));
@@ -2088,8 +2540,10 @@ TEST_CASE("optimizer::constant_folding::unfoldable_comparison_kind_is_left_unfol
 TEST_CASE("optimizer::constant_folding::non_numeric_constant_arithmetic_is_declined_not_folded") {
     auto resource = core::pmr::otterbrix_resource();
     auto params = make_parameter_node(&resource);
-    auto id0 = params->add_parameter(std::string("a"));
-    auto id1 = params->add_parameter(int64_t(1));
+    auto id0 = params->add_parameter(components::vector::make_scalar(&resource, std::string("a")),
+                                     components::vector::parameter_kind::literal);
+    auto id1 = params->add_parameter(components::vector::make_scalar(&resource, int64_t(1)),
+                                     components::vector::parameter_kind::literal);
 
     auto scalar = make_scalar_expression(&resource, scalar_type::add);
     scalar->append_param(id0);
@@ -2101,7 +2555,7 @@ TEST_CASE("optimizer::constant_folding::non_numeric_constant_arithmetic_is_decli
                                         expression_ptr(scalar));
     auto node = make_match_with_expr(&resource, comp);
 
-    components::planner::optimize(&resource, node, params.get());
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
 
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 2);
@@ -2156,7 +2610,12 @@ TEST_CASE("optimizer::host_rules::stage_order_then_registration_order") {
     };
     rule_trace().clear();
     auto params = make_parameter_node(&resource);
-    components::planner::optimize(&resource, agg, params.get(), nullptr, /*can_push_to_agent=*/false, rules);
+    components::planner::optimize(&resource,
+                                  agg,
+                                  params.get(),
+                                  test_execution_context(),
+                                  /*can_push_to_agent=*/false,
+                                  rules);
     REQUIRE(rule_trace() == std::vector<int>{1, 11, 2, 3, 4, 5});
 }
 
@@ -2171,6 +2630,186 @@ TEST_CASE("optimizer::host_rules::aggregate_pushdown_stage_sees_the_stamp") {
     };
     stamp_trace().clear();
     auto params = make_parameter_node(&resource);
-    components::planner::optimize(&resource, agg, params.get(), nullptr, /*can_push_to_agent=*/true, rules);
+    components::planner::optimize(&resource,
+                                  agg,
+                                  params.get(),
+                                  test_execution_context(),
+                                  /*can_push_to_agent=*/true,
+                                  rules);
     REQUIRE(stamp_trace() == std::vector<std::pair<int, bool>>{{3, false}, {4, true}, {5, true}});
+}
+
+namespace {
+    using components::types::complex_logical_type;
+    using components::types::logical_type;
+    namespace vec = components::vector;
+
+    // Folds `left op right` under a match and returns the scalar expression for inspection.
+    boost::intrusive_ptr<scalar_expression_t> fold_scalar_pair(std::pmr::memory_resource* resource,
+                                                               const boost::intrusive_ptr<parameter_node_t>& params,
+                                                               scalar_type op,
+                                                               const complex_logical_type& result,
+                                                               core::parameter_id_t left,
+                                                               core::parameter_id_t right) {
+        auto scalar = make_scalar_expression(resource, op);
+        scalar->set_result_type(result);
+        scalar->append_param(left);
+        scalar->append_param(right);
+        auto comp = make_compare_expression(resource,
+                                            compare_type::eq,
+                                            key(resource, "field", side_t::left),
+                                            expression_ptr(scalar));
+        auto node = make_match_with_expr(resource, comp);
+        components::planner::optimize(resource, node, params.get(), test_execution_context());
+        return boost::intrusive_ptr<scalar_expression_t>(static_cast<scalar_expression_t*>(scalar.get()));
+    }
+} // namespace
+
+TEST_CASE("optimizer::fold_needs_a_stamped_result_type") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(vec::make_scalar(&resource, int64_t(2)), vec::parameter_kind::literal);
+    auto id1 = params->add_parameter(vec::make_scalar(&resource, int64_t(3)), vec::parameter_kind::literal);
+
+    auto s =
+        fold_scalar_pair(&resource, params, scalar_type::add, complex_logical_type{logical_type::INVALID}, id0, id1);
+
+    REQUIRE(s->params().size() == 2);
+    REQUIRE(params->parameters().size() == 2);
+}
+
+TEST_CASE("optimizer::bound_dollar_parameter_folds") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(vec::make_scalar(&resource, int64_t(2)), vec::parameter_kind::external);
+    auto id1 = params->add_parameter(vec::make_scalar(&resource, int64_t(3)), vec::parameter_kind::literal);
+
+    auto s =
+        fold_scalar_pair(&resource, params, scalar_type::add, complex_logical_type{logical_type::BIGINT}, id0, id1);
+
+    REQUIRE(s->params().size() == 1);
+    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
+    REQUIRE(new_id != id0);
+    REQUIRE(params->parameter(new_id).get_value<int64_t>(0) == 5);
+    REQUIRE(params->parameter(id0).get_value<int64_t>(0) == 2);
+    REQUIRE(params->parameters().kind(new_id) == vec::parameter_kind::literal);
+}
+
+TEST_CASE("optimizer::execution_slot_on_either_side_is_not_folded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(vec::make_scalar(&resource, int64_t(2)), vec::parameter_kind::literal);
+    auto id1 = params->add_parameter(vec::make_scalar(&resource, int64_t(3)), vec::parameter_kind::execution);
+
+    auto s =
+        fold_scalar_pair(&resource, params, scalar_type::add, complex_logical_type{logical_type::BIGINT}, id0, id1);
+
+    REQUIRE(s->params().size() == 2);
+    REQUIRE(params->parameters().size() == 2);
+}
+
+TEST_CASE("optimizer::scalar_fold_decimal") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto type = complex_logical_type::create_decimal(&resource, 10, 2);
+    REQUIRE_FALSE(type.has_error());
+    auto id0 = params->add_parameter(vec::make_decimal(&resource, type.value(), 150), vec::parameter_kind::literal);
+    auto id1 = params->add_parameter(vec::make_decimal(&resource, type.value(), 225), vec::parameter_kind::literal);
+
+    auto s = fold_scalar_pair(&resource, params, scalar_type::add, type.value(), id0, id1);
+
+    REQUIRE(s->params().size() == 1);
+    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
+    REQUIRE(new_id != id0);
+    REQUIRE(params->parameter(new_id).type() == type.value());
+    REQUIRE(params->parameter(new_id).get_value<int64_t>(0) == 375);
+}
+
+TEST_CASE("optimizer::scalar_fold_decimal_with_different_scales_is_skipped") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto t2 = complex_logical_type::create_decimal(&resource, 10, 2);
+    auto t3 = complex_logical_type::create_decimal(&resource, 10, 3);
+    REQUIRE_FALSE(t2.has_error());
+    REQUIRE_FALSE(t3.has_error());
+    auto id0 = params->add_parameter(vec::make_decimal(&resource, t2.value(), 150), vec::parameter_kind::literal);
+    auto id1 = params->add_parameter(vec::make_decimal(&resource, t3.value(), 1500), vec::parameter_kind::literal);
+
+    auto s = fold_scalar_pair(&resource, params, scalar_type::multiply, t2.value(), id0, id1);
+
+    REQUIRE(s->params().size() == 2);
+    REQUIRE(params->parameters().size() == 2);
+}
+
+TEST_CASE("optimizer::scalar_fold_min_over_minus_one_is_skipped") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(vec::make_scalar(&resource, std::numeric_limits<int64_t>::min()),
+                                     vec::parameter_kind::literal);
+    auto id1 = params->add_parameter(vec::make_scalar(&resource, int64_t(-1)), vec::parameter_kind::literal);
+
+    auto s =
+        fold_scalar_pair(&resource, params, scalar_type::divide, complex_logical_type{logical_type::BIGINT}, id0, id1);
+    REQUIRE(s->params().size() == 2);
+    REQUIRE(params->parameters().size() == 2);
+}
+
+TEST_CASE("optimizer::scalar_fold_date_plus_interval") {
+    namespace date = core::date;
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    using namespace std::chrono;
+    const auto jan31 = date::from_sys_days(sys_days{year{2024} / January / 31});
+    const auto feb01 = date::from_sys_days(sys_days{year{2024} / February / 1});
+    auto id0 = params->add_parameter(vec::make_scalar(&resource, complex_logical_type{logical_type::DATE}, jan31),
+                                     vec::parameter_kind::literal);
+    auto id1 =
+        params->add_parameter(vec::make_scalar(&resource,
+                                               complex_logical_type{logical_type::INTERVAL},
+                                               date::interval_t{date::microseconds{0}, date::days{1}, date::months{0}}),
+                              vec::parameter_kind::literal);
+
+    auto s = fold_scalar_pair(&resource, params, scalar_type::add, complex_logical_type{logical_type::DATE}, id0, id1);
+
+    REQUIRE(s->params().size() == 1);
+    auto new_id = std::get<core::parameter_id_t>(s->params()[0]);
+    REQUIRE(params->parameter(new_id).get_value<date::date_t>(0).value == feb01.value);
+}
+
+TEST_CASE("optimizer::compare_fold_string") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 =
+        params->add_parameter(vec::make_scalar(&resource, std::string_view{"abc"}), vec::parameter_kind::literal);
+    auto id1 =
+        params->add_parameter(vec::make_scalar(&resource, std::string_view{"abd"}), vec::parameter_kind::literal);
+
+    auto lt = make_compare_expression(&resource, compare_type::lt, id0, id1);
+    auto eq = make_compare_expression(&resource, compare_type::eq, id0, id1);
+    components::planner::optimize(&resource,
+                                  make_match_with_expr(&resource, lt),
+                                  params.get(),
+                                  test_execution_context());
+    components::planner::optimize(&resource,
+                                  make_match_with_expr(&resource, eq),
+                                  params.get(),
+                                  test_execution_context());
+
+    REQUIRE(static_cast<compare_expression_t*>(lt.get())->type() == compare_type::all_true);
+    REQUIRE(static_cast<compare_expression_t*>(eq.get())->type() == compare_type::all_false);
+}
+
+TEST_CASE("optimizer::compare_of_mismatched_physical_types_is_not_folded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto id0 = params->add_parameter(vec::make_scalar(&resource, int64_t(3)), vec::parameter_kind::literal);
+    auto id1 = params->add_parameter(vec::make_scalar(&resource, double(3.0)), vec::parameter_kind::literal);
+
+    auto comp = make_compare_expression(&resource, compare_type::eq, id0, id1);
+    components::planner::optimize(&resource,
+                                  make_match_with_expr(&resource, comp),
+                                  params.get(),
+                                  test_execution_context());
+
+    REQUIRE(static_cast<compare_expression_t*>(comp.get())->type() == compare_type::eq);
 }

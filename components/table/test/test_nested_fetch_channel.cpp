@@ -18,6 +18,8 @@
 #include <components/vector/data_chunk.hpp>
 #include <core/file/local_file_system.hpp>
 
+#include <components/vector/vector_builders.hpp>
+#include <components/vector/vector_operations.hpp>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -84,30 +86,29 @@ namespace {
         return complex_logical_type::create_struct("row_box", fields);
     }
 
-    logical_value_t one_row_value(nested_env_t& env, shape_t shape, const std::string& big) {
+    vector_t one_row_value(nested_env_t& env, shape_t shape, const std::string& big) {
         auto outer = outer_struct_type(env, shape);
         auto field = field_type(env, shape);
-        std::vector<logical_value_t> members;
+        std::vector<vector_t> members;
         switch (shape) {
             case shape_t::STRUCT_OF_STRING:
-                members.emplace_back(&env.resource, big);
+                members.push_back(make_scalar(&env.resource, std::string_view{big}));
                 break;
             case shape_t::STRUCT_OF_STRUCT_STRING: {
-                std::vector<logical_value_t> inner_members;
-                inner_members.emplace_back(&env.resource, big);
-                members.push_back(logical_value_t::create_struct(&env.resource, field, inner_members));
+                std::vector<vector_t> inner_members;
+                inner_members.push_back(make_scalar(&env.resource, std::string_view{big}));
+                members.push_back(make_struct(&env.resource, field, inner_members));
                 break;
             }
             case shape_t::STRUCT_OF_LIST_STRING: {
-                std::vector<logical_value_t> elements;
-                elements.emplace_back(&env.resource, big);
-                members.push_back(logical_value_t::create_list(&env.resource,
-                                                               complex_logical_type{logical_type::STRING_LITERAL},
-                                                               elements));
+                std::vector<vector_t> elements;
+                elements.push_back(make_scalar(&env.resource, std::string_view{big}));
+                members.push_back(
+                    make_list(&env.resource, complex_logical_type{logical_type::STRING_LITERAL}, elements));
                 break;
             }
         }
-        return logical_value_t::create_struct(&env.resource, outer, members);
+        return make_struct(&env.resource, outer, members);
     }
 
     struct built_table_t {
@@ -124,7 +125,7 @@ namespace {
         auto types = out.table->copy_types();
         data_chunk_t chunk(&env.resource, types, 1);
         chunk.set_cardinality(1);
-        chunk.set_value(0, 0, one_row_value(env, shape, big));
+        vector_ops::copy(one_row_value(env, shape, big), chunk.data[0], 1, 0, 0);
 
         table_append_state state(&env.resource);
         REQUIRE_FALSE(out.table->append_lock(state).has_error());

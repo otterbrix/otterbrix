@@ -15,12 +15,16 @@ namespace components::logical_plan {
         stream << "$aggregate: {";
         bool is_first = true;
         for (const auto& child : children_) {
+            const auto text = child->to_string();
+            if (text.empty()) { // an unlimited limit has no text, as PostgreSQL shows no Limit node for it
+                continue;
+            }
             if (is_first) {
                 is_first = false;
             } else {
                 stream << ", ";
             }
-            stream << child->to_string();
+            stream << text;
         }
         // Rendered only for DISTINCT ON (non-empty); plain DISTINCT / non-DISTINCT keep the
         // historical "$aggregate: {<children>}" form that plan-string tests pin.

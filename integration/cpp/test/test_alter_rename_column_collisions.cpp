@@ -75,7 +75,9 @@ TEST_CASE("integration::cpp::alter_rename_column_collisions") {
         auto renamed = run_ok(dispatcher, session, "SELECT b FROM db.t;");
         REQUIRE(renamed->size() == 1);
         INFO("b reads what a held, not what the dropped b held");
-        CHECK(renamed->value(0, 0).value<int32_t>() == 1);
+        auto cell0 = renamed->get<int32_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        CHECK(cell0.value() == 1);
         REQUIRE(run(dispatcher, session, "SELECT a FROM db.t;")->is_error());
 
         INFO("and the reused name takes writes");
@@ -130,7 +132,9 @@ TEST_CASE("integration::cpp::alter_rename_column_collisions::reused_name_survive
 
         auto reloaded = run_ok(dispatcher, session, "SELECT b FROM db.t;");
         REQUIRE(reloaded->size() == 1);
-        CHECK(reloaded->value(0, 0).value<int32_t>() == 1);
+        auto cell1 = reloaded->get<int32_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        CHECK(cell1.value() == 1);
 
         run_ok(dispatcher, session, "INSERT INTO db.t (b) VALUES (9);");
         CHECK(run_ok(dispatcher, session, "SELECT b FROM db.t;")->size() == 2);

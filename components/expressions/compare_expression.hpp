@@ -4,6 +4,7 @@
 #include "key.hpp"
 #include <components/compute/function.hpp>
 #include <memory_resource>
+#include <optional>
 
 namespace components::expressions {
 
@@ -46,7 +47,7 @@ namespace components::expressions {
         void make_unfoldable() noexcept;
 
         // Flags for SQL LIKE -> regex transformation ('i' case-insensitive, 'l' glob, 'n' negated)
-        core::parameter_id_t regex_flags_param() const noexcept;
+        std::optional<core::parameter_id_t> regex_flags_param() const noexcept;
         void set_regex_flags(core::parameter_id_t flags) noexcept;
 
         // The match function, resolved by validation. Should become a plain function call operand.
@@ -59,7 +60,7 @@ namespace components::expressions {
         compare_type type_;
         compare_type inner_op_ = compare_type::invalid;
         bool do_not_fold_ = false;
-        core::parameter_id_t regex_flags_param_{0};
+        std::optional<core::parameter_id_t> regex_flags_param_;
         compute::function_uid function_uid_{compute::invalid_function_uid};
         compute::function_ptr function_{compute::no_function()};
         param_storage left_;

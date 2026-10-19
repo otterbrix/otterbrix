@@ -16,6 +16,19 @@ namespace services::disk {
     namespace {
         namespace wk = components::catalog::well_known_oid;
 
+        // The chunk a scan of `col_indices` fills: data[i] holds col_indices[i].
+        std::pmr::vector<components::types::complex_logical_type>
+        read_types(const components::table::data_table_t& table,
+                   const std::vector<components::table::storage_index_t>& col_indices,
+                   std::pmr::memory_resource* resource) {
+            std::pmr::vector<components::types::complex_logical_type> types(resource);
+            types.reserve(col_indices.size());
+            for (const auto& column : col_indices) {
+                types.push_back(table.columns()[column.primary_index()].type());
+            }
+            return types;
+        }
+
         struct ns_seed_row_t {
             components::catalog::oid_t oid;
             std::string_view name;
@@ -500,30 +513,21 @@ namespace services::disk {
             col_indices.emplace_back(static_cast<int64_t>(id_col));
             components::table::table_scan_state scan_state(&scan_resource);
             table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
-
-            const auto& all_cols = table.columns();
-            std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
-            all_types.reserve(all_cols.size());
-            for (const auto& c : all_cols) {
-                all_types.push_back(c.type());
-            }
-            const std::vector<std::size_t> projected{static_cast<std::size_t>(id_col)};
+            auto chunk_types = read_types(table, col_indices, &scan_resource);
 
             while (true) {
                 components::vector::data_chunk_t chunk(&scan_resource,
-                                                       all_types,
-                                                       projected,
+                                                       chunk_types,
                                                        components::vector::DEFAULT_VECTOR_CAPACITY);
                 table.scan(chunk, scan_state);
                 if (chunk.size() == 0) {
                     break;
                 }
                 for (uint64_t i = 0; i < chunk.size(); i++) {
-                    if (chunk.is_null(id_col, i)) {
+                    if (chunk.is_null(0, i)) {
                         continue;
                     }
-                    const auto seen =
-                        static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(id_col, i));
+                    const auto seen = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                     if (seen > high_water) {
                         high_water = seen;
                     }
@@ -723,27 +727,17 @@ namespace services::disk {
                 return std::size_t{0};
             }
             core::pmr::otterbrix_resource scan_resource;
-            // Sparse [oid,relnamespace,relkind] scan via projected_cols, read by absolute index — a compacted chunk
-            // mis-decodes the dictionary-encoded relkind column (segfault).
+            // [oid, relnamespace, relkind]
             std::vector<components::table::storage_index_t> col_indices;
             col_indices.emplace_back(static_cast<int64_t>(0));
             col_indices.emplace_back(static_cast<int64_t>(2));
             col_indices.emplace_back(static_cast<int64_t>(3));
             components::table::table_scan_state scan_state(&scan_resource);
             cls_table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
-            const auto& all_cols = cls_table.columns();
-            std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
-            all_types.reserve(all_cols.size());
-            for (const auto& c : all_cols) {
-                all_types.push_back(c.type());
-            }
-            const std::vector<std::size_t> projected{static_cast<std::size_t>(0),
-                                                     static_cast<std::size_t>(2),
-                                                     static_cast<std::size_t>(3)};
+            auto chunk_types = read_types(cls_table, col_indices, &scan_resource);
             while (true) {
                 components::vector::data_chunk_t chunk(&scan_resource,
-                                                       all_types,
-                                                       projected,
+                                                       chunk_types,
                                                        components::vector::DEFAULT_VECTOR_CAPACITY);
                 cls_table.scan(chunk, scan_state);
                 if (chunk.size() == 0)
@@ -756,14 +750,14 @@ namespace services::disk {
                         continue;
                     if (has_storage(oid))
                         continue;
-                    const bool rk_null = chunk.is_null(3, i);
-                    const auto rk_v = rk_null ? std::string_view{} : chunk.get_value<std::string_view>(3, i);
+                    const bool rk_null = chunk.is_null(2, i);
+                    const auto rk_v = rk_null ? std::string_view{} : chunk.get_value<std::string_view>(2, i);
                     const char relkind = (rk_null || rk_v.empty()) ? catalog::relkind::regular : rk_v.front();
                     // Only relkinds with physical row storage; views, computed tables, sequences etc. have none.
                     if (relkind != catalog::relkind::regular && relkind != catalog::relkind::materialized_view) {
                         continue;
                     }
-                    if (chunk.is_null(2, i)) {
+                    if (chunk.is_null(1, i)) {
                         // The namespace names the directory the file must be recreated in; nothing else implies it.
                         error(log_,
                               "manager_disk_t::rehydrate_missing_user_storages_sync: pg_class row oid={} "
@@ -772,7 +766,7 @@ namespace services::disk {
                         ++unclosed;
                         continue;
                     }
-                    const auto ns_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(2, i));
+                    const auto ns_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                     need_oids.emplace_back(oid, ns_oid);
                 }
             }
@@ -1035,7 +1029,7 @@ namespace services::disk {
             uint64_t added_at{0};
             uint64_t dropped_at{components::table::NOT_DELETED_ID};
             // Decoded on resource_, not the scan's local arena, since the value outlives this function.
-            std::optional<components::types::logical_value_t> default_value;
+            std::optional<components::vector::vector_t> default_value;
         };
         std::unordered_map<catalog::oid_t, std::vector<catalog_col_t>> raw_by_relid;
         std::unordered_map<catalog::oid_t, std::vector<components::table::column_definition_t>> result;
@@ -1216,28 +1210,21 @@ namespace services::disk {
         col_indices.emplace_back(static_cast<int64_t>(3));
         components::table::table_scan_state scan_state(&scan_resource);
         table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
-        const auto& all_cols = table.columns();
-        std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
-        all_types.reserve(all_cols.size());
-        for (const auto& c : all_cols) {
-            all_types.push_back(c.type());
-        }
-        const std::vector<std::size_t> projected{0, 3};
+        auto chunk_types = read_types(table, col_indices, &scan_resource);
         while (true) {
             components::vector::data_chunk_t chunk(&scan_resource,
-                                                   all_types,
-                                                   projected,
+                                                   chunk_types,
                                                    components::vector::DEFAULT_VECTOR_CAPACITY);
             table.scan(chunk, scan_state);
             if (chunk.size() == 0)
                 break;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.is_null(0, i) || chunk.is_null(3, i))
+                if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
                 const auto seen = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                 if (seen < catalog::FIRST_USER_OID)
                     continue;
-                const auto kind = chunk.get_value<std::string_view>(3, i);
+                const auto kind = chunk.get_value<std::string_view>(1, i);
                 if (kind.size() != 1)
                     continue;
                 const char k = kind.front();
@@ -1285,28 +1272,21 @@ namespace services::disk {
         col_indices.emplace_back(static_cast<int64_t>(3));
         components::table::table_scan_state scan_state(&scan_resource);
         table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
-        const auto& all_cols = table.columns();
-        std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
-        all_types.reserve(all_cols.size());
-        for (const auto& c : all_cols) {
-            all_types.push_back(c.type());
-        }
-        const std::vector<std::size_t> projected{0, 3};
+        auto chunk_types = read_types(table, col_indices, &scan_resource);
         while (true) {
             components::vector::data_chunk_t chunk(&scan_resource,
-                                                   all_types,
-                                                   projected,
+                                                   chunk_types,
                                                    components::vector::DEFAULT_VECTOR_CAPACITY);
             table.scan(chunk, scan_state);
             if (chunk.size() == 0)
                 break;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.is_null(0, i) || chunk.is_null(3, i))
+                if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
                 const auto seen = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                 if (seen != table_oid)
                     continue;
-                const auto kind = chunk.get_value<std::string_view>(3, i);
+                const auto kind = chunk.get_value<std::string_view>(1, i);
                 if (kind.size() == 1) {
                     result = kind.front();
                 }
@@ -1334,28 +1314,21 @@ namespace services::disk {
         col_indices.emplace_back(static_cast<int64_t>(2));
         components::table::table_scan_state scan_state(&scan_resource);
         table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
-        const auto& all_cols = table.columns();
-        std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
-        all_types.reserve(all_cols.size());
-        for (const auto& c : all_cols) {
-            all_types.push_back(c.type());
-        }
-        const std::vector<std::size_t> projected{0, 2};
+        auto chunk_types = read_types(table, col_indices, &scan_resource);
         while (true) {
             components::vector::data_chunk_t chunk(&scan_resource,
-                                                   all_types,
-                                                   projected,
+                                                   chunk_types,
                                                    components::vector::DEFAULT_VECTOR_CAPACITY);
             table.scan(chunk, scan_state);
             if (chunk.size() == 0)
                 break;
             for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.is_null(0, i) || chunk.is_null(2, i))
+                if (chunk.is_null(0, i) || chunk.is_null(1, i))
                     continue;
                 const auto seen = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
                 if (seen != table_oid)
                     continue;
-                result = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(2, i));
+                result = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
             }
         }
         return result;
@@ -1477,29 +1450,19 @@ namespace services::disk {
                 col_indices.emplace_back(static_cast<int64_t>(catalog::pg_attribute_col::attname));
                 components::table::table_scan_state scan_state(&scan_resource);
                 attr_table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
-                const auto& all_cols = attr_table.columns();
-                std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
-                all_types.reserve(all_cols.size());
-                for (const auto& c : all_cols) {
-                    all_types.push_back(c.type());
-                }
-                const std::vector<std::size_t> projected{static_cast<std::size_t>(catalog::pg_attribute_col::attoid),
-                                                         static_cast<std::size_t>(catalog::pg_attribute_col::attname)};
+                auto chunk_types = read_types(attr_table, col_indices, &scan_resource);
                 while (true) {
                     components::vector::data_chunk_t chunk(&scan_resource,
-                                                           all_types,
-                                                           projected,
+                                                           chunk_types,
                                                            components::vector::DEFAULT_VECTOR_CAPACITY);
                     attr_table.scan(chunk, scan_state);
                     if (chunk.size() == 0)
                         break;
                     for (uint64_t i = 0; i < chunk.size(); ++i) {
-                        if (chunk.is_null(catalog::pg_attribute_col::attoid, i) ||
-                            chunk.is_null(catalog::pg_attribute_col::attname, i))
+                        if (chunk.is_null(0, i) || chunk.is_null(1, i))
                             continue;
-                        const auto att_oid = static_cast<catalog::oid_t>(
-                            chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, i));
-                        auto sv = chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname, i);
+                        const auto att_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                        auto sv = chunk.get_value<std::string_view>(1, i);
                         attoid_to_name.emplace(att_oid, std::pmr::string{sv.data(), sv.size(), resource_});
                     }
                 }
@@ -1591,17 +1554,10 @@ namespace services::disk {
         {
             components::table::table_scan_state scan_state(&scan_resource);
             table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
-            const auto& all_cols = table.columns();
-            std::pmr::vector<components::types::complex_logical_type> all_types(&scan_resource);
-            all_types.reserve(all_cols.size());
-            for (const auto& c : all_cols) {
-                all_types.push_back(c.type());
-            }
-            const std::vector<std::size_t> projected{static_cast<std::size_t>(0), static_cast<std::size_t>(2)};
+            auto chunk_types = read_types(table, col_indices, &scan_resource);
             while (true) {
                 components::vector::data_chunk_t chunk(&scan_resource,
-                                                       all_types,
-                                                       projected,
+                                                       chunk_types,
                                                        components::vector::DEFAULT_VECTOR_CAPACITY);
                 const bool produced =
                     table.create_index_scan(scan_state, chunk, components::table::table_scan_type::COMMITTED_ROWS);
@@ -1615,9 +1571,9 @@ namespace services::disk {
                     if (seen < catalog::FIRST_USER_OID) {
                         continue;
                     }
-                    const auto ns = chunk.is_null(2, i)
+                    const auto ns = chunk.is_null(1, i)
                                         ? catalog::INVALID_OID
-                                        : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(2, i));
+                                        : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
                     ns_by_user_oid[seen] = ns;
                 }
             }

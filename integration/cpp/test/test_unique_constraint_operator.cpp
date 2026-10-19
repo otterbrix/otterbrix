@@ -71,12 +71,12 @@ TEST_CASE("unique constraint operator: composite key duplicate is caught", "[uni
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("b");
     vector::data_chunk_t chunk(&resource, cols, 3);
-    chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
-    chunk.set_value(1, 0, types::logical_value_t(&resource, int64_t(9)));
-    chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(1)));
-    chunk.set_value(1, 1, types::logical_value_t(&resource, int64_t(8)));
-    chunk.set_value(0, 2, types::logical_value_t(&resource, int64_t(1)));
-    chunk.set_value(1, 2, types::logical_value_t(&resource, int64_t(9)));
+    chunk.set_value(0, 0, int64_t(1));
+    chunk.set_value(1, 0, int64_t(9));
+    chunk.set_value(0, 1, int64_t(1));
+    chunk.set_value(1, 1, int64_t(8));
+    chunk.set_value(0, 2, int64_t(1));
+    chunk.set_value(1, 2, int64_t(9));
     chunk.set_cardinality(3);
 
     REQUIRE(run_unique(&resource, std::move(chunk), {{"a", "b"}}));
@@ -90,10 +90,10 @@ TEST_CASE("unique constraint operator: composite key with differing second colum
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("b");
     vector::data_chunk_t chunk(&resource, cols, 2);
-    chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
-    chunk.set_value(1, 0, types::logical_value_t(&resource, int64_t(9)));
-    chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(1)));
-    chunk.set_value(1, 1, types::logical_value_t(&resource, int64_t(8)));
+    chunk.set_value(0, 0, int64_t(1));
+    chunk.set_value(1, 0, int64_t(9));
+    chunk.set_value(0, 1, int64_t(1));
+    chunk.set_value(1, 1, int64_t(8));
     chunk.set_cardinality(2);
 
     REQUIRE_FALSE(run_unique(&resource, std::move(chunk), {{"a", "b"}}));
@@ -120,8 +120,8 @@ TEST_CASE("unique constraint operator: NaN duplicate in a double key is caught",
     cols.back().set_alias("score");
     vector::data_chunk_t chunk(&resource, cols, 2);
     const double nan = std::numeric_limits<double>::quiet_NaN();
-    chunk.set_value(0, 0, types::logical_value_t(&resource, nan));
-    chunk.set_value(0, 1, types::logical_value_t(&resource, nan));
+    chunk.set_value(0, 0, nan);
+    chunk.set_value(0, 1, nan);
     chunk.set_cardinality(2);
 
     REQUIRE(run_unique(&resource, std::move(chunk), {{"score"}}));
@@ -133,8 +133,8 @@ TEST_CASE("unique constraint operator: 0.0 and -0.0 collide as one double key", 
     cols.emplace_back(types::logical_type::DOUBLE);
     cols.back().set_alias("score");
     vector::data_chunk_t chunk(&resource, cols, 2);
-    chunk.set_value(0, 0, types::logical_value_t(&resource, 0.0));
-    chunk.set_value(0, 1, types::logical_value_t(&resource, -0.0));
+    chunk.set_value(0, 0, 0.0);
+    chunk.set_value(0, 1, -0.0);
     chunk.set_cardinality(2);
 
     REQUIRE(run_unique(&resource, std::move(chunk), {{"score"}}));
@@ -145,9 +145,9 @@ TEST_CASE("cells_equal resolves dictionary indirection like the hash does", "[un
     auto resource = core::pmr::otterbrix_resource();
 
     vector::vector_t base(&resource, types::complex_logical_type{types::logical_type::BIGINT}, 3);
-    base.set_value(0, types::logical_value_t(&resource, int64_t(10)));
-    base.set_value(1, types::logical_value_t(&resource, int64_t(20)));
-    base.set_value(2, types::logical_value_t(&resource, int64_t(30)));
+    base.set_value(0, int64_t(10));
+    base.set_value(1, int64_t(20));
+    base.set_value(2, int64_t(30));
     vector::indexing_vector_t sel(&resource, 2);
     sel.set_index(0, 2);
     sel.set_index(1, 0);
@@ -155,8 +155,8 @@ TEST_CASE("cells_equal resolves dictionary indirection like the hash does", "[un
     dict.slice(base, sel, 2);
 
     vector::vector_t flat(&resource, types::complex_logical_type{types::logical_type::BIGINT}, 2);
-    flat.set_value(0, types::logical_value_t(&resource, int64_t(30)));
-    flat.set_value(1, types::logical_value_t(&resource, int64_t(10)));
+    flat.set_value(0, int64_t(30));
+    flat.set_value(1, int64_t(10));
 
     REQUIRE(vector::cells_equal(dict, 0, flat, 0));
     REQUIRE(vector::cells_equal(dict, 1, flat, 1));
@@ -171,8 +171,8 @@ TEST_CASE("unique constraint operator: a key column absent from the write-set is
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("a");
     vector::data_chunk_t chunk(&resource, cols, 2);
-    chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
-    chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(1)));
+    chunk.set_value(0, 0, int64_t(1));
+    chunk.set_value(0, 1, int64_t(1));
     chunk.set_cardinality(2);
 
     std::string err;
@@ -189,8 +189,8 @@ TEST_CASE("unique constraint operator: a key column list that is empty is refuse
     cols.emplace_back(types::logical_type::BIGINT);
     cols.back().set_alias("a");
     vector::data_chunk_t chunk(&resource, cols, 2);
-    chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
-    chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(2)));
+    chunk.set_value(0, 0, int64_t(1));
+    chunk.set_value(0, 1, int64_t(2));
     chunk.set_cardinality(2);
 
     std::string err;
@@ -209,8 +209,8 @@ TEST_CASE("unique constraint operator: a chunk whose layout disagrees with the f
     cols1.emplace_back(types::logical_type::BIGINT);
     cols1.back().set_alias("v");
     vector::data_chunk_t chunk1(&resource, cols1, 1);
-    chunk1.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
-    chunk1.set_value(1, 0, types::logical_value_t(&resource, int64_t(100)));
+    chunk1.set_value(0, 0, int64_t(1));
+    chunk1.set_value(1, 0, int64_t(100));
     chunk1.set_cardinality(1);
 
     std::pmr::vector<types::complex_logical_type> cols2(&resource);
@@ -219,8 +219,8 @@ TEST_CASE("unique constraint operator: a chunk whose layout disagrees with the f
     cols2.emplace_back(types::logical_type::BIGINT);
     cols2.back().set_alias("k");
     vector::data_chunk_t chunk2(&resource, cols2, 1);
-    chunk2.set_value(0, 0, types::logical_value_t(&resource, int64_t(999)));
-    chunk2.set_value(1, 0, types::logical_value_t(&resource, int64_t(1)));
+    chunk2.set_value(0, 0, int64_t(999));
+    chunk2.set_value(1, 0, int64_t(1));
     chunk2.set_cardinality(1);
 
     operators::chunks_vector_t chunks(&resource);
@@ -258,8 +258,8 @@ TEST_CASE("unique constraint operator: an unresolved table oid does not disable 
     cols.back().set_alias("a");
     vector::data_chunk_t chunk(&resource, cols, 2);
     // Two distinct keys: LAYER 1 has nothing to say, so this answers LAYER 2 alone.
-    chunk.set_value(0, 0, types::logical_value_t(&resource, int64_t(1)));
-    chunk.set_value(0, 1, types::logical_value_t(&resource, int64_t(2)));
+    chunk.set_value(0, 0, int64_t(1));
+    chunk.set_value(0, 1, int64_t(2));
     chunk.set_cardinality(2);
 
     operators::operator_ptr op(

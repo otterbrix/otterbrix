@@ -2,7 +2,6 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-#include <components/types/logical_value.hpp>
 
 // A non-string LIKE pattern constant is rejected at transform time ("LIKE: right side
 // must be a string"). These cases pin the rejection across every position that lowers
@@ -86,13 +85,17 @@ TEST_CASE("integration::cpp::like_type_guards::string_pattern_still_works") {
         auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.t WHERE s LIKE '1%';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int32_t>() == 1);
+        auto cell0 = cur->get<int32_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == 1);
     }
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.t WHERE s NOT LIKE '1%';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int32_t>() == 2);
+        auto cell1 = cur->get<int32_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == 2);
     }
 }

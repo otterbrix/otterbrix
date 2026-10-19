@@ -53,7 +53,7 @@ namespace {
         REQUIRE_FALSE(table->initialize_append(state).has_error());
         auto chunk = data_chunk_t(&env.resource, types, count);
         for (uint64_t i = 0; i < count; i++) {
-            chunk.data[0].set_value(i, logical_value_t(&env.resource, static_cast<int64_t>(i)));
+            chunk.data[0].set_value(i, static_cast<int64_t>(i));
         }
         chunk.set_cardinality(count);
         REQUIRE_FALSE(table->append(chunk, state).has_error());

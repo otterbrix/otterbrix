@@ -45,15 +45,21 @@ TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restar
             auto cur = exec("SELECT d FROM b.dec ORDER BY id;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
-            REQUIRE(cur->value(0, 0).type().type() == logical_type::DECIMAL);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 1234);
-            REQUIRE(cur->value(0, 1).value<int64_t>() == 5678);
+            REQUIRE(cur->type_data()[0].type() == logical_type::DECIMAL);
+            auto cell0 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == 1234);
+            auto cell1 = cur->get<int64_t>(0, 1);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == 5678);
         }
         {
             auto cur = exec("SELECT id FROM b.dec WHERE d = 12.34;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+            auto cell2 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == 1);
         }
 
         REQUIRE(exec("CHECKPOINT;")->is_success());
@@ -73,16 +79,22 @@ TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restar
             INFO("DECIMAL(10,2) column read back after restart");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
-            REQUIRE(cur->value(0, 0).type().type() == logical_type::DECIMAL);
-            CHECK(cur->value(0, 0).value<int64_t>() == 1234);
-            CHECK(cur->value(0, 1).value<int64_t>() == 5678);
+            REQUIRE(cur->type_data()[0].type() == logical_type::DECIMAL);
+            auto cell3 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell3.has_error());
+            CHECK(cell3.value() == 1234);
+            auto cell4 = cur->get<int64_t>(0, 1);
+            REQUIRE_FALSE(cell4.has_error());
+            CHECK(cell4.value() == 5678);
         }
         {
             auto cur = exec("SELECT id FROM b.dec WHERE d = 12.34;");
             INFO("DECIMAL predicate must still match the stored value after restart");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            CHECK(cur->value(0, 0).value<int64_t>() == 1);
+            auto cell5 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell5.has_error());
+            CHECK(cell5.value() == 1);
         }
     }
 }
@@ -108,11 +120,18 @@ TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restar
             auto cur = exec("SELECT l FROM b.lst WHERE id = 1;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            auto v = cur->value(0, 0);
-            REQUIRE(v.children().size() == 3);
-            REQUIRE(v.children()[0].value<int64_t>() == 1);
-            REQUIRE(v.children()[1].value<int64_t>() == 2);
-            REQUIRE(v.children()[2].value<int64_t>() == 3);
+            auto cell16 = cur->list_size(0, 0);
+            REQUIRE_FALSE(cell16.has_error());
+            REQUIRE(cell16.value() == 3);
+            auto cell17 = cur->get<int64_t>(0, 0, {0});
+            REQUIRE_FALSE(cell17.has_error());
+            REQUIRE(cell17.value() == 1);
+            auto cell18 = cur->get<int64_t>(0, 0, {1});
+            REQUIRE_FALSE(cell18.has_error());
+            REQUIRE(cell18.value() == 2);
+            auto cell19 = cur->get<int64_t>(0, 0, {2});
+            REQUIRE_FALSE(cell19.has_error());
+            REQUIRE(cell19.value() == 3);
         }
 
         REQUIRE(exec("CHECKPOINT;")->is_success());
@@ -132,11 +151,18 @@ TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restar
             INFO("BIGINT[] column read back after restart");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            auto v = cur->value(0, 0);
-            REQUIRE(v.children().size() == 3);
-            CHECK(v.children()[0].value<int64_t>() == 1);
-            CHECK(v.children()[1].value<int64_t>() == 2);
-            CHECK(v.children()[2].value<int64_t>() == 3);
+            auto cell20 = cur->list_size(0, 0);
+            REQUIRE_FALSE(cell20.has_error());
+            REQUIRE(cell20.value() == 3);
+            auto cell21 = cur->get<int64_t>(0, 0, {0});
+            REQUIRE_FALSE(cell21.has_error());
+            CHECK(cell21.value() == 1);
+            auto cell22 = cur->get<int64_t>(0, 0, {1});
+            REQUIRE_FALSE(cell22.has_error());
+            CHECK(cell22.value() == 2);
+            auto cell23 = cur->get<int64_t>(0, 0, {2});
+            REQUIRE_FALSE(cell23.has_error());
+            CHECK(cell23.value() == 3);
         }
     }
 }
@@ -164,8 +190,12 @@ TEST_CASE("integration::cpp::test_persistence_gaps::default_lost_across_restart"
             auto cur = exec("SELECT c FROM b.t WHERE id = 1;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE_FALSE(cur->value(0, 0).is_null());
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 5);
+            auto cell6 = cur->is_null(0, 0);
+            REQUIRE_FALSE(cell6.has_error());
+            REQUIRE_FALSE(cell6.value());
+            auto cell7 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell7.has_error());
+            REQUIRE(cell7.value() == 5);
         }
 
         REQUIRE(exec("CHECKPOINT;")->is_success());
@@ -190,9 +220,15 @@ TEST_CASE("integration::cpp::test_persistence_gaps::default_lost_across_restart"
             INFO("DEFAULT 5 must survive the restart: c must be 5, not NULL");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            CHECK_FALSE(cur->value(0, 0).is_null());
-            if (!cur->value(0, 0).is_null()) {
-                CHECK(cur->value(0, 0).value<int64_t>() == 5);
+            auto cell8 = cur->is_null(0, 0);
+            REQUIRE_FALSE(cell8.has_error());
+            CHECK_FALSE(cell8.value());
+            auto cell9 = cur->is_null(0, 0);
+            REQUIRE_FALSE(cell9.has_error());
+            if (!cell9.value()) {
+                auto cell10 = cur->get<int64_t>(0, 0);
+                REQUIRE_FALSE(cell10.has_error());
+                CHECK(cell10.value() == 5);
             }
         }
 
@@ -215,9 +251,15 @@ TEST_CASE("integration::cpp::test_persistence_gaps::default_lost_across_restart"
             INFO("NOT NULL DEFAULT 7 must survive the restart");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            CHECK_FALSE(cur->value(0, 0).is_null());
-            if (!cur->value(0, 0).is_null()) {
-                CHECK(cur->value(0, 0).value<int64_t>() == 7);
+            auto cell11 = cur->is_null(0, 0);
+            REQUIRE_FALSE(cell11.has_error());
+            CHECK_FALSE(cell11.value());
+            auto cell12 = cur->is_null(0, 0);
+            REQUIRE_FALSE(cell12.has_error());
+            if (!cell12.value()) {
+                auto cell13 = cur->get<int64_t>(0, 0);
+                REQUIRE_FALSE(cell13.has_error());
+                CHECK(cell13.value() == 7);
             }
         }
     }
@@ -341,8 +383,12 @@ TEST_CASE("integration::cpp::test_persistence_gaps::create_then_kill_before_chec
             INFO("the once-young disk table after write + checkpoint + restart");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 3);
-            CHECK(cur->value(0, 0).value<int64_t>() == 1);
-            CHECK(cur->value(0, 2).value<int64_t>() == 3);
+            auto cell14 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell14.has_error());
+            CHECK(cell14.value() == 1);
+            auto cell15 = cur->get<int64_t>(0, 2);
+            REQUIRE_FALSE(cell15.has_error());
+            CHECK(cell15.value() == 3);
         }
         {
             auto cur = exec("SELECT * FROM b.t;");

@@ -1,5 +1,4 @@
 #include "../function.hpp"
-#include <components/types/logical_value.hpp>
 #include <components/types/operations_helper.hpp>
 #include <components/vector/operations/apply_operator.hpp>
 #include <components/vector/vector_operations.hpp>

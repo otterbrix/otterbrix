@@ -82,15 +82,12 @@ namespace components::operators {
                 for (const auto& column : fill_list_) {
                     auto column_type = column.type;
                     column_type.set_alias(std::string{column.name.c_str()});
-                    if (column.value.is_null()) {
-                        vector::vector_t filled(resource_, column_type, capacity);
+                    vector::vector_t filled(resource_, column_type, capacity);
+                    if (column.value.is_null(0)) {
                         filled.validity().set_all_invalid(rows);
-                        input.data.emplace_back(std::move(filled));
-                        continue;
+                    } else {
+                        vector::vector_ops::copy(column.value, filled, rows, 0, 0);
                     }
-                    vector::vector_t filled(resource_, column.value, capacity);
-                    filled.flatten(rows);
-                    filled.set_type_alias(std::string{column.name.c_str()});
                     input.data.emplace_back(std::move(filled));
                 }
             }

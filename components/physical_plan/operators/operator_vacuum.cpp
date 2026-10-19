@@ -5,7 +5,6 @@
 #include <components/catalog/helpers.hpp>
 #include <components/context/context.hpp>
 #include <components/table/column_state.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/index/manager_index.hpp>

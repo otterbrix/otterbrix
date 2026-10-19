@@ -28,11 +28,13 @@ namespace {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == static_cast<size_t>(rows));
         for (size_t r = 0; r < cur->size(); ++r) {
-            const auto id_cell = cur->value(0, r);
-            const auto payload_cell = cur->value(1, r);
             INFO("row " << r);
-            REQUIRE(id_cell.value<int64_t>() == static_cast<int64_t>(r));
-            REQUIRE(payload_cell.value<std::string_view>() == payload_of(static_cast<int>(r)));
+            auto cell0 = cur->get<int64_t>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == static_cast<int64_t>(r));
+            auto cell1 = cur->get<std::string_view>(1, r);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == payload_of(static_cast<int>(r)));
         }
     }
 } // namespace

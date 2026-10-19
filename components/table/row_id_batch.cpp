@@ -8,11 +8,11 @@ namespace components::table {
         assert(count <= vector::DEFAULT_VECTOR_CAPACITY && "make_row_id_window: a window holds at most "
                                                            "DEFAULT_VECTOR_CAPACITY ids");
         return row_ids_t{vector::vector_t(resource,
-                                                types::complex_logical_type{types::logical_type::BIGINT},
-                                                /*create_data=*/true,
-                                                /*zero_data=*/false,
-                                                count),
-                               count};
+                                          types::complex_logical_type{types::logical_type::BIGINT},
+                                          /*create_data=*/true,
+                                          /*zero_data=*/false,
+                                          count),
+                         count};
     }
 
     row_id_batch_t make_row_id_batch(std::pmr::memory_resource* resource, std::span<const int64_t> ids) {

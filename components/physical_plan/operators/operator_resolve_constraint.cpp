@@ -7,7 +7,6 @@
 #include <components/context/context.hpp>
 #include <components/logical_plan/forward.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
@@ -23,32 +22,33 @@ namespace components::operators {
     namespace catalog = components::catalog;
 
     namespace {
-        // A column left out of this projection comes back as an ordinal-stable placeholder that reads as
-        // empty, not an error.
-        std::pmr::vector<std::uint64_t> pg_attribute_fk_child_cols(std::pmr::memory_resource* resource) {
-            std::pmr::vector<std::uint64_t> cols(resource);
-            cols.emplace_back(catalog::pg_attribute_col::attoid);  // matched against the FK attoid list
-            cols.emplace_back(catalog::pg_attribute_col::attname); // the name carried into fk_info
-            cols.emplace_back(catalog::pg_attribute_col::attnum);  // orders the schema positions
-            cols.emplace_back(catalog::pg_attribute_col::attisdropped);
-            cols.emplace_back(catalog::pg_attribute_col::attdefspec);
-            return cols;
-        }
+        // Where the pg_attribute reads below answer each column; only the FK child read carries attdefspec.
+        namespace attr_at {
+            constexpr std::uint64_t attoid = 0;
+            constexpr std::uint64_t attname = 1;
+            constexpr std::uint64_t attnum = 2;
+            constexpr std::uint64_t attisdropped = 3;
+            constexpr std::uint64_t attdefspec = 4;
+        } // namespace attr_at
 
-        std::pmr::vector<std::uint64_t> pg_attribute_fk_parent_cols(std::pmr::memory_resource* resource) {
+        std::pmr::vector<std::uint64_t> pg_attribute_key_cols(std::pmr::memory_resource* resource) {
             std::pmr::vector<std::uint64_t> cols(resource);
-            cols.emplace_back(catalog::pg_attribute_col::attoid);
-            cols.emplace_back(catalog::pg_attribute_col::attname);
-            cols.emplace_back(catalog::pg_attribute_col::attnum);
+            cols.emplace_back(catalog::pg_attribute_col::attoid);  // matched against the key attoid list
+            cols.emplace_back(catalog::pg_attribute_col::attname); // the name carried into the constraint
+            cols.emplace_back(catalog::pg_attribute_col::attnum);  // orders the schema positions
             // Without attisdropped, the tombstone filter below can't see dropped columns and binds to them.
             cols.emplace_back(catalog::pg_attribute_col::attisdropped);
             return cols;
         }
 
+        std::pmr::vector<std::uint64_t> pg_attribute_fk_child_cols(std::pmr::memory_resource* resource) {
+            auto cols = pg_attribute_key_cols(resource);
+            cols.emplace_back(catalog::pg_attribute_col::attdefspec);
+            return cols;
+        }
+
         bool attribute_row_is_dropped(const components::vector::data_chunk_t& chunk, uint64_t row) {
-            return chunk.column_count() > catalog::pg_attribute_col::attisdropped &&
-                   !chunk.is_null(catalog::pg_attribute_col::attisdropped, row) &&
-                   chunk.get_value<bool>(catalog::pg_attribute_col::attisdropped, row);
+            return !chunk.is_null(attr_at::attisdropped, row) && chunk.get_value<bool>(attr_at::attisdropped, row);
         }
 
         struct live_column_t {
@@ -61,23 +61,19 @@ namespace components::operators {
         // A table's live columns in attnum order
         std::pmr::vector<live_column_t>
         live_columns(std::pmr::memory_resource* resource,
-                     const std::pmr::vector<components::vector::data_chunk_t>& attributes,
-                     std::uint64_t required_column) {
+                     const std::pmr::vector<components::vector::data_chunk_t>& attributes) {
             std::pmr::vector<live_column_t> columns(resource);
             for (const auto& attr_chunk : attributes) {
-                if (attr_chunk.column_count() <= required_column) {
-                    continue;
-                }
                 for (uint64_t row = 0; row < attr_chunk.size(); ++row) {
                     if (attribute_row_is_dropped(attr_chunk, row)) {
                         continue;
                     }
                     live_column_t column;
-                    column.attoid = static_cast<catalog::oid_t>(
-                        attr_chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, row));
-                    column.attnum = attr_chunk.is_null(catalog::pg_attribute_col::attnum, row)
+                    column.attoid =
+                        static_cast<catalog::oid_t>(attr_chunk.get_value<std::uint32_t>(attr_at::attoid, row));
+                    column.attnum = attr_chunk.is_null(attr_at::attnum, row)
                                         ? 0
-                                        : attr_chunk.get_value<std::int32_t>(catalog::pg_attribute_col::attnum, row);
+                                        : attr_chunk.get_value<std::int32_t>(attr_at::attnum, row);
                     column.chunk = &attr_chunk;
                     column.row = row;
                     columns.push_back(column);
@@ -113,8 +109,7 @@ namespace components::operators {
             names.reserve(positions.size());
             for (const auto position : positions) {
                 const auto& column = columns[position];
-                names.emplace_back(
-                    column.chunk->get_value<std::string_view>(catalog::pg_attribute_col::attname, column.row));
+                names.emplace_back(column.chunk->get_value<std::string_view>(attr_at::attname, column.row));
             }
             return names;
         }
@@ -442,7 +437,7 @@ namespace components::operators {
                                                 kPgAttribute,
                                                 std::move(attr_p_keys),
                                                 components::operators::make_keys_batch(resource_, parent_oids),
-                                                pg_attribute_fk_parent_cols(resource_));
+                                                pg_attribute_key_cols(resource_));
 
                 auto child_results_r = co_await std::move(fut_attr_c);
                 if (child_results_r.has_error()) {
@@ -497,7 +492,7 @@ namespace components::operators {
                     auto& child_attr = k < child_results.size() ? child_results[k] : empty_child;
                     auto& parent_attr = k < parent_results.size() ? parent_results[k] : empty_parent;
 
-                    auto child_columns = live_columns(resource_, child_attr, catalog::pg_attribute_col::attdefspec);
+                    auto child_columns = live_columns(resource_, child_attr);
                     if (!key_positions(child_columns, child_attoids, &fk.child_col_indices)) {
                         std::string msg = "foreign key constraint \"";
                         msg += describe_constraint();
@@ -513,16 +508,15 @@ namespace components::operators {
                         for (auto position : fk.child_col_indices) {
                             const auto& column = child_columns[position];
                             std::string def_spec;
-                            if (!column.chunk->is_null(catalog::pg_attribute_col::attdefspec, column.row)) {
+                            if (!column.chunk->is_null(attr_at::attdefspec, column.row)) {
                                 def_spec.assign(
-                                    column.chunk->get_value<std::string_view>(catalog::pg_attribute_col::attdefspec,
-                                                                              column.row));
+                                    column.chunk->get_value<std::string_view>(attr_at::attdefspec, column.row));
                             }
                             fk.child_col_default_specs.push_back(std::move(def_spec));
                         }
                     }
 
-                    auto parent_columns = live_columns(resource_, parent_attr, catalog::pg_attribute_col::attisdropped);
+                    auto parent_columns = live_columns(resource_, parent_attr);
                     if (!key_positions(parent_columns, parent_attoids, &fk.parent_col_indices)) {
                         std::string msg = "foreign key constraint \"";
                         msg += describe_constraint();
@@ -618,7 +612,7 @@ namespace components::operators {
                                                 kPgAttribute,
                                                 std::move(attr_keys),
                                                 components::operators::make_key_chunk(resource_, table_oid),
-                                                std::pmr::vector<std::uint64_t>{resource_});
+                                                pg_attribute_key_cols(resource_));
                 auto attr_batches_r = co_await std::move(fut_attr_u);
                 if (attr_batches_r.has_error()) {
                     set_error(attr_batches_r.error());
@@ -652,20 +646,16 @@ namespace components::operators {
                     names.reserve(attoids.size());
                     for (const auto& wanted_oid : attoids) {
                         for (auto& attr_chunk : attr_batches) {
-                            if (attr_chunk.column_count() <= catalog::pg_attribute_col::attisdropped) {
-                                continue;
-                            }
                             bool found = false;
                             for (uint64_t ai = 0; ai < attr_chunk.size(); ++ai) {
                                 if (attribute_row_is_dropped(attr_chunk, ai)) {
                                     continue;
                                 }
                                 auto row_attoid = static_cast<catalog::oid_t>(
-                                    attr_chunk.get_value<std::uint32_t>(catalog::pg_attribute_col::attoid, ai));
+                                    attr_chunk.get_value<std::uint32_t>(attr_at::attoid, ai));
                                 if (row_attoid == wanted_oid) {
-                                    names.emplace_back(std::string(
-                                        attr_chunk.get_value<std::string_view>(catalog::pg_attribute_col::attname,
-                                                                               ai)));
+                                    names.emplace_back(
+                                        std::string(attr_chunk.get_value<std::string_view>(attr_at::attname, ai)));
                                     found = true;
                                     break;
                                 }

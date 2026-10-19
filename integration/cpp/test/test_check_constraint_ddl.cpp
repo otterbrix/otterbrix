@@ -68,12 +68,9 @@ TEST_CASE("integration::cpp::test_check_constraint_ddl::an_expression_is_accepte
     accepted(d, "k18", "CAST(n AS bigint) > 0");
     accepted(d, "k19", "a[1] > 0");
     accepted(d, "k20", "s <> 'it''s'");
-    // A predicate is whatever yields a condition per row; CASE is not a special form here.
     accepted(d, "k21", "(CASE WHEN n > 0 THEN 1 ELSE 0 END) = 1");
     accepted(d, "k22", "n > 0 AND (CASE WHEN m > 0 THEN 1 ELSE 0 END) = 1");
-    // A predicate is whatever yields a condition per row; CASE is not a special form here.
-    accepted(d, "k21", "(CASE WHEN n > 0 THEN 1 ELSE 0 END) = 1");
-    accepted(d, "k22", "n > 0 AND (CASE WHEN m > 0 THEN 1 ELSE 0 END) = 1");
+    accepted(d, "k23", "n = ANY(ARRAY[1, 2])");
 }
 
 TEST_CASE("integration::cpp::test_check_constraint_ddl::an_unsound_expression_is_refused", "[checkddl]") {
@@ -93,8 +90,6 @@ TEST_CASE("integration::cpp::test_check_constraint_ddl::an_unsound_expression_is
     // Not a condition — a CHECK has to say yes or no.
     refused(d, "b04", "n");
     refused(d, "b05", "n + 1");
-    // Cannot be written back to SQL, so it could not be stored and re-read faithfully.
-    refused(d, "b06", "n = ANY(ARRAY[1, 2])");
     // Not an expression at all.
     refused(d, "b07", "");
     // Asks about other rows, and a CHECK judges the one row in front of it.

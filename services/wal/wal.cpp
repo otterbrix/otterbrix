@@ -11,6 +11,42 @@
 
 namespace services::wal {
 
+    namespace {
+
+        // The width of the first chunk that disagrees with the attoid count, for the refusal message.
+        size_t shape_columns(const std::pmr::vector<components::vector::data_chunk_t>& chunks, size_t attoid_count) {
+            for (const auto& chunk : chunks) {
+                if (chunk.column_count() != attoid_count) {
+                    return chunk.column_count();
+                }
+            }
+            return attoid_count;
+        }
+
+        core::result_wrapper_t<wal::id_t> refuse_shape(log_t& log,
+                                                       std::pmr::memory_resource* resource,
+                                                       const char* writer,
+                                                       components::catalog::oid_t table_oid,
+                                                       uint64_t txn_id,
+                                                       size_t attoid_count,
+                                                       size_t column_count) {
+            error(log,
+                  "wal_worker::{} , txn : {} , table oid : {} , {} attoids for {} columns, nothing was journaled",
+                  writer,
+                  txn_id,
+                  static_cast<unsigned>(table_oid),
+                  attoid_count,
+                  column_count);
+            return core::result_wrapper_t<wal::id_t>{
+                core::error_t{core::error_code_t::invalid_parameter,
+                              std::pmr::string{"wal record refused: " + std::to_string(attoid_count) + " attoids for " +
+                                                   std::to_string(column_count) + " columns of table oid " +
+                                                   std::to_string(static_cast<unsigned>(table_oid)),
+                                               resource}}};
+        }
+
+    } // namespace
+
     static std::string segment_filename(const std::string& db_dir_name, uint32_t index) {
         std::ostringstream oss;
         oss << "wal_" << db_dir_name << "_";
@@ -152,6 +188,16 @@ namespace services::wal {
               txn_id,
               row_count);
 
+        if (!attoids_match_chunks(attoids, chunks)) {
+            co_return refuse_shape(log_,
+                                   this->resource(),
+                                   "write_physical_insert",
+                                   table_oid,
+                                   txn_id,
+                                   attoids.size(),
+                                   shape_columns(chunks, attoids.size()));
+        }
+
         encode_buf_.clear();
         // last_crc_ only takes the crc once append() accepts the record, so a refused write can't leave the chain
         // naming a record never journaled.
@@ -239,6 +285,16 @@ namespace services::wal {
 
         trace(log_, "wal_worker::write_physical_update , wal_id : {} , txn : {} , count : {}", wal_id, txn_id, count);
 
+        if (!attoids_match_chunks(attoids, new_chunks)) {
+            co_return refuse_shape(log_,
+                                   this->resource(),
+                                   "write_physical_update",
+                                   table_oid,
+                                   txn_id,
+                                   attoids.size(),
+                                   shape_columns(new_chunks, attoids.size()));
+        }
+
         encode_buf_.clear();
         const auto record_crc = encode_update(encode_buf_,
                                               this->resource(),
@@ -290,6 +346,16 @@ namespace services::wal {
               txn_id,
               first_position);
 
+        if (schema_chunk->column_count() != attoids.size()) {
+            co_return refuse_shape(log_,
+                                   this->resource(),
+                                   "write_physical_add_column",
+                                   table_oid,
+                                   txn_id,
+                                   attoids.size(),
+                                   schema_chunk->column_count());
+        }
+
         encode_buf_.clear();
         const auto record_crc = encode_add_column(encode_buf_,
                                                   last_crc_,
@@ -332,6 +398,17 @@ namespace services::wal {
                                       uint64_t sub_id,
                                       wal::id_t add_column_id,
                                       wal::id_t insert_id) {
+        if (schema_chunk->column_count() > attoids.size() || !attoids_match_chunks(attoids, chunks)) {
+            co_return refuse_shape(log_,
+                                   this->resource(),
+                                   "write_physical_grow",
+                                   table_oid,
+                                   txn_id,
+                                   attoids.size(),
+                                   schema_chunk->column_count() > attoids.size()
+                                       ? schema_chunk->column_count()
+                                       : shape_columns(chunks, attoids.size()));
+        }
         column_attoids_t added_attoids(attoids.end() - static_cast<std::ptrdiff_t>(schema_chunk->column_count()),
                                        attoids.end(),
                                        attoids.get_allocator().resource());

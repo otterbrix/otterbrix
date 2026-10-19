@@ -1,3 +1,4 @@
+#include "parameter_equals.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -18,14 +19,14 @@ using namespace components::sql::transform;
         auto node = result.sub_queries.back();                                                                         \
         auto agg = result.parameters;                                                                                  \
         REQUIRE(node->to_string() == RESULT);                                                                          \
-        REQUIRE(agg->parameters().parameters.size() == PARAMS.size());                                                 \
+        REQUIRE(agg->parameters().size() == PARAMS.size());                                                            \
         for (auto i = 0ul; i < PARAMS.size(); ++i) {                                                                   \
-            REQUIRE(agg->parameter(core::parameter_id_t(uint16_t(i))) == PARAMS.at(i));                                \
+            REQUIRE(parameter_equals(*agg, core::parameter_id_t(uint32_t(i)), PARAMS.at(i)));                          \
         }                                                                                                              \
     }
 
-using v = components::types::logical_value_t;
-using vec = std::vector<v>;
+using components::vector::make_scalar;
+using vec = std::vector<components::vector::vector_t>;
 
 TEST_CASE("components::sql::join") {
     auto resource = core::pmr::otterbrix_resource();
@@ -130,7 +131,7 @@ TEST_CASE("components::sql::join") {
         TEST_JOIN(
             R"_(select * from a left outer join b on a.id = b.fk where b.status = 'active';)_",
             R"_($aggregate: {$join: {$type: left, $aggregate: {}, $aggregate: {}, "id": {$eq: "fk"}}, $match: {"status": {$eq: #0}}})_",
-            vec({v(&resource, "active")}));
+            vec({make_scalar(&resource, "active")}));
     }
 
     // ----------------------------------------------------------------------

@@ -1,35 +1,32 @@
 #include "node_limit.hpp"
 
-#include <limits>
+#include <cassert>
 #include <sstream>
 
 namespace components::logical_plan {
 
-    limit_t::limit_t(int64_t limit, int64_t offset)
-        : limit_(limit)
-        , offset_(offset) {}
+    int64_t limit_t::count() const {
+        assert(count_.has_value());
+        return *count_;
+    }
 
-    limit_t limit_t::unlimit() { return limit_t(); }
-
-    limit_t limit_t::limit_one() { return limit_t(1); }
-
-    int64_t limit_t::limit() const { return limit_; }
-
-    int64_t limit_t::offset() const { return offset_; }
-
-    bool limit_t::check(int64_t count) const { return limit_ == unlimit_ || count < limit_ + offset_; }
-
-    bool limit_t::is_skipping(int64_t count) const { return count < offset_; }
-
-    int64_t limit_t::head_cap() const {
-        if (limit_ == unlimit_) {
-            return unlimit_;
+    core::error_t limit_t::validate(std::pmr::memory_resource* resource) const {
+        if (offset_ < 0) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"OFFSET must not be negative", resource});
         }
-        // Saturate on overflow instead of wrapping negative (mirrors operator_limit).
-        if (offset_ > std::numeric_limits<int64_t>::max() - limit_) {
-            return std::numeric_limits<int64_t>::max();
+        if (count_.has_value() && *count_ < 0) {
+            return core::error_t(core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"LIMIT must not be negative", resource});
         }
-        return limit_ + offset_;
+        return core::error_t::no_error();
+    }
+
+    row_cap_t limit_t::read_cap() const {
+        if (!count_.has_value() || *count_ < 0 || offset_ < 0) {
+            return row_cap_t::uncapped();
+        }
+        return row_cap_t(static_cast<uint64_t>(*count_) + static_cast<uint64_t>(offset_));
     }
 
     node_limit_t::node_limit_t(std::pmr::memory_resource* resource, const limit_t& limit)
@@ -42,9 +39,14 @@ namespace components::logical_plan {
 
     std::string node_limit_t::to_string_impl() const {
         std::stringstream stream;
-        stream << "$limit: " << limit_.limit();
-        if (limit_.offset() > 0) {
-            stream << ", $offset: " << limit_.offset();
+        // LIMIT ALL shows nothing, as PostgreSQL shows no Limit node for it; a written -1 prints as written.
+        bool is_first = true;
+        if (limit_.has_count()) {
+            stream << "$limit: " << limit_.count();
+            is_first = false;
+        }
+        if (limit_.offset() != 0) {
+            stream << (is_first ? "" : ", ") << "$offset: " << limit_.offset();
         }
         return stream.str();
     }

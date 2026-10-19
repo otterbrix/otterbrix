@@ -1,5 +1,7 @@
 #include "cursor.hpp"
 
+#include <algorithm>
+
 namespace components::cursor {
 
     namespace {
@@ -11,6 +13,7 @@ namespace components::cursor {
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource)
         : chunks_(resource)
+        , chunk_starts_(1, 0, resource)
         , type_data_(resource)
         , error_(core::error_t::no_error()) {
         chunks_.emplace_back(empty_chunk(resource));
@@ -20,6 +23,7 @@ namespace components::cursor {
     // default resource, move keeps the producer's), so it's rebuilt via error_on().
     cursor_t::cursor_t(std::pmr::memory_resource* resource, const core::error_t& error)
         : chunks_(resource)
+        , chunk_starts_(1, 0, resource)
         , type_data_(resource)
         , error_(core::error_on(resource, error)) {
         chunks_.emplace_back(empty_chunk(resource));
@@ -32,12 +36,9 @@ namespace components::cursor {
     cursor_t::cursor_t(std::pmr::memory_resource* resource, vector::data_chunk_t&& chunk)
         : size_(chunk.size())
         , chunks_(resource)
+        , chunk_starts_(1, 0, resource)
         , type_data_(resource)
         , error_(core::error_t::no_error()) {
-        // Strip placeholder columns (created by projected_cols scans to keep
-        // storage indices stable for downstream operators). User-facing
-        // iteration should only see real data.
-        chunk.drop_unprojected_placeholders();
         // Mirror final column shape into type_data_ so callers querying the
         // result's typed-column descriptor see one entry per output column.
         const auto& chunk_types = chunk.types();
@@ -47,18 +48,20 @@ namespace components::cursor {
 
     cursor_t::cursor_t(std::pmr::memory_resource* resource, std::pmr::vector<vector::data_chunk_t>&& chunks)
         : chunks_(std::move(chunks), resource)
+        , chunk_starts_(resource)
         , type_data_(resource)
         , error_(core::error_t::no_error()) {
         // Keep the chunks as-is (each ≤DEFAULT_VECTOR_CAPACITY); never combine into one
-        // oversized chunk. Drop placeholder columns per chunk (same shape across all).
+        // oversized chunk.
         std::size_t total = 0;
-        for (auto& c : chunks_) {
-            c.drop_unprojected_placeholders();
+        for (const auto& c : chunks_) {
+            chunk_starts_.push_back(total);
             total += c.size();
         }
         size_ = total;
         if (chunks_.empty()) {
             chunks_.emplace_back(empty_chunk(resource));
+            chunk_starts_.push_back(0);
         }
         const auto& chunk_types = chunks_.front().types();
         type_data_.assign(chunk_types.begin(), chunk_types.end());
@@ -68,13 +71,14 @@ namespace components::cursor {
                        std::pmr::vector<components::types::complex_logical_type>&& types)
         : size_(types.size())
         , chunks_(resource)
+        , chunk_starts_(1, 0, resource)
         , type_data_(std::move(types))
         , error_(core::error_t::no_error()) {
         chunks_.emplace_back(empty_chunk(resource));
     }
 
     // Column shape/types are shared by every chunk; row access that may span chunks goes
-    // through value()/row(), which locate the owning chunk. chunks() is for callers that
+    // through locate(), which finds the owning chunk. chunks() is for callers that
     // genuinely need raw per-chunk column vectors (and must iterate chunks themselves).
     std::pmr::vector<vector::data_chunk_t>& cursor_t::chunks() {
         assert(!is_write_ && "result is a row count, not a data");
@@ -109,39 +113,84 @@ namespace components::cursor {
     void cursor_t::advance() { ++current_index_; }
     index_t cursor_t::current_index() const { return current_index_; }
 
-    types::logical_value_t cursor_t::value(uint64_t col_idx) const {
-        assert(!is_write_ && "result is a row count, not a data");
-        return value(col_idx, static_cast<uint64_t>(current_index_));
+    core::error_t
+    cursor_t::make_error(core::error_code_t code, std::string_view what, std::source_location location) const {
+        return core::error_t{code, std::pmr::string{what, chunks_.get_allocator().resource()}, location};
     }
 
-    types::logical_value_t cursor_t::value(uint64_t col_idx, uint64_t row_idx) const {
+    core::result_wrapper_t<cell_location_t> cursor_t::locate(uint64_t row_idx) const {
         assert(!is_write_ && "result is a row count, not a data");
-        // Locate the chunk holding the global row_idx (chunks are ≤CAP each).
-        uint64_t base = 0;
-        for (const auto& chunk : chunks_) {
-            const auto rows = chunk.size();
-            if (row_idx < base + rows) {
-                return chunk.value(col_idx, row_idx - base);
+        if (row_idx >= chunk_starts_.back() + chunks_.back().size()) {
+            return make_error(core::error_code_t::invalid_parameter, "row is out of range");
+        }
+        const auto next = std::upper_bound(chunk_starts_.begin(), chunk_starts_.end(), row_idx);
+        const auto chunk = static_cast<std::size_t>(next - chunk_starts_.begin()) - 1;
+        return cell_location_t{chunk, row_idx - chunk_starts_[chunk]};
+    }
+
+    core::result_wrapper_t<cursor_t::cell_t>
+    cursor_t::resolve_cell(uint64_t col_idx, uint64_t row_idx, std::span<const std::size_t> path) const {
+        VALUE_OR_RETURN(const auto location, locate(row_idx));
+        const auto& columns = chunks_[location.chunk].data;
+        if (col_idx >= columns.size()) {
+            return make_error(core::error_code_t::field_not_exists, "column is out of range");
+        }
+        const auto& column = columns[col_idx];
+
+        const types::complex_logical_type* type = &column.type();
+        for (const auto sub : path) {
+            switch (type->type()) {
+                case types::logical_type::LIST:
+                case types::logical_type::MAP:
+                    type = &type->child_type();
+                    break;
+                case types::logical_type::ARRAY:
+                    if (sub >= type->extension_as<types::array_logical_type_extension>()->size()) {
+                        return make_error(core::error_code_t::invalid_parameter, "array subscript is out of range");
+                    }
+                    type = &type->child_type();
+                    break;
+                case types::logical_type::STRUCT:
+                    if (sub >= type->child_types().size()) {
+                        return make_error(core::error_code_t::invalid_parameter, "struct field is out of range");
+                    }
+                    type = &type->child_types()[sub];
+                    break;
+                default:
+                    return make_error(core::error_code_t::invalid_parameter,
+                                      "path steps through a type with no sub-elements");
             }
-            base += rows;
         }
-        return chunks_.front().value(col_idx, row_idx);
+
+        const auto element = column.resolve_nested_element(location.row, path, 0);
+        return cell_t{element.leaf,
+                      element.index,
+                      element.is_null || element.leaf->type().type() == types::logical_type::NA};
     }
 
-    std::pmr::vector<types::logical_value_t> cursor_t::row() const {
+    core::result_wrapper_t<bool>
+    cursor_t::is_null(uint64_t col_idx, uint64_t row_idx, std::span<const std::size_t> path) const {
         assert(!is_write_ && "result is a row count, not a data");
-        return row(static_cast<uint64_t>(current_index_));
+        VALUE_OR_RETURN(const auto cell, resolve_cell(col_idx, row_idx, path));
+        return cell.is_null;
     }
 
-    std::pmr::vector<types::logical_value_t> cursor_t::row(uint64_t row_idx) const {
+    core::result_wrapper_t<uint64_t> cursor_t::list_size(uint64_t col_idx, uint64_t row_idx) const {
         assert(!is_write_ && "result is a row count, not a data");
-        const auto cols = chunks_.front().column_count();
-        std::pmr::vector<types::logical_value_t> result(chunks_.front().resource());
-        result.reserve(cols);
-        for (uint64_t col = 0; col < cols; ++col) {
-            result.push_back(value(col, row_idx));
+        VALUE_OR_RETURN(const auto cell, resolve_cell(col_idx, row_idx, {}));
+        if (cell.is_null) {
+            return make_error(core::error_code_t::conversion_failure, "cell is NULL");
         }
-        return result;
+        switch (cell.vec->type().type()) {
+            case types::logical_type::LIST:
+            case types::logical_type::MAP:
+                return static_cast<uint64_t>(cell.vec->data<types::list_entry_t>()[cell.index].length);
+            case types::logical_type::ARRAY:
+                return static_cast<uint64_t>(
+                    cell.vec->type().extension_as<types::array_logical_type_extension>()->size());
+            default:
+                return make_error(core::error_code_t::invalid_parameter, "cell is not a LIST, MAP or ARRAY");
+        }
     }
 
     bool cursor_t::is_success() const noexcept { return !error_.contains_error(); }

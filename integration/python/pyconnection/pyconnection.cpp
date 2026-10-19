@@ -211,7 +211,8 @@ namespace otterbrix {
         auto session = session_id_t();
         auto node = node_in;
         if (optimize) {
-            node = components::planner::optimize(node->resource(), node, nullptr);
+            node =
+                components::planner::optimize(node->resource(), node, nullptr, components::graph_execution_context{});
         }
         return space->dispatcher()->execute_plan(
             session,
@@ -294,8 +295,7 @@ namespace otterbrix {
         // memory and no arena to free it.
         refuse_if_closed();
         std::string name = "df_no_idea";
-        // Built on the space's arena, which refuse_if_closed() above guarantees is live.
-        auto tableref = scan_t::replacement_object(space->dispatcher()->resource(), value, name);
+        auto tableref = scan_t::replacement_object(value, name);
 
         return std::make_unique<py_relation_t>(shared_from_this(),
                                                relation_factory_t::create_df_relation(std::move(tableref)));
@@ -305,7 +305,7 @@ namespace otterbrix {
         // Same road as from_df above, same refusal.
         refuse_if_closed();
         std::string name = "object_no_idea";
-        auto tableref = scan_t::try_replacement_object(space->dispatcher()->resource(), value, name);
+        auto tableref = scan_t::try_replacement_object(value, name);
         assert(tableref);
 
         return std::make_unique<py_relation_t>(shared_from_this(),

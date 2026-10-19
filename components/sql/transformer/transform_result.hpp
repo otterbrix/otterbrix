@@ -1,6 +1,8 @@
 #pragma once
 
+#include <concepts>
 #include <optional>
+#include <type_traits>
 #include <vector>
 
 #include <core/result_wrapper.hpp>
@@ -9,6 +11,7 @@
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_limit.hpp>
+#include <components/vector/vector_builders.hpp>
 
 namespace components::sql::transform {
 
@@ -42,11 +45,12 @@ namespace components::sql::transform {
         transform_result& operator=(transform_result&&) = default;
 
         template<typename T>
-        transform_result& bind(size_t id, T&& value) {
-            return bind(id, types::logical_value_t(taken_params_.resource(), std::forward<T>(value)));
+        requires(!std::same_as<std::remove_cvref_t<T>, vector::vector_t>) transform_result& bind(size_t id, T&& value) {
+            return bind(id, vector::make_scalar(resource_, std::forward<T>(value)));
         }
 
-        transform_result& bind(size_t id, types::logical_value_t value);
+        // The parameter takes row `row` of `value`, whatever its vector type.
+        transform_result& bind(size_t id, const vector::vector_t& value, uint64_t source_row = 0);
 
         size_t parameter_count() const;
 
@@ -68,9 +72,10 @@ namespace components::sql::transform {
         insert_rows_t param_insert_rows_;
         std::vector<deferred_limit_t> deferred_limits_;
 
-        logical_plan::storage_parameters taken_params_;
         std::pmr::unordered_map<size_t, bool> bound_flags_;
         core::error_t last_error_;
+        // Fixed at construction: the plan is gone once finalize() moved it out.
+        size_t parameter_count_{0};
         bool finalized_;
     };
 

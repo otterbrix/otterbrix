@@ -35,12 +35,23 @@ namespace components::logical_plan {
         // Populated by enrich_plan when the table has referencing FK constraints.
         void set_referencing_fks(std::vector<catalog::fk_info_t> v) { referencing_fks_ = std::move(v); }
         const std::vector<catalog::fk_info_t>& referencing_fks() const { return referencing_fks_; }
+        std::vector<catalog::fk_info_t>& referencing_fks() { return referencing_fks_; }
+
+        // The columns the index mirror reads from. Stamped by enrich_plan.
+        const std::vector<size_t>& index_key_columns() const { return index_key_columns_; }
+        void set_index_key_columns(std::vector<size_t> columns) { index_key_columns_ = std::move(columns); }
+
+        // The columns the scan of the target reads, in the order it emits them. Stamped by the optimizer.
+        const std::vector<size_t>& projected_cols() const { return projected_cols_; }
+        void set_projected_cols(std::vector<size_t> columns) { projected_cols_ = std::move(columns); }
 
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
         std::vector<catalog::fk_info_t> referencing_fks_;
+        std::vector<size_t> index_key_columns_;
+        std::vector<size_t> projected_cols_;
         std::pmr::vector<expressions::expression_ptr> returning_;
         std::int64_t oid_col_idx_{-1};
         components::catalog::oid_t target_oid_{components::catalog::INVALID_OID};

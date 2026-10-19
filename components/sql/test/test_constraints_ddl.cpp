@@ -66,7 +66,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
         REQUIRE(col_defs[0].has_default_value() == false);
         REQUIRE(col_defs[1].name() == "name");
         REQUIRE(col_defs[1].has_default_value() == true);
-        REQUIRE(col_defs[1].default_value().value<std::string_view>() == "unknown");
+        REQUIRE(col_defs[1].default_value().get_value<std::string_view>(0) == "unknown");
     }
 
     SECTION("CREATE TABLE with NOT NULL and DEFAULT combined") {

@@ -42,7 +42,7 @@ namespace components::sql::transform {
     }
 
     core::result_wrapper_t<logical_plan::node_ptr> transformer::transform_create_enum_type(CreateEnumStmt& node) {
-        std::vector<types::logical_value_t> values;
+        std::vector<types::enum_entry_t> values;
         if (!node.vals || node.vals->lst.empty()) {
             return core::error_t(core::error_code_t::sql_parse_error,
                                  std::pmr::string{"Can not create enum without values", resource_});
@@ -50,8 +50,7 @@ namespace components::sql::transform {
         values.reserve(node.vals->lst.size());
         int counter = 0;
         for (const auto& cell : node.vals->lst) {
-            values.emplace_back(resource_, counter++);
-            values.back().set_alias(strVal(cell.data));
+            values.push_back(types::enum_entry_t{strVal(cell.data), counter++});
         }
         VALUE_OR_RETURN(auto written, qualified_name_of(resource_, *node.typeName));
         auto type = types::complex_logical_type::create_enum(written.collection.t, std::move(values));

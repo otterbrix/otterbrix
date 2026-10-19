@@ -17,8 +17,12 @@ namespace components::types {
     using int128_t = absl::int128;
     using uint128_t = absl::uint128;
 
-    class logical_value_t;
     class logical_type_extension;
+
+    struct enum_entry_t {
+        std::string label;
+        int32_t value;
+    };
 
     enum class compare_t
     {
@@ -70,7 +74,6 @@ namespace components::types {
         INVALID = 255
     };
 
-    // order change may break logical_value comparators
     enum class logical_type : uint8_t
     {
         NA = 0,
@@ -474,7 +477,7 @@ namespace components::types {
         [[nodiscard]] static core::result_wrapper_t<complex_logical_type>
         create_decimal(std::pmr::memory_resource* resource, uint8_t width, uint8_t scale, std::string alias = "");
         static complex_logical_type
-        create_enum(std::string name, std::vector<logical_value_t> entries, std::string alias = "");
+        create_enum(std::string name, std::vector<enum_entry_t> entries, std::string alias = "");
         static complex_logical_type create_list(const complex_logical_type& internal_type, std::string alias = "");
         static complex_logical_type
         create_array(const complex_logical_type& internal_type, size_t array_size, std::string alias = "");
@@ -659,6 +662,20 @@ namespace components::types {
         static int128_t negative_infinity(physical_type stored_as) noexcept;
         static int128_t not_a_number(physical_type stored_as) noexcept;
         static bool is_special(physical_type stored_as, int128_t raw) noexcept;
+    };
+
+    class enum_logical_type_extension : public logical_type_extension {
+    public:
+        explicit enum_logical_type_extension(std::string name, std::vector<enum_entry_t> entries);
+
+        const std::string& type_name() const { return type_name_; }
+        const std::vector<enum_entry_t>& entries() const noexcept { return entries_; }
+
+        bool operator==(const enum_logical_type_extension& rhs) const;
+
+    private:
+        std::string type_name_;
+        std::vector<enum_entry_t> entries_;
     };
 
     class function_logical_type_extension : public logical_type_extension {

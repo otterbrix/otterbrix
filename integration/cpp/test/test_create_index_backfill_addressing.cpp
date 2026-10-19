@@ -25,8 +25,9 @@ namespace {
     std::string plan_text(const components::cursor::cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            auto v = cur->value(0, r);
-            out += std::string(v.value<std::string_view>());
+            auto cell0 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            out += std::string(cell0.value());
             out += '\n';
         }
         return out;
@@ -153,7 +154,9 @@ TEST_CASE("integration::cpp::create_index_backfill_addressing::a_second_build_ma
         auto cur = exec(d, "SELECT id FROM bdb.t WHERE b = 1007;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        CHECK(cur->value(0, 0).value<int64_t>() == 7);
+        auto cell1 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        CHECK(cell1.value() == 7);
     }
 
     INFO("the unindexed control: the TABLE never held more than one row for this id");

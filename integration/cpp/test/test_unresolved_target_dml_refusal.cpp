@@ -21,7 +21,9 @@ namespace {
         auto cur = d->execute_sql(session, "SELECT count(*) FROM " + table + ";");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        return cur->value(0, 0).value<int64_t>();
+        auto cell0 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        return cell0.value();
     }
 
 } // namespace

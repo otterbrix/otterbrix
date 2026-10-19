@@ -3,7 +3,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <components/types/logical_value.hpp>
+#include <components/vector/vector_builders.hpp>
 
 #include <cstdint>
 #include <string>
@@ -21,11 +21,11 @@ using namespace test_helpers;
 
 namespace {
 
-    using param_t = std::pair<size_t, components::types::logical_value_t>;
+    using param_t = std::pair<size_t, components::vector::vector_t>;
     using params_t = std::vector<param_t>;
 
-    components::types::logical_value_t i64(std::pmr::memory_resource* resource, int64_t v) {
-        return components::types::logical_value_t{resource, v};
+    components::vector::vector_t i64(std::pmr::memory_resource* resource, int64_t v) {
+        return components::vector::make_scalar(resource, v);
     }
 
 } // namespace
@@ -48,8 +48,12 @@ TEST_CASE("integration::cpp::insert_param_column_routing::leading_parameter_befo
     auto cur = exec(d, "SELECT id, d FROM w.t;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1);
-    CHECK(cur->value(0, 0).value<int64_t>() == 1);
-    CHECK(cur->value(1, 0).value<int64_t>() == 7);
+    auto cell0 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    CHECK(cell0.value() == 1);
+    auto cell1 = cur->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell1.has_error());
+    CHECK(cell1.value() == 7);
 }
 
 TEST_CASE("integration::cpp::insert_param_column_routing::trailing_parameter_after_a_literal") {
@@ -70,8 +74,12 @@ TEST_CASE("integration::cpp::insert_param_column_routing::trailing_parameter_aft
     auto cur = exec(d, "SELECT id, d FROM w.t;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1);
-    CHECK(cur->value(0, 0).value<int64_t>() == 7);
-    CHECK(cur->value(1, 0).value<int64_t>() == 1);
+    auto cell2 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell2.has_error());
+    CHECK(cell2.value() == 7);
+    auto cell3 = cur->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell3.has_error());
+    CHECK(cell3.value() == 1);
 }
 
 TEST_CASE("integration::cpp::insert_param_column_routing::middle_parameter_among_three_columns") {
@@ -92,9 +100,15 @@ TEST_CASE("integration::cpp::insert_param_column_routing::middle_parameter_among
     auto cur = exec(d, "SELECT a, b, c FROM w.t;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1);
-    CHECK(cur->value(0, 0).value<int64_t>() == 10);
-    CHECK(cur->value(1, 0).value<int64_t>() == 20);
-    CHECK(cur->value(2, 0).value<int64_t>() == 30);
+    auto cell4 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell4.has_error());
+    CHECK(cell4.value() == 10);
+    auto cell5 = cur->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell5.has_error());
+    CHECK(cell5.value() == 20);
+    auto cell6 = cur->get<int64_t>(2, 0);
+    REQUIRE_FALSE(cell6.has_error());
+    CHECK(cell6.value() == 30);
 }
 
 TEST_CASE("integration::cpp::insert_param_column_routing::placeholders_written_in_reverse_order") {
@@ -115,8 +129,12 @@ TEST_CASE("integration::cpp::insert_param_column_routing::placeholders_written_i
     auto cur = exec(d, "SELECT id, d FROM w.t;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1);
-    CHECK(cur->value(0, 0).value<int64_t>() == 6);
-    CHECK(cur->value(1, 0).value<int64_t>() == 5);
+    auto cell7 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell7.has_error());
+    CHECK(cell7.value() == 6);
+    auto cell8 = cur->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell8.has_error());
+    CHECK(cell8.value() == 5);
 }
 
 TEST_CASE("integration::cpp::insert_param_column_routing::two_rows_swap_the_parameter_column") {
@@ -138,10 +156,18 @@ TEST_CASE("integration::cpp::insert_param_column_routing::two_rows_swap_the_para
     auto cur = exec(d, "SELECT id, d FROM w.t ORDER BY id;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    CHECK(cur->value(0, 0).value<int64_t>() == 1);
-    CHECK(cur->value(1, 0).value<int64_t>() == 7);
-    CHECK(cur->value(0, 1).value<int64_t>() == 8);
-    CHECK(cur->value(1, 1).value<int64_t>() == 2);
+    auto cell9 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell9.has_error());
+    CHECK(cell9.value() == 1);
+    auto cell10 = cur->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell10.has_error());
+    CHECK(cell10.value() == 7);
+    auto cell11 = cur->get<int64_t>(0, 1);
+    REQUIRE_FALSE(cell11.has_error());
+    CHECK(cell11.value() == 8);
+    auto cell12 = cur->get<int64_t>(1, 1);
+    REQUIRE_FALSE(cell12.has_error());
+    CHECK(cell12.value() == 2);
 }
 
 TEST_CASE("integration::cpp::insert_param_column_routing::literals_only_stay_in_place") {
@@ -158,6 +184,10 @@ TEST_CASE("integration::cpp::insert_param_column_routing::literals_only_stay_in_
     auto cur = exec(d, "SELECT id, d FROM w.t;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1);
-    CHECK(cur->value(0, 0).value<int64_t>() == 7);
-    CHECK(cur->value(1, 0).value<int64_t>() == 8);
+    auto cell13 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell13.has_error());
+    CHECK(cell13.value() == 7);
+    auto cell14 = cur->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell14.has_error());
+    CHECK(cell14.value() == 8);
 }

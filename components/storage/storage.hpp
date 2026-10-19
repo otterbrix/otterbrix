@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -44,6 +45,21 @@ namespace components::storage {
         virtual std::pmr::vector<types::complex_logical_type> types(const table::transaction_data&) const {
             return types();
         }
+        // The columns a read of `projected_cols` fills, in that order; nullptr reads every visible column.
+        std::pmr::vector<types::complex_logical_type> read_types(const std::vector<size_t>* projected_cols,
+                                                                 const table::transaction_data& txn) const {
+            auto visible = types(txn);
+            if (projected_cols == nullptr) {
+                return visible;
+            }
+            std::pmr::vector<types::complex_logical_type> read(visible.get_allocator().resource());
+            read.reserve(projected_cols->size());
+            for (size_t column : *projected_cols) {
+                assert(column < visible.size() && "read_types: the projection names a column the reader cannot see");
+                read.push_back(visible[column]);
+            }
+            return read;
+        }
         virtual const std::vector<table::column_definition_t>& columns() const = 0;
         virtual size_t column_count() const = 0;
         virtual bool has_schema() const = 0;
@@ -66,7 +82,8 @@ namespace components::storage {
                                                                             const std::vector<size_t>* projected_cols,
                                                                             table::transaction_data txn) = 0;
 
-        // `true` alone does NOT mean no error — check output's column_fetch_state::fetch_error.
+        // `true` alone does NOT mean no error — check output's column_fetch_state::fetch_error. An empty
+        // projection fetches every column.
         [[nodiscard]] virtual core::result_wrapper_t<bool> fetch(vector::data_chunk_t& output,
                                                                  const vector::vector_t& row_ids,
                                                                  uint64_t count,

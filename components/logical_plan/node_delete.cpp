@@ -25,12 +25,16 @@ namespace components::logical_plan {
         stream << "$delete: <oid:" << static_cast<std::uint64_t>(table_oid()) << "> {";
         bool is_first = true;
         for (const auto& child : children()) {
+            const auto text = child->to_string();
+            if (text.empty()) { // an unlimited limit has no text, as PostgreSQL shows no Limit node for it
+                continue;
+            }
             if (!is_first) {
                 stream << ", ";
             } else {
                 is_first = false;
             }
-            stream << child->to_string();
+            stream << text;
         }
         stream << "}";
         return stream.str();
@@ -48,7 +52,7 @@ namespace components::logical_plan {
         // Empty match (null predicate) + unlimited limit satisfy the base ctor;
         // the catalog branch of operator_delete never reads them.
         auto match = make_node_match(resource, qualified_name_t{}, nullptr);
-        auto limit = make_node_limit(resource, limit_t::unlimit());
+        auto limit = make_node_limit(resource, limit_t::all());
         auto node = boost::intrusive_ptr(new node_delete_t{resource, match, limit});
         node->set_table_oid(catalog_table_oid);
         node->set_catalog_delete(oid_col_idx, target_oid);

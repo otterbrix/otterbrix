@@ -16,6 +16,7 @@
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/operations_helper.hpp>
 #include <variant>
 
@@ -57,6 +58,12 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         columns_value_defaults.reserve(types.size());
         columns_value_defaults_not_null.reserve(types.size());
 
+        // The zero value of the type: not NULL, so the filled rows read back as a value.
+        auto zero_default = [&](const types::complex_logical_type& type) {
+            vector::vector_t zero(dispatcher->resource(), type, 1);
+            zero.set_vector_type(vector::vector_type::CONSTANT);
+            return zero;
+        };
         for (const auto& type : types) {
             columns_simple.emplace_back(type.alias(), type);
         }
@@ -67,7 +74,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
             columns_null_defaults.emplace_back(type.alias(),
                                                type,
                                                false,
-                                               types::logical_value_t{dispatcher->resource(), types::logical_type::NA});
+                                               vector::make_null(dispatcher->resource(), type));
         }
         // Fill loop for columns_value_defaults. Without it the CREATE TABLE
         // call gets an empty column vector → relkind='g' (computing) table,
@@ -75,16 +82,10 @@ TEST_CASE("integration::cpp::test_collection::insert") {
         // because the catalog has UNKNOWN types until the first INSERT
         // registers pg_computed_column rows.
         for (const auto& type : types) {
-            columns_value_defaults.emplace_back(type.alias(),
-                                                type,
-                                                false,
-                                                types::logical_value_t{dispatcher->resource(), type});
+            columns_value_defaults.emplace_back(type.alias(), type, false, zero_default(type));
         }
         for (const auto& type : types) {
-            columns_value_defaults_not_null.emplace_back(type.alias(),
-                                                         type,
-                                                         true,
-                                                         types::logical_value_t{dispatcher->resource(), type});
+            columns_value_defaults_not_null.emplace_back(type.alias(), type, true, zero_default(type));
         }
     }
 
@@ -288,9 +289,10 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
                     REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
-                auto val = types::logical_value_t{dispatcher->resource(), cur->chunks().front().data[1].type()};
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
-                    REQUIRE(cur->value(1, i) == val);
+                    auto default_cell = cur->get<int64_t>(1, i);
+                    REQUIRE_FALSE(default_cell.has_error());
+                    REQUIRE(default_cell.value() == 0);
                 }
             }
         }
@@ -309,9 +311,10 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
                     REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
-                auto val = types::logical_value_t{dispatcher->resource(), cur->chunks().front().data[1].type()};
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 4; i++) {
-                    REQUIRE(cur->value(1, i) == val);
+                    auto default_cell = cur->get<int64_t>(1, i);
+                    REQUIRE_FALSE(default_cell.has_error());
+                    REQUIRE(default_cell.value() == 0);
                 }
             }
         }
@@ -419,9 +422,10 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
                     REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
-                auto val = types::logical_value_t{dispatcher->resource(), cur->chunks().front().data[1].type()};
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 5; i++) {
-                    REQUIRE(cur->value(1, i) == val);
+                    auto default_cell = cur->get<int64_t>(1, i);
+                    REQUIRE_FALSE(default_cell.has_error());
+                    REQUIRE(default_cell.value() == 0);
                 }
             }
         }
@@ -440,9 +444,10 @@ TEST_CASE("integration::cpp::test_collection::insert") {
                 for (size_t i = 0; i < kNumInserts * 3; i++) {
                     REQUIRE_FALSE(cur->chunks().front().data[1].is_null(i));
                 }
-                auto val = types::logical_value_t{dispatcher->resource(), cur->chunks().front().data[1].type()};
                 for (size_t i = kNumInserts * 3; i < kNumInserts * 5; i++) {
-                    REQUIRE(cur->value(1, i) == val);
+                    auto default_cell = cur->get<int64_t>(1, i);
+                    REQUIRE_FALSE(default_cell.has_error());
+                    REQUIRE(default_cell.value() == 0);
                 }
             }
         }

@@ -299,12 +299,11 @@ TEST_CASE("shadow_free_list: a crash between the release and the header write le
         uint64_t null_seen = 0;
         otterbrix_test::scan_table_segment(*recovered, 0, TOTAL_ROWS, [&](data_chunk_t& chunk) {
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                const auto cell = chunk.data[0].value(i);
-                if (cell.is_null()) {
+                if (chunk.data[0].is_null(i)) {
                     null_seen++;
                     continue;
                 }
-                if (cell.value<int64_t>() != row_value(scanned + i)) {
+                if (chunk.data[0].get_value<int64_t>(i) != row_value(scanned + i)) {
                     wrong++;
                 }
             }

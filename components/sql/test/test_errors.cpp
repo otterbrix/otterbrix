@@ -36,10 +36,6 @@ using namespace components::sql;
         REQUIRE_FALSE(result.get_error().contains_error());                                                            \
     }
 
-using v = components::types::logical_value_t;
-using vec = std::vector<v>;
-using fields = std::vector<std::pair<std::string, v>>;
-
 TEST_CASE("components::sql::errors") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);

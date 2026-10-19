@@ -58,7 +58,9 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_select_mid_flushes") {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM FlushDb.dst;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
+        auto cell0 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == static_cast<uint64_t>(kRowCount));
     }
     {
         int64_t expected_sum = 0;
@@ -68,7 +70,9 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_select_mid_flushes") {
         auto cur = exec(dispatcher, "SELECT SUM(val) AS s FROM FlushDb.dst;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == expected_sum);
+        auto cell1 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == expected_sum);
     }
 }
 
@@ -99,12 +103,16 @@ TEST_CASE("integration::cpp::bounded_dml_flush::update_mid_flushes") {
         }
         auto cur = exec(dispatcher, "SELECT SUM(val) AS s FROM FlushDb.t;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == expected_sum);
+        auto cell2 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == expected_sum);
     }
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM FlushDb.t;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount));
+        auto cell3 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == static_cast<uint64_t>(kRowCount));
     }
 
     const auto flushes_before2 = services::collection::executor::dml_flush_count();
@@ -125,7 +133,9 @@ TEST_CASE("integration::cpp::bounded_dml_flush::update_mid_flushes") {
         }
         auto cur = exec(dispatcher, "SELECT SUM(val) AS s FROM FlushDb.t;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == expected_sum);
+        auto cell4 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == expected_sum);
     }
 }
 
@@ -153,7 +163,9 @@ TEST_CASE("integration::cpp::bounded_dml_flush::error_after_mid_flush_reverts_al
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM FlushDb.acc;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 1u);
+        auto cell5 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == 1u);
     }
 
     const auto flushes_before = services::collection::executor::dml_flush_count();
@@ -167,7 +179,9 @@ TEST_CASE("integration::cpp::bounded_dml_flush::error_after_mid_flush_reverts_al
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM FlushDb.acc;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 1u);
+        auto cell6 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == 1u);
     }
     {
         std::stringstream q;
@@ -175,7 +189,9 @@ TEST_CASE("integration::cpp::bounded_dml_flush::error_after_mid_flush_reverts_al
         auto cur = exec(dispatcher, q.str());
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 0);
+        auto cell7 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell7.has_error());
+        REQUIRE(cell7.value() == 0);
     }
 }
 
@@ -214,7 +230,9 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_from_recursive_cte_mid_fl
         auto cur = exec(dispatcher, "SELECT COUNT(n) AS c FROM FlushDb.dst;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == kCteRows);
+        auto cell8 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell8.has_error());
+        REQUIRE(cell8.value() == kCteRows);
     }
 }
 
@@ -258,7 +276,9 @@ TEST_CASE("integration::cpp::bounded_dml_flush::delete_using_limit_spans_flushes
     {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM FlushDb.tgt;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRowCount) - kBound);
+        auto cell9 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell9.has_error());
+        REQUIRE(cell9.value() == static_cast<uint64_t>(kRowCount) - kBound);
     }
     // USING/join runs the non-streaming path (a single flush expected), unlike the streaming sinks in the other tests.
     REQUIRE(flushes_after - flushes_before >= 1);

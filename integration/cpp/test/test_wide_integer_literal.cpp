@@ -53,10 +53,18 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::int64_literals_reach_a_b
     auto cur = exec(d, "SELECT a FROM w.t ORDER BY id;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 4);
-    CHECK(cur->value(0, 0).value<int64_t>() == INT64_MAX_V);
-    CHECK(cur->value(0, 1).value<int64_t>() == 2147483648LL);
-    CHECK(cur->value(0, 2).value<int64_t>() == INT64_MIN_V);
-    CHECK(cur->value(0, 3).value<int64_t>() == 123456789012345678LL);
+    auto cell0 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    CHECK(cell0.value() == INT64_MAX_V);
+    auto cell1 = cur->get<int64_t>(0, 1);
+    REQUIRE_FALSE(cell1.has_error());
+    CHECK(cell1.value() == 2147483648LL);
+    auto cell2 = cur->get<int64_t>(0, 2);
+    REQUIRE_FALSE(cell2.has_error());
+    CHECK(cell2.value() == INT64_MIN_V);
+    auto cell3 = cur->get<int64_t>(0, 3);
+    REQUIRE_FALSE(cell3.has_error());
+    CHECK(cell3.value() == 123456789012345678LL);
 }
 
 TEST_CASE("integration::cpp::test_wide_integer_literal::a_wide_literal_in_a_predicate_matches_the_stored_row") {
@@ -79,26 +87,36 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::a_wide_literal_in_a_pred
         auto cur = exec(d, "SELECT id FROM w.t WHERE a = 9223372036854775807;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        CHECK(cur->value(0, 0).value<int64_t>() == 1);
+        auto cell4 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        CHECK(cell4.value() == 1);
     }
     {
         auto cur = exec(d, "SELECT id FROM w.t WHERE a = 4294967295;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        CHECK(cur->value(0, 0).value<int64_t>() == 2);
+        auto cell5 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        CHECK(cell5.value() == 2);
     }
     {
         auto cur = exec(d, "SELECT id FROM w.t WHERE a = 123456789012345678;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        CHECK(cur->value(0, 0).value<int64_t>() == 3);
+        auto cell6 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        CHECK(cell6.value() == 3);
     }
     {
         auto cur = exec(d, "SELECT id FROM w.t WHERE a > 1000000000000 ORDER BY id;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
-        CHECK(cur->value(0, 0).value<int64_t>() == 1);
-        CHECK(cur->value(0, 1).value<int64_t>() == 3);
+        auto cell7 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell7.has_error());
+        CHECK(cell7.value() == 1);
+        auto cell8 = cur->get<int64_t>(0, 1);
+        REQUIRE_FALSE(cell8.has_error());
+        CHECK(cell8.value() == 3);
     }
 }
 
@@ -120,8 +138,12 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::a_literal_past_int64_rea
     auto cur = exec(d, "SELECT d FROM w.t ORDER BY id;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    CHECK(cur->value(0, 0).value<components::types::int128_t>() == past_int64());
-    CHECK(cur->value(0, 1).value<components::types::int128_t>() == -past_int64());
+    auto cell9 = cur->get<components::types::int128_t>(0, 0);
+    REQUIRE_FALSE(cell9.has_error());
+    CHECK(cell9.value() == past_int64());
+    auto cell10 = cur->get<components::types::int128_t>(0, 1);
+    REQUIRE_FALSE(cell10.has_error());
+    CHECK(cell10.value() == -past_int64());
 }
 
 TEST_CASE("integration::cpp::test_wide_integer_literal::a_literal_wider_than_its_column_is_refused") {
@@ -142,8 +164,12 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::a_literal_wider_than_its
     auto cur = exec(d, "SELECT small FROM w.t ORDER BY id;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    CHECK(cur->value(0, 0).value<int32_t>() == 2147483647);
-    CHECK(cur->value(0, 1).value<int32_t>() == -2147483648);
+    auto cell11 = cur->get<int32_t>(0, 0);
+    REQUIRE_FALSE(cell11.has_error());
+    CHECK(cell11.value() == 2147483647);
+    auto cell12 = cur->get<int32_t>(0, 1);
+    REQUIRE_FALSE(cell12.has_error());
+    CHECK(cell12.value() == -2147483648);
 }
 
 TEST_CASE("integration::cpp::test_wide_integer_literal::a_literal_no_type_can_hold_is_refused_loudly") {
@@ -162,5 +188,7 @@ TEST_CASE("integration::cpp::test_wide_integer_literal::a_literal_no_type_can_ho
     auto cur = exec(d, "SELECT a FROM w.t;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1);
-    CHECK(cur->value(0, 0).value<int64_t>() == INT64_MAX_V);
+    auto cell13 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell13.has_error());
+    CHECK(cell13.value() == INT64_MAX_V);
 }

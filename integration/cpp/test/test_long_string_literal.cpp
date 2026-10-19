@@ -21,8 +21,9 @@ namespace {
 
     std::string first_text(const components::cursor::cursor_t_ptr& cursor) {
         REQUIRE(cursor->size() == 1);
-        const auto cell = cursor->value(0, 0);
-        return std::string{cell.value<std::string_view>()};
+        auto cell0 = cursor->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        return std::string{cell0.value()};
     }
 
 } // namespace

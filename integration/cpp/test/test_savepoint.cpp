@@ -47,7 +47,9 @@ namespace {
             return false;
         }
         for (std::size_t row = 0; row < cursor->size(); ++row) {
-            if (cursor->value(0, row).value<int64_t>() != first + static_cast<int64_t>(row)) {
+            const auto id = cursor->get<int64_t>(0, row);
+            REQUIRE_FALSE(id.has_error());
+            if (id.value() != first + static_cast<int64_t>(row)) {
                 return false;
             }
         }
@@ -172,7 +174,9 @@ TEST_CASE("integration::cpp::savepoint::ddl") {
         auto rows = run(dispatcher, otterbrix::session_id_t(), "SELECT b FROM TestDatabase.columns;");
         REQUIRE(rows->is_success());
         REQUIRE(rows->size() == 1);
-        REQUIRE(rows->value(0, 0).value<int64_t>() == 100);
+        const auto id = rows->get<int64_t>(0, 0);
+        REQUIRE_FALSE(id.has_error());
+        REQUIRE(id.value() == 100);
     }
 
     SECTION("created tables") {
@@ -236,12 +240,18 @@ TEST_CASE("integration::cpp::savepoint::restart") {
     auto below = run(dispatcher, session, "SELECT id FROM TestDatabase.marks WHERE id < 5000 ORDER BY id;");
     REQUIRE(below->is_success());
     REQUIRE(below->size() == static_cast<std::size_t>(COMMITTED_ROWS - 100));
-    REQUIRE(below->value(0, 0).value<int64_t>() == 100);
-    REQUIRE(below->value(0, below->size() - 1).value<int64_t>() == COMMITTED_ROWS - 1);
+    const auto below_first = below->get<int64_t>(0, 0);
+    REQUIRE_FALSE(below_first.has_error());
+    REQUIRE(below_first.value() == 100);
+    const auto below_last = below->get<int64_t>(0, below->size() - 1);
+    REQUIRE_FALSE(below_last.has_error());
+    REQUIRE(below_last.value() == COMMITTED_ROWS - 1);
     auto above = run(dispatcher, session, "SELECT id FROM TestDatabase.marks WHERE id >= 5000;");
     REQUIRE(above->is_success());
     REQUIRE(above->size() == 1);
-    REQUIRE(above->value(0, 0).value<int64_t>() == 6000);
+    const auto above_first = above->get<int64_t>(0, 0);
+    REQUIRE_FALSE(above_first.has_error());
+    REQUIRE(above_first.value() == 6000);
     REQUIRE(run(dispatcher, session, "SELECT gone FROM TestDatabase.marks;")->is_error());
 }
 
@@ -307,7 +317,9 @@ TEST_CASE("integration::cpp::savepoint::failed_statement") {
         REQUIRE(cursor->is_success());
         std::vector<int64_t> out;
         for (std::size_t row = 0; row < cursor->size(); ++row) {
-            out.push_back(cursor->value(0, row).value<int64_t>());
+            const auto id = cursor->get<int64_t>(0, row);
+            REQUIRE_FALSE(id.has_error());
+            out.push_back(id.value());
         }
         return out;
     };

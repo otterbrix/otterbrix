@@ -26,3 +26,9 @@ target_include_directories(
         PUBLIC
         ${CMAKE_SOURCE_DIR}
 )
+
+target_link_libraries(
+        otterbrix_${PROJECT_NAME}
+        PUBLIC
+        absl::int128
+)

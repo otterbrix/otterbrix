@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-#include <components/types/logical_value.hpp>
+#include <components/vector/vector_builders.hpp>
 
 using namespace components;
 using namespace components::cursor;
@@ -22,12 +22,12 @@ using namespace components::cursor;
 // integration/cpp/wrapper_dispatcher.hpp/.cpp): each pair is {one-based placeholder index, value}; the
 // dispatcher calls binder.bind(id, value) then binder.finalize(), surfacing failures as an error cursor.
 //
-// logical_value_t{resource, T} selects the logical type from the C++ type of T via to_logical_type<T>()
-// (components/types/logical_value.hpp); components/sql/test/test_parameter.cpp uses the same construction.
+// make_scalar(resource, T) selects the logical type from the C++ type of T via to_logical_type<T>()
+// (components/vector/vector_builders.hpp); components/sql/test/test_parameter.cpp uses the same construction.
 // Type-to-SqlParamValue mapping: Int64 -> int64_t, UInt64 -> uint64_t, Double -> double, Str -> std::string,
 // Bool -> bool.
 namespace {
-    using param_t = std::pair<size_t, types::logical_value_t>;
+    using param_t = std::pair<size_t, components::vector::vector_t>;
     using params_t = std::vector<param_t>;
 
     // Index of the column whose alias matches `name`, or column_count() if absent.
@@ -67,11 +67,11 @@ TEST_CASE("integration::cpp::params::bind_each_type") {
         {
             auto session = otterbrix::session_id_t();
             params_t params{
-                {1, types::logical_value_t{resource, static_cast<int64_t>(-42)}},
-                {2, types::logical_value_t{resource, static_cast<uint64_t>(7)}},
-                {3, types::logical_value_t{resource, 3.5}},
-                {4, types::logical_value_t{resource, std::string("hello")}},
-                {5, types::logical_value_t{resource, true}},
+                {1, components::vector::make_scalar(resource, static_cast<int64_t>(-42))},
+                {2, components::vector::make_scalar(resource, static_cast<uint64_t>(7))},
+                {3, components::vector::make_scalar(resource, 3.5)},
+                {4, components::vector::make_scalar(resource, std::string("hello"))},
+                {5, components::vector::make_scalar(resource, true)},
             };
             auto cur = dispatcher->execute_sql_with_params(
                 session,
@@ -96,12 +96,21 @@ TEST_CASE("integration::cpp::params::bind_each_type") {
             REQUIRE(s_col < cur->column_count());
             REQUIRE(b_col < cur->column_count());
 
-            REQUIRE(cur->value(i_col, 0).value<int64_t>() == -42);
-            REQUIRE(cur->value(u_col, 0).value<uint64_t>() == 7);
-            REQUIRE(cur->value(d_col, 0).value<double>() == Catch::Approx(3.5));
-            const auto s_cell = cur->value(s_col, 0);
-            REQUIRE(s_cell.value<std::string_view>() == "hello");
-            REQUIRE(cur->value(b_col, 0).value<bool>() == true);
+            auto cell0 = cur->get<int64_t>(i_col, 0);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == -42);
+            auto cell1 = cur->get<uint64_t>(u_col, 0);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == 7);
+            auto cell2 = cur->get<double>(d_col, 0);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == Catch::Approx(3.5));
+            auto cell3 = cur->get<std::string_view>(s_col, 0);
+            REQUIRE_FALSE(cell3.has_error());
+            REQUIRE(cell3.value() == "hello");
+            auto cell4 = cur->get<bool>(b_col, 0);
+            REQUIRE_FALSE(cell4.has_error());
+            REQUIRE(cell4.value() == true);
         }
     }
 }
@@ -125,8 +134,8 @@ TEST_CASE("integration::cpp::params::uint64_max") {
         {
             auto session = otterbrix::session_id_t();
             params_t params{
-                {1, types::logical_value_t{resource, static_cast<int64_t>(1)}},
-                {2, types::logical_value_t{resource, std::numeric_limits<uint64_t>::max()}},
+                {1, components::vector::make_scalar(resource, static_cast<int64_t>(1))},
+                {2, components::vector::make_scalar(resource, std::numeric_limits<uint64_t>::max())},
             };
             auto cur =
                 dispatcher->execute_sql_with_params(session, "INSERT INTO ParamDb.U (k, v) VALUES ($1, $2);", params);
@@ -139,7 +148,9 @@ TEST_CASE("integration::cpp::params::uint64_max") {
             REQUIRE(cur->size() == 1);
             const uint64_t v_col = column_index(cur, "v");
             REQUIRE(v_col < cur->column_count());
-            REQUIRE(cur->value(v_col, 0).value<uint64_t>() == std::numeric_limits<uint64_t>::max());
+            auto cell5 = cur->get<uint64_t>(v_col, 0);
+            REQUIRE_FALSE(cell5.has_error());
+            REQUIRE(cell5.value() == std::numeric_limits<uint64_t>::max());
         }
     }
 }
@@ -162,7 +173,7 @@ TEST_CASE("integration::cpp::params::placeholders") {
     {
         {
             auto session = otterbrix::session_id_t();
-            params_t params{{1, types::logical_value_t{resource, static_cast<int64_t>(99)}}};
+            params_t params{{1, components::vector::make_scalar(resource, static_cast<int64_t>(99))}};
             auto cur = dispatcher->execute_sql_with_params(session,
                                                            "INSERT INTO ParamDb.Place (a, b) VALUES ($1, $1);",
                                                            params);
@@ -177,8 +188,12 @@ TEST_CASE("integration::cpp::params::placeholders") {
             const uint64_t b_col = column_index(cur, "b");
             REQUIRE(a_col < cur->column_count());
             REQUIRE(b_col < cur->column_count());
-            REQUIRE(cur->value(a_col, 0).value<int64_t>() == 99);
-            REQUIRE(cur->value(b_col, 0).value<int64_t>() == 99);
+            auto cell6 = cur->get<int64_t>(a_col, 0);
+            REQUIRE_FALSE(cell6.has_error());
+            REQUIRE(cell6.value() == 99);
+            auto cell7 = cur->get<int64_t>(b_col, 0);
+            REQUIRE_FALSE(cell7.has_error());
+            REQUIRE(cell7.value() == 99);
         }
     }
 
@@ -187,8 +202,8 @@ TEST_CASE("integration::cpp::params::placeholders") {
         {
             auto session = otterbrix::session_id_t();
             params_t params{
-                {1, types::logical_value_t{resource, static_cast<int64_t>(7)}},
-                {2, types::logical_value_t{resource, std::string("row7")}},
+                {1, components::vector::make_scalar(resource, static_cast<int64_t>(7))},
+                {2, components::vector::make_scalar(resource, std::string("row7"))},
             };
             auto cur = dispatcher->execute_sql_with_params(session,
                                                            "INSERT INTO ParamDb.Place (id, name) VALUES ($1, $2);",
@@ -202,8 +217,9 @@ TEST_CASE("integration::cpp::params::placeholders") {
             REQUIRE(cur->size() == 1);
             const uint64_t name_col = column_index(cur, "name");
             REQUIRE(name_col < cur->column_count());
-            const auto name_cell = cur->value(name_col, 0);
-            REQUIRE(name_cell.value<std::string_view>() == "row7");
+            auto cell8 = cur->get<std::string_view>(name_col, 0);
+            REQUIRE_FALSE(cell8.has_error());
+            REQUIRE(cell8.value() == "row7");
         }
     }
 }
@@ -233,7 +249,7 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
     INFO("SELECT ... WHERE count > $1");
     {
         auto session = otterbrix::session_id_t();
-        params_t params{{1, types::logical_value_t{resource, static_cast<int64_t>(15)}}};
+        params_t params{{1, components::vector::make_scalar(resource, static_cast<int64_t>(15))}};
         auto cur = dispatcher->execute_sql_with_params(session, "SELECT * FROM ParamDb.Rows WHERE count > $1;", params);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
@@ -243,8 +259,8 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
     {
         auto session = otterbrix::session_id_t();
         params_t params{
-            {1, types::logical_value_t{resource, static_cast<int64_t>(15)}},
-            {2, types::logical_value_t{resource, std::string("c")}},
+            {1, components::vector::make_scalar(resource, static_cast<int64_t>(15))},
+            {2, components::vector::make_scalar(resource, std::string("c"))},
         };
         auto cur = dispatcher->execute_sql_with_params(session,
                                                        "SELECT * FROM ParamDb.Rows WHERE count > $1 AND name = $2;",
@@ -253,14 +269,15 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
         REQUIRE(cur->size() == 1);
         const uint64_t name_col = column_index(cur, "name");
         REQUIRE(name_col < cur->column_count());
-        const auto name_cell = cur->value(name_col, 0);
-        REQUIRE(name_cell.value<std::string_view>() == "c");
+        auto cell9 = cur->get<std::string_view>(name_col, 0);
+        REQUIRE_FALSE(cell9.has_error());
+        REQUIRE(cell9.value() == "c");
     }
 
     INFO("SELECT ... WHERE flag = $1 (bool param)");
     {
         auto session = otterbrix::session_id_t();
-        params_t params{{1, types::logical_value_t{resource, true}}};
+        params_t params{{1, components::vector::make_scalar(resource, true)}};
         auto cur = dispatcher->execute_sql_with_params(session, "SELECT * FROM ParamDb.Rows WHERE flag = $1;", params);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 2);
@@ -271,8 +288,8 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
         {
             auto session = otterbrix::session_id_t();
             params_t params{
-                {1, types::logical_value_t{resource, static_cast<int64_t>(777)}},
-                {2, types::logical_value_t{resource, std::string("a")}},
+                {1, components::vector::make_scalar(resource, static_cast<int64_t>(777))},
+                {2, components::vector::make_scalar(resource, std::string("a"))},
             };
             auto cur = dispatcher->execute_sql_with_params(session,
                                                            "UPDATE ParamDb.Rows SET count = $1 WHERE name = $2;",
@@ -286,7 +303,9 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
             REQUIRE(cur->size() == 1);
             const uint64_t count_col = column_index(cur, "count");
             REQUIRE(count_col < cur->column_count());
-            REQUIRE(cur->value(count_col, 0).value<int64_t>() == 777);
+            auto cell10 = cur->get<int64_t>(count_col, 0);
+            REQUIRE_FALSE(cell10.has_error());
+            REQUIRE(cell10.value() == 777);
         }
     }
 
@@ -294,7 +313,7 @@ TEST_CASE("integration::cpp::params::where_update_delete") {
     {
         {
             auto session = otterbrix::session_id_t();
-            params_t params{{1, types::logical_value_t{resource, static_cast<int64_t>(20)}}};
+            params_t params{{1, components::vector::make_scalar(resource, static_cast<int64_t>(20))}};
             auto cur =
                 dispatcher->execute_sql_with_params(session, "DELETE FROM ParamDb.Rows WHERE count = $1;", params);
             REQUIRE(cur->is_success());
@@ -325,7 +344,7 @@ TEST_CASE("integration::cpp::params::validation_errors") {
     INFO("missing param: query has $2, only $1 bound");
     {
         auto session = otterbrix::session_id_t();
-        params_t params{{1, types::logical_value_t{resource, static_cast<int64_t>(1)}}};
+        params_t params{{1, components::vector::make_scalar(resource, static_cast<int64_t>(1))}};
         auto cur =
             dispatcher->execute_sql_with_params(session, "INSERT INTO ParamDb.Val (id, name) VALUES ($1, $2);", params);
         REQUIRE(cur->is_error());
@@ -335,7 +354,7 @@ TEST_CASE("integration::cpp::params::validation_errors") {
     INFO("unknown param index: bind $99 for a single-placeholder query");
     {
         auto session = otterbrix::session_id_t();
-        params_t params{{99, types::logical_value_t{resource, static_cast<int64_t>(1)}}};
+        params_t params{{99, components::vector::make_scalar(resource, static_cast<int64_t>(1))}};
         auto cur = dispatcher->execute_sql_with_params(session, "INSERT INTO ParamDb.Val (id) VALUES ($1);", params);
         REQUIRE(cur->is_error());
         REQUIRE_FALSE(cur->get_error().what.empty());
@@ -344,7 +363,7 @@ TEST_CASE("integration::cpp::params::validation_errors") {
     INFO("zero param index is rejected");
     {
         auto session = otterbrix::session_id_t();
-        params_t params{{0, types::logical_value_t{resource, static_cast<int64_t>(1)}}};
+        params_t params{{0, components::vector::make_scalar(resource, static_cast<int64_t>(1))}};
         auto cur = dispatcher->execute_sql_with_params(session, "INSERT INTO ParamDb.Val (id) VALUES ($1);", params);
         REQUIRE(cur->is_error());
         REQUIRE_FALSE(cur->get_error().what.empty());
@@ -368,7 +387,7 @@ TEST_CASE("integration::cpp::params::injection_quote_in_string_stored_verbatim")
     const std::string nasty = "Robert'); DROP TABLE ParamDb.T;--";
     {
         auto session = otterbrix::session_id_t();
-        params_t params{{1, types::logical_value_t{resource, nasty}}};
+        params_t params{{1, components::vector::make_scalar(resource, nasty)}};
         auto cur = dispatcher->execute_sql_with_params(session, "INSERT INTO ParamDb.T (name) VALUES ($1);", params);
         REQUIRE(cur->is_success());
     }
@@ -380,8 +399,9 @@ TEST_CASE("integration::cpp::params::injection_quote_in_string_stored_verbatim")
         REQUIRE(cur->size() == 1);
         const uint64_t name_col = column_index(cur, "name");
         REQUIRE(name_col < cur->column_count());
-        const auto name_cell = cur->value(name_col, 0);
-        REQUIRE(name_cell.value<std::string_view>() == nasty);
+        auto cell11 = cur->get<std::string_view>(name_col, 0);
+        REQUIRE_FALSE(cell11.has_error());
+        REQUIRE(cell11.value() == nasty);
     }
 }
 
@@ -409,7 +429,7 @@ TEST_CASE("integration::cpp::params::injection_or_1_eq_1_matches_no_rows") {
     {
         // The whole payload is a single string literal compared against `name`; no row equals it.
         auto session = otterbrix::session_id_t();
-        params_t params{{1, types::logical_value_t{resource, std::string("alice' OR '1'='1")}}};
+        params_t params{{1, components::vector::make_scalar(resource, std::string("alice' OR '1'='1"))}};
         auto cur = dispatcher->execute_sql_with_params(session, "SELECT * FROM ParamDb.T WHERE name = $1;", params);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
@@ -443,7 +463,7 @@ TEST_CASE("integration::cpp::params::injection_semicolon_does_not_chain") {
     const std::string payload = "x'; DELETE FROM ParamDb.Victim; --";
     {
         auto session = otterbrix::session_id_t();
-        params_t params{{1, types::logical_value_t{resource, payload}}};
+        params_t params{{1, components::vector::make_scalar(resource, payload)}};
         auto cur = dispatcher->execute_sql_with_params(session, "INSERT INTO ParamDb.T (name) VALUES ($1);", params);
         REQUIRE(cur->is_success());
     }
@@ -461,8 +481,9 @@ TEST_CASE("integration::cpp::params::injection_semicolon_does_not_chain") {
         REQUIRE(cur->size() == 1);
         const uint64_t name_col = column_index(cur, "name");
         REQUIRE(name_col < cur->column_count());
-        const auto name_cell = cur->value(name_col, 0);
-        REQUIRE(name_cell.value<std::string_view>() == payload);
+        auto cell12 = cur->get<std::string_view>(name_col, 0);
+        REQUIRE_FALSE(cell12.has_error());
+        REQUIRE(cell12.value() == payload);
     }
 }
 
@@ -489,14 +510,15 @@ TEST_CASE("integration::cpp::params::injection_int_param_type_safety") {
     {
         // An Int64 param compares as an integer; it can only match the integer id.
         auto session = otterbrix::session_id_t();
-        params_t params{{1, types::logical_value_t{resource, static_cast<int64_t>(1)}}};
+        params_t params{{1, components::vector::make_scalar(resource, static_cast<int64_t>(1))}};
         auto cur = dispatcher->execute_sql_with_params(session, "SELECT * FROM ParamDb.T WHERE id = $1;", params);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         const uint64_t name_col = column_index(cur, "name");
         REQUIRE(name_col < cur->column_count());
-        const auto name_cell = cur->value(name_col, 0);
-        REQUIRE(name_cell.value<std::string_view>() == "a");
+        auto cell13 = cur->get<std::string_view>(name_col, 0);
+        REQUIRE_FALSE(cell13.has_error());
+        REQUIRE(cell13.value() == "a");
     }
 }
 
@@ -523,7 +545,7 @@ TEST_CASE("integration::cpp::params::injection_comment_marker_stored_literally")
         // "a'--" is a single literal string; the comment marker must not terminate the predicate,
         // so it matches neither 'a' nor 'b'.
         auto session = otterbrix::session_id_t();
-        params_t params{{1, types::logical_value_t{resource, std::string("a'--")}}};
+        params_t params{{1, components::vector::make_scalar(resource, std::string("a'--"))}};
         auto cur = dispatcher->execute_sql_with_params(session, "SELECT * FROM ParamDb.T WHERE name = $1;", params);
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);

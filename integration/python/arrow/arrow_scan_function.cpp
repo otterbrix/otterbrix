@@ -5,6 +5,7 @@
 
 #include <components/tableref/tableref.hpp>
 #include <components/vector/arrow/scaner/arrow_type.hpp>
+#include <components/vector/vector_operations.hpp>
 
 #include <algorithm>
 #include <cassert>
@@ -95,10 +96,10 @@ namespace otterbrix {
     arrow_scan_function_t::ArrowScanBind(table_function_bind_input_t& input,
                                          std::vector<complex_logical_type>& return_types,
                                          std::vector<std::string>& names) {
-        if (input.inputs[0].is_null()) {
+        if (input.ref.arrow_factory == 0) {
             throw std::runtime_error("arrow_scan: factory pointer cannot be null");
         }
-        auto factory_ptr = reinterpret_cast<uintptr_t>(input.inputs[0].value<void*>());
+        auto factory_ptr = input.ref.arrow_factory;
 
         dependency_item_t* dependency = nullptr;
         if (input.ref.external_dependency) {
@@ -201,10 +202,9 @@ namespace otterbrix {
         uint64_t available = produced.size() - global_state.current_offset;
         uint64_t row_count = std::min<uint64_t>(available, output.capacity());
         output.set_cardinality(row_count);
+        const components::vector::indexing_vector_t window(resource, global_state.current_offset, row_count);
         for (uint64_t col = 0; col < produced.column_count(); col++) {
-            for (uint64_t row = 0; row < row_count; row++) {
-                output.set_value(col, row, produced.value(col, global_state.current_offset + row));
-            }
+            components::vector::vector_ops::copy(produced.data[col], output.data[col], window, row_count, 0, 0);
         }
         global_state.current_offset += row_count;
     }

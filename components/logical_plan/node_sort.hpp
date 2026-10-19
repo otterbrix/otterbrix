@@ -14,14 +14,14 @@ namespace components::logical_plan {
         // Optimizer annotation set by the pushdown_limit rule: a pure COUNT read-cap
         // (offset always 0) this FULL sort may truncate its OUTPUT to, so the
         // authoritative operator_limit above can still window [offset, offset+limit).
-        // Stamped only when there is NO DISTINCT above the sort. unlimit() = no cap.
+        // Stamped only when there is NO DISTINCT above the sort. row_cap_t::uncapped() = no cap.
         // Advisory only; EXCLUDED from hash_impl()/operator== — see
         // node_match_t::read_cap_ for the rationale.
-        void set_read_cap(const limit_t& read_cap) noexcept { read_cap_ = read_cap; }
-        const limit_t& read_cap() const noexcept { return read_cap_; }
+        void set_read_cap(const row_cap_t& read_cap) noexcept { read_cap_ = read_cap; }
+        const row_cap_t& read_cap() const noexcept { return read_cap_; }
 
     private:
-        limit_t read_cap_{};
+        row_cap_t read_cap_{};
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };

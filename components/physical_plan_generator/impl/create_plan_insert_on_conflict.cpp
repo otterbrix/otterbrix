@@ -23,7 +23,7 @@ namespace services::planner::impl {
                         create_plan(context,
                                     function_registry,
                                     node->children().front(),
-                                    components::logical_plan::limit_t::unlimit(),
+                                    components::logical_plan::limit_t::all(),
                                     params));
         ops::operator_unique_constraint_t* check = nullptr;
         for (ops::operator_t* op = insert_part.get(); op != nullptr; op = op->left().get()) {
@@ -51,7 +51,7 @@ namespace services::planner::impl {
                             create_plan(context,
                                         function_registry,
                                         node->children()[1],
-                                        components::logical_plan::limit_t::unlimit(),
+                                        components::logical_plan::limit_t::all(),
                                         params));
             ops::operator_update* update = nullptr;
             for (ops::operator_t* op = update_part.get(); op != nullptr; op = op->left().get()) {

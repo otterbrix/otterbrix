@@ -40,8 +40,9 @@ namespace {
     std::string plan_text(const components::cursor::cursor_t_ptr& cur) {
         std::string out;
         for (std::size_t r = 0; r < cur->size(); ++r) {
-            auto v = cur->value(0, r);
-            out += std::string(v.value<std::string_view>());
+            auto cell0 = cur->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell0.has_error());
+            out += std::string(cell0.value());
             out += '\n';
         }
         return out;
@@ -110,7 +111,9 @@ TEST_CASE("integration::cpp::index_stale_after_compact::a_crash_after_a_compacti
             auto cur = exec(indexed_query());
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            CHECK(cur->value(0, 0).value<int64_t>() == kSurvivorId);
+            auto cell1 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell1.has_error());
+            CHECK(cell1.value() == kSurvivorId);
         }
 
         // kill -9 happens here: the compacted .otbx is durable, the rebuilt index is not.
@@ -139,7 +142,9 @@ TEST_CASE("integration::cpp::index_stale_after_compact::a_crash_after_a_compacti
             auto cur = exec(control_query());
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            CHECK(cur->value(0, 0).value<int64_t>() == kSurvivorKey);
+            auto cell2 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell2.has_error());
+            CHECK(cell2.value() == kSurvivorKey);
         }
 
         INFO("the survivor must still be reachable THROUGH THE INDEX, or the file is a full-scan test");
@@ -158,7 +163,9 @@ TEST_CASE("integration::cpp::index_stale_after_compact::a_crash_after_a_compacti
             // Only commit_inserts' force_flush() before the statement returns makes this
             // survive the crash; without it clear() leaves a 0-row answer.
             REQUIRE(cur->size() == 1);
-            CHECK(cur->value(0, 0).value<int64_t>() == kSurvivorId);
+            auto cell3 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell3.has_error());
+            CHECK(cell3.value() == kSurvivorId);
         }
 
         INFO("and a key from the deleted middle must still be absent");
@@ -213,7 +220,9 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
         auto cur = exec(auto_indexed_query());
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        CHECK(cur->value(0, 0).value<int64_t>() == kSurvivorId);
+        auto cell4 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        CHECK(cell4.value() == kSurvivorId);
     }
 
     services::disk::reset_table_checkpoints();
@@ -270,7 +279,9 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
             return cur->is_success();
         }));
         REQUIRE(cur->size() == 1);
-        CHECK(cur->value(0, 0).value<int64_t>() == kSurvivorId);
+        auto cell5 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        CHECK(cell5.value() == kSurvivorId);
     }
 
     INFO("CONTROL — the unindexed leg on the same table and the same row must agree");
@@ -285,6 +296,8 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
         auto cur = exec(auto_control_query());
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        CHECK(cur->value(0, 0).value<int64_t>() == kSurvivorKey);
+        auto cell6 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        CHECK(cell6.value() == kSurvivorKey);
     }
 }

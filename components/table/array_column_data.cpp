@@ -128,10 +128,7 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool>
-    array_column_data_t::append(column_append_state& state,
-                                vector::vector_t& vector,
-                                uint64_t offset,
-                                uint64_t count) {
+    array_column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t offset, uint64_t count) {
         if (vector.get_vector_type() != vector::vector_type::FLAT) {
             vector::vector_t append_vector(vector);
             append_vector.flatten(offset + count);

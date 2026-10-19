@@ -22,19 +22,19 @@ namespace components::operators {
                 core::error_code_t::physical_plan_error,
                 std::pmr::string{"a predicate that selects nothing reached filter construction", resource}};
         }
-        return table::make_pushed_filter(target, expression, parameters->parameters, context);
+        return table::make_pushed_filter(target, expression, *parameters, context);
     }
 
     full_scan::full_scan(std::pmr::memory_resource* resource,
                          log_t log,
                          components::catalog::oid_t table_oid,
                          const expressions::compare_expression_ptr& expression,
-                         logical_plan::limit_t limit,
+                         logical_plan::row_cap_t cap,
                          std::vector<size_t> projected_cols)
         : read_only_operator_t(resource, log, operator_type::full_scan)
         , table_oid_(table_oid)
         , expression_(expression)
-        , limit_(limit)
+        , cap_(cap)
         , projected_cols_(std::move(projected_cols)) {}
 
     // Each call does at most one cross-actor fetch await; the N awaits are sequential across calls in
@@ -85,42 +85,33 @@ namespace components::operators {
             }
 
             // Short-circuit: null parameter in a scalar comparison — SQL NULL semantics.
-            // col OP NULL → always false → empty. col OP ALL(empty) is vacuously true → scan all.
-            bool null_param_skip_filter = false;
+            // col OP NULL → always false → empty, and so is col OP ANY|ALL (NULL).
             if (expression_ && !expression_->is_union() && expression_->type() != expressions::compare_type::is_null &&
                 expression_->type() != expressions::compare_type::is_not_null &&
                 std::holds_alternative<core::parameter_id_t>(expression_->right())) {
                 auto pid = std::get<core::parameter_id_t>(expression_->right());
-                auto it = ctx->parameters.parameters.find(pid);
-                if (it != ctx->parameters.parameters.end() && it->second.is_null()) {
-                    if (expression_->type() != expressions::compare_type::all) {
-                        drained_ = true;
-                        emitted_any_ = true;
-                        co_return make_guard_chunk(resource_, guard_types_, projected_cols_);
-                    }
-                    null_param_skip_filter = true;
+                if (ctx->parameters.is_null(pid)) {
+                    drained_ = true;
+                    emitted_any_ = true;
+                    co_return make_guard_chunk(resource_, guard_types_, projected_cols_);
                 }
             }
 
-            std::unique_ptr<table::pushed_filter_t> filter;
-            if (!null_param_skip_filter) {
-                auto filter_result = transform_predicate(resource_,
-                                                         ctx->disk_address.resource(),
-                                                         expression_,
-                                                         &ctx->parameters,
-                                                         ctx->execution_context);
-                if (filter_result.has_error()) {
-                    set_error(filter_result.error());
-                    mark_failed();
-                    co_return filter_result.error();
-                }
-                filter = std::move(filter_result.value());
+            auto filter_result = transform_predicate(resource_,
+                                                     ctx->disk_address.resource(),
+                                                     expression_,
+                                                     &ctx->parameters,
+                                                     ctx->execution_context);
+            if (filter_result.has_error()) {
+                set_error(filter_result.error());
+                mark_failed();
+                co_return filter_result.error();
             }
+            auto filter = std::move(filter_result.value());
 
-            // OPEN the cursor: the read-cap (offset+limit head cap) is pushed down as the agent's
-            // post-filter matched-row count cap. SELECT OFFSET is applied by operator_limit above,
-            // so every scan receives offset()==0 and head_cap() == limit here.
-            const int64_t scan_limit = limit_.head_cap();
+            // OPEN the cursor: the read-cap (offset+limit) is pushed down as the agent's
+            // post-filter matched-row count cap. SELECT OFFSET is applied by operator_limit above.
+            const int64_t scan_limit = cap_.to_disk();
 
             auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                         &services::disk::manager_disk_t::storage_fetch_next_batch,

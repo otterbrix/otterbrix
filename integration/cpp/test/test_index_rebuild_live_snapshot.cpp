@@ -46,7 +46,9 @@ TEST_CASE("integration::cpp::index_rebuild_live_snapshot::open_snapshot_checkpoi
         auto pin = d->execute_sql(session_b, "SELECT COUNT(id) AS c FROM b.t;");
         REQUIRE(pin->is_success());
         REQUIRE(pin->size() == 1);
-        REQUIRE(pin->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kRows));
+        auto cell0 = pin->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == static_cast<uint64_t>(kRows));
     }
 
     REQUIRE(exec("DELETE FROM b.t WHERE id = 1000;")->is_success());
@@ -64,7 +66,9 @@ TEST_CASE("integration::cpp::index_rebuild_live_snapshot::open_snapshot_checkpoi
         auto last = exec("SELECT id FROM b.t WHERE k = " + std::to_string(10 * kRows) + ";");
         REQUIRE(last->is_success());
         REQUIRE(last->size() == 1);
-        CHECK(last->value(0, 0).value<int64_t>() == kRows);
+        auto cell1 = last->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        CHECK(cell1.value() == kRows);
     }
 
     // The first key after the tombstone: the first candidate to shift into its slot.
@@ -72,7 +76,9 @@ TEST_CASE("integration::cpp::index_rebuild_live_snapshot::open_snapshot_checkpoi
         auto shifted = exec("SELECT id FROM b.t WHERE k = 10010;");
         REQUIRE(shifted->is_success());
         REQUIRE(shifted->size() == 1);
-        CHECK(shifted->value(0, 0).value<int64_t>() == 1001);
+        auto cell2 = shifted->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        CHECK(cell2.value() == 1001);
     }
 
     REQUIRE(d->execute_sql(session_b, "ROLLBACK;")->is_success());

@@ -80,13 +80,17 @@ TEST_CASE("integration::cpp::index_rebuild_crash::mid_table_delete_shifts_rebuil
         auto last = exec("SELECT id FROM b.t WHERE k = " + std::to_string(10 * kRows) + ";");
         REQUIRE(last->is_success());
         REQUIRE(last->size() == 1);
-        CHECK(last->value(0, 0).value<int64_t>() == kRows);
+        auto cell0 = last->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        CHECK(cell0.value() == kRows);
 
         // A row right after the tombstone: the first shifted victim.
         auto shifted = exec("SELECT id FROM b.t WHERE k = 10010;");
         REQUIRE(shifted->is_success());
         REQUIRE(shifted->size() == 1);
-        CHECK(shifted->value(0, 0).value<int64_t>() == 1001);
+        auto cell1 = shifted->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        CHECK(cell1.value() == 1001);
     }
     std::filesystem::remove_all(crash_dir);
 }

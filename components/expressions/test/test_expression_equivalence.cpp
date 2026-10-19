@@ -29,7 +29,7 @@ namespace {
 
 TEST_CASE("components::expression::same_computation::function_identity") {
     auto resource = core::pmr::otterbrix_resource();
-    const components::types::parameter_map_t parameters(&resource);
+    const components::vector::storage_parameters parameters(&resource);
     const auto same = [&](const expression_ptr& lhs, const expression_ptr& rhs) {
         return same_computation(lhs, rhs, parameters);
     };

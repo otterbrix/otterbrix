@@ -55,9 +55,8 @@ namespace {
         const auto column = col_of(cur, alias);
         for (const auto& chunk : cur->chunks()) {
             for (size_t r = 0; r < chunk.size(); ++r) {
-                const auto cell = chunk.value(column, r);
-                if (!cell.is_null()) {
-                    s.insert(cell.value<const std::string&>());
+                if (!chunk.data[column].is_null(r)) {
+                    s.insert(std::string{chunk.data[column].get_value<std::string_view>(r)});
                 }
             }
         }
@@ -106,7 +105,7 @@ TEST_CASE("integration::cpp::test_view_expansion::aggregate_over_view") {
     auto cur = exec(d, "SELECT COUNT(*) AS n FROM vx.v;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 1);
-    CHECK(cur->chunks().front().get_value<int64_t>(col_of(cur, "n"), 0) == 2);
+    CHECK(cur->chunks().front().get_value<uint64_t>(col_of(cur, "n"), 0) == 2);
 }
 
 // Both plans number parameters from zero, so merging the parameter map under shared ids let `> 18` overwrite `> 10`.

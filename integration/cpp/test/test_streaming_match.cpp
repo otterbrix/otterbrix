@@ -58,7 +58,9 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
         auto cur = exec(dispatcher, "SELECT COUNT(id) AS c FROM MatchDb.t WHERE name LIKE 'match%';");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == static_cast<uint64_t>(kExpectedMatches));
+        auto cell0 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == static_cast<uint64_t>(kExpectedMatches));
     }
 }
 
@@ -164,13 +166,17 @@ TEST_CASE("integration::cpp::streaming_match::delete_where_in_group_subquery_lan
     {
         auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM SinkDb.emp;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
+        auto cell1 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == 1);
     }
     {
         auto cur = exec(dispatcher, "SELECT id FROM SinkDb.emp WHERE dept_id = 3;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 6);
+        auto cell2 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value() == 6);
     }
 }
 
@@ -200,7 +206,9 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_large_build_side_does
     {
         auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM BigDb.target;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 2);
+        auto cell3 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == 2);
     }
 }
 
@@ -223,12 +231,16 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_with_nonpushdown_filt
     {
         auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM SinkDb.emp;");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 3);
+        auto cell4 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == 3);
     }
     {
         auto cur = exec(dispatcher, "SELECT COUNT(*) AS c FROM SinkDb.emp WHERE name LIKE 'a%';");
         REQUIRE(cur->is_success());
-        REQUIRE(cur->value(0, 0).value<int64_t>() == 0);
+        auto cell5 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == 0);
     }
 }
 
@@ -312,14 +324,16 @@ TEST_CASE("integration::cpp::streaming_match::late_mat_gather_selective_disk_val
         auto cur = exec(dispatcher, "SELECT s FROM GatherDb.t WHERE id = 7;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        const auto cell = cur->value(0, 0);
-        REQUIRE(cell.value<std::string_view>() == std::string("payload_7_") + wide_pad);
+        auto cell6 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == std::string("payload_7_") + wide_pad);
     }
     {
         auto cur = exec(dispatcher, "SELECT s FROM GatherDb.t WHERE id = 3999;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        const auto cell = cur->value(0, 0);
-        REQUIRE(cell.value<std::string_view>() == std::string("payload_3999_") + wide_pad);
+        auto cell7 = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell7.has_error());
+        REQUIRE(cell7.value() == std::string("payload_3999_") + wide_pad);
     }
 }

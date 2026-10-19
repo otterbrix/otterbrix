@@ -47,13 +47,25 @@ namespace {
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             REQUIRE(cur->column_count() == 6);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 150);
-            REQUIRE(cur->value(1, 0).value<uint64_t>() == 5);
-            REQUIRE(cur->value(2, 0).value<uint64_t>() == 5);
-            REQUIRE(cur->value(3, 0).value<int64_t>() == 10);
-            REQUIRE(cur->value(4, 0).value<int64_t>() == 50);
-            REQUIRE(cur->value(5, 0).value<double>() == Catch::Approx(30.0)); // 150 / 5
-            REQUIRE(services::disk::pushdown_reply_rows() > 0);               // was-actually-pushed proof
+            auto cell0 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == 150);
+            auto cell1 = cur->get<uint64_t>(1, 0);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == 5);
+            auto cell2 = cur->get<uint64_t>(2, 0);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == 5);
+            auto cell3 = cur->get<int64_t>(3, 0);
+            REQUIRE_FALSE(cell3.has_error());
+            REQUIRE(cell3.value() == 10);
+            auto cell4 = cur->get<int64_t>(4, 0);
+            REQUIRE_FALSE(cell4.has_error());
+            REQUIRE(cell4.value() == 50);
+            auto cell5 = cur->get<double>(5, 0);
+            REQUIRE_FALSE(cell5.has_error());
+            REQUIRE(cell5.value() == Catch::Approx(30.0));      // 150 / 5
+            REQUIRE(services::disk::pushdown_reply_rows() > 0); // was-actually-pushed proof
         }
 
         INFO("scalar aggregates WITH a builtin WHERE (v >= 30 -> rows 30,50,40)");
@@ -66,11 +78,21 @@ namespace {
             INFO("scalar-where error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 120);
-            REQUIRE(cur->value(1, 0).value<uint64_t>() == 3);
-            REQUIRE(cur->value(2, 0).value<int64_t>() == 30);
-            REQUIRE(cur->value(3, 0).value<int64_t>() == 50);
-            REQUIRE(cur->value(4, 0).value<double>() == Catch::Approx(40.0)); // 120 / 3, AVG over BIGINT answers DOUBLE
+            auto cell6 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell6.has_error());
+            REQUIRE(cell6.value() == 120);
+            auto cell7 = cur->get<uint64_t>(1, 0);
+            REQUIRE_FALSE(cell7.has_error());
+            REQUIRE(cell7.value() == 3);
+            auto cell8 = cur->get<int64_t>(2, 0);
+            REQUIRE_FALSE(cell8.has_error());
+            REQUIRE(cell8.value() == 30);
+            auto cell9 = cur->get<int64_t>(3, 0);
+            REQUIRE_FALSE(cell9.has_error());
+            REQUIRE(cell9.value() == 50);
+            auto cell10 = cur->get<double>(4, 0);
+            REQUIRE_FALSE(cell10.has_error());
+            REQUIRE(cell10.value() == Catch::Approx(40.0)); // 120 / 3, AVG over BIGINT answers DOUBLE
             REQUIRE(services::disk::pushdown_reply_rows() > 0);
         }
 
@@ -82,12 +104,24 @@ namespace {
                                 table + " WHERE v > 1000;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).is_null());              // SUM over no rows
-            REQUIRE(cur->value(1, 0).value<uint64_t>() == 0); // COUNT(*) over no rows
-            REQUIRE(cur->value(2, 0).value<uint64_t>() == 0); // COUNT(v) over no rows
-            REQUIRE(cur->value(3, 0).is_null());              // MIN over no rows
-            REQUIRE(cur->value(4, 0).is_null());              // MAX over no rows
-            REQUIRE(cur->value(5, 0).is_null());              // AVG over no rows
+            auto cell11 = cur->is_null(0, 0);
+            REQUIRE_FALSE(cell11.has_error());
+            REQUIRE(cell11.value()); // SUM over no rows
+            auto cell12 = cur->get<uint64_t>(1, 0);
+            REQUIRE_FALSE(cell12.has_error());
+            REQUIRE(cell12.value() == 0); // COUNT(*) over no rows
+            auto cell13 = cur->get<uint64_t>(2, 0);
+            REQUIRE_FALSE(cell13.has_error());
+            REQUIRE(cell13.value() == 0); // COUNT(v) over no rows
+            auto cell14 = cur->is_null(3, 0);
+            REQUIRE_FALSE(cell14.has_error());
+            REQUIRE(cell14.value()); // MIN over no rows
+            auto cell15 = cur->is_null(4, 0);
+            REQUIRE_FALSE(cell15.has_error());
+            REQUIRE(cell15.value()); // MAX over no rows
+            auto cell16 = cur->is_null(5, 0);
+            REQUIRE_FALSE(cell16.has_error());
+            REQUIRE(cell16.value()); // AVG over no rows
         }
     }
 
@@ -110,19 +144,43 @@ namespace {
             REQUIRE(cur->size() == 2);
             REQUIRE(cur->column_count() == 6);
 
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 30);
-            REQUIRE(cur->value(2, 0).value<uint64_t>() == 2);
-            REQUIRE(cur->value(3, 0).value<int64_t>() == 10);
-            REQUIRE(cur->value(4, 0).value<int64_t>() == 20);
-            REQUIRE(cur->value(5, 0).value<double>() == Catch::Approx(15.0)); // 30 / 2, AVG over BIGINT answers DOUBLE
+            auto cell17 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell17.has_error());
+            REQUIRE(cell17.value() == 1);
+            auto cell18 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell18.has_error());
+            REQUIRE(cell18.value() == 30);
+            auto cell19 = cur->get<uint64_t>(2, 0);
+            REQUIRE_FALSE(cell19.has_error());
+            REQUIRE(cell19.value() == 2);
+            auto cell20 = cur->get<int64_t>(3, 0);
+            REQUIRE_FALSE(cell20.has_error());
+            REQUIRE(cell20.value() == 10);
+            auto cell21 = cur->get<int64_t>(4, 0);
+            REQUIRE_FALSE(cell21.has_error());
+            REQUIRE(cell21.value() == 20);
+            auto cell22 = cur->get<double>(5, 0);
+            REQUIRE_FALSE(cell22.has_error());
+            REQUIRE(cell22.value() == Catch::Approx(15.0)); // 30 / 2, AVG over BIGINT answers DOUBLE
 
-            REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
-            REQUIRE(cur->value(1, 1).value<int64_t>() == 120);
-            REQUIRE(cur->value(2, 1).value<uint64_t>() == 3);
-            REQUIRE(cur->value(3, 1).value<int64_t>() == 30);
-            REQUIRE(cur->value(4, 1).value<int64_t>() == 50);
-            REQUIRE(cur->value(5, 1).value<double>() == Catch::Approx(40.0)); // 120 / 3
+            auto cell23 = cur->get<int64_t>(0, 1);
+            REQUIRE_FALSE(cell23.has_error());
+            REQUIRE(cell23.value() == 2);
+            auto cell24 = cur->get<int64_t>(1, 1);
+            REQUIRE_FALSE(cell24.has_error());
+            REQUIRE(cell24.value() == 120);
+            auto cell25 = cur->get<uint64_t>(2, 1);
+            REQUIRE_FALSE(cell25.has_error());
+            REQUIRE(cell25.value() == 3);
+            auto cell26 = cur->get<int64_t>(3, 1);
+            REQUIRE_FALSE(cell26.has_error());
+            REQUIRE(cell26.value() == 30);
+            auto cell27 = cur->get<int64_t>(4, 1);
+            REQUIRE_FALSE(cell27.has_error());
+            REQUIRE(cell27.value() == 50);
+            auto cell28 = cur->get<double>(5, 1);
+            REQUIRE_FALSE(cell28.has_error());
+            REQUIRE(cell28.value() == Catch::Approx(40.0)); // 120 / 3
             REQUIRE(services::disk::pushdown_reply_rows() > 0);
         }
 
@@ -136,12 +194,24 @@ namespace {
             INFO("grouped-where error: " << (cur->is_error() ? cur->get_error().what : "none"));
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 2);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-            REQUIRE(cur->value(1, 0).value<int64_t>() == 20);
-            REQUIRE(cur->value(2, 0).value<uint64_t>() == 1);
-            REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
-            REQUIRE(cur->value(1, 1).value<int64_t>() == 120);
-            REQUIRE(cur->value(2, 1).value<uint64_t>() == 3);
+            auto cell29 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell29.has_error());
+            REQUIRE(cell29.value() == 1);
+            auto cell30 = cur->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell30.has_error());
+            REQUIRE(cell30.value() == 20);
+            auto cell31 = cur->get<uint64_t>(2, 0);
+            REQUIRE_FALSE(cell31.has_error());
+            REQUIRE(cell31.value() == 1);
+            auto cell32 = cur->get<int64_t>(0, 1);
+            REQUIRE_FALSE(cell32.has_error());
+            REQUIRE(cell32.value() == 2);
+            auto cell33 = cur->get<int64_t>(1, 1);
+            REQUIRE_FALSE(cell33.has_error());
+            REQUIRE(cell33.value() == 120);
+            auto cell34 = cur->get<uint64_t>(2, 1);
+            REQUIRE_FALSE(cell34.has_error());
+            REQUIRE(cell34.value() == 3);
             REQUIRE(services::disk::pushdown_reply_rows() > 0);
         }
     }
@@ -176,10 +246,18 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_aggregation_bails_und
     INFO("residual-where error: " << (cur->is_error() ? cur->get_error().what : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-    REQUIRE(cur->value(1, 0).value<int64_t>() == 10);
-    REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
-    REQUIRE(cur->value(1, 1).value<int64_t>() == 30);
+    auto cell35 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell35.has_error());
+    REQUIRE(cell35.value() == 1);
+    auto cell36 = cur->get<int64_t>(1, 0);
+    REQUIRE_FALSE(cell36.has_error());
+    REQUIRE(cell36.value() == 10);
+    auto cell37 = cur->get<int64_t>(0, 1);
+    REQUIRE_FALSE(cell37.has_error());
+    REQUIRE(cell37.value() == 2);
+    auto cell38 = cur->get<int64_t>(1, 1);
+    REQUIRE_FALSE(cell38.has_error());
+    REQUIRE(cell38.value() == 30);
 }
 
 // eager_aggregation must re-stamp the pushed node's output_types with the true partial layout; a stale base-table
@@ -204,10 +282,18 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_partial_min_keeps_dou
     INFO("partial-types error: " << (cur->is_error() ? cur->get_error().what : "none"));
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    REQUIRE(cur->value(0, 0).value<int64_t>() == 1);
-    REQUIRE(cur->value(1, 0).type().type() == components::types::logical_type::DOUBLE);
-    REQUIRE(core::is_equals(cur->value(1, 0).value<double>(), 1.5)); // exactly representable
-    REQUIRE(cur->value(0, 1).value<int64_t>() == 2);
-    REQUIRE(cur->value(1, 1).type().type() == components::types::logical_type::DOUBLE);
-    REQUIRE(core::is_equals(cur->value(1, 1).value<double>(), 10.25)); // exactly representable
+    auto cell39 = cur->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell39.has_error());
+    REQUIRE(cell39.value() == 1);
+    REQUIRE(cur->type_data()[1].type() == components::types::logical_type::DOUBLE);
+    auto cell40 = cur->get<double>(1, 0);
+    REQUIRE_FALSE(cell40.has_error());
+    REQUIRE(core::is_equals(cell40.value(), 1.5)); // exactly representable
+    auto cell41 = cur->get<int64_t>(0, 1);
+    REQUIRE_FALSE(cell41.has_error());
+    REQUIRE(cell41.value() == 2);
+    REQUIRE(cur->type_data()[1].type() == components::types::logical_type::DOUBLE);
+    auto cell42 = cur->get<double>(1, 1);
+    REQUIRE_FALSE(cell42.has_error());
+    REQUIRE(core::is_equals(cell42.value(), 10.25)); // exactly representable
 }

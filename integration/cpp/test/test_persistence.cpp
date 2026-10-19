@@ -648,8 +648,12 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
                 dispatcher->execute_sql(s2, "SELECT id, a::?bigint FROM TestDatabase.TestCollection ORDER BY id;");
             REQUIRE(c2->is_success());
             REQUIRE(c2->size() == 2);
-            REQUIRE(c2->value(1, 0).value<int64_t>() == 10);
-            REQUIRE(c2->value(1, 1).is_null());
+            auto cell0 = c2->get<int64_t>(1, 0);
+            REQUIRE_FALSE(cell0.has_error());
+            REQUIRE(cell0.value() == 10);
+            auto cell1 = c2->is_null(1, 1);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value());
         }
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE id = 1;", 1);
     }
@@ -667,7 +671,9 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
             auto c2 = dispatcher->execute_sql(s2, "SELECT a::?bigint FROM TestDatabase.TestCollection WHERE id = 1;");
             REQUIRE(c2->is_success());
             REQUIRE(c2->size() == 1);
-            REQUIRE(c2->value(0, 0).value<int64_t>() == 10);
+            auto cell2 = c2->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == 10);
         }
 
         {
@@ -709,13 +715,13 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
         REQUIRE(a_bool >= 0);
 
         REQUIRE(chunk.get_value<int64_t>(static_cast<size_t>(a_bigint), 0) == 10);
-        REQUIRE(chunk.value(static_cast<size_t>(a_bigint), 1).is_null());
-        REQUIRE(chunk.value(static_cast<size_t>(a_bigint), 2).is_null());
-        REQUIRE(chunk.value(static_cast<size_t>(a_string), 0).is_null());
+        REQUIRE(chunk.is_null(static_cast<size_t>(a_bigint), 1));
+        REQUIRE(chunk.is_null(static_cast<size_t>(a_bigint), 2));
+        REQUIRE(chunk.is_null(static_cast<size_t>(a_string), 0));
         REQUIRE(chunk.get_value<std::string_view>(static_cast<size_t>(a_string), 1) == "str");
-        REQUIRE(chunk.value(static_cast<size_t>(a_string), 2).is_null());
-        REQUIRE(chunk.value(static_cast<size_t>(a_bool), 0).is_null());
-        REQUIRE(chunk.value(static_cast<size_t>(a_bool), 1).is_null());
+        REQUIRE(chunk.is_null(static_cast<size_t>(a_string), 2));
+        REQUIRE(chunk.is_null(static_cast<size_t>(a_bool), 0));
+        REQUIRE(chunk.is_null(static_cast<size_t>(a_bool), 1));
         REQUIRE(chunk.get_value<bool>(static_cast<size_t>(a_bool), 2) == true);
 
         {
@@ -723,14 +729,18 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
             auto c2 = dispatcher->execute_sql(s2, "SELECT a::?bigint FROM TestDatabase.TestCollection WHERE id = 1;");
             REQUIRE(c2->is_success());
             REQUIRE(c2->size() == 1);
-            REQUIRE(c2->value(0, 0).value<int64_t>() == 10);
+            auto cell3 = c2->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell3.has_error());
+            REQUIRE(cell3.value() == 10);
         }
         {
             auto s2 = otterbrix::session_id_t();
             auto c2 = dispatcher->execute_sql(s2, "SELECT a::?string FROM TestDatabase.TestCollection WHERE id = 2;");
             REQUIRE(c2->is_success());
             REQUIRE(c2->size() == 1);
-            REQUIRE(c2->value(0, 0).value<std::string_view>() == "str");
+            auto cell4 = c2->get<std::string_view>(0, 0);
+            REQUIRE_FALSE(cell4.has_error());
+            REQUIRE(cell4.value() == "str");
         }
         {
             auto s2 = otterbrix::session_id_t();
@@ -746,7 +756,9 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_re
             auto c2 = dispatcher->execute_sql(s2, "SELECT a::?bool FROM TestDatabase.TestCollection WHERE id = 3;");
             REQUIRE(c2->is_success());
             REQUIRE(c2->size() == 1);
-            REQUIRE(c2->value(0, 0).value<bool>() == true);
+            auto cell5 = c2->get<bool>(0, 0);
+            REQUIRE_FALSE(cell5.has_error());
+            REQUIRE(cell5.value() == true);
         }
     }
 }
@@ -858,13 +870,13 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
         REQUIRE(a_bool >= 0);
 
         REQUIRE(chunk.get_value<int64_t>(static_cast<size_t>(a_bigint), 0) == 10);
-        REQUIRE(chunk.value(static_cast<size_t>(a_bigint), 1).is_null());
-        REQUIRE(chunk.value(static_cast<size_t>(a_bigint), 2).is_null());
-        REQUIRE(chunk.value(static_cast<size_t>(a_string), 0).is_null());
+        REQUIRE(chunk.is_null(static_cast<size_t>(a_bigint), 1));
+        REQUIRE(chunk.is_null(static_cast<size_t>(a_bigint), 2));
+        REQUIRE(chunk.is_null(static_cast<size_t>(a_string), 0));
         REQUIRE(chunk.get_value<std::string_view>(static_cast<size_t>(a_string), 1) == "str");
-        REQUIRE(chunk.value(static_cast<size_t>(a_string), 2).is_null());
-        REQUIRE(chunk.value(static_cast<size_t>(a_bool), 0).is_null());
-        REQUIRE(chunk.value(static_cast<size_t>(a_bool), 1).is_null());
+        REQUIRE(chunk.is_null(static_cast<size_t>(a_string), 2));
+        REQUIRE(chunk.is_null(static_cast<size_t>(a_bool), 0));
+        REQUIRE(chunk.is_null(static_cast<size_t>(a_bool), 1));
         REQUIRE(chunk.get_value<bool>(static_cast<size_t>(a_bool), 2) == true);
 
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE id = 3;", 1);
@@ -873,7 +885,9 @@ TEST_CASE("integration::cpp::test_persistence::computed_type_variants_survive_cr
             auto c2 = dispatcher->execute_sql(s2, "SELECT a::?bool FROM TestDatabase.TestCollection WHERE id = 3;");
             REQUIRE(c2->is_success());
             REQUIRE(c2->size() == 1);
-            REQUIRE(c2->value(0, 0).value<bool>() == true);
+            auto cell6 = c2->get<bool>(0, 0);
+            REQUIRE_FALSE(cell6.has_error());
+            REQUIRE(cell6.value() == true);
         }
     }
 }
@@ -1494,7 +1508,9 @@ TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_a
             auto cur = dispatcher->execute_sql(session, "SELECT c FROM TestDatabase.TestCollection WHERE id = 1;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE_FALSE(cur->value(0, 0).is_null());
+            auto cell7 = cur->is_null(0, 0);
+            REQUIRE_FALSE(cell7.has_error());
+            REQUIRE_FALSE(cell7.value());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1520,7 +1536,9 @@ TEST_CASE("integration::cpp::test_persistence::default_check_constraint_agrees_a
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
             INFO("CHECK (c IS NOT NULL) admitted the row, so the stored c must satisfy it");
-            CHECK_FALSE(cur->value(0, 0).is_null());
+            auto cell8 = cur->is_null(0, 0);
+            REQUIRE_FALSE(cell8.has_error());
+            CHECK_FALSE(cell8.value());
         }
         CHECK_FIND_SQL("SELECT id FROM TestDatabase.TestCollection WHERE c IS NULL;", 0);
     }

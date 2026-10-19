@@ -135,7 +135,9 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 100000);
+        auto cell0 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == 100000);
     }
 
     INFO("GROUP BY with COUNT");
@@ -148,7 +150,9 @@ TEST_CASE("integration::cpp::production::scale_100k_group_by") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 50);
         for (size_t i = 0; i < cur->size(); ++i) {
-            REQUIRE(cur->value(1, i).value<uint64_t>() == 2000);
+            auto cell1 = cur->get<uint64_t>(1, i);
+            REQUIRE_FALSE(cell1.has_error());
+            REQUIRE(cell1.value() == 2000);
         }
     }
 }
@@ -237,7 +241,9 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 20); // 20 customers, each with 10 orders
         for (size_t i = 0; i < cur->size(); ++i) {
-            REQUIRE(cur->value(1, i).value<uint64_t>() == 10);
+            auto cell2 = cur->get<uint64_t>(1, i);
+            REQUIRE_FALSE(cell2.has_error());
+            REQUIRE(cell2.value() == 10);
         }
     }
 
@@ -252,7 +258,9 @@ TEST_CASE("integration::cpp::production::multi_table_join") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5); // 5 countries, each with 4 customers
         for (size_t i = 0; i < cur->size(); ++i) {
-            REQUIRE(cur->value(1, i).value<uint64_t>() == 4);
+            auto cell3 = cur->get<uint64_t>(1, i);
+            REQUIRE_FALSE(cell3.has_error());
+            REQUIRE(cell3.value() == 4);
         }
     }
 }
@@ -493,7 +501,9 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 1000);
+        auto cell4 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE(cell4.value() == 1000);
     }
 
     INFO("verify thread 1 rows");
@@ -504,7 +514,9 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
                                            "WHERE thread_id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 500);
+        auto cell5 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        REQUIRE(cell5.value() == 500);
     }
 
     INFO("verify thread 2 rows");
@@ -515,7 +527,9 @@ TEST_CASE("integration::cpp::production::concurrent_insert") {
                                            "WHERE thread_id = 2;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 500);
+        auto cell6 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE(cell6.value() == 500);
     }
 }
 
@@ -542,6 +556,7 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
         std::atomic<bool> writer_done{false};
         std::atomic<uint64_t> max_count_seen{0};
         std::atomic<bool> reader_saw_decrease{false};
+        std::atomic<uint64_t> reader_read_failures{0};
 
         std::thread writer([&]() {
             for (int batch_start = 0; batch_start < 500; batch_start += 50) {
@@ -565,12 +580,17 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
                 auto cur =
                     dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
                 if (cur->is_success() && cur->size() == 1) {
-                    auto count = cur->value(0, 0).value<uint64_t>();
-                    auto prev_max = max_count_seen.load();
-                    if (count > prev_max) {
-                        max_count_seen.store(count);
-                    } else if (count < prev_max) {
-                        reader_saw_decrease.store(true);
+                    auto cell7 = cur->get<uint64_t>(0, 0);
+                    if (cell7.has_error()) {
+                        reader_read_failures.fetch_add(1);
+                    } else {
+                        auto count = cell7.value();
+                        auto prev_max = max_count_seen.load();
+                        if (count > prev_max) {
+                            max_count_seen.store(count);
+                        } else if (count < prev_max) {
+                            reader_saw_decrease.store(true);
+                        }
                     }
                 }
             }
@@ -579,6 +599,8 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
         writer.join();
         reader.join();
 
+        INFO("a COUNT cell the reader thread could not read");
+        CHECK(reader_read_failures.load() == 0);
         REQUIRE_FALSE(reader_saw_decrease.load());
     }
 
@@ -588,7 +610,9 @@ TEST_CASE("integration::cpp::production::concurrent_read_write") {
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == 500);
+        auto cell8 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell8.has_error());
+        REQUIRE(cell8.value() == 500);
     }
 }
 
@@ -635,7 +659,9 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<uint64_t>() == uint64_t(expected_count));
+            auto cell9 = cur->get<uint64_t>(0, 0);
+            REQUIRE_FALSE(cell9.has_error());
+            REQUIRE(cell9.value() == uint64_t(expected_count));
         }
 
         {
@@ -655,7 +681,9 @@ TEST_CASE("integration::cpp::production::large_checkpoint_100k") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<uint64_t>() == uint64_t(expected_count));
+            auto cell10 = cur->get<uint64_t>(0, 0);
+            REQUIRE_FALSE(cell10.has_error());
+            REQUIRE(cell10.value() == uint64_t(expected_count));
         }
 
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 0;", 1);
@@ -877,7 +905,9 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<uint64_t>() == 500);
+            auto cell11 = cur->get<uint64_t>(0, 0);
+            REQUIRE_FALSE(cell11.has_error());
+            REQUIRE(cell11.value() == 500);
         }
     }
 
@@ -912,7 +942,9 @@ TEST_CASE("integration::cpp::production::wal_segment_rotation") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<uint64_t>() == 500);
+            auto cell12 = cur->get<uint64_t>(0, 0);
+            REQUIRE_FALSE(cell12.has_error());
+            REQUIRE(cell12.value() == 500);
         }
 
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 0;", 1);
@@ -993,7 +1025,9 @@ TEST_CASE("integration::cpp::production::compaction_checkpoint_cycle") {
             auto cur = dispatcher->execute_sql(session, "SELECT COUNT(id) AS cnt FROM TestDatabase.TestCollection;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<uint64_t>() == 200);
+            auto cell13 = cur->get<uint64_t>(0, 0);
+            REQUIRE_FALSE(cell13.has_error());
+            REQUIRE(cell13.value() == 200);
         }
 
         CHECK_SQL("SELECT * FROM TestDatabase.TestCollection WHERE id = 1;", 1);
@@ -1124,7 +1158,9 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         // SUM over bigint comes back as a signed scalar; the exact match proves the scan completed correctly.
-        REQUIRE(cur->value(0, 0).value<int64_t>() == expected_revenue);
+        auto cell14 = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell14.has_error());
+        REQUIRE(cell14.value() == expected_revenue);
     }
 
     INFO("sanity: full-table count scans cleanly and returns every row");
@@ -1133,7 +1169,9 @@ TEST_CASE("integration::cpp::production::large_scan_segfault_red", "[step1]") {
         auto cur = dispatcher->execute_sql(session, "SELECT COUNT(lo_orderkey) AS cnt FROM TestDatabase.Lineorder;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        REQUIRE(cur->value(0, 0).value<uint64_t>() == uint64_t(total_rows));
+        auto cell15 = cur->get<uint64_t>(0, 0);
+        REQUIRE_FALSE(cell15.has_error());
+        REQUIRE(cell15.value() == uint64_t(total_rows));
     }
 }
 
@@ -1204,7 +1242,9 @@ TEST_CASE("integration::cpp::production::reopen_resolves_columns_after_checkpoin
                                                "AND lo_quantity < 25;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
-            REQUIRE(cur->value(0, 0).value<int64_t>() == 3500);
+            auto cell16 = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(cell16.has_error());
+            REQUIRE(cell16.value() == 3500);
         }
     }
 }

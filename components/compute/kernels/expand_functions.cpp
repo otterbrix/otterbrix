@@ -1,5 +1,4 @@
 #include "../function.hpp"
-#include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 
 #include <cassert>
@@ -13,28 +12,28 @@ namespace {
 
     // Coerce any integer-category value to int64_t. The make_integer matcher gates
     // the inputs, so only integer types reach here.
-    inline int64_t coerce_int(const logical_value_t& v) {
+    inline int64_t coerce_int(const vector_t& v, uint64_t row) {
         switch (v.type().type()) {
             case logical_type::TINYINT:
-                return v.value<int8_t>();
+                return v.get_value<int8_t>(row);
             case logical_type::SMALLINT:
-                return v.value<int16_t>();
+                return v.get_value<int16_t>(row);
             case logical_type::INTEGER:
-                return v.value<int32_t>();
+                return v.get_value<int32_t>(row);
             case logical_type::BIGINT:
-                return v.value<int64_t>();
+                return v.get_value<int64_t>(row);
             case logical_type::HUGEINT:
-                return static_cast<int64_t>(v.value<int128_t>());
+                return static_cast<int64_t>(v.get_value<int128_t>(row));
             case logical_type::UTINYINT:
-                return v.value<uint8_t>();
+                return v.get_value<uint8_t>(row);
             case logical_type::USMALLINT:
-                return v.value<uint16_t>();
+                return v.get_value<uint16_t>(row);
             case logical_type::UINTEGER:
-                return v.value<uint32_t>();
+                return v.get_value<uint32_t>(row);
             case logical_type::UBIGINT:
-                return static_cast<int64_t>(v.value<uint64_t>());
+                return static_cast<int64_t>(v.get_value<uint64_t>(row));
             case logical_type::UHUGEINT:
-                return static_cast<int64_t>(v.value<uint128_t>());
+                return static_cast<int64_t>(v.get_value<uint128_t>(row));
             default:
                 assert(false && "integer matcher invariant: type must be integer category");
                 return 0;
@@ -58,14 +57,14 @@ namespace {
         }
 
         for (size_t col = 0; col < arg_count; ++col) {
-            if (inputs.value(col, 0).type().type() == logical_type::NA) {
+            if (inputs.data[col].type().type() == logical_type::NA || inputs.data[col].is_null(0)) {
                 return core::error_t::no_error(); // NULL argument -> empty series
             }
         }
 
-        const int64_t start = coerce_int(inputs.value(0, 0));
-        const int64_t stop = coerce_int(inputs.value(1, 0));
-        const int64_t step = arg_count == 3 ? coerce_int(inputs.value(2, 0)) : 1;
+        const int64_t start = coerce_int(inputs.data[0], 0);
+        const int64_t stop = coerce_int(inputs.data[1], 0);
+        const int64_t step = arg_count == 3 ? coerce_int(inputs.data[2], 0) : 1;
         if (step == 0) {
             return core::error_t(core::error_code_t::kernel_error,
                                  std::pmr::string{"generate_series: step must not be zero", resource});
@@ -90,8 +89,6 @@ namespace {
 
         const bool ascending = step > 0;
         for (int64_t value = start; ascending ? (value <= stop) : (value >= stop); value += step) {
-            // Set the int64 directly via the templated set_value — no transient
-            // logical_value_t (and its per-value resource allocation) needed.
             chunk.set_value(0, filled, value);
             if (++filled == cap) {
                 flush();

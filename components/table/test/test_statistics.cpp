@@ -39,11 +39,11 @@ TEST_CASE("statistics: update from vector") {
             data[i] = static_cast<int64_t>(i + 1);
         }
 
-        stats.update(vec, 0,100);
+        stats.update(vec, 0, 100);
 
         REQUIRE(stats.has_stats());
-        CHECK(stats.min_value().value<int64_t>() == 1);
-        CHECK(stats.max_value().value<int64_t>() == 100);
+        CHECK(stats.min_as<int64_t>() == 1);
+        CHECK(stats.max_as<int64_t>() == 100);
         CHECK(stats.null_count() == 0);
     }
 
@@ -60,12 +60,12 @@ TEST_CASE("statistics: update from vector") {
             }
         }
 
-        stats.update(vec, 0,50);
+        stats.update(vec, 0, 50);
 
         REQUIRE(stats.has_stats());
         CHECK(stats.null_count() == 10);
-        CHECK(stats.min_value().value<int64_t>() == 10);
-        CHECK(stats.max_value().value<int64_t>() == 490);
+        CHECK(stats.min_as<int64_t>() == 10);
+        CHECK(stats.max_as<int64_t>() == 490);
     }
 
     SECTION("DOUBLE min/max") {
@@ -77,11 +77,11 @@ TEST_CASE("statistics: update from vector") {
             data[i] = static_cast<double>(i) * 0.5;
         }
 
-        stats.update(vec, 0,100);
+        stats.update(vec, 0, 100);
 
         REQUIRE(stats.has_stats());
-        CHECK(stats.min_value().value<double>() == Catch::Approx(0.0));
-        CHECK(stats.max_value().value<double>() == Catch::Approx(49.5));
+        CHECK(stats.min_as<double>() == Catch::Approx(0.0));
+        CHECK(stats.max_as<double>() == Catch::Approx(49.5));
         CHECK(stats.null_count() == 0);
     }
 
@@ -94,7 +94,7 @@ TEST_CASE("statistics: update from vector") {
             for (uint64_t i = 0; i < 50; i++) {
                 data[i] = static_cast<int32_t>(i + 1);
             }
-            stats.update(vec, 0,50);
+            stats.update(vec, 0, 50);
         }
 
         {
@@ -103,12 +103,12 @@ TEST_CASE("statistics: update from vector") {
             for (uint64_t i = 0; i < 50; i++) {
                 data[i] = static_cast<int32_t>(i + 51);
             }
-            stats.update(vec, 0,50);
+            stats.update(vec, 0, 50);
         }
 
         REQUIRE(stats.has_stats());
-        CHECK(stats.min_value().value<int32_t>() == 1);
-        CHECK(stats.max_value().value<int32_t>() == 100);
+        CHECK(stats.min_as<int32_t>() == 1);
+        CHECK(stats.max_as<int32_t>() == 100);
         CHECK(stats.null_count() == 0);
     }
 
@@ -120,7 +120,7 @@ TEST_CASE("statistics: update from vector") {
             vec.validity().set_invalid(i);
         }
 
-        stats.update(vec, 0,10);
+        stats.update(vec, 0, 10);
 
         CHECK_FALSE(stats.has_stats());
         CHECK(stats.null_count() == 10);
@@ -130,7 +130,7 @@ TEST_CASE("statistics: update from vector") {
         base_statistics_t stats(&resource, logical_type::BIGINT);
         vector_t vec(&resource, logical_type::BIGINT, 10);
 
-        stats.update(vec, 0,0);
+        stats.update(vec, 0, 0);
 
         CHECK_FALSE(stats.has_stats());
         CHECK(stats.null_count() == 0);
@@ -159,43 +159,42 @@ TEST_CASE("zonemap: check_zonemap filters") {
     auto col = column_data_t::create_column(&resource, block_manager, 0, 0, complex_logical_type{logical_type::BIGINT});
 
     // Manually set statistics as if [1..100] was appended
-    col->statistics().set_min(logical_value_t{&resource, int64_t(1)});
-    col->statistics().set_max(logical_value_t{&resource, int64_t(100)});
+    col->statistics().set_bounds<int64_t>(1, 100);
 
     column_scan_state scan_state;
 
     SECTION("gt filter: value > 200 => ALWAYS_FALSE") {
-        constant_filter_t f(compare_type::gt, logical_value_t{&resource, int64_t(200)}, {0});
+        constant_filter_t f(compare_type::gt, make_scalar(&resource, int64_t(200)), {0});
         auto result = col->check_zonemap(scan_state, f);
         CHECK(result == filter_propagate_result_t::ALWAYS_FALSE);
     }
 
     SECTION("gt filter: value > 50 => NO_PRUNING") {
-        constant_filter_t f(compare_type::gt, logical_value_t{&resource, int64_t(50)}, {0});
+        constant_filter_t f(compare_type::gt, make_scalar(&resource, int64_t(50)), {0});
         auto result = col->check_zonemap(scan_state, f);
         CHECK(result == filter_propagate_result_t::NO_PRUNING_POSSIBLE);
     }
 
     SECTION("lt filter: value < 0 => ALWAYS_FALSE") {
-        constant_filter_t f(compare_type::lt, logical_value_t{&resource, int64_t(0)}, {0});
+        constant_filter_t f(compare_type::lt, make_scalar(&resource, int64_t(0)), {0});
         auto result = col->check_zonemap(scan_state, f);
         CHECK(result == filter_propagate_result_t::ALWAYS_FALSE);
     }
 
     SECTION("eq filter: value == 150 => ALWAYS_FALSE") {
-        constant_filter_t f(compare_type::eq, logical_value_t{&resource, int64_t(150)}, {0});
+        constant_filter_t f(compare_type::eq, make_scalar(&resource, int64_t(150)), {0});
         auto result = col->check_zonemap(scan_state, f);
         CHECK(result == filter_propagate_result_t::ALWAYS_FALSE);
     }
 
     SECTION("eq filter: value == 50 => NO_PRUNING") {
-        constant_filter_t f(compare_type::eq, logical_value_t{&resource, int64_t(50)}, {0});
+        constant_filter_t f(compare_type::eq, make_scalar(&resource, int64_t(50)), {0});
         auto result = col->check_zonemap(scan_state, f);
         CHECK(result == filter_propagate_result_t::NO_PRUNING_POSSIBLE);
     }
 
     SECTION("gte filter: value >= 0 => ALWAYS_TRUE") {
-        constant_filter_t f(compare_type::gte, logical_value_t{&resource, int64_t(0)}, {0});
+        constant_filter_t f(compare_type::gte, make_scalar(&resource, int64_t(0)), {0});
         auto result = col->check_zonemap(scan_state, f);
         CHECK(result == filter_propagate_result_t::ALWAYS_TRUE);
     }
@@ -226,8 +225,7 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     auto seg1 = std::move(seg1_r.value());
     {
         base_statistics_t s1(&resource, logical_type::BIGINT);
-        s1.set_min(logical_value_t{&resource, int64_t(1)});
-        s1.set_max(logical_value_t{&resource, int64_t(50)});
+        s1.set_bounds<int64_t>(1, 50);
         seg1->set_segment_statistics(std::move(s1));
     }
 
@@ -240,15 +238,14 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     auto seg2 = std::move(seg2_r.value());
     {
         base_statistics_t s2(&resource, logical_type::BIGINT);
-        s2.set_min(logical_value_t{&resource, int64_t(51)});
-        s2.set_max(logical_value_t{&resource, int64_t(100)});
+        s2.set_bounds<int64_t>(51, 100);
         seg2->set_segment_statistics(std::move(s2));
     }
 
     SECTION("segment 1: value > 75 => ALWAYS_FALSE (max=50 <= 75)") {
         column_scan_state state;
         state.current = seg1.get();
-        constant_filter_t f(compare_type::gt, logical_value_t{&resource, int64_t(75)}, {0});
+        constant_filter_t f(compare_type::gt, make_scalar(&resource, int64_t(75)), {0});
         auto result = col->check_segment_zonemap(state, f);
         CHECK(result == filter_propagate_result_t::ALWAYS_FALSE);
     }
@@ -256,7 +253,7 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     SECTION("segment 2: value > 75 => NO_PRUNING (max=100 > 75)") {
         column_scan_state state;
         state.current = seg2.get();
-        constant_filter_t f(compare_type::gt, logical_value_t{&resource, int64_t(75)}, {0});
+        constant_filter_t f(compare_type::gt, make_scalar(&resource, int64_t(75)), {0});
         auto result = col->check_segment_zonemap(state, f);
         CHECK(result == filter_propagate_result_t::NO_PRUNING_POSSIBLE);
     }
@@ -264,7 +261,7 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     SECTION("segment 1: value < 25 => NO_PRUNING (min=1 < 25)") {
         column_scan_state state;
         state.current = seg1.get();
-        constant_filter_t f(compare_type::lt, logical_value_t{&resource, int64_t(25)}, {0});
+        constant_filter_t f(compare_type::lt, make_scalar(&resource, int64_t(25)), {0});
         auto result = col->check_segment_zonemap(state, f);
         CHECK(result == filter_propagate_result_t::NO_PRUNING_POSSIBLE);
     }
@@ -272,7 +269,7 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     SECTION("segment 2: value < 25 => ALWAYS_FALSE (min=51 >= 25)") {
         column_scan_state state;
         state.current = seg2.get();
-        constant_filter_t f(compare_type::lt, logical_value_t{&resource, int64_t(25)}, {0});
+        constant_filter_t f(compare_type::lt, make_scalar(&resource, int64_t(25)), {0});
         auto result = col->check_segment_zonemap(state, f);
         CHECK(result == filter_propagate_result_t::ALWAYS_FALSE);
     }
@@ -280,7 +277,7 @@ TEST_CASE("per-segment statistics: check_segment_zonemap") {
     SECTION("no segment => NO_PRUNING") {
         column_scan_state state;
         state.current = nullptr;
-        constant_filter_t f(compare_type::gt, logical_value_t{&resource, int64_t(75)}, {0});
+        constant_filter_t f(compare_type::gt, make_scalar(&resource, int64_t(75)), {0});
         auto result = col->check_segment_zonemap(state, f);
         CHECK(result == filter_propagate_result_t::NO_PRUNING_POSSIBLE);
     }
@@ -320,6 +317,6 @@ TEST_CASE("per-segment statistics: populated during append") {
     REQUIRE(append_state.current->segment_statistics().has_stats());
     auto& seg_stats = append_state.current->segment_statistics();
     CHECK(seg_stats.has_stats());
-    CHECK(seg_stats.min_value().value<int64_t>() == 1);
-    CHECK(seg_stats.max_value().value<int64_t>() == 100);
+    CHECK(seg_stats.min_as<int64_t>() == 1);
+    CHECK(seg_stats.max_as<int64_t>() == 100);
 }

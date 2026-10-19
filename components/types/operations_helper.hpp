@@ -141,9 +141,7 @@ namespace components::types {
                 // A true invariant violation must never throw (an exception aborts messily through the
                 // noexcept executor coroutine). Every non-CAST caller of this switch (arithmetic / copy /
                 // compare / void in components/vector/*.cpp) operates on already-validated vector physical
-                // types that are never NA/complex, so reaching here is a genuine "cannot happen". CAST is
-                // guarded before it ever dispatches here (logical_value_t::cast_as returns a
-                // conversion_failure error for a non-castable physical type instead of entering the switch).
+                // types that are never NA/complex, so reaching here is a genuine "cannot happen".
                 assert(false && "simple_physical_type_switch: unhandled physical type");
                 std::abort();
         }

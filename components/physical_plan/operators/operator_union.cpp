@@ -1,6 +1,7 @@
 #include "operator_union.hpp"
 #include "operator_data.hpp"
 
+#include <components/vector/cell_equal.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/indexing_vector.hpp>
 #include <components/vector/vector_operations.hpp>
@@ -14,50 +15,6 @@ namespace components::operators {
             const vector::data_chunk_t* chunk;
             uint64_t row;
         };
-
-        // Physical equality for a single column at given row indices.
-        // Handles FLAT vectors directly; falls back to value() for others.
-        bool cols_equal(const vector::vector_t& a, uint64_t ra, const vector::vector_t& b, uint64_t rb) {
-            using pt = types::physical_type;
-            if (a.get_vector_type() == vector::vector_type::FLAT && b.get_vector_type() == vector::vector_type::FLAT) {
-                switch (a.type().to_physical_type()) {
-                    case pt::BOOL:
-                        return a.data<bool>()[ra] == b.data<bool>()[rb];
-                    case pt::INT8:
-                        return a.data<int8_t>()[ra] == b.data<int8_t>()[rb];
-                    case pt::INT16:
-                        return a.data<int16_t>()[ra] == b.data<int16_t>()[rb];
-                    case pt::INT32:
-                        return a.data<int32_t>()[ra] == b.data<int32_t>()[rb];
-                    case pt::INT64:
-                        return a.data<int64_t>()[ra] == b.data<int64_t>()[rb];
-                    case pt::UINT8:
-                        return a.data<uint8_t>()[ra] == b.data<uint8_t>()[rb];
-                    case pt::UINT16:
-                        return a.data<uint16_t>()[ra] == b.data<uint16_t>()[rb];
-                    case pt::UINT32:
-                        return a.data<uint32_t>()[ra] == b.data<uint32_t>()[rb];
-                    case pt::UINT64:
-                        return a.data<uint64_t>()[ra] == b.data<uint64_t>()[rb];
-                    case pt::FLOAT:
-                        return core::is_equals(a.data<float>()[ra], b.data<float>()[rb]);
-                    case pt::DOUBLE:
-                        return core::is_equals(a.data<double>()[ra], b.data<double>()[rb]);
-                    default:
-                        break;
-                }
-            }
-            return a.value(ra) == b.value(rb);
-        }
-
-        bool rows_equal(const vector::data_chunk_t& a, uint64_t ra, const vector::data_chunk_t& b, uint64_t rb) {
-            for (size_t c = 0; c < a.column_count(); ++c) {
-                if (!cols_equal(a.data[c], ra, b.data[c], rb)) {
-                    return false;
-                }
-            }
-            return true;
-        }
 
         // Deep-copy selected rows from src into a new chunk of `types`. Columns are copied per-column so a
         // column whose source type differs from the target (the reconciled NULL-literal UNION branch — a
@@ -170,7 +127,7 @@ namespace components::operators {
                 } else {
                     bool is_dup = false;
                     for (const auto& ref : it->second) {
-                        if (rows_equal(chunk, row, *ref.chunk, ref.row)) {
+                        if (vector::rows_equal(chunk, row, *ref.chunk, ref.row)) {
                             is_dup = true;
                             break;
                         }

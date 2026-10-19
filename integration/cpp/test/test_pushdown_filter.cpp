@@ -111,7 +111,7 @@ TEST_CASE("logical_plan::pushdown_filter_under_identity_select") {
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, std::move(cmp)));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == inner);
     REQUIRE(inner->children().size() == 3);
@@ -138,7 +138,7 @@ TEST_CASE("logical_plan::pushdown_filter_skips_renamed_select_output") {
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, std::move(cmp)));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == outer);
     REQUIRE(inner->children().size() == 2);
@@ -163,7 +163,7 @@ TEST_CASE("logical_plan::pushdown_filter_under_sort") {
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, std::move(cmp)));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == inner);
     REQUIRE(inner->children().size() == 3);
@@ -190,7 +190,7 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch") {
     outer->append_child(join);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, std::move(cmp)));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == join);
     REQUIRE(join->children().size() == 2);
@@ -220,7 +220,7 @@ TEST_CASE("logical_plan::pushdown_filter_skips_join_predicate_on_both_sides") {
     outer->append_child(join);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, std::move(cmp)));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == outer);
     REQUIRE(outer->children().size() == 2);
@@ -254,7 +254,7 @@ TEST_CASE("logical_plan::pushdown_filter_under_group_by_key") {
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, std::move(cmp)));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == inner);
     REQUIRE(inner->children().size() == 3);
@@ -284,7 +284,7 @@ TEST_CASE("logical_plan::pushdown_filter_skips_group_by_aggregate_output") {
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, std::move(cmp)));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == outer);
     REQUIRE(outer->children().size() == 2);
@@ -317,7 +317,7 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_both_join_branc
     outer->append_child(join);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, conj));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == join);
     REQUIRE(join->children().size() == 2);
@@ -357,7 +357,7 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_with_residual_join")
     outer->append_child(join);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, conj));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == outer);
     REQUIRE(outer->children().size() == 2);
@@ -396,7 +396,7 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_into_all_three_bucke
     outer->append_child(join);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, conj));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == outer);
     REQUIRE(outer->children().size() == 2);
@@ -442,7 +442,7 @@ TEST_CASE("logical_plan::pushdown_filter_flattens_nested_conjunction") {
     outer->append_child(join);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, conj));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == join);
     REQUIRE(join->children().size() == 2);
@@ -498,7 +498,7 @@ TEST_CASE("logical_plan::pushdown_filter_splits_conjunction_through_group_by") {
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, conj));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == outer);
     REQUIRE(outer->children().size() == 2);
@@ -529,7 +529,7 @@ TEST_CASE("logical_plan::pushdown_filter_vetoed_by_narrowing_projection") {
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, std::move(cmp)));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == outer);
     REQUIRE(outer->children().size() == 2);
@@ -555,7 +555,7 @@ TEST_CASE("logical_plan::pushdown_filter_allowed_through_non_narrowing_projectio
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, std::move(cmp)));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == inner);
     REQUIRE(inner->children().size() == 3);
@@ -582,7 +582,7 @@ TEST_CASE("logical_plan::pushdown_filter_allowed_when_projection_width_unknown")
     outer->append_child(inner);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, std::move(cmp)));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == inner);
     REQUIRE(inner->children().size() == 3);
@@ -664,7 +664,7 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch_disk_shaped_scans") {
     outer->append_child(join);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, conj));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == join);
     REQUIRE(join->children().size() == 2);
@@ -727,7 +727,7 @@ TEST_CASE("logical_plan::pushdown_filter_into_join_branch_under_group_and_sort")
     outer->append_child(group);
     outer->append_child(sort);
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     // outer keeps group + sort, so it is not elided; the join stays its source.
     REQUIRE(out == outer);
@@ -790,7 +790,7 @@ TEST_CASE("logical_plan::pushdown_filter_union_skips_aliasless_output_column") {
     outer->append_child(uni);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, std::move(cmp)));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     // Full push: the outer aggregate collapses to the union; each branch got the
     // filter wrapped above its scan.
@@ -859,7 +859,7 @@ TEST_CASE("logical_plan::pushdown_filter_union_branches_do_not_share_mutated_con
     outer->append_child(uni);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, std::move(cmp)));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == uni);
     REQUIRE(uni->children().size() == 2);
@@ -919,7 +919,7 @@ TEST_CASE("logical_plan::pushdown_filter_join_full_push_keeps_distinct_aggregate
     outer->append_child(join);
     outer->append_child(make_node_match(&resource, qualified_name_t{db, rel}, std::move(cmp)));
 
-    node_ptr out = components::planner::optimize(&resource, outer, nullptr);
+    node_ptr out = components::planner::optimize(&resource, outer, nullptr, components::graph_execution_context{});
 
     REQUIRE(out == outer);
     REQUIRE(outer->is_distinct());

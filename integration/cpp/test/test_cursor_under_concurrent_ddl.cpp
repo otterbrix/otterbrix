@@ -128,8 +128,9 @@ TEST_CASE("integration::cursor_under_concurrent_ddl::surviving_projected_column_
     std::size_t wrong = 0;
     std::size_t first_wrong = ROWS;
     for (std::size_t row = 0; row < ROWS; ++row) {
-        const auto cell = r.reader_cursor->value(0, row);
-        if (cell.value<int64_t>() != B_BASE + static_cast<int64_t>(row)) {
+        auto cell0 = r.reader_cursor->get<int64_t>(0, row);
+        REQUIRE_FALSE(cell0.has_error());
+        if (cell0.value() != B_BASE + static_cast<int64_t>(row)) {
             if (wrong == 0) {
                 first_wrong = row;
             }
@@ -145,6 +146,7 @@ TEST_CASE("integration::cursor_under_concurrent_ddl::surviving_projected_column_
     auto fresh = dispatcher->execute_sql(session, "SELECT b FROM TestDatabase.t;");
     REQUIRE(fresh->is_success());
     REQUIRE(fresh->size() == ROWS);
-    const auto fresh_first = fresh->value(0, 0);
-    REQUIRE(fresh_first.value<int64_t>() == B_BASE);
+    auto cell1 = fresh->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell1.has_error());
+    REQUIRE(cell1.value() == B_BASE);
 }

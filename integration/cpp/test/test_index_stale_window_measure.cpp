@@ -76,6 +76,7 @@ namespace {
         int64_t got{0}; // id of the first returned row, when rows >= 1
     };
 
+    // Reader threads call this, so no Catch assertions: an unreadable cell reports success = false.
     probe_outcome_t classify(const components::cursor::cursor_t_ptr& cur) {
         probe_outcome_t out;
         out.success = cur->is_success();
@@ -84,7 +85,12 @@ namespace {
         }
         out.rows = cur->size();
         if (out.rows >= 1) {
-            out.got = cur->value(0, 0).value<int64_t>();
+            auto cell0 = cur->get<int64_t>(0, 0);
+            if (cell0.has_error()) {
+                out.success = false;
+                return out;
+            }
+            out.got = cell0.value();
         }
         return out;
     }
@@ -155,8 +161,9 @@ namespace {
         REQUIRE(plan->is_success());
         std::string text;
         for (std::size_t r = 0; r < plan->size(); ++r) {
-            auto v = plan->value(0, r);
-            text += std::string(v.value<std::string_view>());
+            auto cell1 = plan->get<std::string_view>(0, r);
+            REQUIRE_FALSE(cell1.has_error());
+            text += std::string(cell1.value());
             text += '\n';
         }
         INFO("plan for the indexed probe:\n" << text);

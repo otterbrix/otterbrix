@@ -12,6 +12,7 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/table/transaction_manager.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <core/file/local_file_system.hpp>
 
 #include <algorithm>
@@ -117,10 +118,9 @@ namespace {
                 const uint64_t row = start + offset + i;
                 switch (kind) {
                     case nested_kind_t::STRUCT: {
-                        std::vector<logical_value_t> members;
-                        members.emplace_back(&env.resource, static_cast<int64_t>(row * 7));
-                        members.emplace_back(&env.resource, row_name(row));
-                        chunk.set_value(0, i, logical_value_t::create_struct(&env.resource, struct_type, members));
+                        const std::string name = row_name(row);
+                        chunk.data[0].entries()[0]->set_value(i, static_cast<int64_t>(row * 7));
+                        chunk.data[0].entries()[1]->set_value(i, std::string_view{name});
                         break;
                     }
                     case nested_kind_t::LIST: {
@@ -193,32 +193,35 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                auto cell = chunk.data[0].value(i);
+                const auto& column = chunk.data[0];
                 switch (kind) {
                     case nested_kind_t::STRUCT: {
-                        REQUIRE(cell.type().type() == logical_type::STRUCT);
-                        REQUIRE(cell.children().size() == 2);
-                        const auto row = static_cast<uint64_t>(cell.children()[0].value<int64_t>()) / 7;
-                        REQUIRE(cell.children()[0].value<int64_t>() == static_cast<int64_t>(row * 7));
-                        const auto& name_value = cell.children()[1]; // named local: cells are temporaries
-                        REQUIRE(name_value.value<std::string_view>() == row_name(row));
+                        REQUIRE(column.type().type() == logical_type::STRUCT);
+                        const auto cell = resolve_cell(column, i);
+                        REQUIRE(cell.vec->entries().size() == 2);
+                        const auto stored = cell.vec->entries()[0]->get_value<int64_t>(cell.index);
+                        const auto row = static_cast<uint64_t>(stored) / 7;
+                        REQUIRE(stored == static_cast<int64_t>(row * 7));
+                        REQUIRE(cell.vec->entries()[1]->get_value<std::string_view>(cell.index) == row_name(row));
                         break;
                     }
                     case nested_kind_t::LIST: {
-                        REQUIRE(cell.type().type() == logical_type::LIST);
-                        REQUIRE(cell.children().size() == LIST_LENGTH);
-                        const auto row = cell.children()[0].value<uint64_t>() / 100;
+                        REQUIRE(column.type().type() == logical_type::LIST);
+                        const auto seq = sequence_of(column, i);
+                        REQUIRE(seq.length == LIST_LENGTH);
+                        const auto row = seq.child->get_value<uint64_t>(seq.offset) / 100;
                         for (uint64_t j = 0; j < LIST_LENGTH; j++) {
-                            REQUIRE(cell.children()[j].value<uint64_t>() == row * 100 + j);
+                            REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == row * 100 + j);
                         }
                         break;
                     }
                     case nested_kind_t::ARRAY: {
-                        REQUIRE(cell.type().type() == logical_type::ARRAY);
-                        REQUIRE(cell.children().size() == ARRAY_WIDTH);
-                        const auto row = cell.children()[0].value<uint64_t>() / 1000;
+                        REQUIRE(column.type().type() == logical_type::ARRAY);
+                        const auto seq = sequence_of(column, i);
+                        REQUIRE(seq.length == ARRAY_WIDTH);
+                        const auto row = seq.child->get_value<uint64_t>(seq.offset) / 1000;
                         for (uint64_t j = 0; j < ARRAY_WIDTH; j++) {
-                            REQUIRE(cell.children()[j].value<uint64_t>() == row * 1000 + j);
+                            REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == row * 1000 + j);
                         }
                         break;
                     }

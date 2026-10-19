@@ -29,7 +29,9 @@ namespace {
         REQUIRE(cursor->is_success());
         integers values;
         for (uint64_t row = 0; row < cursor->size(); ++row) {
-            values.push_back(cursor->value(column, row).template value<int64_t>());
+            auto cell0 = cursor->template get<int64_t>(column, row);
+            REQUIRE_FALSE(cell0.has_error());
+            values.push_back(cell0.value());
         }
         return values;
     }
@@ -42,7 +44,9 @@ namespace {
         REQUIRE(cursor->is_success());
         doubles values;
         for (uint64_t row = 0; row < cursor->size(); ++row) {
-            values.push_back(cursor->value(column, row).template value<double>());
+            auto cell1 = cursor->template get<double>(column, row);
+            REQUIRE_FALSE(cell1.has_error());
+            values.push_back(cell1.value());
         }
         return values;
     }
@@ -238,7 +242,9 @@ TEST_CASE("integration::cpp::group_by_expressions::more_groups_than_one_chunk") 
     CHECK(cursor->size() == 3000);
     int64_t counted_rows = 0;
     for (uint64_t row = 0; row < cursor->size(); ++row) {
-        counted_rows += cursor->value(1, row).value<int64_t>();
+        auto cell2 = cursor->get<int64_t>(1, row);
+        REQUIRE_FALSE(cell2.has_error());
+        counted_rows += cell2.value();
     }
     CHECK(counted_rows == 3000);
 }

@@ -89,8 +89,7 @@ namespace components::table {
         uint64_t max_threads() const;
 
         void scan(vector::data_chunk_t& result, table_scan_state& state);
-        void scan_batched(const std::pmr::vector<types::complex_logical_type>& types,
-                          const std::vector<size_t>* projected_cols,
+        void scan_batched(const std::pmr::vector<types::complex_logical_type>& chunk_types,
                           std::pmr::vector<vector::data_chunk_t>& batches,
                           table_scan_state& state,
                           std::pmr::memory_resource* resource);
@@ -106,12 +105,12 @@ namespace components::table {
 
         // `txn`/`visibility` have no default: under SNAPSHOT the collection drops rows the
         // transaction may not see; under RAW it drops nothing (CREATE INDEX backfill needs deleted rows).
+        // result.data[i] receives column_ids[i].
         void fetch(vector::data_chunk_t& result,
                    const std::vector<storage_index_t>& column_ids,
                    const vector::vector_t& row_ids,
                    uint64_t fetch_count,
                    column_fetch_state& state,
-                   const std::vector<size_t>& projected_cols,
                    const transaction_data& txn,
                    fetch_visibility_t visibility);
 

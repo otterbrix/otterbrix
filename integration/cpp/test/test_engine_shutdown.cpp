@@ -145,7 +145,9 @@ TEST_CASE("integration::cpp::engine_shutdown::an_index_is_wired_after_a_shutdown
     REQUIRE(plan->is_success());
     std::string text;
     for (std::size_t r = 0; r < plan->size(); ++r) {
-        text += std::string(plan->value(0, r).value<std::string_view>());
+        auto cell0 = plan->get<std::string_view>(0, r);
+        REQUIRE_FALSE(cell0.has_error());
+        text += std::string(cell0.value());
         text += '\n';
     }
     INFO("plan after the reopen:\n" << text);

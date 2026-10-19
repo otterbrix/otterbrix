@@ -17,7 +17,7 @@ namespace components::operators {
     //     skips rows of A *and* B independently — wrong;
     //   - a GROUP BY that pushes the limit into its scan sees only rows `[m, m+n)`,
     //     producing the WRONG groups and counts.
-    // create_plan_aggregate passes `unlimit` to such a source and wraps the terminal
+    // create_plan_aggregate passes no cap to such a source and wraps the terminal
     // chain in this operator as the OUTERMOST node (above DISTINCT — LIMIT applies
     // after DISTINCT), so the window is applied once over the fully-merged stream. The
     // ORDER-BY path is untouched: its sort already applies the limit.
@@ -38,7 +38,16 @@ namespace components::operators {
         void reset_pipeline_state() noexcept override { stream_pos_ = 0; }
 
     private:
+        // The one place a LIMIT/OFFSET is validated, when the node starts to run, as PostgreSQL's ExecLimit does
+        // (recompute_limits). Every plan-time consumer reads only read_cap() and so never meets an invalid value.
+        actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx) override;
+        bool opens_at_start_impl() const noexcept override { return true; }
+
         const logical_plan::limit_t limit_;
+        // The window [begin_, end_) of stream positions that pass. Set by open_impl once limit_ is valid.
+        uint64_t begin_{0};
+        uint64_t end_{0};
+        bool opened_{false};
 
         std::pmr::vector<types::complex_logical_type> shape_;
 
@@ -46,7 +55,7 @@ namespace components::operators {
         // position of the first row of the NEXT batch. The emit window is intersected
         // against [stream_pos_, stream_pos_ + batch.size()) so a LIMIT caps the total
         // across ALL batches and an OFFSET skips the head of the whole stream.
-        int64_t stream_pos_{0};
+        uint64_t stream_pos_{0};
     };
 
 } // namespace components::operators

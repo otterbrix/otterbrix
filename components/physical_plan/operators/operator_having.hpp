@@ -16,12 +16,11 @@ namespace components::operators {
     // DISTINCT operator (operator_type::having, rendered "Having").
     // It is kept separate from operator_match because three WHERE-only branches are structurally
     // unreachable for HAVING (its child is ALWAYS the group operator, never a scan or nothing):
-    //   * NO LIMIT / read-cap  — HAVING is always lowered unlimit(); operator_limit is the window.
+    //   * NO LIMIT / read-cap  — HAVING is always lowered uncapped; operator_limit is the window.
     //   * NO row-id propagation — the input is a group SINK whose output row_ids are the zero
     //     sentinel; the typed gather (data_chunk_t::copy) reproduces that sentinel for free.
     //   * NO sourceless shape   — role() is unconditionally streaming; there is no source_next.
-    // The row copy uses the TYPED, no-box data_chunk_t::copy gather, not match's per-cell
-    // logical_value_t box/unbox loop.
+    // The row copy uses the TYPED data_chunk_t::copy gather.
     class operator_having_t final : public read_only_operator_t {
     public:
         operator_having_t(std::pmr::memory_resource* resource,
@@ -43,8 +42,6 @@ namespace components::operators {
         std::unique_ptr<execution_dag::execution_dag_t> graph_;
         expressions::condition_kind condition_{expressions::condition_kind::always};
         std::pmr::vector<types::complex_logical_type> stream_types_{resource_};
-        std::vector<size_t> stream_populated_cols_;
-        bool stream_sparse_{false};
         bool stream_ready_{false};
     };
 

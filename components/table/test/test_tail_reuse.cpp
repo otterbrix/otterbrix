@@ -136,10 +136,8 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < chunk.size(); i++) {
-                auto id_cell = chunk.value(0, i);
-                auto payload_cell = chunk.value(1, i);
-                REQUIRE(id_cell.value<int64_t>() == static_cast<int64_t>(seen));
-                REQUIRE(payload_cell.value<std::string_view>() == payload_of(seen));
+                REQUIRE(chunk.data[0].get_value<int64_t>(i) == static_cast<int64_t>(seen));
+                REQUIRE(chunk.data[1].get_value<std::string_view>(i) == payload_of(seen));
                 seen++;
             }
         }

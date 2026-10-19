@@ -32,6 +32,7 @@
 #include <components/sql/transformer/utils.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/executor.hpp>
 #include <core/non_thread_scheduler/scheduler_test.hpp>
 #include <core/tests/wait_ready.hpp>
@@ -523,11 +524,14 @@ TEST_CASE("services::dispatcher::alter_add_column_default_is_coerced_like_create
         auto cur = test.execute_sql("SELECT c FROM db.created;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        const auto v = cur->value(0, 0);
-        REQUIRE_FALSE(v.is_null());
+        auto cell4 = cur->is_null(0, 0);
+        REQUIRE_FALSE(cell4.has_error());
+        REQUIRE_FALSE(cell4.value());
         // INTEGER, not the BIGINT the literal started as: convert_column_default ran.
-        CHECK(v.type().type() == logical_type::INTEGER);
-        CHECK(v.value<int32_t>() == 7);
+        CHECK(cur->type_data()[0].type() == logical_type::INTEGER);
+        auto cell5 = cur->get<int32_t>(0, 0);
+        REQUIRE_FALSE(cell5.has_error());
+        CHECK(cell5.value() == 7);
     }
 
     // The write path expands a DEFAULT for a row inserted without the column.
@@ -538,10 +542,13 @@ TEST_CASE("services::dispatcher::alter_add_column_default_is_coerced_like_create
         auto cur = test.execute_sql("SELECT a, c FROM db.agree;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        const auto v = cur->value(1, 0);
-        REQUIRE_FALSE(v.is_null());
-        CHECK(v.type().type() == logical_type::BIGINT);
-        CHECK(v.value<int64_t>() == 7);
+        auto cell6 = cur->is_null(1, 0);
+        REQUIRE_FALSE(cell6.has_error());
+        REQUIRE_FALSE(cell6.value());
+        CHECK(cur->type_data()[1].type() == logical_type::BIGINT);
+        auto cell7 = cur->get<int64_t>(1, 0);
+        REQUIRE_FALSE(cell7.has_error());
+        CHECK(cell7.value() == 7);
     }
 
     REQUIRE(test.execute_sql("CREATE TABLE db.diverge (a bigint);")->is_success());
@@ -551,20 +558,23 @@ TEST_CASE("services::dispatcher::alter_add_column_default_is_coerced_like_create
         auto cur = test.execute_sql("SELECT c FROM db.diverge;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
-        const auto v = cur->value(0, 0);
-        REQUIRE_FALSE(v.is_null());
-        CHECK(v.type().type() == logical_type::INTEGER);
-        CHECK(v.value<int32_t>() == 7);
+        auto cell8 = cur->is_null(0, 0);
+        REQUIRE_FALSE(cell8.has_error());
+        REQUIRE_FALSE(cell8.value());
+        CHECK(cur->type_data()[0].type() == logical_type::INTEGER);
+        auto cell9 = cur->get<int32_t>(0, 0);
+        REQUIRE_FALSE(cell9.has_error());
+        CHECK(cell9.value() == 7);
     }
 
     // attdefspec checks a stored logical tag byte against the column type before reading anything else.
     {
-        const components::types::logical_value_t bigint_seven{mr.get(), static_cast<int64_t>(7)};
+        const auto bigint_seven = components::vector::make_scalar(mr.get(), static_cast<int64_t>(7));
         std::string spec;
         REQUIRE_FALSE(components::catalog::encode_default_spec(mr.get(), bigint_seven, spec).contains_error());
 
         // Widths differ (8 vs 4): already caught pre-tag by the leftover-bytes check.
-        std::optional<components::types::logical_value_t> as_integer;
+        std::optional<components::vector::vector_t> as_integer;
         auto ec_int = components::catalog::decode_default_spec(mr.get(),
                                                                complex_logical_type{logical_type::INTEGER},
                                                                spec,
@@ -572,13 +582,51 @@ TEST_CASE("services::dispatcher::alter_add_column_default_is_coerced_like_create
         CHECK(ec_int.contains_error());
 
         // Widths agree (int64 both): the arm the tag byte, not the leftover-bytes check, actually carries.
-        std::optional<components::types::logical_value_t> as_timestamp;
+        std::optional<components::vector::vector_t> as_timestamp;
         auto ec_ts = components::catalog::decode_default_spec(mr.get(),
                                                               complex_logical_type{logical_type::TIMESTAMP},
                                                               spec,
                                                               as_timestamp);
         CHECK(ec_ts.contains_error());
         CHECK_FALSE(as_timestamp.has_value());
+    }
+}
+
+// The fill copies the one-row DEFAULT into every omitted row of the batch; a batch longer than one vector
+// capacity and a default that owns heap data (string) are the shapes a shallow copy would corrupt.
+TEST_CASE("services::dispatcher::default_fills_every_row_of_a_large_insert") {
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
+    dispatcher_fixture test(mr.get(), dispatcher_dir("default_fill_large"));
+
+    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE TABLE db.t (a bigint, s text DEFAULT 'filled', n bigint DEFAULT NULL, "
+                             "d numeric(10,2) DEFAULT 12.5);")
+                ->is_success());
+
+    constexpr int rows = 2500;
+    std::string sql = "INSERT INTO db.t (a) VALUES ";
+    for (int i = 0; i < rows; ++i) {
+        sql += (i == 0 ? "(" : ", (") + std::to_string(i) + ")";
+    }
+    sql += ";";
+    REQUIRE(test.execute_sql(sql)->is_success());
+
+    auto cur = test.execute_sql("SELECT a, s, n, d FROM db.t ORDER BY a;");
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == rows);
+    for (int i = 0; i < rows; ++i) {
+        auto cell0 = cur->get<int64_t>(0, static_cast<size_t>(i));
+        REQUIRE_FALSE(cell0.has_error());
+        REQUIRE(cell0.value() == i);
+        auto cell1 = cur->get<std::string_view>(1, static_cast<size_t>(i));
+        REQUIRE_FALSE(cell1.has_error());
+        REQUIRE(cell1.value() == "filled");
+        auto cell2 = cur->is_null(2, static_cast<size_t>(i));
+        REQUIRE_FALSE(cell2.has_error());
+        REQUIRE(cell2.value());
+        auto cell3 = cur->get<int64_t>(3, static_cast<size_t>(i));
+        REQUIRE_FALSE(cell3.has_error());
+        REQUIRE(cell3.value() == 1250);
     }
 }
 
@@ -589,42 +637,42 @@ TEST_CASE("services::dispatcher::alter_add_column_default_is_coerced_like_create
 TEST_CASE("services::dispatcher::attdefspec_type_tag_refuses_every_wrong_type_pair") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     auto* resource = mr.get();
-    using components::types::logical_value_t;
+    namespace vec = components::vector;
 
     struct scalar_case {
         const char* name;
         complex_logical_type type;
-        logical_value_t value;
+        vec::vector_t value;
     };
 
     // Values are SMALL and non-negative: they reinterpret cleanly into another type of the same width.
     const std::vector<scalar_case> cases{
-        {"BOOLEAN", complex_logical_type{logical_type::BOOLEAN}, logical_value_t{resource, true}},
-        {"TINYINT", complex_logical_type{logical_type::TINYINT}, logical_value_t{resource, std::int8_t{1}}},
-        {"UTINYINT", complex_logical_type{logical_type::UTINYINT}, logical_value_t{resource, std::uint8_t{1}}},
-        {"SMALLINT", complex_logical_type{logical_type::SMALLINT}, logical_value_t{resource, std::int16_t{7}}},
-        {"USMALLINT", complex_logical_type{logical_type::USMALLINT}, logical_value_t{resource, std::uint16_t{7}}},
-        {"INTEGER", complex_logical_type{logical_type::INTEGER}, logical_value_t{resource, std::int32_t{7}}},
-        {"UINTEGER", complex_logical_type{logical_type::UINTEGER}, logical_value_t{resource, std::uint32_t{7}}},
-        {"BIGINT", complex_logical_type{logical_type::BIGINT}, logical_value_t{resource, std::int64_t{7}}},
-        {"UBIGINT", complex_logical_type{logical_type::UBIGINT}, logical_value_t{resource, std::uint64_t{7}}},
-        {"FLOAT", complex_logical_type{logical_type::FLOAT}, logical_value_t{resource, 7.0F}},
-        {"DOUBLE", complex_logical_type{logical_type::DOUBLE}, logical_value_t{resource, 7.0}},
+        {"BOOLEAN", complex_logical_type{logical_type::BOOLEAN}, vec::make_scalar(resource, true)},
+        {"TINYINT", complex_logical_type{logical_type::TINYINT}, vec::make_scalar(resource, std::int8_t{1})},
+        {"UTINYINT", complex_logical_type{logical_type::UTINYINT}, vec::make_scalar(resource, std::uint8_t{1})},
+        {"SMALLINT", complex_logical_type{logical_type::SMALLINT}, vec::make_scalar(resource, std::int16_t{7})},
+        {"USMALLINT", complex_logical_type{logical_type::USMALLINT}, vec::make_scalar(resource, std::uint16_t{7})},
+        {"INTEGER", complex_logical_type{logical_type::INTEGER}, vec::make_scalar(resource, std::int32_t{7})},
+        {"UINTEGER", complex_logical_type{logical_type::UINTEGER}, vec::make_scalar(resource, std::uint32_t{7})},
+        {"BIGINT", complex_logical_type{logical_type::BIGINT}, vec::make_scalar(resource, std::int64_t{7})},
+        {"UBIGINT", complex_logical_type{logical_type::UBIGINT}, vec::make_scalar(resource, std::uint64_t{7})},
+        {"FLOAT", complex_logical_type{logical_type::FLOAT}, vec::make_scalar(resource, 7.0F)},
+        {"DOUBLE", complex_logical_type{logical_type::DOUBLE}, vec::make_scalar(resource, 7.0)},
         {"STRING_LITERAL",
          complex_logical_type{logical_type::STRING_LITERAL},
-         logical_value_t{resource, std::string{"seven"}}},
+         vec::make_scalar(resource, std::string{"seven"})},
         {"DATE",
          complex_logical_type{logical_type::DATE},
-         logical_value_t{resource, core::date::date_t{core::date::days{7}}}},
+         vec::make_scalar(resource, complex_logical_type{logical_type::DATE}, std::int32_t{7})},
         {"TIME",
          complex_logical_type{logical_type::TIME},
-         logical_value_t{resource, core::date::time_t{core::date::microseconds{7}}}},
+         vec::make_scalar(resource, complex_logical_type{logical_type::TIME}, std::int64_t{7})},
         {"TIMESTAMP",
          complex_logical_type{logical_type::TIMESTAMP},
-         logical_value_t{resource, core::date::timestamp_t{core::date::microseconds{7}}}},
+         vec::make_scalar(resource, complex_logical_type{logical_type::TIMESTAMP}, std::int64_t{7})},
         {"TIMESTAMP_TZ",
          complex_logical_type{logical_type::TIMESTAMP_TZ},
-         logical_value_t{resource, core::date::timestamptz_t{core::date::microseconds{7}}}},
+         vec::make_scalar(resource, complex_logical_type{logical_type::TIMESTAMP_TZ}, std::int64_t{7})},
     };
     REQUIRE(cases.size() == 16);
 
@@ -640,7 +688,7 @@ TEST_CASE("services::dispatcher::attdefspec_type_tag_refuses_every_wrong_type_pa
         REQUIRE_FALSE(spec.empty());
 
         for (const auto& dst : cases) {
-            std::optional<logical_value_t> out;
+            std::optional<vec::vector_t> out;
             const auto ec = components::catalog::decode_default_spec(resource, dst.type, spec, out);
 
             if (&src == &dst) {
@@ -673,35 +721,35 @@ TEST_CASE("services::dispatcher::attdefspec_type_tag_refuses_every_wrong_type_pa
 TEST_CASE("services::dispatcher::attdefspec_type_tag_spares_null_and_reaches_every_leaf") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     auto* resource = mr.get();
-    using components::types::logical_value_t;
+    namespace vec = components::vector;
 
     INFO("an explicit DEFAULT NULL still decodes against any column type");
     {
         std::string null_spec;
-        REQUIRE_FALSE(
-            components::catalog::encode_default_spec(resource,
-                                                     logical_value_t{resource, complex_logical_type{logical_type::NA}},
-                                                     null_spec)
-                .contains_error());
+        REQUIRE_FALSE(components::catalog::encode_default_spec(
+                          resource,
+                          vec::make_null(resource, complex_logical_type{logical_type::BIGINT}),
+                          null_spec)
+                          .contains_error());
         for (const auto t : {logical_type::BIGINT, logical_type::TIMESTAMP, logical_type::STRING_LITERAL}) {
-            std::optional<logical_value_t> out;
+            std::optional<vec::vector_t> out;
             REQUIRE_FALSE(components::catalog::decode_default_spec(resource, complex_logical_type{t}, null_spec, out)
                               .contains_error());
             REQUIRE(out.has_value());
-            CHECK(out->is_null());
+            CHECK(out->is_null(0));
         }
     }
 
     INFO("ARRAY / LIST round trip, and refuse on the ELEMENT type");
     {
-        const std::vector<logical_value_t> elems{logical_value_t{resource, std::int64_t{7}},
-                                                 logical_value_t{resource, std::int64_t{8}}};
+        const vec::vector_t elems[] = {vec::make_scalar(resource, std::int64_t{7}),
+                                       vec::make_scalar(resource, std::int64_t{8})};
         const complex_logical_type bigint{logical_type::BIGINT};
         const complex_logical_type timestamp{logical_type::TIMESTAMP};
 
         for (const bool as_array : {true, false}) {
-            const auto value = as_array ? logical_value_t::create_array(resource, bigint, elems)
-                                        : logical_value_t::create_list(resource, bigint, elems);
+            const auto value =
+                as_array ? vec::make_array(resource, bigint, elems) : vec::make_list(resource, bigint, elems);
             const auto good =
                 as_array ? complex_logical_type::create_array(bigint, 2) : complex_logical_type::create_list(bigint);
             const auto bad = as_array ? complex_logical_type::create_array(timestamp, 2)
@@ -710,15 +758,14 @@ TEST_CASE("services::dispatcher::attdefspec_type_tag_spares_null_and_reaches_eve
             std::string spec;
             REQUIRE_FALSE(components::catalog::encode_default_spec(resource, value, spec).contains_error());
 
-            std::optional<logical_value_t> out;
+            std::optional<vec::vector_t> out;
             REQUIRE_FALSE(components::catalog::decode_default_spec(resource, good, spec, out).contains_error());
             REQUIRE(out.has_value());
-            REQUIRE(out->children().size() == 2);
-            CHECK(out->children()[0].value<std::int64_t>() == 7);
-            CHECK(out->children()[1].value<std::int64_t>() == 8);
+            CHECK(out->entry().get_value<std::int64_t>(0) == 7);
+            CHECK(out->entry().get_value<std::int64_t>(1) == 8);
 
             // Same outer type, same width, WRONG element type. Only a per-leaf tag sees it.
-            std::optional<logical_value_t> wrong;
+            std::optional<vec::vector_t> wrong;
             CHECK(components::catalog::decode_default_spec(resource, bad, spec, wrong).contains_error());
             CHECK_FALSE(wrong.has_value());
         }
@@ -737,21 +784,21 @@ TEST_CASE("services::dispatcher::attdefspec_type_tag_spares_null_and_reaches_eve
         bad_fields.emplace_back(complex_logical_type{logical_type::STRING_LITERAL, "s"});
         const auto bad = complex_logical_type::create_struct("s", bad_fields);
 
-        const std::vector<logical_value_t> fields{logical_value_t{resource, std::int64_t{42}},
-                                                  logical_value_t{resource, std::string{"x"}}};
-        const auto value = logical_value_t::create_struct(resource, good, fields);
+        const vec::vector_t fields[] = {vec::make_scalar(resource, std::int64_t{42}),
+                                        vec::make_scalar(resource, std::string{"x"})};
+        const auto value = vec::make_struct(resource, good, fields);
 
         std::string spec;
         REQUIRE_FALSE(components::catalog::encode_default_spec(resource, value, spec).contains_error());
 
-        std::optional<logical_value_t> out;
+        std::optional<vec::vector_t> out;
         REQUIRE_FALSE(components::catalog::decode_default_spec(resource, good, spec, out).contains_error());
         REQUIRE(out.has_value());
-        REQUIRE(out->children().size() == 2);
-        CHECK(out->children()[0].value<std::int64_t>() == 42);
-        CHECK(out->children()[1].value<std::string_view>() == "x");
+        REQUIRE(out->entries().size() == 2);
+        CHECK(out->entries()[0]->get_value<std::int64_t>(0) == 42);
+        CHECK(out->entries()[1]->get_value<std::string_view>(0) == "x");
 
-        std::optional<logical_value_t> wrong;
+        std::optional<vec::vector_t> wrong;
         CHECK(components::catalog::decode_default_spec(resource, bad, spec, wrong).contains_error());
         CHECK_FALSE(wrong.has_value());
     }

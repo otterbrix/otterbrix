@@ -11,7 +11,7 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/table/test/fault_injection_file.hpp>
-#include <components/types/logical_value.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <core/file/local_file_system.hpp>
 
 #include <cstdio>
@@ -79,7 +79,7 @@ namespace {
 
     struct row_t {
         int64_t k;
-        logical_value_t v;
+        vector_t v;
     };
 
     // Returns the rows seen; the scan's error (if any) lands in *error.
@@ -104,7 +104,8 @@ namespace {
             }
             if (cells) {
                 for (uint64_t i = 0; i < chunk.size(); i++) {
-                    cells->push_back(row_t{chunk.value(0, i).value<int64_t>(), chunk.value(1, i)});
+                    cells->push_back(row_t{chunk.data[0].get_value<int64_t>(i),
+                                           make_constant_copy(&env.resource, chunk.data[1], i)});
                 }
             }
             seen += chunk.size();
@@ -277,9 +278,9 @@ namespace {
             CHECK(seen == kept_rows);
             if (cells.size() == kept_rows) {
                 CHECK(cells.front().k == 0);
-                CHECK(cells.front().v.value<std::string_view>() == "kept");
+                CHECK(cells.front().v.get_value<std::string_view>(0) == "kept");
                 CHECK(cells.back().k == static_cast<int64_t>(kept_rows) - 1);
-                CHECK(cells.back().v.value<std::string_view>() == "kept");
+                CHECK(cells.back().v.get_value<std::string_view>(0) == "kept");
             }
             // The latched durability error keeps the file at its last good root.
             auto cp = checkpoint_production(bm, *table);
@@ -335,7 +336,7 @@ namespace {
             CHECK_FALSE(err.contains_error());
             CHECK(seen == rows);
             if (cells.size() == rows) {
-                CHECK(cells.front().v.value<std::string_view>() == "kept");
+                CHECK(cells.front().v.get_value<std::string_view>(0) == "kept");
                 CHECK(cells.back().k == static_cast<int64_t>(rows) - 1);
             }
             auto more = string_chunk(env, *table, {"after"}, 1000);
@@ -414,10 +415,10 @@ namespace {
             CHECK(seen == committed);
             if (cells.size() == committed) {
                 CHECK(cells.front().k == 0);
-                CHECK(cells.front().v.value<std::string_view>() == "a");
-                CHECK(cells[rg - 1].v.value<std::string_view>() == "b");
+                CHECK(cells.front().v.get_value<std::string_view>(0) == "a");
+                CHECK(cells[rg - 1].v.get_value<std::string_view>(0) == "b");
                 CHECK(cells.back().k == static_cast<int64_t>(committed) - 1);
-                CHECK(cells.back().v.value<std::string_view>() == "b");
+                CHECK(cells.back().v.get_value<std::string_view>(0) == "b");
             }
         }
         std::remove(path.c_str());

@@ -1,7 +1,7 @@
 """A constant's bytes are pmr-allocated out of the ENGINE's arena, so the map that keeps
 them must be destroyed BEFORE the space that owns that arena.
 
-`ConstantExpression("OH", conn)` builds a `logical_value_t` on
+`ConstantExpression("OH", conn)` builds a one-row vector on
 `conn.space_ptr()->dispatcher()->resource()` and hands it to
 `expression_factory_t::add_value`, which stores it in the member map `values`. That member map
 and the `boost::intrusive_ptr<otterbrix_t> space` that owns the arena live side by side in
@@ -11,7 +11,7 @@ that no longer existed.
 
     EXC_BAD_ACCESS (code=1, address=0x18)
       std::pmr::memory_resource::deallocate(this=0x100c55f48, __p=0x5b61484c0, __bytes=24, __align=8)
-      ... ~logical_value_t
+      ... ~vector_t
       otterbrix::expression_factory_t::~expression_factory_t
       Python`finalize_modules / _Py_Finalize
 

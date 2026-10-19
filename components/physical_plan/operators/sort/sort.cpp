@@ -1,5 +1,8 @@
 #include "sort.hpp"
 
+#include <components/vector/operations/apply_operator.hpp>
+#include <core/operations_helper.hpp>
+
 namespace components::sort {
 
     columnar_sorter_t::columnar_sorter_t(std::pmr::memory_resource* resource,
@@ -29,7 +32,12 @@ namespace components::sort {
         int compare_typed(const vector::vector_t& va, size_t a, const vector::vector_t& vb, size_t b) {
             auto* da = va.data<T>();
             auto* db = vb.data<T>();
-            return (da[a] < db[b]) ? -1 : (da[a] > db[b]) ? 1 : 0;
+            if constexpr (std::is_floating_point_v<T>) {
+                const auto ordering = core::float_order(da[a], db[b]);
+                return ordering < 0 ? -1 : (ordering > 0 ? 1 : 0);
+            } else {
+                return (da[a] < db[b]) ? -1 : (da[a] > db[b]) ? 1 : 0;
+            }
         }
 
         int compare_values(const vector::vector_t& va, size_t a, const vector::vector_t& vb, size_t b) {
@@ -62,13 +70,23 @@ namespace components::sort {
                 case types::physical_type::STRING:
                     return compare_typed<std::string_view>(va, a, vb, b);
                 default: {
-                    // Composite key (STRUCT, whole LIST/ARRAY): no flat typed layout to compare.
-                    if (!va.resource())
-                        return 0;
-                    auto lva = va.value(a);
-                    auto lvb = vb.value(b);
-                    auto cmp = lva.compare(lvb);
-                    return (cmp == types::compare_t::less) ? -1 : (cmp == types::compare_t::more) ? 1 : 0;
+                    switch (va.type().type()) {
+                        case types::logical_type::STRUCT:
+                        case types::logical_type::LIST:
+                        case types::logical_type::ARRAY:
+                        case types::logical_type::MAP:
+                        case types::logical_type::TIME_TZ:
+                        case types::logical_type::INTERVAL: {
+                            const auto ordering = vector::operations::compare_cells(va, a, vb, b);
+                            return ordering == std::partial_ordering::less      ? -1
+                                   : ordering == std::partial_ordering::greater ? 1
+                                                                                : 0;
+                        }
+                        default:
+                            break;
+                    }
+                    // Other composite keys (UNION, VARIANT) have no order: all of them sort as equal.
+                    return 0;
                 }
             }
         }

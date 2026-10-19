@@ -4,7 +4,6 @@
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
 #include <components/context/execution_context.hpp>
-#include <components/types/logical_value.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <services/disk/manager_disk.hpp>
 

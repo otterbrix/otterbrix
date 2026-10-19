@@ -28,24 +28,36 @@ TEST_CASE("integration::cpp::test_tinyint_numeric_cast::a_tinyint_column_lands_i
     REQUIRE(cur->size() == 3);
     // Not merely "not null": the Release half of the bug stored NULL and reported success, and a
     // scale mistake would store 7 instead of 700 with is_null() false either way.
-    CHECK_FALSE(cur->value(0, 0).is_null());
-    CHECK_FALSE(cur->value(0, 1).is_null());
-    CHECK_FALSE(cur->value(0, 2).is_null());
+    auto cell0 = cur->is_null(0, 0);
+    REQUIRE_FALSE(cell0.has_error());
+    CHECK_FALSE(cell0.value());
+    auto cell1 = cur->is_null(0, 1);
+    REQUIRE_FALSE(cell1.has_error());
+    CHECK_FALSE(cell1.value());
+    auto cell2 = cur->is_null(0, 2);
+    REQUIRE_FALSE(cell2.has_error());
+    CHECK_FALSE(cell2.value());
 
     auto probe = exec(d, "SELECT id FROM tn.dst WHERE n = 7.00;");
     REQUIRE(probe->is_success());
     REQUIRE(probe->size() == 1);
-    CHECK(probe->value(0, 0).value<int64_t>() == 1);
+    auto cell3 = probe->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell3.has_error());
+    CHECK(cell3.value() == 1);
 
     auto floor_probe = exec(d, "SELECT id FROM tn.dst WHERE n = -128.00;");
     REQUIRE(floor_probe->is_success());
     REQUIRE(floor_probe->size() == 1);
-    CHECK(floor_probe->value(0, 0).value<int64_t>() == 2);
+    auto cell4 = floor_probe->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell4.has_error());
+    CHECK(cell4.value() == 2);
 
     auto ceiling_probe = exec(d, "SELECT id FROM tn.dst WHERE n = 127.00;");
     REQUIRE(ceiling_probe->is_success());
     REQUIRE(ceiling_probe->size() == 1);
-    CHECK(ceiling_probe->value(0, 0).value<int64_t>() == 3);
+    auto cell5 = ceiling_probe->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell5.has_error());
+    CHECK(cell5.value() == 3);
 }
 
 TEST_CASE("integration::cpp::test_tinyint_numeric_cast::a_utinyint_column_lands_in_a_numeric_column") {
@@ -66,13 +78,19 @@ TEST_CASE("integration::cpp::test_tinyint_numeric_cast::a_utinyint_column_lands_
     auto cur = exec(d, "SELECT n FROM tn.dst ORDER BY id;");
     REQUIRE(cur->is_success());
     REQUIRE(cur->size() == 2);
-    CHECK_FALSE(cur->value(0, 0).is_null());
-    CHECK_FALSE(cur->value(0, 1).is_null());
+    auto cell6 = cur->is_null(0, 0);
+    REQUIRE_FALSE(cell6.has_error());
+    CHECK_FALSE(cell6.value());
+    auto cell7 = cur->is_null(0, 1);
+    REQUIRE_FALSE(cell7.has_error());
+    CHECK_FALSE(cell7.value());
 
     auto probe = exec(d, "SELECT id FROM tn.dst WHERE n = 255.00;");
     REQUIRE(probe->is_success());
     REQUIRE(probe->size() == 1);
-    CHECK(probe->value(0, 0).value<int64_t>() == 2);
+    auto cell8 = probe->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell8.has_error());
+    CHECK(cell8.value() == 2);
 
     auto wrong = exec(d, "SELECT id FROM tn.dst WHERE n = -1.00;");
     REQUIRE(wrong->is_success());

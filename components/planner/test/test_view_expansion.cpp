@@ -7,6 +7,7 @@
 //    create_plan_match hands back a bare full_scan over a view with no storage — zero rows, no error.
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/vector/vector_builders.hpp>
 
 #include <components/catalog/catalog_codes.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -151,11 +152,13 @@ TEST_CASE("planner::view_expansion::body parameters are renumbered into the oute
     // Both plans number from zero. Without renumbering the outer #0 and the body
     // #0 are the same slot and the outer constant wins.
     auto outer_params = logical_plan::make_parameter_node(res());
-    const auto outer_id = outer_params->add_parameter(types::logical_value_t{res(), int64_t{18}});
+    const auto outer_id =
+        outer_params->add_parameter(vector::make_scalar(res(), int64_t{18}), vector::parameter_kind::literal);
     CHECK(outer_id == core::parameter_id_t{0});
 
     auto body_params = logical_plan::make_parameter_node(res());
-    const auto body_id = body_params->add_parameter(types::logical_value_t{res(), int64_t{10}});
+    const auto body_id =
+        body_params->add_parameter(vector::make_scalar(res(), int64_t{10}), vector::parameter_kind::literal);
     CHECK(body_id == core::parameter_id_t{0});
 
     auto body = logical_plan::make_node_aggregate(res(), qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
@@ -176,8 +179,37 @@ TEST_CASE("planner::view_expansion::body parameters are renumbered into the oute
     CHECK(new_id != outer_id);
 
     INFO("and that id holds the body's own constant, not the outer query's");
-    CHECK(outer_params->parameter(new_id).value<int64_t>() == 10);
-    CHECK(outer_params->parameter(outer_id).value<int64_t>() == 18);
+    CHECK(outer_params->parameter(new_id).get_value<int64_t>(0) == 10);
+    CHECK(outer_params->parameter(outer_id).get_value<int64_t>(0) == 18);
+}
+
+TEST_CASE("planner::view_expansion::body parameters do not land on an outer id that was set explicitly") {
+    // A host that numbers its own parameters (the Python relation factory) has them in the outer plan already.
+    // The id handed out for the view body must be past those.
+    auto outer_params = logical_plan::make_parameter_node(res());
+    const auto host_id =
+        outer_params->add_parameter(vector::make_scalar(res(), int64_t{18}), vector::parameter_kind::literal);
+
+    auto body_params = logical_plan::make_parameter_node(res());
+    const auto body_id =
+        body_params->add_parameter(vector::make_scalar(res(), int64_t{10}), vector::parameter_kind::literal);
+
+    auto body = logical_plan::make_node_aggregate(res(), qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
+    body->append_expression(
+        expressions::make_compare_expression(res(),
+                                             expressions::compare_type::gt,
+                                             expressions::param_storage{expressions::key_t{res(), "col_b"}},
+                                             expressions::param_storage{body_id}));
+
+    renumber_body_parameters(res(), body.get(), body_params, outer_params);
+
+    const auto& moved =
+        static_cast<const expressions::compare_expression_t*>(body->expressions().front().get())->right();
+    REQUIRE(expressions::is_parameter(moved));
+    const auto new_id = expressions::as_parameter(moved);
+    CHECK(new_id != host_id);
+    CHECK(outer_params->parameter(new_id).get_value<int64_t>(0) == 10);
+    CHECK(outer_params->parameter(host_id).get_value<int64_t>(0) == 18);
 }
 
 namespace {

@@ -1,9 +1,11 @@
+#include "parameter_equals.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <core/counting_resource.hpp>
 
 using namespace components::sql;
 using namespace components::sql::transform;
@@ -37,9 +39,9 @@ TEST_CASE("components::sql::insert_into") {
         const auto& chunk =
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 1l));
-        REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "Name"));
-        REQUIRE(chunk.value(2, 0) == components::types::logical_value_t(&arena_resource, 1l));
+        REQUIRE(cell_equals(chunk.data[0], 0, components::vector::make_scalar(&resource, int64_t{1})));
+        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_scalar(&resource, std::string_view{"Name"})));
+        REQUIRE(cell_equals(chunk.data[2], 0, components::vector::make_scalar(&resource, int64_t{1})));
     }
 
     SECTION("insert into without TestDatabase") {
@@ -54,9 +56,9 @@ TEST_CASE("components::sql::insert_into") {
         const auto& chunk =
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 1l));
-        REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "Name"));
-        REQUIRE(chunk.value(2, 0) == components::types::logical_value_t(&arena_resource, 1l));
+        REQUIRE(cell_equals(chunk.data[0], 0, components::vector::make_scalar(&resource, int64_t{1})));
+        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_scalar(&resource, std::string_view{"Name"})));
+        REQUIRE(cell_equals(chunk.data[2], 0, components::vector::make_scalar(&resource, int64_t{1})));
     }
 
     SECTION("insert into with quoted") {
@@ -71,9 +73,9 @@ TEST_CASE("components::sql::insert_into") {
         const auto& chunk =
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 1l));
-        REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "Name"));
-        REQUIRE(chunk.value(2, 0) == components::types::logical_value_t(&arena_resource, 1l));
+        REQUIRE(cell_equals(chunk.data[0], 0, components::vector::make_scalar(&resource, int64_t{1})));
+        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_scalar(&resource, std::string_view{"Name"})));
+        REQUIRE(cell_equals(chunk.data[2], 0, components::vector::make_scalar(&resource, int64_t{1})));
     }
 
     SECTION("insert into struct") {
@@ -89,8 +91,9 @@ TEST_CASE("components::sql::insert_into") {
         const auto& chunk =
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 43l));
-        REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "some text"));
+        REQUIRE(cell_equals(chunk.data[0], 0, components::vector::make_scalar(&resource, int64_t{43})));
+        REQUIRE(
+            cell_equals(chunk.data[1], 0, components::vector::make_scalar(&resource, std::string_view{"some text"})));
     }
 
     SECTION("insert into array") {
@@ -105,13 +108,16 @@ TEST_CASE("components::sql::insert_into") {
         const auto& chunk =
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
-        auto arr =
-            components::types::logical_value_t::create_array(&arena_resource,
-                                                             components::types::logical_type::BIGINT,
-                                                             {components::types::logical_value_t{&arena_resource, 1l},
-                                                              components::types::logical_value_t{&arena_resource, 2l},
-                                                              components::types::logical_value_t{&arena_resource, 3l}});
-        REQUIRE(chunk.value(0, 0) == arr);
+        std::vector<components::vector::vector_t> elements;
+        for (int64_t value : {1, 2, 3}) {
+            elements.push_back(components::vector::make_scalar(&resource, value));
+        }
+        REQUIRE(cell_equals(chunk.data[0],
+                            0,
+                            components::vector::make_array(
+                                &resource,
+                                components::types::complex_logical_type{components::types::logical_type::BIGINT},
+                                elements)));
     }
 
     SECTION("insert into multi-documents") {
@@ -131,12 +137,12 @@ TEST_CASE("components::sql::insert_into") {
         const auto& chunk =
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 5);
-        REQUIRE(chunk.value(0, 0) == components::types::logical_value_t(&arena_resource, 1l));
-        REQUIRE(chunk.value(1, 0) == components::types::logical_value_t(&arena_resource, "Name1"));
-        REQUIRE(chunk.value(2, 0) == components::types::logical_value_t(&arena_resource, 1l));
-        REQUIRE(chunk.value(0, 4) == components::types::logical_value_t(&arena_resource, 5l));
-        REQUIRE(chunk.value(1, 4) == components::types::logical_value_t(&arena_resource, "Name5"));
-        REQUIRE(chunk.value(2, 4) == components::types::logical_value_t(&arena_resource, 5l));
+        REQUIRE(cell_equals(chunk.data[0], 0, components::vector::make_scalar(&resource, int64_t{1})));
+        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_scalar(&resource, std::string_view{"Name1"})));
+        REQUIRE(cell_equals(chunk.data[2], 0, components::vector::make_scalar(&resource, int64_t{1})));
+        REQUIRE(cell_equals(chunk.data[0], 4, components::vector::make_scalar(&resource, int64_t{5})));
+        REQUIRE(cell_equals(chunk.data[1], 4, components::vector::make_scalar(&resource, std::string_view{"Name5"})));
+        REQUIRE(cell_equals(chunk.data[2], 4, components::vector::make_scalar(&resource, int64_t{5})));
     }
 
     SECTION("insert from select") {
@@ -158,5 +164,59 @@ WHERE condition = true;)_"));
                     static_cast<components::logical_plan::node_aggregate_t*>(node->children().front().get())
                         ->target()
                         .collection) == "table1");
+    }
+}
+
+TEST_CASE("components::sql::insert_into takes nothing from the default resource") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    std::string sql = "INSERT INTO t (a, b) VALUES (1, 'x')";
+    for (int row = 2; row <= 50; ++row) {
+        sql += ", (" + std::to_string(row) + ", 'y')";
+    }
+    sql += ";";
+    auto select = linitial(raw_parser(&arena_resource, sql.c_str()));
+
+    core::pmr::default_resource_counter_t default_resource;
+    auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
+    const auto default_allocations = default_resource.allocations();
+
+    REQUIRE_FALSE(result.has_error());
+    REQUIRE(default_allocations == 0);
+}
+
+namespace {
+    std::size_t transform_insert_allocations(const std::string& row, int rows) {
+        auto host = core::pmr::otterbrix_resource();
+        core::pmr::counting_resource_t counter(&host);
+        {
+            std::pmr::monotonic_buffer_resource arena_resource(&host);
+            transform::transformer transformer(&counter);
+            std::string sql = "INSERT INTO t VALUES " + row;
+            for (int i = 1; i < rows; ++i) {
+                sql += ", " + row;
+            }
+            sql += ";";
+            auto select = linitial(raw_parser(&arena_resource, sql.c_str()));
+            counter.reset();
+            auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
+            REQUIRE_FALSE(result.has_error());
+        }
+        return counter.allocations();
+    }
+} // namespace
+
+TEST_CASE("components::sql::insert_into allocates nothing per plain literal cell") {
+    SECTION("integers") {
+        const auto rows100 = transform_insert_allocations("(1, 2, 3, 4, 5, 6)", 100);
+        const auto rows200 = transform_insert_allocations("(1, 2, 3, 4, 5, 6)", 200);
+        REQUIRE(rows200 - rows100 < 100);
+    }
+    SECTION("strings and doubles") {
+        const auto rows100 = transform_insert_allocations("(1, 'abc', 2.5, 'de', 3.25, 7)", 100);
+        const auto rows200 = transform_insert_allocations("(1, 'abc', 2.5, 'de', 3.25, 7)", 200);
+        REQUIRE(rows200 - rows100 < 100);
     }
 }

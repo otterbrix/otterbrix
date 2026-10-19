@@ -4,6 +4,7 @@
 #include <components/table/storage/single_file_block_manager.hpp>
 #include <components/table/storage/standard_buffer_manager.hpp>
 #include <components/table/transaction_manager.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <core/file/local_file_system.hpp>
 #include <cstdio>
 #include <string>
@@ -757,8 +758,8 @@ namespace {
         auto chunk = data_chunk_t(&env.resource, types, count);
         for (uint64_t i = 0; i < count; i++) {
             auto v = start + static_cast<int64_t>(i);
-            chunk.data[0].set_value(i, logical_value_t(&env.resource, v));
-            chunk.data[1].set_value(i, logical_value_t(&env.resource, v * 10));
+            chunk.data[0].set_value(i, v);
+            chunk.data[1].set_value(i, v * 10);
         }
         chunk.set_cardinality(count);
 
@@ -786,7 +787,7 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < result.size(); i++) {
-                rows.emplace_back(result.data[0].value(i).value<int64_t>(), result.data[1].value(i).value<int64_t>());
+                rows.emplace_back(result.data[0].get_value<int64_t>(i), result.data[1].get_value<int64_t>(i));
             }
         }
         return rows;
@@ -847,8 +848,8 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
     auto types = table->copy_types();
     {
         auto chunk = data_chunk_t(&env.resource, types, 1);
-        chunk.data[0].set_value(0, logical_value_t(&env.resource, int64_t(1)));
-        chunk.data[1].set_value(0, logical_value_t(&env.resource, std::string("p1")));
+        chunk.data[0].set_value(0, int64_t(1));
+        chunk.data[1].set_value(0, std::string_view{std::string("p1")});
         chunk.set_cardinality(1);
         table_append_state state(&env.resource);
         REQUIRE_FALSE(table->append_lock(state).has_error());
@@ -866,7 +867,7 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
     int64_t appended_start = 0;
     {
         auto chunk = data_chunk_t(&env.resource, types, 1);
-        chunk.data[0].set_value(0, logical_value_t(&env.resource, int64_t(77)));
+        chunk.data[0].set_value(0, int64_t(77));
         chunk.data[1].set_null(0, true);
         chunk.set_cardinality(1);
         table_append_state state(&env.resource);
@@ -895,10 +896,10 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
     {
         auto result = scan_once(TRANSACTION_ID_START + 6, 101);
         REQUIRE(result.size() == 1);
-        INFO("id=" << result.data[0].value(0).value<int64_t>());
-        REQUIRE(result.data[0].value(0).value<int64_t>() == 1);
+        INFO("id=" << result.data[0].get_value<int64_t>(0));
+        REQUIRE(result.data[0].get_value<int64_t>(0) == 1);
         REQUIRE(result.data[1].validity().row_is_valid(0));
-        REQUIRE_FALSE(result.data[1].value(0).is_null());
+        REQUIRE_FALSE(result.data[1].is_null(0));
     }
 
     const uint64_t txn2 = TRANSACTION_ID_START + 7;
@@ -909,8 +910,8 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
     int64_t start2 = 0;
     {
         auto chunk = data_chunk_t(&env.resource, types, 1);
-        chunk.data[0].set_value(0, logical_value_t(&env.resource, int64_t(1)));
-        chunk.data[1].set_value(0, logical_value_t(&env.resource, std::string("renamed")));
+        chunk.data[0].set_value(0, int64_t(1));
+        chunk.data[1].set_value(0, std::string_view{std::string("renamed")});
         chunk.set_cardinality(1);
         table_append_state state(&env.resource);
         REQUIRE_FALSE(table->append_lock(state).has_error());
@@ -926,13 +927,12 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
     {
         auto result = scan_once(TRANSACTION_ID_START + 8, 104);
         REQUIRE(result.size() == 1);
-        INFO("id=" << result.data[0].value(0).value<int64_t>());
-        REQUIRE(result.data[0].value(0).value<int64_t>() == 1);
+        INFO("id=" << result.data[0].get_value<int64_t>(0));
+        REQUIRE(result.data[0].get_value<int64_t>(0) == 1);
         INFO("val validity=" << result.data[1].validity().row_is_valid(0));
         REQUIRE(result.data[1].validity().row_is_valid(0));
-        auto v = result.data[1].value(0);
-        REQUIRE_FALSE(v.is_null());
-        REQUIRE(v.value<std::string_view>() == "renamed");
+        REQUIRE_FALSE(result.data[1].is_null(0));
+        REQUIRE(result.data[1].get_value<std::string_view>(0) == "renamed");
     }
 }
 
@@ -1164,13 +1164,13 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < result.size(); i++, row++) {
-                REQUIRE(result.data[0].value(i).value<int64_t>() == static_cast<int64_t>(row));
+                REQUIRE(result.data[0].get_value<int64_t>(i) == static_cast<int64_t>(row));
                 const uint64_t base = row < new_from ? 0 : new_base;
-                auto lv = result.data[1].value(i);
-                REQUIRE(lv.type().type() == logical_type::LIST);
-                REQUIRE(lv.children().size() == nested_list_length(row));
+                REQUIRE(result.data[1].type().type() == logical_type::LIST);
+                const auto seq = sequence_of(result.data[1], i);
+                REQUIRE(seq.length == nested_list_length(row));
                 for (uint64_t j = 0; j < nested_list_length(row); j++) {
-                    REQUIRE(lv.children()[j].value<uint64_t>() == base + row * 100 + j);
+                    REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == base + row * 100 + j);
                 }
             }
         }
@@ -1192,13 +1192,13 @@ namespace {
                 break;
             }
             for (uint64_t i = 0; i < result.size(); i++, row++) {
-                REQUIRE(result.data[0].value(i).value<int64_t>() == static_cast<int64_t>(row));
+                REQUIRE(result.data[0].get_value<int64_t>(i) == static_cast<int64_t>(row));
                 const uint64_t base = row < new_from ? 0 : new_base;
-                auto av = result.data[1].value(i);
-                REQUIRE(av.type().type() == logical_type::ARRAY);
-                REQUIRE(av.children().size() == NESTED_ARRAY_SIZE);
+                REQUIRE(result.data[1].type().type() == logical_type::ARRAY);
+                const auto seq = sequence_of(result.data[1], i);
+                REQUIRE(seq.length == NESTED_ARRAY_SIZE);
                 for (uint64_t j = 0; j < NESTED_ARRAY_SIZE; j++) {
-                    REQUIRE(av.children()[j].value<uint64_t>() == base + row * 100 + 50 + j);
+                    REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == base + row * 100 + 50 + j);
                 }
             }
         }

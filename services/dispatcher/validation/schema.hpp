@@ -42,10 +42,6 @@ namespace services::dispatcher::validation {
     using named_schema = std::pmr::vector<type_from_t>;
     using type_paths = std::pmr::vector<type_path_t>;
 
-    // Type as it should read in a user-facing message: the declared name for a named
-    // type (ENUM / STRUCT / UDT), the pg_type name for everything else.
-    std::string describe_type(const components::types::complex_logical_type& type);
-
     // JOIN schema = pure concatenation of both sides. The runtime join
     // operators (join_utils.hpp: res_types = left.types() + all right
     // types) emit every column of both inputs, including same-named join

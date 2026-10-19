@@ -132,8 +132,7 @@ namespace {
         result.rows = out.size();
         for (uint64_t i = 0; i < out.size(); ++i) {
             result.row_ids.push_back(out.row_ids.data<int64_t>()[i]);
-            const auto cell = out.value(0, i);
-            result.values.push_back(cell.value<int64_t>());
+            result.values.push_back(out.data[0].get_value<int64_t>(i));
         }
         return result;
     }

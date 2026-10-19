@@ -14,10 +14,6 @@
 // lives here so the two operators stay in sync.
 namespace components::operators::join_detail {
 
-    // Placeholder columns (produced by projected scans) have no buffer and no auxiliary.
-    // They must be skipped when copying — vector_ops::copy would dereference a null data_.
-    bool is_placeholder(const vector::vector_t& v) noexcept;
-
     // turn 1 row into a const_vector (every row redirects to the same value)
     vector::vector_t broadcast_row(std::pmr::memory_resource* resource, const vector::vector_t& source, uint64_t row);
 
@@ -60,13 +56,6 @@ namespace components::operators::join_detail {
                              std::vector<size_t>& indices_left,
                              std::vector<size_t>& indices_right);
 
-    // Computes which OUTPUT slots need a real buffer.
-    void compute_active_indices(const vector::data_chunk_t& left_front,
-                                const vector::data_chunk_t& right_front,
-                                const std::vector<size_t>& indices_left,
-                                const std::vector<size_t>& indices_right,
-                                std::vector<size_t>* active_indices);
-
     // Streams join output into a chunks_vector_t where every chunk is
     // ≤ DEFAULT_VECTOR_CAPACITY (1024) rows.
     //
@@ -97,8 +86,7 @@ namespace components::operators::join_detail {
         join_builder(std::pmr::memory_resource* resource,
                      const std::pmr::vector<types::complex_logical_type>& out_types,
                      const std::vector<size_t>& indices_left,
-                     const std::vector<size_t>& indices_right,
-                     const std::vector<size_t>& active_indices);
+                     const std::vector<size_t>& indices_right);
 
         // The destination for completed chunks. push()/finalize() each receive their own
         // out vector, so the operator re-seats this per call; the PENDING chunk is
@@ -131,8 +119,6 @@ namespace components::operators::join_detail {
         // Bounds the index buffers. Mid-batch, so the sources are still alive.
         void ensure_space_();
 
-        void ensure_slots_();
-
         void ensure_pending_();
 
         void emit_pending_();
@@ -144,7 +130,6 @@ namespace components::operators::join_detail {
         const std::pmr::vector<types::complex_logical_type>& out_types_;
         const std::vector<size_t>& indices_left_;
         const std::vector<size_t>& indices_right_;
-        const std::vector<size_t>& active_indices_;
         chunks_vector_t* out_ = nullptr;
         bool emitted_ = false;
 
@@ -171,8 +156,6 @@ namespace components::operators::join_detail {
         std::pmr::vector<uint64_t> group_start_;
         std::pmr::vector<uint64_t> order_;
         std::pmr::vector<uint64_t> cursor_;
-        std::pmr::vector<uint8_t> slot_live_;
-        bool slots_ready_ = false;
         // Sized once at DEFAULT_VECTOR_CAPACITY and rewritten per gather — a window
         // never exceeds it, and vector_ops::copy only reads the first `count` entries.
         vector::indexing_vector_t indexing_;

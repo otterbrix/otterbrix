@@ -16,8 +16,7 @@
 #include <components/execution_dag/execution_dag.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/forward.hpp>
-#include <components/types/logical_value.hpp>
-#include <components/types/parameter_map.hpp>
+#include <components/vector/storage_parameters.hpp>
 
 namespace components::vector {
     class data_chunk_t;
@@ -66,7 +65,7 @@ namespace components::table {
 
     class table_filter_t {
     public:
-        table_filter_t(types::parameter_map_t parameters,
+        table_filter_t(vector::storage_parameters&& parameters,
                        graph_execution_context context,
                        std::unique_ptr<execution_dag::execution_dag_t> graph,
                        expressions::condition_kind condition)
@@ -75,7 +74,7 @@ namespace components::table {
             , graph(std::move(graph))
             , condition(condition) {}
 
-        types::parameter_map_t parameters;
+        vector::storage_parameters parameters;
         graph_execution_context context;
         std::unique_ptr<execution_dag::execution_dag_t> graph;
         expressions::condition_kind condition{expressions::condition_kind::always};

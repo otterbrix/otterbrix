@@ -4,6 +4,8 @@
 
 #include <components/vector/arrow/arrow_appender.hpp>
 #include <components/vector/arrow/arrow_converter.hpp>
+#include <components/vector/arrow/scaner/arrow_conversion.hpp>
+#include <components/vector/cell_equal.hpp>
 #include <core/date/date_types.hpp>
 
 using namespace components::vector::arrow;
@@ -33,7 +35,8 @@ TEST_CASE("components::vector::arrow_batch_longer_than_a_vector") {
         for (size_t row = 0; row < count; row++) {
             const size_t global_row = first + row;
             chunk.set_value(0, row, static_cast<int64_t>(global_row));
-            chunk.set_value(1, row, logical_value_t{&resource, "row_" + std::to_string(global_row)});
+            const std::string text{"row_" + std::to_string(global_row)};
+            chunk.set_value(1, row, std::string_view{text});
             if (global_row % 7 == 0) {
                 chunk.data[2].set_null(row, true);
             } else {
@@ -64,7 +67,7 @@ TEST_CASE("components::vector::arrow_batch_longer_than_a_vector") {
         REQUIRE(converted[index].size() == source[index].size());
         for (size_t column = 0; column < types.size(); column++) {
             for (size_t row = 0; row < source[index].size(); row++) {
-                REQUIRE(source[index].value(column, row) == converted[index].value(column, row));
+                REQUIRE(cells_equal(source[index].data[column], row, converted[index].data[column], row));
             }
         }
     }
@@ -161,19 +164,17 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
             }
             // struct
             {
-                std::vector<logical_value_t> arr;
+                std::vector<uint16_t> arr;
                 arr.reserve(i);
                 for (size_t j = 0; j < i; j++) {
-                    arr.emplace_back(&resource, static_cast<uint16_t>(j));
+                    arr.emplace_back(static_cast<uint16_t>(j));
                 }
-                std::vector<logical_value_t> value_fiels;
-                value_fiels.emplace_back(&resource, i % 2 != 0);
-                value_fiels.emplace_back(&resource, static_cast<int32_t>(i));
-                value_fiels.emplace_back(
-                    logical_value_t{&resource, std::string{"long_string_with_index_" + std::to_string(i)}});
-                value_fiels.emplace_back(logical_value_t::create_list(&resource, logical_type::USMALLINT, arr));
-                logical_value_t value = logical_value_t::create_struct(&resource, types.back(), value_fiels);
-                chunk.set_value(8, i, value);
+                const std::string name{"long_string_with_index_" + std::to_string(i)};
+                auto& fields = chunk.data[8].entries();
+                fields[0]->set_value(i, i % 2 != 0);
+                fields[1]->set_value(i, static_cast<int32_t>(i));
+                fields[2]->set_value(i, std::string_view{name});
+                fields[3]->set_value(i, arr);
             }
         }
 
@@ -190,7 +191,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         REQUIRE(chunk.size() == res.size());
         for (size_t i = 0; i < chunk.column_count(); i++) {
             for (size_t j = 0; j < chunk.size(); j++) {
-                REQUIRE(chunk.value(i, j) == res.value(i, j));
+                REQUIRE(cells_equal(chunk.data[i], j, res.data[i], j));
             }
         }
         schema.release(&schema);
@@ -284,19 +285,17 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
             }
             // struct
             {
-                std::vector<logical_value_t> arr;
+                std::vector<uint16_t> arr;
                 arr.reserve(i);
                 for (size_t j = 0; j < i; j++) {
-                    arr.emplace_back(&resource, static_cast<uint16_t>(j));
+                    arr.emplace_back(static_cast<uint16_t>(j));
                 }
-                std::vector<logical_value_t> value_fiels;
-                value_fiels.emplace_back(&resource, i % 2 != 0);
-                value_fiels.emplace_back(&resource, static_cast<int32_t>(i));
-                value_fiels.emplace_back(
-                    logical_value_t{&resource, std::string{"long_string_with_index_" + std::to_string(i)}});
-                value_fiels.emplace_back(logical_value_t::create_list(&resource, logical_type::USMALLINT, arr));
-                logical_value_t value = logical_value_t::create_struct(&resource, types.back(), value_fiels);
-                chunk.set_value(8, i, value);
+                const std::string name{"long_string_with_index_" + std::to_string(i)};
+                auto& fields = chunk.data[8].entries();
+                fields[0]->set_value(i, i % 2 != 0);
+                fields[1]->set_value(i, static_cast<int32_t>(i));
+                fields[2]->set_value(i, std::string_view{name});
+                fields[3]->set_value(i, arr);
             }
         }
 
@@ -313,7 +312,7 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         REQUIRE(chunk.size() == res.size());
         for (size_t i = 0; i < chunk.column_count(); i++) {
             for (size_t j = 0; j < chunk.size(); j++) {
-                REQUIRE(chunk.value(i, j) == res.value(i, j));
+                REQUIRE(cells_equal(chunk.data[i], j, res.data[i], j));
             }
         }
         schema.release(&schema);
@@ -337,24 +336,14 @@ TEST_CASE("components::vector::data_chunk_to_arrow::datetime") {
     chunk.set_cardinality(chunk_size);
 
     for (size_t i = 0; i < chunk_size; i++) {
-        chunk.set_value(0, i, logical_value_t{&resource, date_t{days{static_cast<int32_t>(i) - 100}}});
-        chunk.set_value(
-            1,
-            i,
-            logical_value_t{&resource, core::date::time_t{microseconds{static_cast<int64_t>(i) * 1000000LL}}});
-        chunk.set_value(
-            2,
-            i,
-            logical_value_t{&resource, timestamp_t{microseconds{static_cast<int64_t>(i) * 1000000LL - 86400000000LL}}});
-        chunk.set_value(3,
-                        i,
-                        logical_value_t{&resource, timestamptz_t{microseconds{static_cast<int64_t>(i) * 1000000LL}}});
-        chunk.set_value(4,
-                        i,
-                        logical_value_t{&resource,
-                                        interval_t{microseconds{static_cast<int64_t>(i) * 1000LL},
-                                                   days{static_cast<int32_t>(i)},
-                                                   months{static_cast<int32_t>(i % 12)}}});
+        chunk.data[0].set_value(i, date_t{days{static_cast<int32_t>(i) - 100}});
+        chunk.data[1].set_value(i, core::date::time_t{microseconds{static_cast<int64_t>(i) * 1000000LL}});
+        chunk.data[2].set_value(i, timestamp_t{microseconds{static_cast<int64_t>(i) * 1000000LL - 86400000000LL}});
+        chunk.data[3].set_value(i, timestamptz_t{microseconds{static_cast<int64_t>(i) * 1000000LL}});
+        chunk.data[4].set_value(i,
+                                interval_t{microseconds{static_cast<int64_t>(i) * 1000LL},
+                                           days{static_cast<int32_t>(i)},
+                                           months{static_cast<int32_t>(i % 12)}});
     }
 
     ArrowSchema schema;
@@ -371,8 +360,78 @@ TEST_CASE("components::vector::data_chunk_to_arrow::datetime") {
     REQUIRE(chunk.size() == res.size());
     for (size_t i = 0; i < chunk.column_count(); i++) {
         for (size_t j = 0; j < chunk.size(); j++) {
-            REQUIRE(chunk.value(i, j) == res.value(i, j));
+            REQUIRE(cells_equal(chunk.data[i], j, res.data[i], j));
         }
     }
     schema.release(&schema);
+}
+
+TEST_CASE("components::vector::arrow_scan::sparse_union_fills_tag_and_active_member") {
+    core::pmr::otterbrix_resource resource;
+
+    ArrowSchema child_a{};
+    child_a.format = "i";
+    child_a.name = "a";
+    ArrowSchema child_b{};
+    child_b.format = "l";
+    child_b.name = "b";
+    ArrowSchema* schema_children[] = {&child_a, &child_b};
+    ArrowSchema schema{};
+    schema.format = "+us:0,1";
+    schema.name = "u";
+    schema.n_children = 2;
+    schema.children = schema_children;
+
+    // rows: a=7, b=9, a=NULL
+    const int8_t type_ids[] = {0, 1, 0};
+    const int32_t a_data[] = {7, 0, 0};
+    const uint8_t a_validity[] = {0b011};
+    const int64_t b_data[] = {0, 9, 0};
+    const void* a_buffers[] = {a_validity, a_data};
+    const void* b_buffers[] = {nullptr, b_data};
+    ArrowArray a_array{};
+    a_array.length = 3;
+    a_array.null_count = 1;
+    a_array.n_buffers = 2;
+    a_array.buffers = a_buffers;
+    ArrowArray b_array{};
+    b_array.length = 3;
+    b_array.n_buffers = 2;
+    b_array.buffers = b_buffers;
+    ArrowArray* array_children[] = {&a_array, &b_array};
+    const void* union_buffers[] = {nullptr, type_ids};
+    ArrowArray array{};
+    array.length = 3;
+    array.n_buffers = 2;
+    array.buffers = union_buffers;
+    array.n_children = 2;
+    array.children = array_children;
+
+    auto arrow_type = arrow_logical_type(&resource, schema);
+    REQUIRE_FALSE(arrow_type.has_error());
+    vector_t vec(&resource, arrow_type.value()->type(), 3);
+    arrow_array_scan_state state;
+    auto err = scaner::arrow_column_to_vector(vec, array, 0, state, 3, *arrow_type.value());
+    REQUIRE_FALSE(err.contains_error());
+
+    auto& tag = *vec.entries()[0];
+    auto& member_a = *vec.entries()[1];
+    auto& member_b = *vec.entries()[2];
+
+    CHECK_FALSE(tag.is_null(0));
+    CHECK(tag.get_value<uint8_t>(0) == 0);
+    CHECK_FALSE(member_a.is_null(0));
+    CHECK(member_a.get_value<int32_t>(0) == 7);
+    CHECK(member_b.is_null(0));
+
+    CHECK_FALSE(tag.is_null(1));
+    CHECK(tag.get_value<uint8_t>(1) == 1);
+    CHECK(member_a.is_null(1));
+    CHECK_FALSE(member_b.is_null(1));
+    CHECK(member_b.get_value<int64_t>(1) == 9);
+
+    CHECK(tag.is_null(2));
+    CHECK_FALSE(vec.is_null(0));
+    CHECK_FALSE(vec.is_null(1));
+    CHECK(vec.is_null(2));
 }

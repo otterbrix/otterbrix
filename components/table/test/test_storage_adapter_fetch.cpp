@@ -122,8 +122,7 @@ TEST_CASE("storage_adapter: fetch returns owned big-string bytes on the intact p
     auto fetch_r = storage.fetch(out, row_ids, 1, {}, transaction_data::committed(), fetch_visibility_t::SNAPSHOT);
     REQUIRE_FALSE(fetch_r.has_error());
     REQUIRE(out.size() == 1);
-    const auto cell = out.value(1, 0); // named local: chunk.value() is a temporary
-    REQUIRE(cell.value<std::string_view>() == big);
+    REQUIRE(out.data[1].get_value<std::string_view>(0) == big);
 }
 
 TEST_CASE("storage_adapter: a fetch failure reaches the storage caller as an error") {

@@ -2469,6 +2469,14 @@ namespace services::dispatcher {
                                 shows(expr, nullptr);
                                 agg_result_positions.push_back(result.size() - 1);
                             }
+                        } else if (expr->group() == expression_group::function) {
+                            auto type = expr->result_type();
+                            if (!expr->key().is_null()) {
+                                type.set_alias(expr->key().as_string());
+                            }
+                            result.emplace_back(type_from_t{node->result_alias(), std::move(type)});
+                            shows(expr, nullptr);
+                            key_schema.emplace_back(result.back());
                         } else {
                             // TODO: add check to validate schema, if assert is triggered
                             assert(false);

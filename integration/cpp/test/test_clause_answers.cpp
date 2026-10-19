@@ -648,7 +648,7 @@ TEST_CASE("integration::cpp::clause_answers::select_list_is_evaluated_once_and_a
     }
     SECTION("E12 a shown computation over the groups is not computed again for ORDER BY") {
         CHECK(probe_calls_of(dispatcher,
-                             "SELECT probe(k) + 0 AS r, count(*) FROM ob.d GROUP BY k ORDER BY probe(k) + 0;",
+                             "SELECT probe(k) AS r, count(*) FROM ob.d GROUP BY k ORDER BY probe(k);",
                              cur) == 2);
         CHECK(column_of(cur) == values{2, 3});
         CHECK(width_of(cur) == 2);
@@ -656,7 +656,7 @@ TEST_CASE("integration::cpp::clause_answers::select_list_is_evaluated_once_and_a
     SECTION("E13 a volatile computation over the groups sorts by the value shown") {
         flip_rows = 0;
         auto shown = column_of(
-            exec(dispatcher, "SELECT flip(a) + 0 AS r, count(*) FROM ob.t GROUP BY a ORDER BY flip(a) + 0;"));
+            exec(dispatcher, "SELECT flip(a) AS r, count(*) FROM ob.t GROUP BY a ORDER BY flip(a);"));
         REQUIRE(shown.size() == 3);
         INFO("r: " << shown[0] << ", " << shown[1] << ", " << shown[2]);
         CHECK(std::is_sorted(shown.begin(), shown.end()));
@@ -1205,5 +1205,37 @@ TEST_CASE("integration::cpp::clause_answers::a_constant_distinct_on_key_is_dropp
         INFO("plan:\n" << plan);
         CHECK(shows_node(plan, "Unique"));
         CHECK(ints_at(exec(dispatcher, sql), 1).size() == 1);
+    }
+}
+
+TEST_CASE("integration::cpp::clause_answers::a_function_over_the_groups_in_the_select_list") {
+    test_spaces space(make_test_config(integration_fixture_path("test_clause_answers/grouped_function")));
+    auto* dispatcher = space.dispatcher();
+    seed_ob(dispatcher);
+    REQUIRE_FALSE(
+        dispatcher
+            ->register_udf(otterbrix::session_id_t(), make_volatile_udf(dispatcher->resource(), "probe", probe_kernel))
+            .contains_error());
+    components::cursor::cursor_t_ptr cur;
+
+    SECTION("F1 a built-in function of a grouping key") {
+        cur = exec(dispatcher, "SELECT abs(k - 3) AS r, count(*) FROM ob.d GROUP BY k ORDER BY r;");
+        CHECK(column_of(cur) == values{1, 2});
+        CHECK(width_of(cur) == 2);
+    }
+    SECTION("F2 a user-defined function of a grouping key is computed once per group") {
+        CHECK(probe_calls_of(dispatcher, "SELECT probe(k) AS r, count(*) FROM ob.d GROUP BY k ORDER BY r;", cur) ==
+              2);
+        CHECK(column_of(cur) == values{2, 3});
+        CHECK(width_of(cur) == 2);
+    }
+    SECTION("F3 a function of an aggregate") {
+        cur = exec(dispatcher, "SELECT k, abs(0 - sum(v)) AS s FROM ob.d GROUP BY k ORDER BY k;");
+        CHECK(column_of(cur) == values{1, 2});
+        CHECK(ints_at(cur, 1) == values{21, 41});
+    }
+    SECTION("F4 a function of a column neither grouped nor aggregated is refused") {
+        CHECK(mentions(refusal_of(exec(dispatcher, "SELECT abs(v), count(*) FROM ob.d GROUP BY k;")),
+                       "must appear in a GROUP BY clause or be used in an aggregate function"));
     }
 }

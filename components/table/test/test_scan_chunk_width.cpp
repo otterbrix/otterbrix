@@ -9,14 +9,9 @@
 #include <components/vector/vector_operations.hpp>
 #include <core/file/local_file_system.hpp>
 
-#include <cerrno>
-#include <csignal>
 #include <cstdio>
-#include <cstdlib>
-#include <iostream>
 #include <memory>
 #include <string>
-#include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
 
@@ -56,7 +51,6 @@ namespace {
     }
 
     // (k BIGINT, v LIST<STRING>), three committed rows, row i's list has i + 1 elements; nullptr on any error.
-    // No Catch macros: the death test's forked child runs it too.
     std::unique_ptr<data_table_t> seeded_table(env_t& env, tstorage::single_file_block_manager_t& bm) {
         std::vector<column_definition_t> columns;
         columns.emplace_back("k", logical_type::BIGINT);
@@ -82,72 +76,6 @@ namespace {
         static const std::vector<storage_index_t> ids{storage_index_t(1)};
         return ids;
     }
-
-#ifndef NDEBUG
-    constexpr int setup_failed = 3;
-
-    // Scans ordinal 1 alone into a chunk as wide as the table.
-    [[noreturn]] void scan_into_a_wide_chunk(const std::string& path) {
-        env_t env;
-        tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
-        if (bm.create_new_database().has_error()) {
-            std::_Exit(setup_failed);
-        }
-        auto table = seeded_table(env, bm);
-        if (!table) {
-            std::_Exit(setup_failed);
-        }
-        table_scan_state state(&env.resource);
-        table->initialize_scan(state, only_v(), transaction_data::committed(), nullptr);
-        data_chunk_t wide(&env.resource, table->copy_types(), DEFAULT_VECTOR_CAPACITY);
-        table->scan(wide, state);
-        std::_Exit(0);
-    }
-
-    struct child_outcome_t {
-        int status;
-        std::string err;
-    };
-
-    child_outcome_t run_in_child(const std::string& path) {
-        std::cout.flush();
-        std::cerr.flush();
-        std::fflush(nullptr);
-        int fds[2];
-        REQUIRE(::pipe(fds) == 0);
-        const pid_t child = ::fork();
-        REQUIRE(child >= 0);
-        if (child == 0) {
-            ::close(fds[0]);
-            ::dup2(fds[1], STDERR_FILENO);
-            ::close(fds[1]);
-            ::signal(SIGABRT, SIG_DFL);
-            scan_into_a_wide_chunk(path);
-        }
-        ::close(fds[1]);
-        child_outcome_t outcome{0, {}};
-        char buffer[4096];
-        for (;;) {
-            const ssize_t n = ::read(fds[0], buffer, sizeof(buffer));
-            if (n > 0) {
-                outcome.err.append(buffer, static_cast<std::size_t>(n));
-            } else if (n == 0 || errno != EINTR) {
-                break;
-            }
-        }
-        ::close(fds[0]);
-        REQUIRE(::waitpid(child, &outcome.status, 0) == child);
-        return outcome;
-    }
-
-    // macOS's wait macros cast their argument to int*, so a const status would trip -Wcast-qual.
-    bool aborted(const child_outcome_t& outcome) {
-        int status = outcome.status;
-        return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
-    }
-
-    bool says(const child_outcome_t& outcome, const char* text) { return outcome.err.find(text) != std::string::npos; }
-#endif // NDEBUG
 
 } // namespace
 

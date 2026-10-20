@@ -18,6 +18,7 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/catalog_probe.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
@@ -80,12 +81,17 @@ namespace {
                                                                           manager_disk_->address(),
                                                                           manager_index_->address(),
                                                                           configuration::config_execution{},
-                                                                          components::planner::primitives_t{})) {
-            manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
-            manager_disk_->set_manager_wal_sync(manager_wal_->address());
-            manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
+                                                                          components::planner::primitives_t{},
+                                                                          services::dispatcher::dispatcher_seed_t{})) {
+            const services::bootstrap_token_t token{};
+            manager_wal_replicate_t::bootstrap_t wal_boot{*manager_wal_, token};
+            manager_disk_t::bootstrap_t disk_boot{*manager_disk_, token};
+            services::index::manager_index_t::bootstrap_t index_boot{*manager_index_, token};
+            wal_boot.set_manager_dispatcher_sync(manager_dispatcher_->address());
+            disk_boot.set_manager_wal_sync(manager_wal_->address());
+            index_boot.set_manager_dispatcher_sync(manager_dispatcher_->address());
 
-            REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
+            REQUIRE_FALSE(disk_boot.bootstrap_system_tables_sync().contains_error());
         }
 
         ~differential_fixture() {

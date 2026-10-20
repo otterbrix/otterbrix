@@ -5,7 +5,6 @@
 
 #include <cassert>
 #include <charconv>
-#include <stdexcept>
 
 namespace services::disk {
 
@@ -482,11 +481,11 @@ namespace services::disk {
         return core::error_t::no_error();
     }
 
-    void manager_disk_t::restore_oid_generator_sync() {
+    core::error_t manager_disk_t::restore_oid_generator_sync() {
         // agents_[0] (catalog agent) owns all catalog SFBM entries; scans below run pre-scheduler, single-threaded.
         if (agents_.empty() || agents_[0] == nullptr) {
             trace(log_, "manager_disk_t::restore_oid_generator_sync : no catalog agent, skipping");
-            return;
+            return core::error_t::no_error();
         }
 
         components::catalog::oid_t high_water = components::catalog::FIRST_USER_OID - 1;
@@ -537,7 +536,9 @@ namespace services::disk {
 
         auto reserved = read_oid_reservation(resource(), config_.path);
         if (reserved.has_error()) {
-            throw std::runtime_error(std::string{"refusing to start: "} + reserved.error().what.c_str());
+            return core::error_t(
+                reserved.error().type,
+                std::pmr::string{"refusing to start: " + std::string{reserved.error().what.c_str()}, resource()});
         }
         oid_reserved_until_ = reserved.value();
         if (oid_reserved_until_ != components::catalog::INVALID_OID && oid_reserved_until_ - 1 > high_water) {
@@ -545,6 +546,7 @@ namespace services::disk {
         }
         oid_gen_.seed(high_water);
         trace(log_, "manager_disk_t::restore_oid_generator_sync : seeded high_water={}", high_water);
+        return core::error_t::no_error();
     }
 
     std::uint64_t manager_disk_t::max_persisted_commit_id_sync() const {
@@ -1146,40 +1148,6 @@ namespace services::disk {
             result.emplace(relid, std::move(defs));
         }
         return result;
-    }
-
-    std::pmr::vector<components::vector::data_chunk_t>
-    manager_disk_t::scan_storage_for_rebuild_sync(components::catalog::oid_t table_oid,
-                                                  std::pmr::memory_resource* resource) const {
-        std::pmr::vector<components::vector::data_chunk_t> batches{resource};
-        if (agents_.empty())
-            return batches;
-        const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
-        if (idx >= agents_.size() || agents_[idx] == nullptr)
-            return batches;
-        const collection_storage_entry_t* entry = agents_[idx]->storage_entry_sync(table_oid);
-        if (entry == nullptr || entry->storage == nullptr)
-            return batches;
-        const auto total = entry->storage->total_rows();
-        if (total == 0)
-            return batches;
-        // REGULAR scan drops committed-deleted tombstones; scan_segment would let them leak back through a WHERE.
-        auto scan_r = entry->storage->scan_batched(batches,
-                                                   /*filter=*/nullptr,
-                                                   /*limit=*/-1,
-                                                   /*projected_cols=*/nullptr,
-                                                   components::table::transaction_data::committed());
-        if (scan_r.has_error()) {
-            // A partial batch set would silently rebuild a disagreeing index.
-            auto log = log_.clone();
-            error(log,
-                  "manager_disk_t::scan_storage_for_rebuild_sync: scan failed for oid={}: {} — "
-                  "returning no batches (index left unrebuilt)",
-                  static_cast<unsigned>(table_oid),
-                  scan_r.error().what);
-            batches.clear();
-        }
-        return batches;
     }
 
     std::pmr::vector<components::catalog::oid_t> manager_disk_t::scan_live_table_oids_sync() const {

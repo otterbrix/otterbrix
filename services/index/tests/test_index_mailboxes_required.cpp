@@ -26,5 +26,6 @@ namespace {
 // the only late-wired address left is the dispatcher's, through its own named setter.
 TEST_CASE("services::index::manager_index_t::an index manager has no bootstrap sync step to forget") {
     CHECK_FALSE(has_bootstrap_sync<manager_index_t>);
-    CHECK(has_dispatcher_setter<manager_index_t>);
+    CHECK(has_dispatcher_setter<manager_index_t::bootstrap_t>);
+    CHECK_FALSE(has_dispatcher_setter<manager_index_t>);
 }

@@ -102,7 +102,8 @@ namespace services::dispatcher {
                                                actor_zeta::address_t disk_address,
                                                actor_zeta::address_t index_address,
                                                const configuration::config_execution& execution,
-                                               components::planner::primitives_t primitives)
+                                               components::planner::primitives_t primitives,
+                                               dispatcher_seed_t seed)
         : actor_zeta::actor::actor_mixin<manager_dispatcher_t>()
         , resource_(resource_ptr)
         , scheduler_(scheduler)
@@ -119,6 +120,17 @@ namespace services::dispatcher {
         , pending_void_(resource_ptr) {
         ZoneScoped;
         trace(log_, "manager_dispatcher_t::manager_dispatcher_t");
+        // Restores BOTH halves of the commit clock: raising only the horizon left post-reopen
+        // INSERTs reusing already-published commit-ids (symptom: SSB q1-1 returned 0 rows on reopen).
+        txn_manager_.restore_commit_clock(seed.commit_frontier);
+        txn_manager_.seed_transaction_ids(seed.txn_id_high_water);
+        trace(log_,
+              "manager_dispatcher_t: commit frontier {} , transaction ids above {}",
+              seed.commit_frontier,
+              seed.txn_id_high_water);
+        default_settings_ = std::move(seed.settings);
+        disk_has_dropped_ = seed.disk_has_dropped;
+        index_has_dropped_ = seed.index_has_dropped;
         components::casts::register_default_casts(cast_registry_);
         components::compute::register_default_functions(function_registry_);
 
@@ -141,86 +153,89 @@ namespace services::dispatcher {
               "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses",
               execution.executor_pool_size);
 
-        loop_thread_ = std::thread([this] {
-            auto& in_flight = in_flight_;
-            while (loop_running_.load(std::memory_order_acquire)) {
-                actor_zeta::mailbox::message* raw = nullptr;
-                while (inbox_.pop(raw)) {
-                    in_flight.emplace_back();
-                    in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr{raw};
-                }
+        construction_error_ =
+            loop_thread_.start<manager_dispatcher_t, &manager_dispatcher_t::loop_body>(resource_,
+                                                                                       "manager_dispatcher",
+                                                                                       this);
+    }
 
-                bool progress = true;
-                while (progress) {
-                    progress = false;
+    void manager_dispatcher_t::loop_body() {
+        auto& in_flight = in_flight_;
+        while (loop_running_.load(std::memory_order_acquire)) {
+            actor_zeta::mailbox::message* raw = nullptr;
+            while (inbox_.pop(raw)) {
+                in_flight.emplace_back();
+                in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr{raw};
+            }
 
-                    {
-                        in_flight_entry_t* slot = nullptr;
-                        for (auto& e : in_flight) {
-                            if (e.pending_msg && !e.behavior) {
-                                slot = &e;
-                                break;
-                            }
-                        }
-                        if (slot) {
-                            current_entry_ = slot;
-                            slot->behavior = behavior(slot->pending_msg.get());
-                            current_entry_ = nullptr;
-                            progress = true;
-                            continue;
-                        }
-                    }
+            bool progress = true;
+            while (progress) {
+                progress = false;
 
-                    {
-                        in_flight_entry_t* ready_slot = nullptr;
-                        actor_zeta::detail::coroutine_handle<> cont{};
-                        for (auto& e : in_flight) {
-                            if (e.behavior.is_awaited_ready()) {
-                                cont = e.behavior.take_awaited_continuation();
-                                if (cont) {
-                                    ready_slot = &e;
-                                    break;
-                                }
-                            }
-                        }
-                        if (cont) {
-                            current_entry_ = ready_slot;
-                            cont.resume();
-                            current_entry_ = nullptr;
-                            poll_pending();
-                            progress = true;
-                            continue;
-                        }
-                    }
-
-                    for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
-                        if (it->behavior && it->behavior.done()) {
-                            in_flight.erase(it);
-                            progress = true;
+                {
+                    in_flight_entry_t* slot = nullptr;
+                    for (auto& e : in_flight) {
+                        if (e.pending_msg && !e.behavior) {
+                            slot = &e;
                             break;
                         }
                     }
-
-                    poll_pending();
+                    if (slot) {
+                        current_entry_ = slot;
+                        slot->behavior = behavior(slot->pending_msg.get());
+                        current_entry_ = nullptr;
+                        progress = true;
+                        continue;
+                    }
                 }
 
-#ifdef DEV_MODE
-                const dev_pump_wait_t pump_probe{in_flight.empty()};
-#endif
-                std::unique_lock<std::mutex> lk(mutex_);
-                pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
-                    return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
-                });
+                {
+                    in_flight_entry_t* ready_slot = nullptr;
+                    actor_zeta::detail::coroutine_handle<> cont{};
+                    for (auto& e : in_flight) {
+                        if (e.behavior.is_awaited_ready()) {
+                            cont = e.behavior.take_awaited_continuation();
+                            if (cont) {
+                                ready_slot = &e;
+                                break;
+                            }
+                        }
+                    }
+                    if (cont) {
+                        current_entry_ = ready_slot;
+                        cont.resume();
+                        current_entry_ = nullptr;
+                        poll_pending();
+                        progress = true;
+                        continue;
+                    }
+                }
+
+                for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
+                    if (it->behavior && it->behavior.done()) {
+                        in_flight.erase(it);
+                        progress = true;
+                        break;
+                    }
+                }
+
+                poll_pending();
             }
-        });
+
+#ifdef DEV_MODE
+            const dev_pump_wait_t pump_probe{in_flight.empty()};
+#endif
+            std::unique_lock<std::mutex> lk(mutex_);
+            pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
+                return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
+            });
+        }
     }
 
     void manager_dispatcher_t::stop_loop() noexcept {
         loop_running_.store(false, std::memory_order_release);
         wake_loop_();
-        if (loop_thread_.joinable()) {
-            loop_thread_.join();
-        }
+        loop_thread_.join();
     }
 
     manager_dispatcher_t::~manager_dispatcher_t() {
@@ -401,22 +416,6 @@ namespace services::dispatcher {
             index_has_dropped_ = false;
         }
         co_return;
-    }
-
-    void manager_dispatcher_t::cache_settings_sync(const components::catalog::session_catalog_t& settings) {
-        default_settings_ = settings;
-        trace(log_, "manager_dispatcher_t::cache_settings_sync");
-    }
-
-    void manager_dispatcher_t::seed_clocks_sync(uint64_t commit_frontier, uint64_t txn_id_high_water) {
-        // Restores BOTH halves of the commit clock: raising only the horizon left post-reopen
-        // INSERTs reusing already-published commit-ids (symptom: SSB q1-1 returned 0 rows on reopen).
-        txn_manager_.restore_commit_clock(commit_frontier);
-        txn_manager_.seed_transaction_ids(txn_id_high_water);
-        trace(log_,
-              "manager_dispatcher_t::seed_clocks_sync , commit frontier {} , transaction ids above {}",
-              commit_frontier,
-              txn_id_high_water);
     }
 
     namespace {

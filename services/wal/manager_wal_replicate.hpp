@@ -6,6 +6,8 @@
 #include <actor-zeta/actor/dispatch_traits.hpp>
 #include <actor-zeta/detail/future.hpp>
 
+#include <services/bootstrap_token.hpp>
+#include <services/loop_thread.hpp>
 #include <services/wal/wal.hpp>
 #include <services/wal/wal_contract.hpp>
 #include <services/wal/wal_sync_mode.hpp>
@@ -24,7 +26,6 @@
 #include <mutex>
 #include <optional>
 #include <set>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -81,8 +82,9 @@ namespace services::wal {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
         std::pair<bool, actor_zeta::detail::enqueue_result> enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        // base_spaces wires this before scheduler.start; empty in test topologies without a dispatcher.
-        void set_manager_dispatcher_sync(actor_zeta::address_t address);
+        class bootstrap_t;
+
+        [[nodiscard]] const core::error_t& construction_error() const noexcept { return construction_error_; }
 
         unique_future<core::result_wrapper_t<std::vector<record_t>>> load(session_id_t session, wal::id_t wal_id);
 
@@ -195,6 +197,9 @@ namespace services::wal {
         std::uintmax_t total_wal_bytes() const noexcept;
 
     private:
+        // base_spaces wires this before scheduler.start; empty in test topologies without a dispatcher.
+        void set_manager_dispatcher_sync(actor_zeta::address_t address);
+
         wal_worker_t* get_or_create_worker(components::catalog::oid_t database_oid);
 #ifdef DEV_MODE
         unique_future<void> dev_park_round_(session_id_t session, auto_checkpoint_point_t point);
@@ -232,13 +237,28 @@ namespace services::wal {
         void poll_auto_checkpoint_();
 
         std::pmr::list<in_flight_entry_t> in_flight_{resource_};
-        std::thread loop_thread_;
+        void loop_body();
+        core::error_t construction_error_{core::error_t::no_error()};
         std::atomic<bool> loop_running_{true};
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
         std::mutex mutex_; // guards the idle wait condition only.
         std::condition_variable pump_cv_;
         configuration::pump_intervals_t pump_;
         void wake_loop_() noexcept;
+        loop_thread_t loop_thread_;
+    };
+
+    class manager_wal_replicate_t::bootstrap_t final {
+    public:
+        bootstrap_t(manager_wal_replicate_t& manager, const services::bootstrap_token_t&) noexcept
+            : manager_(manager) {}
+
+        void set_manager_dispatcher_sync(actor_zeta::address_t address) {
+            manager_.set_manager_dispatcher_sync(std::move(address));
+        }
+
+    private:
+        manager_wal_replicate_t& manager_;
     };
 
 } // namespace services::wal

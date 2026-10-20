@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -47,6 +48,7 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         fixture()
             : log(make_test_log())
@@ -64,7 +66,7 @@ namespace {
                                                         configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(d4_dir());
-            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
+            REQUIRE_FALSE(boot.bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             // manager must be destroyed before the scheduler: its dtor joins the loop thread,
@@ -93,22 +95,22 @@ namespace {
 
 TEST_CASE("services::disk::d4::all_system_tables_loaded_after_bootstrap") {
     fixture fx;
-    REQUIRE(fx.manager->has_storage(well_known_oid::pg_database_table));
-    REQUIRE(fx.manager->has_storage(well_known_oid::pg_namespace_table));
-    REQUIRE(fx.manager->has_storage(well_known_oid::pg_class_table));
-    REQUIRE(fx.manager->has_storage(well_known_oid::pg_attribute_table));
-    REQUIRE(fx.manager->has_storage(well_known_oid::pg_type_table));
-    REQUIRE(fx.manager->has_storage(well_known_oid::pg_proc_table));
-    REQUIRE(fx.manager->has_storage(well_known_oid::pg_depend_table));
-    REQUIRE(fx.manager->has_storage(well_known_oid::pg_constraint_table));
-    REQUIRE(fx.manager->has_storage(well_known_oid::pg_index_table));
-    REQUIRE(fx.manager->has_storage(well_known_oid::pg_computed_column_table));
+    REQUIRE(fx.boot.has_storage(well_known_oid::pg_database_table));
+    REQUIRE(fx.boot.has_storage(well_known_oid::pg_namespace_table));
+    REQUIRE(fx.boot.has_storage(well_known_oid::pg_class_table));
+    REQUIRE(fx.boot.has_storage(well_known_oid::pg_attribute_table));
+    REQUIRE(fx.boot.has_storage(well_known_oid::pg_type_table));
+    REQUIRE(fx.boot.has_storage(well_known_oid::pg_proc_table));
+    REQUIRE(fx.boot.has_storage(well_known_oid::pg_depend_table));
+    REQUIRE(fx.boot.has_storage(well_known_oid::pg_constraint_table));
+    REQUIRE(fx.boot.has_storage(well_known_oid::pg_index_table));
+    REQUIRE(fx.boot.has_storage(well_known_oid::pg_computed_column_table));
 }
 
 TEST_CASE("services::disk::d4::user_table_not_in_storages_at_start") {
     fixture fx;
     // An unallocated user oid (FIRST_USER_OID would be the next allocated), so definitely not loaded.
-    REQUIRE_FALSE(fx.manager->has_storage(catalog::oid_t{FIRST_USER_OID + 1000}));
+    REQUIRE_FALSE(fx.boot.has_storage(catalog::oid_t{FIRST_USER_OID + 1000}));
 }
 
 TEST_CASE("services::disk::d4::create_table_does_not_eager_load_storage") {
@@ -118,7 +120,7 @@ TEST_CASE("services::disk::d4::create_table_does_not_eager_load_storage") {
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt_oid = test_create_table(fx, ns_oid, "users", std::move(cols));
     REQUIRE(rt_oid >= FIRST_USER_OID);
-    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
+    REQUIRE_FALSE(fx.boot.has_storage(rt_oid));
 }
 
 TEST_CASE("services::disk::d4::resolve_table_finds_unloaded_user_table") {
@@ -138,7 +140,7 @@ TEST_CASE("services::disk::d4::drop_unloaded_table") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("v", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt_oid = test_create_table(fx, ns_oid, "temp_t", std::move(cols));
-    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
+    REQUIRE_FALSE(fx.boot.has_storage(rt_oid));
     test_drop_table(fx, rt_oid);
     auto resolved = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("temp_t"));
     REQUIRE_FALSE(resolved.found);
@@ -150,12 +152,12 @@ TEST_CASE("services::disk::d4::alter_unloaded_table_add_column") {
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt_oid = test_create_table(fx, ns_oid, "alter_me", std::move(cols));
-    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
+    REQUIRE_FALSE(fx.boot.has_storage(rt_oid));
     components::table::column_definition_t new_col(
         "name",
         components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
     test_add_column(fx, rt_oid, std::move(new_col), 2);
-    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
+    REQUIRE_FALSE(fx.boot.has_storage(rt_oid));
     auto resolved = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("alter_me"));
     REQUIRE(resolved.found);
     REQUIRE(resolved.columns.size() == 2);
@@ -171,7 +173,7 @@ TEST_CASE("services::disk::d4::repeated_resolve_does_not_create_storage") {
         auto r = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("readme"));
         REQUIRE(r.found);
     }
-    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
+    REQUIRE_FALSE(fx.boot.has_storage(rt_oid));
 }
 
 TEST_CASE("services::disk::d4::resolve_table_collects_columns_by_attrelid") {
@@ -194,8 +196,8 @@ TEST_CASE("services::disk::d4::resolve_table_collects_columns_by_attrelid") {
 TEST_CASE("services::disk::d4::peek_checkpoint_wal_id_unknown_returns_zero") {
     fixture fx;
     // "No sidecar" is the only state that still answers 0; one that exists but can't be read reports an error.
-    auto v = fx.manager->peek_checkpoint_wal_id_from_disk(catalog::oid_t{FIRST_USER_OID + 9000},
-                                                          well_known_oid::main_database);
+    auto v =
+        fx.boot.peek_checkpoint_wal_id_from_disk(catalog::oid_t{FIRST_USER_OID + 9000}, well_known_oid::main_database);
     REQUIRE_FALSE(v.has_error());
     REQUIRE(v.value() == services::wal::id_t{0});
 }
@@ -207,7 +209,7 @@ TEST_CASE("services::disk::d4::load_storage_for_wal_replay_noop_when_loaded") {
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto rt_oid = test_create_table(fx, ns_oid, "lazy_t", std::move(cols));
 
-    REQUIRE_FALSE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
+    REQUIRE_FALSE(fx.boot.load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
 }
 // A never-checkpointed .otbx loads as a legitimately empty table with its schema from the catalog;
 // the metadata reader instead fails it with "attempted to read past end of chain".
@@ -233,9 +235,9 @@ TEST_CASE("services::disk::d4::never_checkpointed_otbx_loads_as_empty_with_catal
     }
     REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
 
-    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
-    REQUIRE_FALSE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
-    REQUIRE(fx.manager->has_storage(rt_oid));
+    REQUIRE_FALSE(fx.boot.has_storage(rt_oid));
+    REQUIRE_FALSE(fx.boot.load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
+    REQUIRE(fx.boot.has_storage(rt_oid));
     REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
 }
 
@@ -271,8 +273,8 @@ TEST_CASE("services::disk::d4::young_otbx_with_checkpoint_sidecar_is_refused") {
     }
 
     // Must be visible, or replay treats it like a missing file and creates a fresh one over it.
-    REQUIRE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
-    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
+    REQUIRE(fx.boot.load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
+    REQUIRE_FALSE(fx.boot.has_storage(rt_oid));
     REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
     REQUIRE(std::filesystem::file_size(tbl_dir / "table.otbx.wal_id") == sizeof(uint64_t));
 }
@@ -314,9 +316,9 @@ TEST_CASE("services::disk::d4::write_through_never_checkpointed_otbx_loads_as_em
     const auto grown = std::filesystem::file_size(otbx);
     REQUIRE(grown > components::table::storage::BLOCK_START);
 
-    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
-    REQUIRE_FALSE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
-    REQUIRE(fx.manager->has_storage(rt_oid));
+    REQUIRE_FALSE(fx.boot.has_storage(rt_oid));
+    REQUIRE_FALSE(fx.boot.load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
+    REQUIRE(fx.boot.has_storage(rt_oid));
     REQUIRE(std::filesystem::file_size(otbx) == grown);
 }
 
@@ -350,8 +352,8 @@ TEST_CASE("services::disk::d4::write_through_otbx_with_checkpoint_sidecar_is_ref
         REQUIRE(sidecar.good());
     }
 
-    REQUIRE(fx.manager->load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
-    REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
+    REQUIRE(fx.boot.load_storage_for_wal_replay_sync(rt_oid, well_known_oid::main_database).contains_error());
+    REQUIRE_FALSE(fx.boot.has_storage(rt_oid));
     REQUIRE(std::filesystem::file_size(otbx) == grown);
     REQUIRE(std::filesystem::file_size(tbl_dir / "table.otbx.wal_id") == sizeof(uint64_t));
 }

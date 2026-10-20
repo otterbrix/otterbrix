@@ -3,7 +3,6 @@
 #include <chrono>
 #include <condition_variable>
 #include <string>
-#include <thread>
 
 #include <actor-zeta.hpp>
 #include <actor-zeta/actor/actor_mixin.hpp>
@@ -37,6 +36,7 @@
 #include <core/result_wrapper.hpp>
 #include <services/collection/executor.hpp>
 #include <services/dispatcher/txn_messages.hpp>
+#include <services/loop_thread.hpp>
 
 namespace services::disk {
     class manager_disk_t;
@@ -48,6 +48,14 @@ namespace services::dispatcher {
     // Test seam: how many statements had to wait for their session's turn.
     std::uint64_t dev_statements_waited_turn() noexcept;
 #endif
+
+    struct dispatcher_seed_t final {
+        uint64_t commit_frontier{0};
+        uint64_t txn_id_high_water{0};
+        components::catalog::session_catalog_t settings{};
+        bool disk_has_dropped{false};
+        bool index_has_dropped{false};
+    };
 
     // Thin router + txn-state mailbox service + executor-pool admin: per-query work lives entirely
     // in executor_t; the dispatcher owns only state that must stay global — txn_manager_ (reachable
@@ -71,7 +79,8 @@ namespace services::dispatcher {
                              actor_zeta::address_t disk_address,
                              actor_zeta::address_t index_address,
                              const configuration::config_execution& execution,
-                             components::planner::primitives_t primitives);
+                             components::planner::primitives_t primitives,
+                             dispatcher_seed_t seed);
         ~manager_dispatcher_t();
         // Joins the loop thread and keeps its suspended coroutines: a neighbour's loop must not
         // resume against them while they are torn down. Idempotent; the destructor calls it too.
@@ -84,14 +93,7 @@ namespace services::dispatcher {
         [[nodiscard]] std::pair<bool, actor_zeta::detail::enqueue_result>
         enqueue_impl(actor_zeta::mailbox::message_ptr msg);
 
-        // Direct sync call, safe only because the scheduler has not started yet; idempotent.
-        void seed_clocks_sync(uint64_t commit_frontier, uint64_t txn_id_high_water);
-
-        void cache_settings_sync(const components::catalog::session_catalog_t& settings);
-
-        // Sync twin of on_drop_resource_marked(), for use before scheduler.start. Idempotent.
-        void set_disk_has_dropped_sync(bool value) noexcept { disk_has_dropped_ = value; }
-        void set_index_has_dropped_sync(bool value) noexcept { index_has_dropped_ = value; }
+        [[nodiscard]] const core::error_t& construction_error() const noexcept { return construction_error_; }
 
         unique_future<components::cursor::cursor_t_ptr> execute_plan(components::session::session_id_t session,
                                                                      components::logical_plan::execution_plan_t plan);
@@ -269,7 +271,8 @@ namespace services::dispatcher {
 
         // mutex_/pump_cv_ guard only the loop's idle sleep, woken early by enqueue.
         std::pmr::list<in_flight_entry_t> in_flight_{resource_};
-        std::thread loop_thread_;
+        void loop_body();
+        core::error_t construction_error_{core::error_t::no_error()};
         std::atomic<bool> loop_running_{true};
         // Raw message* since boost::lockfree requires trivially-copyable; re-wrapped by the loop.
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
@@ -299,6 +302,8 @@ namespace services::dispatcher {
         std::pmr::vector<actor_zeta::unique_future<void>> pending_void_;
 
         void poll_pending();
+
+        loop_thread_t loop_thread_;
     };
 
 } // namespace services::dispatcher

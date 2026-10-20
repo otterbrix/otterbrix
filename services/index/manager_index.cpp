@@ -289,71 +289,74 @@ namespace services::index {
             return std::filesystem::is_directory(path_db_, ec);
         }());
 
-        loop_thread_ = std::thread([this] {
-            // pmr::list for iterator stability: behavior_t is move-only, and a resume can re-suspend in place.
-            auto& in_flight = in_flight_;
+        construction_error_ =
+            loop_thread_.start<manager_index_t, &manager_index_t::loop_body>(resource_, "manager_index", this);
+    }
 
-            while (loop_running_.load(std::memory_order_acquire)) {
-                {
-                    actor_zeta::mailbox::message* raw = nullptr;
-                    while (inbox_.pop(raw)) {
-                        in_flight.emplace_back();
-                        in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr{raw};
-                    }
+    void manager_index_t::loop_body() {
+        // pmr::list for iterator stability: behavior_t is move-only, and a resume can re-suspend in place.
+        auto& in_flight = in_flight_;
+
+        while (loop_running_.load(std::memory_order_acquire)) {
+            {
+                actor_zeta::mailbox::message* raw = nullptr;
+                while (inbox_.pop(raw)) {
+                    in_flight.emplace_back();
+                    in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr{raw};
                 }
+            }
 
-                bool made_progress = false;
+            bool made_progress = false;
 
+            for (auto& e : in_flight) {
+                if (e.pending_msg && !e.behavior) {
+                    e.behavior = behavior(e.pending_msg.get());
+                    poll_pending();
+                    made_progress = true;
+                    break;
+                }
+            }
+
+            // take_awaited_continuation atomically claims it; null means another resume already took it.
+            if (!made_progress) {
+                actor_zeta::detail::coroutine_handle<> cont{};
                 for (auto& e : in_flight) {
-                    if (e.pending_msg && !e.behavior) {
-                        e.behavior = behavior(e.pending_msg.get());
-                        poll_pending();
-                        made_progress = true;
-                        break;
-                    }
-                }
-
-                // take_awaited_continuation atomically claims it; null means another resume already took it.
-                if (!made_progress) {
-                    actor_zeta::detail::coroutine_handle<> cont{};
-                    for (auto& e : in_flight) {
-                        if (e.behavior.is_awaited_ready()) {
-                            cont = e.behavior.take_awaited_continuation();
-                            if (cont) {
-                                break;
-                            }
-                        }
-                    }
-                    if (cont) {
-                        cont.resume();
-                        poll_pending();
-                        made_progress = true;
-                    }
-                }
-
-                if (!made_progress) {
-                    for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
-                        if (it->behavior && it->behavior.done()) {
-                            it = in_flight.erase(it);
-                            made_progress = true;
+                    if (e.behavior.is_awaited_ready()) {
+                        cont = e.behavior.take_awaited_continuation();
+                        if (cont) {
                             break;
                         }
                     }
                 }
-
-                if (made_progress) {
-                    continue;
+                if (cont) {
+                    cont.resume();
+                    poll_pending();
+                    made_progress = true;
                 }
+            }
+
+            if (!made_progress) {
+                for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
+                    if (it->behavior && it->behavior.done()) {
+                        it = in_flight.erase(it);
+                        made_progress = true;
+                        break;
+                    }
+                }
+            }
+
+            if (made_progress) {
+                continue;
+            }
 
 #ifdef DEV_MODE
-                const dev_pump_wait_t pump_probe{in_flight.empty()};
+            const dev_pump_wait_t pump_probe{in_flight.empty()};
 #endif
-                std::unique_lock<std::mutex> lk(mutex_);
-                pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
-                    return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
-                });
-            }
-        });
+            std::unique_lock<std::mutex> lk(mutex_);
+            pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
+                return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
+            });
+        }
     }
 
     manager_index_t::~manager_index_t() {
@@ -371,9 +374,7 @@ namespace services::index {
     void manager_index_t::stop_loop() noexcept {
         loop_running_.store(false, std::memory_order_release);
         wake_loop_();
-        if (loop_thread_.joinable()) {
-            loop_thread_.join();
-        }
+        loop_thread_.join();
     }
 
     auto manager_index_t::make_type() const noexcept -> const char* { return "manager_index"; }
@@ -662,17 +663,6 @@ namespace services::index {
     }
 
 #ifdef DEV_MODE
-    std::pmr::vector<bitcask_index_agent_t*> manager_index_t::owned_bitcask_agents_sync() {
-        std::pmr::vector<bitcask_index_agent_t*> agents(resource_);
-        agents.reserve(bitcask_agents_owned_.size());
-        for (auto& agent : bitcask_agents_owned_) {
-            if (agent) {
-                agents.emplace_back(agent.get());
-            }
-        }
-        return agents;
-    }
-
     std::pmr::vector<btree_index_agent_t*> manager_index_t::owned_btree_agents_sync() {
         std::pmr::vector<btree_index_agent_t*> agents(resource_);
         agents.reserve(btree_agents_owned_.size());

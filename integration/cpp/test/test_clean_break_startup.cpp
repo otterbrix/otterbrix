@@ -27,6 +27,7 @@
 #include <filesystem>
 #include <limits>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -44,6 +45,7 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         explicit fresh_disk(const std::filesystem::path& path)
             : log(make_test_log("python", integration_fixture_path("test_clean_break_startup/logs").string()))
@@ -83,7 +85,7 @@ TEST_CASE("integration::clean_break_startup::fresh_install_creates_pg_catalog") 
     std::filesystem::create_directories(dir);
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
     }
     // On-disk layout is oid-keyed (<db_oid>/<tbl_oid>/table.otbx); system tables live under
     // well_known_oid::main_database.
@@ -106,12 +108,12 @@ TEST_CASE("integration::clean_break_startup::existing_pg_catalog_loads") {
     std::filesystem::create_directories(dir);
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        REQUIRE_NOTHROW(fd2.manager->restore_oid_generator_sync());
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
     }
     std::filesystem::remove_all(dir);
 }
@@ -123,7 +125,7 @@ TEST_CASE("integration::clean_break_startup::oid_generator_seeded_max_plus_1") {
     components::catalog::oid_t high_oid = 0;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         for (int i = 0; i < 5; ++i) {
             auto ns_oid = test_create_namespace(fd, std::string("ns_") + std::to_string(i));
             high_oid = std::max(high_oid, ns_oid);
@@ -138,8 +140,8 @@ TEST_CASE("integration::clean_break_startup::oid_generator_seeded_max_plus_1") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         auto new_ns_oid = test_create_namespace(fd2, "after_restart");
         REQUIRE(new_ns_oid > high_oid);
     }
@@ -153,7 +155,7 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
     components::catalog::oid_t ns_oid = 0;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "durable_ns");
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
                                                    &manager_disk_t::checkpoint_all,
@@ -165,8 +167,8 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         components::table::transaction_data _td_open(0, 0);
         _td_open.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t ctx{session_id_t{}, _td_open, {}};
@@ -190,7 +192,7 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
     components::catalog::oid_t tbl_oid = 0;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -205,8 +207,8 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         components::table::transaction_data _td_open(0, 0);
         _td_open.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t ctx{session_id_t{}, _td_open, {}};
@@ -238,7 +240,7 @@ TEST_CASE("integration::clean_break_startup::index_round_trip") {
     components::catalog::oid_t ns_oid = 0;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "idx_ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -255,8 +257,8 @@ TEST_CASE("integration::clean_break_startup::index_round_trip") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         components::table::transaction_data _td_open(0, 0);
         _td_open.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t ctx{session_id_t{}, _td_open, {}};
@@ -274,7 +276,7 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
     std::filesystem::create_directories(dir);
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         test_create_namespace(fd, "post_restart");
         auto [_, cf] = actor_zeta::otterbrix::send(fd.manager->address(),
                                                    &manager_disk_t::checkpoint_all,
@@ -286,8 +288,8 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         components::table::transaction_data _td_open(0, 0);
         _td_open.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t ctx{session_id_t{}, _td_open, {}};
@@ -313,7 +315,7 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
     components::catalog::oid_t macro_oid = 0;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "ns");
         seq_oid = test_create_sequence(fd, ns_oid, "seq1", 1, 1, 1, std::numeric_limits<std::int64_t>::max(), false);
         view_oid = test_create_view(fd, ns_oid, "v1");
@@ -329,8 +331,8 @@ TEST_CASE("integration::clean_break_startup::sequence_view_macro_via_pg_class") 
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         auto after_oid = test_create_namespace(fd2, "after");
         REQUIRE(after_oid > seq_oid);
         REQUIRE(after_oid > view_oid);

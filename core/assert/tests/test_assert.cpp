@@ -58,3 +58,30 @@ TEST_CASE("core::assert::a_failed_assertion_reports_through_the_given_log") {
     CHECK(log_text(root / "other").find("the given log carries this") == std::string::npos);
     std::filesystem::remove_all(root);
 }
+
+// A stacktrace names frames like `{lambda()#1}`: the report is text, never a format string.
+TEST_CASE("core::assert::a_report_with_braces_in_it_is_logged_as_written") {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("otterbrix_assert_braces_" + std::to_string(static_cast<long>(::getpid())));
+    std::filesystem::remove_all(root);
+    constexpr std::string_view braced = "a frame named {lambda()#1} and a lone }";
+
+    if constexpr (core::detail::enable_assert) {
+        const pid_t child = ::fork();
+        REQUIRE(child >= 0);
+        if (child == 0) {
+            ::signal(SIGABRT, SIG_DFL);
+            auto log = make_test_log("own", root / "own");
+            assertion_log_msg(&log, 1 + 1 == 3, braced);
+            ::_exit(0);
+        }
+        int status = 0;
+        REQUIRE(::waitpid(child, &status, 0) == child);
+        REQUIRE(WIFSIGNALED(status));
+    } else {
+        auto log = make_test_log("own", root / "own");
+        REQUIRE_THROWS([&] { assertion_log_msg(&log, 1 + 1 == 3, braced); }());
+    }
+    CHECK(log_text(root / "own").find(braced) != std::string::npos);
+    std::filesystem::remove_all(root);
+}

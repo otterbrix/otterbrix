@@ -9,11 +9,13 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <services/wal/wal_reader.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -24,7 +26,6 @@
 #include <set>
 #include <sys/file.h>
 #include <system_error>
-#include <thread>
 #include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -161,6 +162,45 @@ namespace services::engine {
 
     namespace {
 
+        core::error_t refuse_host_arguments(std::pmr::memory_resource* resource, schedulers_t schedulers, log_t& log) {
+            if (resource == nullptr) {
+                return startup_error(std::pmr::new_delete_resource(),
+                                     core::error_code_t::invalid_parameter,
+                                     "engine startup REFUSED , the memory resource is null: every manager allocates "
+                                     "from it");
+            }
+            if (!log.is_valid()) {
+                return startup_error(resource,
+                                     core::error_code_t::invalid_parameter,
+                                     "engine startup REFUSED , the log has no logger: every manager writes through it");
+            }
+            const std::array<actor_zeta::scheduler_raw, 3> pools{schedulers.general, schedulers.exec, schedulers.disk};
+            constexpr std::array<const char*, 3> roles{"general", "exec", "disk"};
+            for (std::size_t i = 0; i < pools.size(); ++i) {
+                const std::string role{roles[i]};
+                if (pools[i] == nullptr) {
+                    return startup_error(resource,
+                                         core::error_code_t::invalid_parameter,
+                                         "engine startup REFUSED , the " + role + " pool is null");
+                }
+                if (pools[i]->num_workers() == 0) {
+                    return startup_error(resource,
+                                         core::error_code_t::invalid_parameter,
+                                         "engine startup REFUSED , the " + role +
+                                             " pool has no worker: nothing sent to it would ever be answered");
+                }
+                for (std::size_t j = 0; j < i; ++j) {
+                    if (pools[j] == pools[i]) {
+                        return startup_error(resource,
+                                             core::error_code_t::invalid_parameter,
+                                             "engine startup REFUSED , the " + std::string{roles[j]} + " and " + role +
+                                                 " pools are one pool: it would be started and stopped twice");
+                    }
+                }
+            }
+            return core::error_t::no_error();
+        }
+
         // Validates the configuration, takes the directory lock and reads the WAL; spawns nothing.
         core::result_wrapper_t<std::unique_ptr<engine_parts_t>>
         prepare_parts(std::pmr::memory_resource* resource, const configuration::config& config, log_t& log) {
@@ -226,15 +266,13 @@ namespace services::engine {
             return parts;
         }
 
-        void spawn_managers(engine_parts_t& parts,
-                            schedulers_t schedulers,
-                            const configuration::config& config,
-                            components::planner::primitives_t primitives) {
+        core::error_t
+        spawn_managers(engine_parts_t& parts, schedulers_t schedulers, const configuration::config& config) {
             auto* resource = parts.resource;
             parts.schedulers = schedulers;
             auto& own_log = parts.log;
 
-            // The dispatcher's own address — born last — is wired back into each manager below, post-construction.
+            // The dispatcher is born after the bootstrap; its address is wired back by spawn_dispatcher.
             trace(own_log, "engine::spawn manager_disk");
             parts.disk = actor_zeta::spawn<services::disk::manager_disk_t>(resource,
                                                                            schedulers.general,
@@ -242,6 +280,9 @@ namespace services::engine {
                                                                            config.disk,
                                                                            own_log,
                                                                            config.execution.pump);
+            if (parts.disk->construction_error().contains_error()) {
+                return core::error_on(resource, parts.disk->construction_error());
+            }
             trace(own_log, "engine::spawn manager_index");
             parts.index = actor_zeta::spawn<services::index::manager_index_t>(resource,
                                                                               schedulers.general,
@@ -251,6 +292,9 @@ namespace services::engine {
                                                                               config.disk.bitcask_segment_record_limit,
                                                                               config.disk.btree_flush_threshold,
                                                                               config.execution.pump);
+            if (parts.index->construction_error().contains_error()) {
+                return core::error_on(resource, parts.index->construction_error());
+            }
             trace(own_log, "engine::spawn manager_wal");
             parts.wal = actor_zeta::spawn<services::wal::manager_wal_replicate_t>(resource,
                                                                                   schedulers.general,
@@ -259,28 +303,50 @@ namespace services::engine {
                                                                                   parts.disk->address(),
                                                                                   parts.index->address(),
                                                                                   config.execution.pump);
-            trace(own_log, "engine::spawn manager_dispatcher");
+            if (parts.wal->construction_error().contains_error()) {
+                return core::error_on(resource, parts.wal->construction_error());
+            }
+            return core::error_t::no_error();
+        }
+
+        core::error_t spawn_dispatcher(engine_parts_t& parts,
+                                       const configuration::config& config,
+                                       components::planner::primitives_t primitives,
+                                       services::dispatcher::dispatcher_seed_t seed,
+                                       const services::bootstrap_token_t& token) {
+            auto* resource = parts.resource;
+            trace(parts.log, "engine::spawn manager_dispatcher");
             parts.dispatcher = actor_zeta::spawn<services::dispatcher::manager_dispatcher_t>(resource,
-                                                                                             schedulers.exec,
-                                                                                             own_log,
+                                                                                             parts.schedulers.exec,
+                                                                                             parts.log,
                                                                                              parts.wal->address(),
                                                                                              parts.disk->address(),
                                                                                              parts.index->address(),
                                                                                              config.execution,
-                                                                                             primitives);
+                                                                                             primitives,
+                                                                                             std::move(seed));
+            if (parts.dispatcher->construction_error().contains_error()) {
+                return core::error_on(resource, parts.dispatcher->construction_error());
+            }
 
             // Dispatcher address published into every manager: disk/index for the GC-ack path
             // (disk -> dispatcher -> wal truncate), wal for the auto-checkpoint watermark.
-            parts.disk->set_manager_dispatcher_sync(parts.dispatcher->address());
-            parts.index->set_manager_dispatcher_sync(parts.dispatcher->address());
-            parts.wal->set_manager_dispatcher_sync(parts.dispatcher->address());
+            services::disk::manager_disk_t::bootstrap_t disk{*parts.disk, token};
+            services::index::manager_index_t::bootstrap_t index{*parts.index, token};
+            services::wal::manager_wal_replicate_t::bootstrap_t wal{*parts.wal, token};
+            disk.set_manager_dispatcher_sync(parts.dispatcher->address());
+            index.set_manager_dispatcher_sync(parts.dispatcher->address());
+            wal.set_manager_dispatcher_sync(parts.dispatcher->address());
+            return core::error_t::no_error();
         }
 
-        core::error_t bootstrap_indexes(engine_parts_t& parts) {
+        core::error_t bootstrap_indexes(engine_parts_t& parts, const services::bootstrap_token_t& token) {
             auto& log = parts.log;
-            auto live_tables = parts.disk->scan_live_table_oids_sync();
+            services::disk::manager_disk_t::bootstrap_t disk{*parts.disk, token};
+            services::index::manager_index_t::bootstrap_t index{*parts.index, token};
+            auto live_tables = disk.scan_live_table_oids_sync();
             for (auto oid : live_tables) {
-                parts.index->bootstrap_engine_sync(oid);
+                index.bootstrap_engine_sync(oid);
             }
 
             std::size_t indexes_wired = 0;
@@ -289,7 +355,7 @@ namespace services::engine {
             std::size_t indexes_skipped_unrebuilt = 0;
 
             // Anything left in this marker names an index whose store still holds pre-compact row ids.
-            const auto pending_rebuilds = parts.index->pending_index_rebuilds_sync();
+            const auto pending_rebuilds = index.pending_index_rebuilds_sync();
             const auto rebuild_is_owed = [&pending_rebuilds](components::catalog::oid_t table_oid,
                                                              components::catalog::oid_t index_oid) {
                 for (const auto& entry : pending_rebuilds) {
@@ -300,7 +366,7 @@ namespace services::engine {
                 return false;
             };
 
-            VALUE_OR_RETURN(auto index_rows, parts.disk->scan_alive_pg_index_sync());
+            VALUE_OR_RETURN(auto index_rows, disk.scan_alive_pg_index_sync());
             for (auto& row : index_rows) {
                 if (rebuild_is_owed(row.table_oid, row.oid)) {
                     // Wiring it would silently answer with whatever row slid into the stale id.
@@ -329,11 +395,11 @@ namespace services::engine {
                                                                  parts.commit_ids.end(),
                                                                  parts.resource);
 
-                auto wire_error = parts.index->bootstrap_index_sync(row.table_oid,
-                                                                    row.oid,
-                                                                    row.type,
-                                                                    std::move(row.keys),
-                                                                    std::move(committed_for_agent));
+                auto wire_error = index.bootstrap_index_sync(row.table_oid,
+                                                             row.oid,
+                                                             row.type,
+                                                             std::move(row.keys),
+                                                             std::move(committed_for_agent));
                 if (wire_error.contains_error()) {
                     // Skipped rather than aborting: a full scan costs less than the engine failing to start.
                     error(log,
@@ -346,9 +412,9 @@ namespace services::engine {
                 ++indexes_wired;
             }
 
-            auto dropped = parts.disk->scan_dropped_table_oids_sync();
+            auto dropped = disk.scan_dropped_oids_sync();
             for (const auto& row : dropped) {
-                parts.index->bootstrap_dropped_sync(row.oid, row.delete_id);
+                index.bootstrap_dropped_sync(row.oid, row.delete_id);
             }
 
             // No index is rebuilt here: repair needs a mailbox round trip the schedulers aren't running for yet.
@@ -374,7 +440,7 @@ namespace services::engine {
 
         // A row-carrying record needs its table's storage: loaded from its file, or synthesised from the
         // record's own column types when the file was never written. Refused is logged here.
-        replay_storage_t ensure_replay_storage(services::disk::manager_disk_t& disk,
+        replay_storage_t ensure_replay_storage(services::disk::manager_disk_t::bootstrap_t& disk,
                                                log_t& log,
                                                components::catalog::oid_t table_oid,
                                                components::catalog::oid_t ns_oid,
@@ -448,9 +514,12 @@ namespace services::engine {
             return replay_storage_t::created;
         }
 
-        core::error_t bootstrap_parts(engine_parts_t& parts) {
-            auto& disk = *parts.disk;
+        core::result_wrapper_t<services::dispatcher::dispatcher_seed_t>
+        bootstrap_parts(engine_parts_t& parts, const services::bootstrap_token_t& token) {
+            services::disk::manager_disk_t::bootstrap_t disk{*parts.disk, token};
+            services::index::manager_index_t::bootstrap_t index{*parts.index, token};
             auto& log = parts.log;
+            services::dispatcher::dispatcher_seed_t seed;
             RETURN_IF_ERROR(disk.bootstrap_system_tables_sync());
             RETURN_IF_ERROR(disk.load_user_table_storages_sync());
             // A .otbx can be lost after crash even though its pg_class row survived (its directory entry
@@ -756,9 +825,9 @@ namespace services::engine {
             // index stores against this schema.
             RETURN_IF_ERROR(disk.reconcile_storage_with_catalog_sync());
 
-            disk.restore_oid_generator_sync();
+            RETURN_IF_ERROR(disk.restore_oid_generator_sync());
 
-            parts.dispatcher->cache_settings_sync(disk.stored_settings_sync());
+            seed.settings = disk.stored_settings_sync();
 
             // Both commit-clock halves are raised together, from one frontier, so they never disagree.
             uint64_t reopen_frontier = disk.max_persisted_commit_id_sync();
@@ -771,7 +840,8 @@ namespace services::engine {
                     txn_high_water = r.transaction_id;
                 }
             }
-            parts.dispatcher->seed_clocks_sync(reopen_frontier, txn_high_water);
+            seed.commit_frontier = reopen_frontier;
+            seed.txn_id_high_water = txn_high_water;
 
             // Recovers pg_class rows tombstoned by a pre-crash DROP TABLE that never removed the .otbx.
             auto dropped_oids = disk.scan_dropped_oids_sync();
@@ -788,17 +858,18 @@ namespace services::engine {
                         sidecars.push_back(std::move(wal_id_sidecar));
                     }
                     disk.register_dropped_storage_sync(row.oid, row.delete_id, std::move(otbx), std::move(sidecars));
-                    parts.index->mark_table_dropped_sync(row.oid, row.delete_id);
+                    index.mark_table_dropped_sync(row.oid, row.delete_id);
                 }
                 // on_horizon_advanced can't be called inline (not yet running); arm flags for the first commit.
-                parts.dispatcher->set_disk_has_dropped_sync(true);
-                parts.dispatcher->set_index_has_dropped_sync(true);
+                seed.disk_has_dropped = true;
+                seed.index_has_dropped = true;
                 trace(log,
                       "engine::bootstrap: rebuilt {} dropped storage/index entries from pg_class",
                       dropped_oids.size());
             }
 
-            return bootstrap_indexes(parts);
+            RETURN_IF_ERROR(bootstrap_indexes(parts, token));
+            return seed;
         }
 
     } // namespace
@@ -808,11 +879,22 @@ namespace services::engine {
                                                  const configuration::config& config,
                                                  log_t& log,
                                                  components::planner::primitives_t primitives) {
+        RETURN_IF_ERROR(refuse_host_arguments(resource, schedulers, log));
         VALUE_OR_RETURN(auto parts, prepare_parts(resource, config, log));
-        spawn_managers(*parts, schedulers, config, primitives);
+        const services::bootstrap_token_t token{};
+        if (auto err = spawn_managers(*parts, schedulers, config); err.contains_error()) {
+            error(parts->log, "engine::spawn REFUSED: {}", err.what);
+            return err;
+        }
         // Catalog, WAL replay, oid/commit clocks, tombstones and indexes; the pools are not running yet.
-        if (auto err = bootstrap_parts(*parts); err.contains_error()) {
-            error(parts->log, "engine::bootstrap REFUSED: {}", err.what);
+        auto seed = bootstrap_parts(*parts, token);
+        if (seed.has_error()) {
+            error(parts->log, "engine::bootstrap REFUSED: {}", seed.error().what);
+            return seed.error();
+        }
+        if (auto err = spawn_dispatcher(*parts, config, primitives, std::move(seed.value()), token);
+            err.contains_error()) {
+            error(parts->log, "engine::spawn REFUSED: {}", err.what);
             return err;
         }
         // Only replay needs them; the running engine never reads the journal back.

@@ -30,6 +30,7 @@
 #include "../../../components/table/test/fault_injection_file.hpp"
 #include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 
 // Every crash here goes through the real T3 fault seam driving table_storage_t's production
 // checkpoint, and recovery is judged by reading the data back against a named root, never just
@@ -110,6 +111,7 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         explicit torn_manager_t(const std::filesystem::path& path)
             : log(make_test_log())
@@ -338,8 +340,8 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
 
     {
         torn_manager_t m(dir);
-        REQUIRE_FALSE(m.manager->bootstrap_system_tables_sync().contains_error());
-        REQUIRE(m.manager->has_storage(catalog::oid_t{victim_oid}));
+        REQUIRE_FALSE(m.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE(m.boot.has_storage(catalog::oid_t{victim_oid}));
     }
     REQUIRE(std::filesystem::exists(victim_otbx));
 
@@ -366,11 +368,11 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
         const auto stray_bytes_before = slurp_file(stray);
         {
             torn_manager_t m(dir);
-            REQUIRE(m.manager->bootstrap_system_tables_sync().contains_error());
-            CHECK_FALSE(m.manager->has_storage(catalog::oid_t{victim_oid}));
+            REQUIRE(m.boot.bootstrap_system_tables_sync().contains_error());
+            CHECK_FALSE(m.boot.has_storage(catalog::oid_t{victim_oid}));
             // A STOP, not a teardown: tables before the victim stay up, those after were never opened.
-            CHECK(m.manager->has_storage(catalog::well_known_oid::pg_settings_table));
-            CHECK_FALSE(m.manager->has_storage(catalog::oid_t{other_oid}));
+            CHECK(m.boot.has_storage(catalog::well_known_oid::pg_settings_table));
+            CHECK_FALSE(m.boot.has_storage(catalog::oid_t{other_oid}));
         }
         CHECK(slurp_file(victim_otbx) == otbx_bytes_before);
         REQUIRE(std::filesystem::exists(stray));
@@ -389,8 +391,8 @@ TEST_CASE("services::disk::torn::stray_legacy_sidecar_is_refused_loudly_and_unto
 
     {
         torn_manager_t m(dir);
-        REQUIRE_FALSE(m.manager->bootstrap_system_tables_sync().contains_error());
-        CHECK(m.manager->has_storage(catalog::oid_t{victim_oid}));
+        REQUIRE_FALSE(m.boot.bootstrap_system_tables_sync().contains_error());
+        CHECK(m.boot.has_storage(catalog::oid_t{victim_oid}));
     }
 
     cleanup_torn_dir();

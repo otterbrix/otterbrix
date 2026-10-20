@@ -94,36 +94,6 @@ auto trace(log_t& log, const S& format_str, Args&&... args) -> void {
     log->trace(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
 }
 
-template<typename S>
-auto info(log_t& log, const S& format_str) -> void {
-    log->info(format_str);
-}
-
-template<typename S>
-auto debug(log_t& log, const S& format_str) -> void {
-    log->debug(format_str);
-}
-
-template<typename S>
-auto warn(log_t& log, const S& format_str) -> void {
-    log->warn(format_str);
-}
-
-template<typename S>
-auto error(log_t& log, const S& format_str) -> void {
-    log->error(format_str);
-}
-
-template<typename S>
-auto critical(log_t& log, const S& format_str) -> void {
-    log->critical(format_str);
-}
-
-template<typename S>
-auto trace(log_t& log, const S& format_str) -> void {
-    log->trace(format_str);
-}
-
 // A logger owned by its caller: nothing is registered with spdlog, so two engines in one process
 // never share one. Writes to stdout and to <directory>/<name>-<seconds>.txt. A file that cannot be
 // opened is answered as an io_error whose message lives on new_delete_resource, never thrown.

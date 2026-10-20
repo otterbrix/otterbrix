@@ -385,7 +385,15 @@ namespace services::disk {
         };
 
         // Crash recovery is the two-slot shadow-paged root inside the .otbx; every refusal leaves it byte-identical.
-        if (!std::filesystem::exists(otbx_path)) {
+        std::error_code otbx_ec;
+        const bool otbx_present = std::filesystem::exists(otbx_path, otbx_ec);
+        if (otbx_ec) {
+            return core::error_t(
+                core::error_code_t::io_error,
+                std::pmr::string{"load_storage_disk_sync: cannot stat " + otbx_path.string() + ": " + otbx_ec.message(),
+                                 resource()});
+        }
+        if (!otbx_present) {
             // Callers guard existence, so arriving here means the file vanished between their check and this load.
             return core::error_t(core::error_code_t::data_corruption,
                                  std::pmr::string{"load_storage_disk_sync: " + otbx_path.string() +
@@ -567,7 +575,15 @@ namespace services::disk {
         }
         auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid)) /
                          std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
-        if (!std::filesystem::exists(otbx_path)) {
+        std::error_code otbx_ec;
+        const bool otbx_present = std::filesystem::exists(otbx_path, otbx_ec);
+        if (otbx_ec) {
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"load_storage_for_wal_replay_sync: cannot stat " +
+                                                      otbx_path.string() + ": " + otbx_ec.message(),
+                                                  resource()});
+        }
+        if (!otbx_present) {
             // Legal here: replay can run ahead of a checkpoint, synthesising the storage from the chunk instead.
             return core::error_t::no_error();
         }

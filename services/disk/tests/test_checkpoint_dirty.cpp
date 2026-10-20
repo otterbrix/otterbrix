@@ -24,6 +24,7 @@
 #include <fstream>
 #include <limits>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -47,6 +48,7 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         explicit fresh_disk(const std::filesystem::path& path)
             : log(make_test_log())
@@ -188,7 +190,7 @@ TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_tab
 
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "dirty_ns");
 
         tables.reserve(kTables);
@@ -230,9 +232,9 @@ TEST_CASE("services::disk::checkpoint_dirty::round_rewrites_only_the_changed_tab
     // A fresh manager over the same dir catches a skip that never wrote the table, not just one left untouched.
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
-        REQUIRE_FALSE(fd2.manager->load_user_table_storages_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.load_user_table_storages_sync().contains_error());
 
         REQUIRE(disk_test_helpers::read_ok(
                     fd2.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, tables[0])) == 2 * kRows);
@@ -254,7 +256,7 @@ TEST_CASE("services::disk::checkpoint_dirty::clean_table_still_reports_its_wal_f
 
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "floor_ns");
         auto table_oid = make_table(fd, ns_oid, "floored", 100);
 
@@ -278,7 +280,7 @@ TEST_CASE("services::disk::checkpoint_dirty::a_round_that_defers_everything_is_c
     std::filesystem::create_directories(root);
     {
         fresh_disk fd(root);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "ns_defer");
         auto table_oid = make_table(fd, ns_oid, "t_defer", 8);
 

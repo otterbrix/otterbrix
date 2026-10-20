@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <limits>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -52,6 +53,7 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         explicit disk_only_fixture(const std::filesystem::path& path)
             : log(make_test_log())
@@ -154,7 +156,7 @@ TEST_CASE("services::disk::sysboot::creates_10_otbx_files") {
 
     {
         disk_only_fixture fx(base);
-        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
     }
 
     REQUIRE(std::filesystem::exists(sys_dir_for(base)));
@@ -176,7 +178,7 @@ TEST_CASE("services::disk::sysboot::bootstrap_is_idempotent") {
 
     {
         disk_only_fixture fx(base);
-        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
     }
 
     auto pg_class_otbx = otbx_for(base, well_known_oid::pg_class_table);
@@ -186,7 +188,7 @@ TEST_CASE("services::disk::sysboot::bootstrap_is_idempotent") {
 
     {
         disk_only_fixture fx(base);
-        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
     }
     REQUIRE(std::filesystem::file_size(pg_class_otbx) == first_size);
     // Extra parens stop Catch2 from stringifying file_time_type — its __int128 rep has no ostream overload on macOS.
@@ -202,12 +204,12 @@ TEST_CASE("services::disk::sysboot::restart_loads_all_10") {
 
     {
         disk_only_fixture fx(base);
-        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
     }
 
     {
         disk_only_fixture fx(base);
-        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
     }
 
     cleanup_boot_dir();
@@ -226,10 +228,11 @@ TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
                                                test_directory::created(c),
                                                log,
                                                configuration::pump_intervals_t{});
+    manager_disk_t::bootstrap_t boot{*m, services::bootstrap_token_t{}};
 
-    REQUIRE_FALSE(m->bootstrap_system_tables_sync().contains_error());
-    REQUIRE_FALSE(m->bootstrap_system_tables_sync().contains_error());
-    REQUIRE_NOTHROW(m->restore_oid_generator_sync());
+    REQUIRE_FALSE(boot.bootstrap_system_tables_sync().contains_error());
+    REQUIRE_FALSE(boot.bootstrap_system_tables_sync().contains_error());
+    REQUIRE_FALSE(boot.restore_oid_generator_sync().contains_error());
 
     m.reset();
     scheduler->stop();
@@ -242,8 +245,8 @@ TEST_CASE("services::disk::sysboot::oid_generator_default_seed") {
     std::filesystem::create_directories(base);
 
     disk_only_fixture fx(base);
-    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
-    fx.manager->restore_oid_generator_sync();
+    REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
+    REQUIRE_FALSE(fx.boot.restore_oid_generator_sync().contains_error());
 
     auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{2});
     REQUIRE(oids.size() == 2);
@@ -266,7 +269,7 @@ TEST_CASE("services::disk::sysboot::dir_layout_per_table") {
 
     {
         disk_only_fixture fx(base);
-        REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
     }
 
     for (const auto& def : all_system_tables()) {
@@ -282,9 +285,9 @@ TEST_CASE("services::disk::sysboot::load_after_bootstrap_in_same_process") {
     std::filesystem::create_directories(base);
 
     disk_only_fixture fx(base);
-    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
-    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
-    REQUIRE_FALSE(fx.manager->bootstrap_system_tables_sync().contains_error());
+    REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
+    REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
+    REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
 
     cleanup_boot_dir();
 }
@@ -300,7 +303,7 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
 
     {
         disk_only_fixture fd(base);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = disk_test_helpers::test_create_namespace(fd, "ns_one");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -325,16 +328,16 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
 
         disk_only_fixture fd2(base);
         INFO("a pg_catalog table that could not be opened must stop the start, not be skipped");
-        REQUIRE(fd2.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE(fd2.boot.bootstrap_system_tables_sync().contains_error());
         REQUIRE(plan.reads_failed > 0);
     }
 
     // Survival proof: the refusal wrote nothing, so a repeat open still holds phase 1's content.
     {
         disk_only_fixture fd3(base);
-        REQUIRE_FALSE(fd3.manager->bootstrap_system_tables_sync().contains_error());
-        fd3.manager->restore_oid_generator_sync();
-        REQUIRE_FALSE(fd3.manager->load_user_table_storages_sync().contains_error());
+        REQUIRE_FALSE(fd3.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd3.boot.restore_oid_generator_sync().contains_error());
+        REQUIRE_FALSE(fd3.boot.load_user_table_storages_sync().contains_error());
         auto ns = fd3.invoke(&manager_disk_t::resolve_namespace, fd3.ctx(), std::string("ns_one"));
         REQUIRE_FALSE(ns.has_error());
         CHECK(ns.value().found);
@@ -355,7 +358,7 @@ TEST_CASE("services::disk::sysboot::a_catalog_that_did_not_come_up_never_lowers_
     components::catalog::oid_t live_ns = components::catalog::INVALID_OID;
     {
         disk_only_fixture fd(base);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         live_ns = disk_test_helpers::test_create_namespace(fd, "ns_two");
         fd.checkpoint(services::wal::id_t{100});
     }
@@ -368,9 +371,9 @@ TEST_CASE("services::disk::sysboot::a_catalog_that_did_not_come_up_never_lowers_
         "/" + std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::pg_namespace_table)) + "/");
 
     disk_only_fixture fd2(base);
-    const bool refused = fd2.manager->bootstrap_system_tables_sync().contains_error();
+    const bool refused = fd2.boot.bootstrap_system_tables_sync().contains_error();
     if (!refused) {
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         auto oids = fd2.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         REQUIRE(oids.size() == 1);
         INFO("fresh oid " << oids[0] << " would be minted over the live namespace oid " << live_ns);
@@ -395,7 +398,7 @@ TEST_CASE("services::disk::sysboot::uncreatable_system_table_refuses_the_start")
         "/" + std::to_string(static_cast<unsigned>(components::catalog::well_known_oid::pg_namespace_table)) + "/");
 
     disk_only_fixture fd(base);
-    const bool refused = fd.manager->bootstrap_system_tables_sync().contains_error();
+    const bool refused = fd.boot.bootstrap_system_tables_sync().contains_error();
     if (!refused) {
         plan.fail_writes_from = 0;
         auto ns = fd.invoke(&manager_disk_t::resolve_namespace, fd.ctx(), std::string("public"));
@@ -417,7 +420,7 @@ TEST_CASE("services::disk::sysboot::a_system_table_that_loads_empty_is_seeded_ag
 
     {
         disk_only_fixture fd(base);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
     }
 
     const auto otbx = otbx_for(base, components::catalog::well_known_oid::pg_namespace_table);
@@ -434,7 +437,7 @@ TEST_CASE("services::disk::sysboot::a_system_table_that_loads_empty_is_seeded_ag
     REQUIRE(std::filesystem::file_size(otbx) == components::table::storage::BLOCK_START);
 
     disk_only_fixture fd2(base);
-    REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
+    REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
     auto ns = fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("public"));
     REQUIRE_FALSE(ns.has_error());
     INFO("a system table that loaded with zero rows must be seeded, not left silently empty");
@@ -461,8 +464,8 @@ TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_
 
     {
         disk_only_fixture fd(base);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
-        fd.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.restore_oid_generator_sync().contains_error());
         ns_oid = disk_test_helpers::test_create_namespace(fd, "ns_old");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -487,7 +490,7 @@ TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_
                       std::int64_t{components::catalog::pg_attribute_col::attrelid},
                       def.relation_oid);
         }
-        auto rk = fd.manager->relkind_for_oid_sync(pg_class);
+        auto rk = fd.boot.relkind_for_oid_sync(pg_class);
         REQUIRE_FALSE(rk.has_error());
         REQUIRE(rk.value() == '\0');
         auto t = test_probe::probe_table(fd, fd.ctx(), ns_oid, std::string("t_old"));
@@ -505,9 +508,9 @@ TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_
 
     {
         disk_only_fixture fd2(base);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
-        REQUIRE_FALSE(fd2.manager->load_user_table_storages_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.load_user_table_storages_sync().contains_error());
 
         auto t = test_probe::probe_table(fd2, fd2.ctx(), ns_oid, std::string("t_old"));
         INFO("catching up the catalog must not lose the user table's pg_class row");
@@ -537,9 +540,9 @@ TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_
     // The catch-up rows persist via their own checkpoint — phase 2 ran no checkpoint_all.
     {
         disk_only_fixture fd3(base);
-        REQUIRE_FALSE(fd3.manager->bootstrap_system_tables_sync().contains_error());
-        fd3.manager->restore_oid_generator_sync();
-        REQUIRE_FALSE(fd3.manager->load_user_table_storages_sync().contains_error());
+        REQUIRE_FALSE(fd3.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd3.boot.restore_oid_generator_sync().contains_error());
+        REQUIRE_FALSE(fd3.boot.load_user_table_storages_sync().contains_error());
 
         auto cls_rows = disk_test_helpers::read_ok(
             fd3.invoke(&manager_disk_t::storage_total_rows, components::session::session_id_t{}, pg_class));

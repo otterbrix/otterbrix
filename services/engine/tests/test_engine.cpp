@@ -7,8 +7,11 @@
 #include <components/sql/transformer/utils.hpp>
 #include <core/pmr.hpp>
 #include <services/dev_pump.hpp>
+#include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/engine/engine.hpp>
+#include <services/index/manager_index.hpp>
+#include <services/wal/manager_wal_replicate.hpp>
 
 #include <chrono>
 #include <components/log/test/test_log.hpp>
@@ -201,4 +204,261 @@ TEST_CASE("services::engine::log::a_log_directory_that_cannot_be_written_answers
     REQUIRE(refused.has_error());
     INFO("refusal: " << refused.error().what.c_str());
     CHECK(std::string(refused.error().what.c_str()).find((root / "log").string()) != std::string::npos);
+}
+
+TEST_CASE("services::engine::host::an_empty_log_or_a_null_resource_is_refused_before_anything_is_written") {
+    const auto root = test_root("host_log");
+    host_t host(root);
+    SECTION("an empty log") {
+        log_t empty;
+        auto opened = open_engine(&host.resource, host.schedulers(), host.config, empty, {});
+        REQUIRE(opened.has_error());
+        CHECK(opened.error().type == core::error_code_t::invalid_parameter);
+    }
+    SECTION("a null resource") {
+        auto opened = open_engine(nullptr, host.schedulers(), host.config, host.log, {});
+        REQUIRE(opened.has_error());
+        CHECK(opened.error().type == core::error_code_t::invalid_parameter);
+    }
+    CHECK_FALSE(std::filesystem::exists(host.config.main_path / ".lock"));
+}
+
+TEST_CASE("services::engine::host::a_missing_idle_or_shared_pool_is_refused") {
+    const auto root = test_root("host_pools");
+    host_t host(root);
+    actor_zeta::scheduler_ptr no_workers{new actor_zeta::shared_work(0, 1000)};
+    const auto refused = [&host](schedulers_t pools) {
+        auto opened = open_engine(&host.resource, pools, host.config, host.log, {});
+        return opened.has_error() && opened.error().type == core::error_code_t::invalid_parameter;
+    };
+    CHECK(refused({nullptr, host.exec.get(), host.disk.get()}));
+    CHECK(refused({host.general.get(), nullptr, host.disk.get()}));
+    CHECK(refused({host.general.get(), host.exec.get(), nullptr}));
+    CHECK(refused({no_workers.get(), host.exec.get(), host.disk.get()}));
+    CHECK(refused({host.general.get(), host.general.get(), host.disk.get()}));
+    CHECK(refused({host.general.get(), host.exec.get(), host.general.get()}));
+    REQUIRE_FALSE(host.open().contains_error());
+    REQUIRE(host.execute("CREATE DATABASE pools;")->is_success());
+}
+
+TEST_CASE("services::engine::factory::an_unreadable_oid_reservation_is_refused_as_an_error") {
+    const auto root = test_root("oid_reservation");
+    {
+        host_t host(root);
+        REQUIRE_FALSE(host.open().contains_error());
+        REQUIRE(host.execute("CREATE DATABASE r;")->is_success());
+        REQUIRE(host.execute("CREATE TABLE r.t (id BIGINT);")->is_success());
+    }
+    host_t host(root);
+    {
+        std::ofstream torn((host.config.disk.path / "oid_reservation").string(), std::ios::binary | std::ios::trunc);
+        torn << 'x';
+    }
+    auto refusal = host.open();
+    REQUIRE(refusal.contains_error());
+    CHECK(refusal.type == core::error_code_t::data_corruption);
+    CHECK_FALSE(host.engine.has_value());
+    CHECK(services::dev_pump_idle_waiters() == 0);
+}
+
+namespace {
+
+#define OTTERBRIX_PUBLIC_MEMBER(name)                                                                                  \
+    template<typename T>                                                                                               \
+    concept public_##name = requires { &T::name; };
+
+    OTTERBRIX_PUBLIC_MEMBER(has_storage)
+    OTTERBRIX_PUBLIC_MEMBER(peek_checkpoint_wal_id_from_disk)
+    OTTERBRIX_PUBLIC_MEMBER(load_storage_for_wal_replay_sync)
+    OTTERBRIX_PUBLIC_MEMBER(create_storage_disk_sync)
+    OTTERBRIX_PUBLIC_MEMBER(bootstrap_system_tables_sync)
+    OTTERBRIX_PUBLIC_MEMBER(load_user_table_storages_sync)
+    OTTERBRIX_PUBLIC_MEMBER(rehydrate_missing_user_storages_sync)
+    OTTERBRIX_PUBLIC_MEMBER(reconcile_storage_with_catalog_sync)
+    OTTERBRIX_PUBLIC_MEMBER(alive_user_oids_sync)
+    OTTERBRIX_PUBLIC_MEMBER(relkind_for_oid_sync)
+    OTTERBRIX_PUBLIC_MEMBER(relnamespace_for_oid_sync)
+    OTTERBRIX_PUBLIC_MEMBER(scan_live_table_oids_sync)
+    OTTERBRIX_PUBLIC_MEMBER(scan_alive_pg_index_sync)
+    OTTERBRIX_PUBLIC_MEMBER(scan_storage_for_rebuild_sync)
+    OTTERBRIX_PUBLIC_MEMBER(scan_dropped_oids_sync)
+    OTTERBRIX_PUBLIC_MEMBER(scan_dropped_table_oids_sync)
+    OTTERBRIX_PUBLIC_MEMBER(path_db)
+    OTTERBRIX_PUBLIC_MEMBER(restore_oid_generator_sync)
+    OTTERBRIX_PUBLIC_MEMBER(max_persisted_commit_id_sync)
+    OTTERBRIX_PUBLIC_MEMBER(read_setting_sync)
+    OTTERBRIX_PUBLIC_MEMBER(stored_settings_sync)
+    OTTERBRIX_PUBLIC_MEMBER(append_sync)
+    OTTERBRIX_PUBLIC_MEMBER(commit_append_sync)
+    OTTERBRIX_PUBLIC_MEMBER(delete_sync)
+    OTTERBRIX_PUBLIC_MEMBER(commit_all_deletes_sync)
+    OTTERBRIX_PUBLIC_MEMBER(update_sync)
+    OTTERBRIX_PUBLIC_MEMBER(direct_add_column_sync)
+    OTTERBRIX_PUBLIC_MEMBER(register_dropped_storage_sync)
+    OTTERBRIX_PUBLIC_MEMBER(set_manager_dispatcher_sync)
+    OTTERBRIX_PUBLIC_MEMBER(set_manager_wal_sync)
+    OTTERBRIX_PUBLIC_MEMBER(mark_table_dropped_sync)
+    OTTERBRIX_PUBLIC_MEMBER(bootstrap_engine_sync)
+    OTTERBRIX_PUBLIC_MEMBER(bootstrap_index_sync)
+    OTTERBRIX_PUBLIC_MEMBER(bootstrap_dropped_sync)
+    OTTERBRIX_PUBLIC_MEMBER(pending_index_rebuilds_sync)
+    OTTERBRIX_PUBLIC_MEMBER(owned_bitcask_agents_sync)
+    OTTERBRIX_PUBLIC_MEMBER(seed_clocks_sync)
+    OTTERBRIX_PUBLIC_MEMBER(cache_settings_sync)
+    OTTERBRIX_PUBLIC_MEMBER(set_disk_has_dropped_sync)
+    OTTERBRIX_PUBLIC_MEMBER(set_index_has_dropped_sync)
+
+#undef OTTERBRIX_PUBLIC_MEMBER
+
+} // namespace
+
+TEST_CASE("services::engine::bootstrap::no_manager_exposes_a_bootstrap_step") {
+    using services::disk::manager_disk_t;
+    using services::dispatcher::manager_dispatcher_t;
+    using services::index::manager_index_t;
+    using services::wal::manager_wal_replicate_t;
+
+    CHECK_FALSE(public_has_storage<manager_disk_t>);
+    CHECK_FALSE(public_peek_checkpoint_wal_id_from_disk<manager_disk_t>);
+    CHECK_FALSE(public_load_storage_for_wal_replay_sync<manager_disk_t>);
+    CHECK_FALSE(public_create_storage_disk_sync<manager_disk_t>);
+    CHECK_FALSE(public_bootstrap_system_tables_sync<manager_disk_t>);
+    CHECK_FALSE(public_load_user_table_storages_sync<manager_disk_t>);
+    CHECK_FALSE(public_rehydrate_missing_user_storages_sync<manager_disk_t>);
+    CHECK_FALSE(public_reconcile_storage_with_catalog_sync<manager_disk_t>);
+    CHECK_FALSE(public_alive_user_oids_sync<manager_disk_t>);
+    CHECK_FALSE(public_relkind_for_oid_sync<manager_disk_t>);
+    CHECK_FALSE(public_relnamespace_for_oid_sync<manager_disk_t>);
+    CHECK_FALSE(public_scan_live_table_oids_sync<manager_disk_t>);
+    CHECK_FALSE(public_scan_alive_pg_index_sync<manager_disk_t>);
+    CHECK_FALSE(public_scan_storage_for_rebuild_sync<manager_disk_t>);
+    CHECK_FALSE(public_scan_dropped_oids_sync<manager_disk_t>);
+    CHECK_FALSE(public_scan_dropped_table_oids_sync<manager_disk_t>);
+    CHECK_FALSE(public_path_db<manager_disk_t>);
+    CHECK_FALSE(public_restore_oid_generator_sync<manager_disk_t>);
+    CHECK_FALSE(public_max_persisted_commit_id_sync<manager_disk_t>);
+    CHECK_FALSE(public_read_setting_sync<manager_disk_t>);
+    CHECK_FALSE(public_stored_settings_sync<manager_disk_t>);
+    CHECK_FALSE(public_append_sync<manager_disk_t>);
+    CHECK_FALSE(public_commit_append_sync<manager_disk_t>);
+    CHECK_FALSE(public_delete_sync<manager_disk_t>);
+    CHECK_FALSE(public_commit_all_deletes_sync<manager_disk_t>);
+    CHECK_FALSE(public_update_sync<manager_disk_t>);
+    CHECK_FALSE(public_direct_add_column_sync<manager_disk_t>);
+    CHECK_FALSE(public_register_dropped_storage_sync<manager_disk_t>);
+    CHECK_FALSE(public_set_manager_dispatcher_sync<manager_disk_t>);
+    CHECK_FALSE(public_set_manager_wal_sync<manager_disk_t>);
+
+    CHECK_FALSE(public_mark_table_dropped_sync<manager_index_t>);
+    CHECK_FALSE(public_set_manager_dispatcher_sync<manager_index_t>);
+    CHECK_FALSE(public_bootstrap_engine_sync<manager_index_t>);
+    CHECK_FALSE(public_bootstrap_index_sync<manager_index_t>);
+    CHECK_FALSE(public_bootstrap_dropped_sync<manager_index_t>);
+    CHECK_FALSE(public_pending_index_rebuilds_sync<manager_index_t>);
+    CHECK_FALSE(public_owned_bitcask_agents_sync<manager_index_t>);
+
+    CHECK_FALSE(public_set_manager_dispatcher_sync<manager_wal_replicate_t>);
+
+    CHECK_FALSE(public_seed_clocks_sync<manager_dispatcher_t>);
+    CHECK_FALSE(public_cache_settings_sync<manager_dispatcher_t>);
+    CHECK_FALSE(public_set_disk_has_dropped_sync<manager_dispatcher_t>);
+    CHECK_FALSE(public_set_index_has_dropped_sync<manager_dispatcher_t>);
+
+    CHECK(public_has_storage<manager_disk_t::bootstrap_t>);
+    CHECK(public_peek_checkpoint_wal_id_from_disk<manager_disk_t::bootstrap_t>);
+    CHECK(public_load_storage_for_wal_replay_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_create_storage_disk_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_bootstrap_system_tables_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_load_user_table_storages_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_rehydrate_missing_user_storages_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_reconcile_storage_with_catalog_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_alive_user_oids_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_relkind_for_oid_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_relnamespace_for_oid_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_scan_live_table_oids_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_scan_alive_pg_index_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_scan_dropped_oids_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_path_db<manager_disk_t::bootstrap_t>);
+    CHECK(public_restore_oid_generator_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_max_persisted_commit_id_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_read_setting_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_stored_settings_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_append_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_commit_append_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_delete_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_commit_all_deletes_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_update_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_direct_add_column_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_register_dropped_storage_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_set_manager_dispatcher_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_set_manager_wal_sync<manager_disk_t::bootstrap_t>);
+
+    CHECK(public_mark_table_dropped_sync<manager_index_t::bootstrap_t>);
+    CHECK(public_set_manager_dispatcher_sync<manager_index_t::bootstrap_t>);
+    CHECK(public_bootstrap_engine_sync<manager_index_t::bootstrap_t>);
+    CHECK(public_bootstrap_index_sync<manager_index_t::bootstrap_t>);
+    CHECK(public_bootstrap_dropped_sync<manager_index_t::bootstrap_t>);
+    CHECK(public_pending_index_rebuilds_sync<manager_index_t::bootstrap_t>);
+
+    CHECK(public_set_manager_dispatcher_sync<manager_wal_replicate_t::bootstrap_t>);
+}
+
+namespace {
+
+    bool includes_token_definition(const std::filesystem::path& file) {
+        std::ifstream in(file);
+        std::string line;
+        while (std::getline(in, line)) {
+            const auto hash = line.find_first_not_of(" \t");
+            if (hash == std::string::npos || line[hash] != '#') {
+                continue;
+            }
+            const auto directive = line.find_first_not_of(" \t", hash + 1);
+            if (directive == std::string::npos || line.compare(directive, 7, "include") != 0) {
+                continue;
+            }
+            if (line.find("bootstrap_token_def.hpp", directive) != std::string::npos) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool is_cxx_source(const std::filesystem::path& file) {
+        const auto ext = file.extension();
+        return ext == ".cpp" || ext == ".hpp" || ext == ".h" || ext == ".cc" || ext == ".c" || ext == ".ipp";
+    }
+
+} // namespace
+
+TEST_CASE("services::engine::bootstrap::only_the_engine_includes_the_token_definition") {
+    const std::filesystem::path root{OTTERBRIX_SOURCE_ROOT};
+    const auto engine_cpp = root / "services" / "engine" / "engine.cpp";
+    REQUIRE(includes_token_definition(engine_cpp));
+
+    std::string offenders;
+    for (const char* top : {"core", "components", "services", "integration", "example", "benchmark", "JSONBench"}) {
+        std::error_code ec;
+        std::filesystem::recursive_directory_iterator it(root / top, ec);
+        REQUIRE_FALSE(ec);
+        for (const std::filesystem::recursive_directory_iterator end; it != end; it.increment(ec)) {
+            REQUIRE_FALSE(ec);
+            const auto& path = it->path();
+            if (it->is_directory(ec)) {
+                if (path.filename() == "tests" || path.filename() == "test") {
+                    it.disable_recursion_pending();
+                }
+                continue;
+            }
+            if (!is_cxx_source(path) || path == engine_cpp) {
+                continue;
+            }
+            if (includes_token_definition(path)) {
+                offenders += path.lexically_relative(root).generic_string();
+                offenders += '\n';
+            }
+        }
+        REQUIRE_FALSE(ec);
+    }
+    CHECK(offenders == std::string{});
 }

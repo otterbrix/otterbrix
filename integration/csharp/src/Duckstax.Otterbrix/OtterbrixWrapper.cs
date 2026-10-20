@@ -67,6 +67,7 @@ namespace Duckstax.Otterbrix
 
         ActorAgentMissing,
         ConnectionClosed,
+        ThreadStartFailed,
     }
 
     public struct ErrorMessage {

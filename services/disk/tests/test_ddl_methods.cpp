@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <functional>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -82,6 +83,7 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         fixture()
             : log(make_test_log())
@@ -99,7 +101,7 @@ namespace {
                                                         configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(ddl_dir());
-            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
+            REQUIRE_FALSE(boot.bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             // Destroy the manager first: its dtor joins the internal loop thread, which may still
@@ -783,12 +785,12 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     append_one(survivor, std::int64_t{777});
 
     for (std::size_t i = 0; i < N; ++i) {
-        REQUIRE(fx.manager->has_storage(targets[i]));
+        REQUIRE(fx.boot.has_storage(targets[i]));
         auto rows =
             disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, targets[i]));
         REQUIRE(rows == 1);
     }
-    REQUIRE(fx.manager->has_storage(survivor));
+    REQUIRE(fx.boot.has_storage(survivor));
     REQUIRE(disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, survivor)) == 1);
 
     {
@@ -798,7 +800,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     }
 
     for (std::size_t i = 0; i < N; ++i) {
-        REQUIRE_FALSE(fx.manager->has_storage(targets[i]));
+        REQUIRE_FALSE(fx.boot.has_storage(targets[i]));
         // A dropped storage's row count is a refusal, not 0 -- the "dropped" vs "still there and
         // emptied" distinction this case is named after.
         {
@@ -819,7 +821,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         REQUIRE(dropped_read.error().type == core::error_code_t::missing_table);
     }
 
-    REQUIRE(fx.manager->has_storage(survivor));
+    REQUIRE(fx.boot.has_storage(survivor));
     REQUIRE(disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, survivor)) == 1);
     {
         std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
@@ -1060,7 +1062,7 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     ids.push_back(0);
     const std::pmr::vector<catalog::oid_t> one_attoid({grown_attoid}, &fx.resource);
 
-    CHECK(fx.manager->delete_sync(nowhere, ids, 1, components::table::transaction_data::committed()).type ==
+    CHECK(fx.boot.delete_sync(nowhere, ids, 1, components::table::transaction_data::committed()).type ==
           core::error_code_t::io_error);
 
     std::pmr::vector<components::types::complex_logical_type> upd_types(&fx.resource);
@@ -1068,7 +1070,7 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     components::vector::data_chunk_t upd(&fx.resource, upd_types, 1);
     upd.set_cardinality(1);
     upd.set_value(0, 0, std::int64_t{7});
-    CHECK(fx.manager->update_sync(nowhere, ids, one_attoid, upd, components::table::transaction_data::committed())
+    CHECK(fx.boot.update_sync(nowhere, ids, one_attoid, upd, components::table::transaction_data::committed())
               .error()
               .type == core::error_code_t::io_error);
 
@@ -1078,11 +1080,10 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     schema_types.push_back(added_type);
     components::vector::data_chunk_t schema_chunk(&fx.resource, schema_types, 1);
     schema_chunk.set_cardinality(0);
-    CHECK(fx.manager->direct_add_column_sync(nowhere, one_attoid, schema_chunk, 1).type ==
-          core::error_code_t::io_error);
+    CHECK(fx.boot.direct_add_column_sync(nowhere, one_attoid, schema_chunk, 1).type == core::error_code_t::io_error);
 
     std::pmr::vector<std::int64_t> no_ids(&fx.resource);
-    CHECK(fx.manager->delete_sync(nowhere, no_ids, 0, components::table::transaction_data::committed()).type ==
+    CHECK(fx.boot.delete_sync(nowhere, no_ids, 0, components::table::transaction_data::committed()).type ==
           core::error_code_t::none);
 
     auto ns_oid = test_create_namespace(fx, "nsreplay");
@@ -1094,7 +1095,7 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
                       std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
     std::filesystem::create_directories(otbx.parent_path());
     REQUIRE_FALSE(
-        fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false).contains_error());
-    REQUIRE(fx.manager->has_storage(table_oid));
-    CHECK(fx.manager->direct_add_column_sync(table_oid, one_attoid, schema_chunk, 1).type == core::error_code_t::none);
+        fx.boot.create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false).contains_error());
+    REQUIRE(fx.boot.has_storage(table_oid));
+    CHECK(fx.boot.direct_add_column_sync(table_oid, one_attoid, schema_chunk, 1).type == core::error_code_t::none);
 }

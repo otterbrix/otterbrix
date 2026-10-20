@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <limits>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -45,6 +46,7 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         explicit fresh_disk(const std::filesystem::path& path)
             : log(make_test_log())
@@ -149,7 +151,7 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
 
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         table_oid = make_seeded_table(fd, kRowsBeforeSeal);
 
         REQUIRE(fd.checkpoint_round(services::wal::id_t{100}) == services::wal::id_t{0});
@@ -166,7 +168,7 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
 
         REQUIRE(fd.checkpoint_round(services::wal::id_t{400}) == services::wal::id_t{100});
 
-        auto peeked = fd.manager->peek_checkpoint_wal_id_from_disk(table_oid, catalog::well_known_oid::main_database);
+        auto peeked = fd.boot.peek_checkpoint_wal_id_from_disk(table_oid, catalog::well_known_oid::main_database);
         REQUIRE_FALSE(peeked.has_error());
         REQUIRE(peeked.value() == services::wal::id_t{200});
     }
@@ -174,9 +176,9 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
     // A fresh manager reopens the table from the round-2 root, so rows appended after it exist only in the WAL.
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
-        REQUIRE_FALSE(fd2.manager->load_user_table_storages_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.load_user_table_storages_sync().contains_error());
 
         const auto durable_rows =
             disk_test_helpers::read_ok(fd2.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid));

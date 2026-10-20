@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <limits>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -55,6 +56,7 @@ namespace {
         configuration::config_wal wal_config;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> disk;
+        manager_disk_t::bootstrap_t disk_boot{*disk, services::bootstrap_token_t{}};
         std::unique_ptr<services::wal::manager_wal_replicate_t, actor_zeta::pmr::deleter_t> wal;
 
         // wire_wal=false leaves manager_wal_addr_ empty: storage mutates but emits no WAL record.
@@ -87,9 +89,9 @@ namespace {
                   configuration::pump_intervals_t{})) {
             std::filesystem::create_directories(dir);
             if (wire_wal) {
-                disk->set_manager_wal_sync(wal->address());
+                disk_boot.set_manager_wal_sync(wal->address());
             }
-            REQUIRE_FALSE(disk->bootstrap_system_tables_sync().contains_error());
+            REQUIRE_FALSE(disk_boot.bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             disk.reset();
@@ -178,7 +180,7 @@ TEST_CASE("services::disk::wal_catalog::bootstrap_alone_no_wal") {
     cleanup_dir(dir);
     {
         fixture fx(dir);
-        auto stored = fx.disk->read_setting_sync("TimeZone");
+        auto stored = fx.disk_boot.read_setting_sync("TimeZone");
         REQUIRE_FALSE(stored.has_error());
         REQUIRE_FALSE(stored.value().empty());
     }
@@ -192,7 +194,7 @@ TEST_CASE("services::disk::wal_catalog::bootstrap_seeds_a_recognized_timezone") 
     cleanup_dir(dir);
     {
         fixture fx(dir);
-        auto stored = fx.disk->read_setting_sync("TimeZone");
+        auto stored = fx.disk_boot.read_setting_sync("TimeZone");
         REQUIRE_FALSE(stored.has_error());
         const auto seeded = stored.value();
         REQUIRE_FALSE(seeded.empty());
@@ -625,10 +627,10 @@ TEST_CASE("services::disk::wal_catalog::a_partial_aliased_row_is_casted_by_colum
         auto before = test_probe::probe_table(replayed, auto_ctx(), ns_oid, std::string("partial_probe"));
         REQUIRE_FALSE(before.found);
         for (auto& chunk : records.front().physical_data) {
-            auto append_r = replayed.disk->append_sync(pg_class,
-                                                       records.front().physical_attoids,
-                                                       chunk,
-                                                       components::table::transaction_data::committed());
+            auto append_r = replayed.disk_boot.append_sync(pg_class,
+                                                           records.front().physical_attoids,
+                                                           chunk,
+                                                           components::table::transaction_data::committed());
             REQUIRE_FALSE(append_r.has_error());
         }
         auto after = test_probe::probe_table(replayed, auto_ctx(), ns_oid, std::string("partial_probe"));
@@ -906,19 +908,19 @@ TEST_CASE("services::disk::wal_catalog::the_backfill_stamp_survives_a_kill_throu
                 continue;
             if (r.record_type == services::wal::wal_record_type::PHYSICAL_INSERT) {
                 for (auto& chunk : r.physical_data) {
-                    auto append_r = fx2.disk->append_sync(pg_attr,
-                                                          r.physical_attoids,
-                                                          chunk,
-                                                          components::table::transaction_data::committed());
+                    auto append_r = fx2.disk_boot.append_sync(pg_attr,
+                                                              r.physical_attoids,
+                                                              chunk,
+                                                              components::table::transaction_data::committed());
                     REQUIRE_FALSE(append_r.has_error());
                 }
             } else if (r.record_type == services::wal::wal_record_type::PHYSICAL_UPDATE) {
                 REQUIRE_FALSE(r.physical_data.empty());
-                auto upd_r = fx2.disk->update_sync(pg_attr,
-                                                   r.physical_row_ids,
-                                                   r.physical_attoids,
-                                                   r.physical_data.front(),
-                                                   components::table::transaction_data::committed());
+                auto upd_r = fx2.disk_boot.update_sync(pg_attr,
+                                                       r.physical_row_ids,
+                                                       r.physical_attoids,
+                                                       r.physical_data.front(),
+                                                       components::table::transaction_data::committed());
                 REQUIRE_FALSE(upd_r.has_error());
                 ++updates_applied;
             }

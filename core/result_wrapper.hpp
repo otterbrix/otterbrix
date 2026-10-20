@@ -68,6 +68,7 @@ namespace core {
 
         actor_agent_missing,
         connection_closed,
+        thread_start_failed, // pthread_create refused a manager's loop thread
     };
 
     struct [[nodiscard]] error_t {

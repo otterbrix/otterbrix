@@ -11,7 +11,6 @@
 #include <filesystem>
 #include <limits>
 #include <mutex>
-#include <thread>
 
 #include <actor-zeta/spawn.hpp>
 #include <core/executor.hpp>
@@ -172,73 +171,77 @@ namespace services::wal {
         trace(log_, "manager_wal_replicate finish");
 
         // The loop starts only after recovery above finishes, so it never races the single-threaded scan.
-        loop_thread_ = std::thread([this] {
-            // this->resource() is qualified since the ctor param `resource` shadows the member function.
-            auto& in_flight = in_flight_;
+        construction_error_ =
+            loop_thread_.start<manager_wal_replicate_t, &manager_wal_replicate_t::loop_body>(resource_,
+                                                                                             "manager_wal_replicate",
+                                                                                             this);
+    }
 
-            while (loop_running_.load(std::memory_order_acquire)) {
-                actor_zeta::mailbox::message* raw = nullptr;
-                while (inbox_.pop(raw)) {
-                    in_flight.emplace_back();
-                    in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr(raw);
+    void manager_wal_replicate_t::loop_body() {
+        auto& in_flight = in_flight_;
+
+        while (loop_running_.load(std::memory_order_acquire)) {
+            actor_zeta::mailbox::message* raw = nullptr;
+            while (inbox_.pop(raw)) {
+                in_flight.emplace_back();
+                in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr(raw);
+            }
+
+            bool made_progress = false;
+
+            // Unlike manager_dispatcher_t, every send is co_await'ed inline: no pending_<T>_/poll_pending step.
+
+            // pending_msg stays in its slot: the coroutine holds a raw pointer to it across suspension points.
+            for (auto& e : in_flight) {
+                if (e.pending_msg && !e.behavior) {
+                    e.behavior = behavior(e.pending_msg.get());
+                    made_progress = true;
+                    break;
                 }
+            }
+            if (made_progress) {
+                continue;
+            }
 
-                bool made_progress = false;
-
-                // Unlike manager_dispatcher_t, every send is co_await'ed inline: no pending_<T>_/poll_pending step.
-
-                // pending_msg stays in its slot: the coroutine holds a raw pointer to it across suspension points.
+            {
+                actor_zeta::detail::coroutine_handle<> cont{};
                 for (auto& e : in_flight) {
-                    if (e.pending_msg && !e.behavior) {
-                        e.behavior = behavior(e.pending_msg.get());
-                        made_progress = true;
-                        break;
-                    }
-                }
-                if (made_progress) {
-                    continue;
-                }
-
-                {
-                    actor_zeta::detail::coroutine_handle<> cont{};
-                    for (auto& e : in_flight) {
-                        if (e.behavior.is_awaited_ready()) {
-                            cont = e.behavior.take_awaited_continuation();
-                            if (cont) {
-                                break;
-                            }
+                    if (e.behavior.is_awaited_ready()) {
+                        cont = e.behavior.take_awaited_continuation();
+                        if (cont) {
+                            break;
                         }
                     }
-                    if (cont) {
-                        cont.resume();
-                        continue;
-                    }
                 }
-
-                for (auto it = in_flight.begin(); it != in_flight.end();) {
-                    if (it->behavior && it->behavior.done()) {
-                        it = in_flight.erase(it);
-                        made_progress = true;
-                        break;
-                    } else {
-                        ++it;
-                    }
-                }
-                if (made_progress) {
+                if (cont) {
+                    cont.resume();
                     continue;
                 }
+            }
 
-                poll_auto_checkpoint_();
+            for (auto it = in_flight.begin(); it != in_flight.end();) {
+                if (it->behavior && it->behavior.done()) {
+                    it = in_flight.erase(it);
+                    made_progress = true;
+                    break;
+                } else {
+                    ++it;
+                }
+            }
+            if (made_progress) {
+                continue;
+            }
+
+            poll_auto_checkpoint_();
 
 #ifdef DEV_MODE
-                const dev_pump_wait_t pump_probe{in_flight.empty()};
+            const dev_pump_wait_t pump_probe{in_flight.empty()};
 #endif
-                std::unique_lock<std::mutex> lock(mutex_);
-                pump_cv_.wait_for(lock, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
-                    return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
-                });
-            }
-        });
+            std::unique_lock<std::mutex> lock(mutex_);
+            pump_cv_.wait_for(lock, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
+                return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
+            });
+        }
     }
 
     manager_wal_replicate_t::~manager_wal_replicate_t() {
@@ -254,9 +257,7 @@ namespace services::wal {
     void manager_wal_replicate_t::stop_loop() noexcept {
         loop_running_.store(false, std::memory_order_release);
         wake_loop_();
-        if (loop_thread_.joinable()) {
-            loop_thread_.join();
-        }
+        loop_thread_.join();
     }
 
     std::pmr::memory_resource* manager_wal_replicate_t::resource() const noexcept { return resource_; }

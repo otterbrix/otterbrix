@@ -371,71 +371,71 @@ namespace services::disk {
             create_agent(config.agent);
         }
         // This thread owns all message processing; senders only push into inbox_ and wake it.
-        loop_thread_ = std::thread([this] {
-            // this->resource(): the ctor parameter `resource` shadows the member fn.
-            auto& in_flight = in_flight_;
-            while (loop_running_.load(std::memory_order_acquire)) {
-                actor_zeta::mailbox::message* raw = nullptr;
-                while (inbox_.pop(raw)) {
-                    in_flight.emplace_back();
-                    in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr{raw};
+        construction_error_ =
+            loop_thread_.start<manager_disk_t, &manager_disk_t::loop_body>(resource_, "manager_disk", this);
+        trace(log_, "manager_disk finish");
+    }
+
+    void manager_disk_t::loop_body() {
+        auto& in_flight = in_flight_;
+        while (loop_running_.load(std::memory_order_acquire)) {
+            actor_zeta::mailbox::message* raw = nullptr;
+            while (inbox_.pop(raw)) {
+                in_flight.emplace_back();
+                in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr{raw};
+            }
+            bool progress = true;
+            while (progress) {
+                progress = false;
+                // pending_msg stays in the slot: the coroutine holds a raw pointer to it across suspensions.
+                for (auto& e : in_flight) {
+                    if (e.pending_msg && !e.behavior) {
+                        e.behavior = behavior(e.pending_msg.get());
+                        progress = true;
+                        break;
+                    }
                 }
-                bool progress = true;
-                while (progress) {
-                    progress = false;
-                    // pending_msg stays in the slot: the coroutine holds a raw pointer to it across suspensions.
+                if (progress) {
+                    continue;
+                }
+                {
+                    actor_zeta::detail::coroutine_handle<> cont{};
                     for (auto& e : in_flight) {
-                        if (e.pending_msg && !e.behavior) {
-                            e.behavior = behavior(e.pending_msg.get());
-                            progress = true;
-                            break;
-                        }
-                    }
-                    if (progress) {
-                        continue;
-                    }
-                    {
-                        actor_zeta::detail::coroutine_handle<> cont{};
-                        for (auto& e : in_flight) {
-                            if (e.behavior.is_awaited_ready()) {
-                                cont = e.behavior.take_awaited_continuation();
-                                if (cont) {
-                                    break;
-                                }
+                        if (e.behavior.is_awaited_ready()) {
+                            cont = e.behavior.take_awaited_continuation();
+                            if (cont) {
+                                break;
                             }
                         }
-                        if (cont) {
-                            cont.resume(); // disk: no poll_pending — no pending_<T>_ containers.
-                            progress = true;
-                            continue;
-                        }
                     }
-                    for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
-                        if (it->behavior && it->behavior.done()) {
-                            in_flight.erase(it);
-                            progress = true;
-                            break;
-                        }
+                    if (cont) {
+                        cont.resume(); // disk: no poll_pending — no pending_<T>_ containers.
+                        progress = true;
+                        continue;
                     }
                 }
-#ifdef DEV_MODE
-                const dev_pump_wait_t pump_probe{in_flight.empty()};
-#endif
-                std::unique_lock<std::mutex> lk(mutex_);
-                pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
-                    return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
-                });
+                for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
+                    if (it->behavior && it->behavior.done()) {
+                        in_flight.erase(it);
+                        progress = true;
+                        break;
+                    }
+                }
             }
-        });
-        trace(log_, "manager_disk finish");
+#ifdef DEV_MODE
+            const dev_pump_wait_t pump_probe{in_flight.empty()};
+#endif
+            std::unique_lock<std::mutex> lk(mutex_);
+            pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
+                return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
+            });
+        }
     }
 
     void manager_disk_t::stop_loop() noexcept {
         loop_running_.store(false, std::memory_order_release);
         wake_loop_();
-        if (loop_thread_.joinable()) {
-            loop_thread_.join();
-        }
+        loop_thread_.join();
     }
 
     manager_disk_t::~manager_disk_t() {

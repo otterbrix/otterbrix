@@ -19,7 +19,7 @@ namespace core::detail {
     namespace {
         void report(log_t* log, const std::string& text) noexcept {
             if (log != nullptr && log->is_valid()) {
-                error(*log, text);
+                error(*log, "{}", text);
                 (*log)->flush();
                 return;
             }

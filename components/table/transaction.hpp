@@ -149,6 +149,7 @@ namespace components::table {
         void push_savepoint(std::string_view name);
         bool release_savepoint(std::string_view name);
         bool rollback_to_savepoint(std::string_view name, txn_abort_drain_t* drain);
+        bool has_open_savepoint() const noexcept { return !savepoints_.empty(); }
 
         void accumulate_base_append(dml_append_range_t range) { pending_base_appends_.push_back(range); }
         void accumulate_base_delete(dml_delete_range_t range) { pending_base_deletes_.push_back(range); }

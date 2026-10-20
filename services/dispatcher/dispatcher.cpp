@@ -1028,6 +1028,7 @@ namespace services::dispatcher {
         context.txn = txn.data();
         context.settings = settings;
         context.lowest_active_start_time = txn_manager_.lowest_active_start_time();
+        context.savepoint_open = txn.has_open_savepoint();
         trace(log_,
               "manager_dispatcher_t::create_session_context, session: {}, txn: {}, ends with the statement: {}",
               session.data(),

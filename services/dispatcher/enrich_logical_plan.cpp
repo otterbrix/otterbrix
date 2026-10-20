@@ -765,6 +765,19 @@ namespace services::catalog_resolve {
         return core::error_t::no_error();
     }
 
+    core::error_t refuse_storage_write_in_savepoint(std::pmr::memory_resource* resource,
+                                                    const catalog_resolves_t& resolves,
+                                                    const components::logical_plan::node_t& write) {
+        const auto* entry = resolves.table_entry(write.target());
+        if (entry == nullptr || !entry->storage) {
+            return core::error_t::no_error();
+        }
+        std::pmr::string msg{"cannot write to storage table \"", resource};
+        msg += write.target().to_string();
+        msg += "\" while a savepoint is open: ROLLBACK TO cannot undo what its backend wrote";
+        return core::error_t{core::error_code_t::unimplemented_yet, std::move(msg)};
+    }
+
     core::error_t refuse_unbound_names(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
         if (!resolves.tables) {
             return core::error_t::no_error();

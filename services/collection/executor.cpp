@@ -1124,6 +1124,14 @@ namespace services::collection::executor {
         if (plan.sub_queries.back()) {
             services::dispatcher::bind_catalog_data(plan.sub_queries.back().get(), plan.catalog_resolves);
         }
+        if (needs_dml_txn && session_ctx.savepoint_open) {
+            if (auto refused = services::catalog_resolve::refuse_storage_write_in_savepoint(resource(),
+                                                                                           plan.catalog_resolves,
+                                                                                           *plan.sub_queries.back());
+                refused.contains_error()) {
+                co_return execute_result_t{make_cursor(resource(), std::move(refused))};
+            }
+        }
         context_storage.catalog_resolves = &plan.catalog_resolves;
 
         using components::catalog::table_id;

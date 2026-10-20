@@ -1626,3 +1626,125 @@ TEST_CASE("integration::cpp::host_names::delete_rows_without_columns_by_row_numb
     CHECK(write_log() == std::vector<std::string>{"delete m2.shop.marks rows 2"});
     CHECK(backend()["m2.shop.marks"].size() == 1);
 }
+
+TEST_CASE("integration::cpp::host_names::a_storage_write_after_a_savepoint_is_refused") {
+    HOST_TEST_BOILERPLATE("test_host_names/savepoint_write")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    auto session = otterbrix::session_id_t();
+    REQUIRE(run(dispatcher, session, "BEGIN;")->is_success());
+    REQUIRE(run(dispatcher, session, "SAVEPOINT s;")->is_success());
+    for (const char* sql : {"INSERT INTO m2.shop.orders (id, amount) VALUES (4, 400);",
+                            "INSERT INTO m2.shop.orders (id, amount) VALUES (4, 400) ON CONFLICT DO NOTHING;",
+                            "UPDATE m2.shop.orders SET amount = 1 WHERE id = 1;",
+                            "DELETE FROM m2.shop.orders WHERE id = 1;"}) {
+        INFO(sql);
+        auto refused = run(dispatcher, session, sql);
+        REQUIRE(refused->is_error());
+        CHECK(refused->get_error().type == core::error_code_t::unimplemented_yet);
+        const std::string what{refused->get_error().what};
+        CHECK(what.find("m2.shop.orders") != std::string::npos);
+        CHECK(what.find("savepoint") != std::string::npos);
+        REQUIRE(run(dispatcher, session, "ROLLBACK TO SAVEPOINT s;")->is_success());
+    }
+    REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
+    CHECK(write_log().empty());
+    CHECK(backend()["m2.shop.orders"] == rows_t{{1, 100}, {2, 200}, {3, 300}});
+}
+
+TEST_CASE("integration::cpp::host_names::a_storage_insert_select_after_a_savepoint_is_refused") {
+    HOST_TEST_BOILERPLATE("test_host_names/savepoint_insert_select")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE TABLE loc.t (id BIGINT, amount BIGINT);")->is_success());
+    REQUIRE(run(dispatcher, "INSERT INTO loc.t (id, amount) VALUES (8, 800);")->is_success());
+    auto session = otterbrix::session_id_t();
+    REQUIRE(run(dispatcher, session, "BEGIN;")->is_success());
+    REQUIRE(run(dispatcher, session, "SAVEPOINT s;")->is_success());
+    auto refused = run(dispatcher, session, "INSERT INTO m2.shop.orders (id, amount) SELECT id, amount FROM loc.t;");
+    REQUIRE(refused->is_error());
+    CHECK(refused->get_error().type == core::error_code_t::unimplemented_yet);
+    REQUIRE(run(dispatcher, session, "ROLLBACK;")->is_success());
+    CHECK(write_log().empty());
+    CHECK(backend()["m2.shop.orders"].size() == 3);
+}
+
+// ROLLBACK TO keeps its savepoint open (PostgreSQL 18 xact.c RollbackToSavepoint), so the refusal stays.
+TEST_CASE("integration::cpp::host_names::a_storage_write_after_rollback_to_is_refused") {
+    HOST_TEST_BOILERPLATE("test_host_names/savepoint_rollback_to")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    auto session = otterbrix::session_id_t();
+    REQUIRE(run(dispatcher, session, "BEGIN;")->is_success());
+    REQUIRE(run(dispatcher, session, "SAVEPOINT s;")->is_success());
+    REQUIRE(run(dispatcher, session, "ROLLBACK TO SAVEPOINT s;")->is_success());
+    auto refused = run(dispatcher, session, "INSERT INTO m2.shop.orders (id, amount) VALUES (4, 400);");
+    REQUIRE(refused->is_error());
+    CHECK(refused->get_error().type == core::error_code_t::unimplemented_yet);
+    REQUIRE(run(dispatcher, session, "ROLLBACK;")->is_success());
+    CHECK(write_log().empty());
+    CHECK(backend()["m2.shop.orders"].size() == 3);
+}
+
+TEST_CASE("integration::cpp::host_names::a_storage_write_after_releasing_the_savepoints_is_allowed") {
+    HOST_TEST_BOILERPLATE("test_host_names/savepoint_release")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    auto session = otterbrix::session_id_t();
+    REQUIRE(run(dispatcher, session, "BEGIN;")->is_success());
+    REQUIRE(run(dispatcher, session, "SAVEPOINT outer_one;")->is_success());
+    REQUIRE(run(dispatcher, session, "SAVEPOINT inner_one;")->is_success());
+
+    SECTION("the outermost savepoint released") {
+        REQUIRE(run(dispatcher, session, "RELEASE SAVEPOINT outer_one;")->is_success());
+        auto inserted = run(dispatcher, session, "INSERT INTO m2.shop.orders (id, amount) VALUES (4, 400);");
+        INFO(error_of(inserted));
+        REQUIRE(inserted->is_success());
+        REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
+        CHECK(write_log() == std::vector<std::string>{"insert m2.shop.orders id:bigint,amount:bigint"});
+        CHECK(backend()["m2.shop.orders"].size() == 4);
+    }
+    SECTION("an inner savepoint released, the outer one still open") {
+        REQUIRE(run(dispatcher, session, "RELEASE SAVEPOINT inner_one;")->is_success());
+        auto refused = run(dispatcher, session, "INSERT INTO m2.shop.orders (id, amount) VALUES (4, 400);");
+        REQUIRE(refused->is_error());
+        CHECK(refused->get_error().type == core::error_code_t::unimplemented_yet);
+        REQUIRE(run(dispatcher, session, "ROLLBACK;")->is_success());
+        CHECK(backend()["m2.shop.orders"].size() == 3);
+    }
+}
+
+TEST_CASE("integration::cpp::host_names::a_storage_read_after_a_savepoint_works") {
+    HOST_TEST_BOILERPLATE("test_host_names/savepoint_read")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    auto session = otterbrix::session_id_t();
+    REQUIRE(run(dispatcher, session, "BEGIN;")->is_success());
+    REQUIRE(run(dispatcher, session, "SAVEPOINT s;")->is_success());
+    auto read = run(dispatcher, session, "SELECT id, amount FROM m2.shop.orders;");
+    INFO(error_of(read));
+    REQUIRE(read->is_success());
+    CHECK(sorted_int_rows(read) == rows_t{{1, 100}, {2, 200}, {3, 300}});
+    REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
+}
+
+TEST_CASE("integration::cpp::host_names::a_savepoint_over_local_tables_still_works_in_a_host_topology") {
+    HOST_TEST_BOILERPLATE("test_host_names/savepoint_local")
+    REQUIRE(run(dispatcher, declare_orders)->is_success());
+    REQUIRE(run(dispatcher, "CREATE DATABASE loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE TABLE loc.t (id BIGINT, amount BIGINT);")->is_success());
+    REQUIRE(run(dispatcher, "INSERT INTO loc.t (id, amount) VALUES (1, 10);")->is_success());
+    auto session = otterbrix::session_id_t();
+    REQUIRE(run(dispatcher, session, "BEGIN;")->is_success());
+    REQUIRE(run(dispatcher, session, "SAVEPOINT s;")->is_success());
+    REQUIRE(run(dispatcher, session, "INSERT INTO loc.t (id, amount) VALUES (2, 20);")->is_success());
+    auto copied = run(dispatcher, session, "INSERT INTO loc.t (id, amount) SELECT id, amount FROM m2.shop.orders;");
+    INFO(error_of(copied));
+    REQUIRE(copied->is_success());
+    auto before = run(dispatcher, session, "SELECT id, amount FROM loc.t;");
+    REQUIRE(before->is_success());
+    CHECK(sorted_int_rows(before) == rows_t{{1, 10}, {1, 100}, {2, 20}, {2, 200}, {3, 300}});
+    REQUIRE(run(dispatcher, session, "ROLLBACK TO SAVEPOINT s;")->is_success());
+    auto after = run(dispatcher, session, "SELECT id, amount FROM loc.t;");
+    REQUIRE(after->is_success());
+    CHECK(sorted_int_rows(after) == rows_t{{1, 10}});
+    REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
+    CHECK(sorted_int_rows(run(dispatcher, "SELECT id, amount FROM loc.t;")) == rows_t{{1, 10}});
+    CHECK(write_log().empty());
+}

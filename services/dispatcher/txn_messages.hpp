@@ -27,10 +27,12 @@ namespace services::dispatcher {
     //              scope for resolve + the operator pipeline.
     //   settings — dispatcher-owned settings cache (feeds context_storage_t).
     //   lowest_active_start_time — VACUUM/MVCC GC gate value for pipeline ctx.
+    //   savepoint_open — a savepoint of the transaction is neither released nor rolled past.
     struct txn_session_context_t {
         components::table::transaction_data txn{0, 0};
         components::catalog::session_catalog_t settings{};
         uint64_t lowest_active_start_time{0};
+        bool savepoint_open{false};
     };
 
     // Result of txn_commit_drain_msg: the dispatcher snapshots txn_data, drains

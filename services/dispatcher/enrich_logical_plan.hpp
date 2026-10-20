@@ -71,6 +71,10 @@ namespace services::catalog_resolve {
     core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource,
                                              const components::logical_plan::catalog_resolves_t& resolves);
 
+    core::error_t refuse_storage_write_in_savepoint(std::pmr::memory_resource* resource,
+                                                    const components::logical_plan::catalog_resolves_t& resolves,
+                                                    const components::logical_plan::node_t& write);
+
     // search_dbnames is ordered by precedence over the type-name search path.
     const components::logical_plan::resolved_type_metadata_t*
     probe_type_in_path(const components::logical_plan::catalog_resolves_t& resolves,

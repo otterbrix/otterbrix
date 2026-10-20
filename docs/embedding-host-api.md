@@ -220,6 +220,9 @@ Inside `BEGIN … COMMIT` a write into a storage table is not refused: `decide` 
 and the storage decides what it allows (`a_storage_learns_of_an_explicit_transaction`). Until #663:
 
 - ROLLBACK does not undo what a storage wrote;
+- while a savepoint is open (taken and neither released nor left by an outer ROLLBACK TO), an INSERT / UPDATE /
+  DELETE into a storage table is refused with `unimplemented_yet` before the storage sees it; reads and SAVEPOINT
+  itself are accepted (`a_storage_write_after_a_savepoint_is_refused`);
 - an UPDATE / DELETE whose sink is flushed during the scan may be half written if a later round fails.
 
 ## Optimizer rules

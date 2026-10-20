@@ -1964,9 +1964,8 @@ namespace components::sql::transform {
         }
         if (node->type() == logical_plan::node_type::insert_on_conflict_t) {
             name_catalog_target(dbname, relname, node->children().front());
-        } else {
-            node->set_target(qualified_name_t{dbname, relname});
         }
+        node->set_target(qualified_name_t{dbname, relname});
         return node;
     }
 

@@ -122,7 +122,7 @@ namespace otterbrix { namespace util {
                     return make_error(r, "OtterBrix doen\'t support enum type");
                 case logical_type::UNION:
                     return make_error(r, "OtterBrix doen\'t support union type");
-                case logical_type::STRING_LITERAL:
+                case logical_type::TEXT:
                     return python_string(leaf.data<std::string_view>()[index]);
                 case logical_type::UUID:
                 case logical_type::BLOB:

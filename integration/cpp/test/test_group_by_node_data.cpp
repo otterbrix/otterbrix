@@ -16,7 +16,7 @@
 using namespace components;
 
 // Reproduction of a SIGSEGV in operator_group_t's fallback aggregation:
-// a GROUP BY over a table-qualified STRING key, where the table subtrees are
+// a GROUP BY over a table-qualified TEXT key, where the table subtrees are
 // raw node_data chunks (the embedder/federation scenario — otterstax fetches
 // remote tables and splices the rows into the plan as node_data).
 //
@@ -88,7 +88,7 @@ namespace {
         auto root = plan.sub_queries.back();
         REQUIRE(root);
 
-        const auto name_type = string_key ? types::logical_type::STRING_LITERAL : types::logical_type::INTEGER;
+        const auto name_type = string_key ? types::logical_type::TEXT : types::logical_type::INTEGER;
         std::deque<logical_plan::node_ptr> walk{root};
         size_t swapped = 0;
         while (!walk.empty()) {

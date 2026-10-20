@@ -43,7 +43,7 @@ from otterbrix import ConstantExpression
 
 conn = otterbrix.connect(sys.argv[1])
 constant = ConstantExpression("OH", conn)
-print("STRING-CONSTANT-OK")
+print("TEXT-CONSTANT-OK")
 """
 
 # Dropping the Python object first does NOT help, and that is the point: the bytes are not in
@@ -103,7 +103,7 @@ def _assert_clean_exit(finished, marker):
 
 def test_a_string_constant_held_at_interpreter_shutdown_does_not_crash(tmp_path):
     finished = _run(_STRING_CONSTANT_ALIVE_AT_EXIT, tmp_path / "string_constant_db")
-    _assert_clean_exit(finished, "STRING-CONSTANT-OK")
+    _assert_clean_exit(finished, "TEXT-CONSTANT-OK")
 
 
 def test_a_string_constant_released_before_its_connection_does_not_crash(tmp_path):

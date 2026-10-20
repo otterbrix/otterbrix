@@ -12,6 +12,18 @@ namespace components::casts {
 
         constexpr cast_cost no_cost{.precision_loss = 0, .footprint = 0};
 
+        [[nodiscard]] bool is_literal(const types::complex_logical_type& type) noexcept {
+            return type.type() == types::logical_type::STRING_LITERAL;
+        }
+
+        // An untyped literal takes the type of whatever it meets or is set to text
+        [[nodiscard]] types::complex_logical_type adopt_type_from(const types::complex_logical_type& other) {
+            if (is_literal(other) || other.type() == types::logical_type::NA) {
+                return types::complex_logical_type{types::logical_type::TEXT};
+            }
+            return other;
+        }
+
         [[nodiscard]] bool is_list_or_array(const types::complex_logical_type& type) noexcept {
             return type.type() == types::logical_type::LIST || type.type() == types::logical_type::ARRAY;
         }
@@ -157,7 +169,7 @@ namespace components::casts {
             }
             return cast_info{least_permissive(element->level, cast_type::assignment), no_cost};
         }
-        if (is_list_or_array(source) && target.type() == types::logical_type::STRING_LITERAL) {
+        if (is_list_or_array(source) && target.type() == types::logical_type::TEXT) {
             std::optional<cast_info> element = lookup(source.child_type(), target);
             if (!element.has_value()) {
                 return std::nullopt;
@@ -249,6 +261,12 @@ namespace components::casts {
     std::optional<cast_registry_t::common_type>
     cast_registry_t::find_best_common_type(const types::complex_logical_type& left,
                                            const types::complex_logical_type& right) const {
+        if (is_literal(left)) {
+            return common_via(left, right, adopt_type_from(right));
+        }
+        if (is_literal(right)) {
+            return common_via(left, right, adopt_type_from(left));
+        }
         if (left.type() == types::logical_type::DECIMAL && right.type() == types::logical_type::DECIMAL) {
             return common_decimal_type(left, right);
         }
@@ -320,6 +338,20 @@ namespace components::casts {
     cast_registry_t::find_best_common_type(std::span<const types::complex_logical_type> inputs) const {
         if (inputs.empty()) {
             return std::nullopt;
+        }
+
+        if (std::any_of(inputs.begin(), inputs.end(), is_literal)) {
+            std::pmr::vector<types::complex_logical_type> typed(resource_);
+            std::copy_if(inputs.begin(), inputs.end(), std::back_inserter(typed), std::not_fn(is_literal));
+            types::complex_logical_type target{types::logical_type::TEXT};
+            if (!typed.empty()) {
+                std::optional<common_type_n> common = find_best_common_type(std::span{typed});
+                if (!common.has_value()) {
+                    return std::nullopt;
+                }
+                target = adopt_type_from(common->type);
+            }
+            return common_n_via(inputs, target);
         }
 
         if (std::optional<types::complex_logical_type> constructed = constructed_common_candidate(inputs)) {

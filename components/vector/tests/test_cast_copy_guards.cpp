@@ -34,12 +34,12 @@ namespace {
 TEST_CASE("vector_ops: copy_strided_target copies the string leg") {
     auto resource = core::pmr::otterbrix_resource();
 
-    vector::vector_t src(&resource, complex_logical_type(logical_type::STRING_LITERAL), 4);
+    vector::vector_t src(&resource, complex_logical_type(logical_type::TEXT), 4);
     src.set_value(0, std::string_view{"updated"});
     src.set_value(1, std::string_view{"second"});
     src.set_null(2, true);
 
-    vector::vector_t dst(&resource, complex_logical_type(logical_type::STRING_LITERAL), 16);
+    vector::vector_t dst(&resource, complex_logical_type(logical_type::TEXT), 16);
     for (uint64_t i = 0; i < 9; ++i) {
         std::string old = "old" + std::to_string(i);
         dst.set_value(i, std::string_view{old});
@@ -153,13 +153,12 @@ TEST_CASE("vector_ops: cast_vector string pairs answer through the channel") {
     auto resource = core::pmr::otterbrix_resource();
 
     SECTION("string to string deep-copies, validity carried") {
-        vector::vector_t src(&resource, complex_logical_type(logical_type::STRING_LITERAL), 4);
+        vector::vector_t src(&resource, complex_logical_type(logical_type::TEXT), 4);
         src.set_value(0, std::string_view{"alpha"});
         src.set_null(1, true);
         src.set_value(2, std::string_view{"beta"});
 
-        auto out =
-            vector::vector_ops::cast_vector(&resource, src, complex_logical_type(logical_type::STRING_LITERAL), 3);
+        auto out = vector::vector_ops::cast_vector(&resource, src, complex_logical_type(logical_type::TEXT), 3);
         REQUIRE_FALSE(out.has_error());
         CHECK(out.value().get_value<std::string_view>(0) == "alpha");
         CHECK(out.value().is_null(1));
@@ -169,14 +168,13 @@ TEST_CASE("vector_ops: cast_vector string pairs answer through the channel") {
     SECTION("numeric to string is a refusal, not an uninitialised vector") {
         vector::vector_t src(&resource, complex_logical_type(logical_type::BIGINT), 4);
         src.set_value(0, int64_t{7});
-        auto out =
-            vector::vector_ops::cast_vector(&resource, src, complex_logical_type(logical_type::STRING_LITERAL), 1);
+        auto out = vector::vector_ops::cast_vector(&resource, src, complex_logical_type(logical_type::TEXT), 1);
         REQUIRE(out.has_error());
         CHECK(out.error().type == core::error_code_t::conversion_failure);
     }
 
     SECTION("string to numeric is a refusal") {
-        vector::vector_t src(&resource, complex_logical_type(logical_type::STRING_LITERAL), 4);
+        vector::vector_t src(&resource, complex_logical_type(logical_type::TEXT), 4);
         src.set_value(0, std::string_view{"7"});
         auto out = vector::vector_ops::cast_vector(&resource, src, complex_logical_type(logical_type::BIGINT), 1);
         REQUIRE(out.has_error());

@@ -185,7 +185,7 @@ TEST_CASE("index key bytes: 0.0 and -0.0 are different keys to bitcask but equal
 
 TEST_CASE("index key bytes: strings") {
     const auto text_keys = [](std::string_view text) {
-        components::vector::vector_t keys(arena(), logical_type::STRING_LITERAL, 1);
+        components::vector::vector_t keys(arena(), logical_type::TEXT, 1);
         keys.data<std::string_view>()[0] = text;
         return keys;
     };
@@ -235,7 +235,7 @@ TEST_CASE("index key bytes: DECIMAL of each storage width") {
 
 TEST_CASE("index key bytes: NULL key is the single NA tag") {
     // A NULL row of any key type collapses to the same one byte.
-    for (const auto type : {logical_type::BIGINT, logical_type::STRING_LITERAL, logical_type::DOUBLE}) {
+    for (const auto type : {logical_type::BIGINT, logical_type::TEXT, logical_type::DOUBLE}) {
         components::vector::vector_t keys(arena(), type, 1);
         keys.validity().set_invalid(0);
         require_bytes(vector_bytes(keys), {0x00});
@@ -326,7 +326,7 @@ TEST_CASE("index key bytes: decode of the pinned bytes (btree key view and key v
     const auto integer = view_of({0x0D, 0xC0, 0x1D, 0xFE, 0xFF}, ok);
     REQUIRE(ok);
     REQUIRE(integer.value<physical_type::INT32>() == -123456);
-    // A STRING view borrows the encoded buffer, so it must outlive the view.
+    // A TEXT view borrows the encoded buffer, so it must outlive the view.
     const bytes_t encoded_text{0x23, 0x05, 0x00, 0x00, 0x00, 0x68, 0x65, 0x6C, 0x6C, 0x6F};
     const auto text = view_of(encoded_text, ok);
     REQUIRE(ok);
@@ -354,13 +354,13 @@ TEST_CASE("index key bytes: decode of the pinned bytes (btree key view and key v
 
 // key_hash sits in hash_index.bin but is recomputed from the stored key bytes on every open, so insert and decode
 // must agree; the constants pin today's function. Per-type flat-vs-stored-bytes consistency is asserted inside pin().
-// Under seed 0x9E3779B9; the STRING value is deliberately not a constant (it depends on std::hash<string_view>).
+// Under seed 0x9E3779B9; the TEXT value is deliberately not a constant (it depends on std::hash<string_view>).
 TEST_CASE("index key bytes: hash32 of a key under a fixed seed") {
     // A lookup hashes a constant one-row vector; the batch path hashes a flat one.
     REQUIRE(hash_of(make_keys<int64_t>(complex_logical_type{logical_type::BIGINT}, int64_t{1})) == 0x2A724163U);
     REQUIRE(hash_of(components::vector::make_scalar(arena(), int64_t{1})) == 0x2A724163U);
 
-    components::vector::vector_t flat_text(arena(), logical_type::STRING_LITERAL, 1);
+    components::vector::vector_t flat_text(arena(), logical_type::TEXT, 1);
     flat_text.data<std::string_view>()[0] = "hello";
     REQUIRE(hash_of(flat_text) == hash_of(components::vector::make_scalar(arena(), std::string_view("hello"))));
 

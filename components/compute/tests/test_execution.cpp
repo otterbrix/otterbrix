@@ -463,7 +463,7 @@ TEST_CASE("components::compute::errors") {
         vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
         REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
-        data_chunk_t try_chunk(&resource, {logical_type::STRING_LITERAL});
+        data_chunk_t try_chunk(&resource, {logical_type::TEXT});
         try_chunk.set_value(0, 0, std::string_view{"oops"});
         try_chunk.set_cardinality(1);
 
@@ -551,7 +551,7 @@ namespace {
         for (const auto& arg : args) {
             switch (arg.kind) {
                 case arg_t::kind_t::text:
-                    types.emplace_back(logical_type::STRING_LITERAL);
+                    types.emplace_back(logical_type::TEXT);
                     break;
                 case arg_t::kind_t::integer:
                     types.emplace_back(logical_type::BIGINT);
@@ -731,7 +731,7 @@ TEST_CASE("components::compute::string::one_executor_over_several_chunks") {
     REQUIRE(fn != nullptr);
 
     std::pmr::vector<complex_logical_type> in_types(&fx.resource);
-    in_types.emplace_back(logical_type::STRING_LITERAL);
+    in_types.emplace_back(logical_type::TEXT);
     auto executor = fn->make_executor(&fx.resource, in_types, nullptr, fx.ctx);
     REQUIRE_FALSE(executor.has_error());
 
@@ -762,7 +762,7 @@ TEST_CASE("components::compute::string::length_over_a_chunk") {
     REQUIRE(fn != nullptr);
 
     std::pmr::vector<complex_logical_type> types(&fx.resource);
-    types.emplace_back(logical_type::STRING_LITERAL);
+    types.emplace_back(logical_type::TEXT);
     data_chunk_t args(&fx.resource, types, uint64_t{3});
     args.data[0].set_value(0, std::string_view{"a"});
     args.data[0].set_value(1, std::string_view{"bb"});
@@ -828,7 +828,7 @@ TEST_CASE("components::compute::string::upper_over_a_chunk") {
     REQUIRE(fn != nullptr);
 
     std::pmr::vector<complex_logical_type> types(&fx.resource);
-    types.emplace_back(logical_type::STRING_LITERAL);
+    types.emplace_back(logical_type::TEXT);
     data_chunk_t args(&fx.resource, types, uint64_t{5});
     args.data[0].set_value(0, std::string_view{"a"});
     args.data[0].set_value(1, std::string_view{"bbbbbbbbbbbbbbbb"});
@@ -867,7 +867,7 @@ TEST_CASE("components::compute::string::upper_null") {
     REQUIRE(fn != nullptr);
 
     std::pmr::vector<complex_logical_type> types(&fx.resource);
-    types.emplace_back(logical_type::STRING_LITERAL);
+    types.emplace_back(logical_type::TEXT);
     data_chunk_t args(&fx.resource, types, uint64_t{1});
     args.data[0].set_null(0, true);
     args.set_cardinality(1);
@@ -884,7 +884,7 @@ TEST_CASE("components::compute::string::length_null_row_within_chunk") {
     REQUIRE(fn != nullptr);
 
     std::pmr::vector<complex_logical_type> types(&fx.resource);
-    types.emplace_back(logical_type::STRING_LITERAL);
+    types.emplace_back(logical_type::TEXT);
     data_chunk_t args(&fx.resource, types, uint64_t{3});
     args.data[0].set_value(0, std::string_view{"ab"});
     args.data[0].set_null(1, true);

@@ -41,7 +41,7 @@ namespace {
     const complex_logical_type ubigint_type{logical_type::UBIGINT};
     const complex_logical_type float_type{logical_type::FLOAT};
     const complex_logical_type double_type{logical_type::DOUBLE};
-    const complex_logical_type string_type{logical_type::STRING_LITERAL};
+    const complex_logical_type string_type{logical_type::TEXT};
 
     uint32_t precision_loss(const cast_registry_t& registry,
                             const complex_logical_type& source,
@@ -706,6 +706,53 @@ TEST_CASE("default casts: string conversions are not implicit and non-throwing")
     }
 }
 
+TEST_CASE("default casts: a string literal to any type") {
+    auto* resource = std::pmr::get_default_resource();
+    cast_registry_t registry{resource};
+    register_default_casts(registry);
+
+    const complex_logical_type literal{logical_type::STRING_LITERAL};
+    const complex_logical_type smallint{logical_type::SMALLINT};
+    const complex_logical_type date{logical_type::DATE};
+    const complex_logical_type null_type{logical_type::NA};
+
+    SECTION("two operands") {
+        REQUIRE(common(registry, smallint, literal)->type == smallint);
+        REQUIRE(common(registry, literal, date)->type == date);
+        REQUIRE(common(registry, literal, string_type)->type == string_type);
+        REQUIRE(common(registry, literal, literal)->type == string_type);
+        REQUIRE(common(registry, literal, null_type)->type == string_type);
+    }
+
+    SECTION("many operands") {
+        const std::pmr::vector<complex_logical_type> mixed{{literal, bigint_type, literal, integer_type}, resource};
+        REQUIRE(registry.find_best_common_type(std::span{mixed})->type == bigint_type);
+        const std::pmr::vector<complex_logical_type> untyped{{literal, null_type, literal}, resource};
+        REQUIRE(registry.find_best_common_type(std::span{untyped})->type == string_type);
+    }
+
+    SECTION("conversions run the text kernels") {
+        graph_execution_context params{};
+        vector::vector_t source{resource, literal};
+        source.set_value(0, std::string_view{"17"});
+        source.set_null(1, true);
+
+        auto to_integer = registry.resolve(literal, integer_type, cast_type::implicit);
+        REQUIRE(to_integer.has_value());
+        vector::vector_t number{resource, integer_type};
+        REQUIRE_FALSE((*to_integer)(cast_kind::cast, source, &number, params, 2).contains_error());
+        REQUIRE(number.get_value<int32_t>(0) == 17);
+        REQUIRE(number.is_null(1));
+
+        auto to_string = registry.resolve(literal, string_type, cast_type::implicit);
+        REQUIRE(to_string.has_value());
+        vector::vector_t text{resource, string_type};
+        REQUIRE_FALSE((*to_string)(cast_kind::cast, source, &text, params, 2).contains_error());
+        REQUIRE(text.get_value<std::string_view>(0) == "17");
+        REQUIRE(text.is_null(1));
+    }
+}
+
 TEST_CASE("default casts: date/time conversions, string parse/format, and to_string") {
     namespace cd = core::date;
     auto* resource = std::pmr::get_default_resource();
@@ -717,7 +764,7 @@ TEST_CASE("default casts: date/time conversions, string parse/format, and to_str
     const complex_logical_type timestamp_type{logical_type::TIMESTAMP};
     const complex_logical_type timestamptz_type{logical_type::TIMESTAMP_TZ};
 
-    // type<->type is implicit, string<->datetime is assignment; DATE widens to TIMESTAMP as their common type.
+    // type<->type is implicit, string<->datetime is explicit; DATE widens to TIMESTAMP as their common type.
     {
         const cast_entry* date_to_ts = registry.find(date_type, timestamp_type);
         const cast_entry* str_to_date = registry.find(string_type, date_type);
@@ -1585,7 +1632,7 @@ TEST_CASE("cast_registry: level_of passes containers through and takes structs a
     using level = cast_type;
     const complex_logical_type i32{logical_type::INTEGER};
     const complex_logical_type i64{logical_type::BIGINT};
-    const complex_logical_type str{logical_type::STRING_LITERAL};
+    const complex_logical_type str{logical_type::TEXT};
 
     auto field = [](logical_type type, const char* name) {
         complex_logical_type result{type};
@@ -1600,7 +1647,7 @@ TEST_CASE("cast_registry: level_of passes containers through and takes structs a
     REQUIRE(registry.level_of(i32, i64) == std::optional<level>{level::implicit});
     REQUIRE(registry.level_of(i64, i32) == std::optional<level>{level::assignment});
     REQUIRE(registry.level_of(i32, str) == std::optional<level>{level::assignment});
-    REQUIRE(registry.level_of(str, i32) == std::optional<level>{level::assignment});
+    REQUIRE(registry.level_of(str, i32) == std::optional<level>{level::explicit_only});
 
     REQUIRE(registry.level_of(complex_logical_type::create_list(i32), complex_logical_type::create_list(i64)) ==
             std::optional<level>{level::implicit});
@@ -2046,12 +2093,11 @@ TEST_CASE("cast_registry: a shape-changing container cast is capped at assignmen
     REQUIRE(registry.level_of(list_i32, array2_i32) == std::optional<level>{level::assignment});
     REQUIRE(registry.level_of(array2_i32, array3_i64) == std::optional<level>{level::assignment});
 
-    const complex_logical_type list_str =
-        complex_logical_type::create_list(complex_logical_type{logical_type::STRING_LITERAL});
+    const complex_logical_type list_str = complex_logical_type::create_list(complex_logical_type{logical_type::TEXT});
     const complex_logical_type array2_str =
-        complex_logical_type::create_array(complex_logical_type{logical_type::STRING_LITERAL}, 2);
+        complex_logical_type::create_array(complex_logical_type{logical_type::TEXT}, 2);
     REQUIRE(registry.level_of(list_str, complex_logical_type::create_array(i32, 2)) ==
-            std::optional<level>{level::assignment});
+            std::optional<level>{level::explicit_only});
     REQUIRE(registry.level_of(list_i32, array2_str) == std::optional<level>{level::assignment});
 
     REQUIRE_FALSE(registry.cost_of(list_i32, array2_i32).has_value());
@@ -2076,7 +2122,7 @@ TEST_CASE("cast_registry: the requested coercion level gates what resolve() retu
     using level = cast_type;
     const complex_logical_type i32{logical_type::INTEGER};
     const complex_logical_type i64{logical_type::BIGINT};
-    const complex_logical_type str{logical_type::STRING_LITERAL};
+    const complex_logical_type str{logical_type::TEXT};
 
     REQUIRE(registry.resolve(i32, i64, level::implicit).has_value());
     REQUIRE(registry.resolve(i32, i64, level::assignment).has_value());
@@ -2088,12 +2134,16 @@ TEST_CASE("cast_registry: the requested coercion level gates what resolve() retu
     REQUIRE(registry.resolve(i32, str, level::assignment).has_value());
 
     REQUIRE_FALSE(registry.resolve(str, i32, level::implicit).has_value());
-    REQUIRE(registry.resolve(str, i32, level::assignment).has_value());
+    REQUIRE_FALSE(registry.resolve(str, i32, level::assignment).has_value());
     REQUIRE(registry.resolve(str, i32, level::explicit_only).has_value());
+
+    const complex_logical_type literal{logical_type::STRING_LITERAL};
+    REQUIRE(registry.resolve(literal, i32, level::implicit).has_value());
+    REQUIRE(registry.resolve(literal, str, level::implicit).has_value());
 
     const complex_logical_type list_str = complex_logical_type::create_list(str);
     const complex_logical_type list_i32 = complex_logical_type::create_list(i32);
-    REQUIRE(registry.resolve(list_str, list_i32, level::assignment).has_value());
+    REQUIRE_FALSE(registry.resolve(list_str, list_i32, level::assignment).has_value());
     REQUIRE(registry.resolve(list_str, list_i32, level::explicit_only).has_value());
 }
 

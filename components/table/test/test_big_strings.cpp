@@ -82,7 +82,7 @@ TEST_CASE("big_strings: a single >=4096-byte string survives append and read-bac
         REQUIRE(!bm.create_new_database().has_error());
         std::vector<column_definition_t> columns;
         columns.emplace_back("id", logical_type::BIGINT);
-        columns.emplace_back("payload", logical_type::STRING_LITERAL);
+        columns.emplace_back("payload", logical_type::TEXT);
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "big_strings");
 
         const std::string big(5000, 'x');
@@ -104,7 +104,7 @@ TEST_CASE("big_strings: two big strings in one segment do not overwrite each oth
         REQUIRE(!bm.create_new_database().has_error());
         std::vector<column_definition_t> columns;
         columns.emplace_back("id", logical_type::BIGINT);
-        columns.emplace_back("payload", logical_type::STRING_LITERAL);
+        columns.emplace_back("payload", logical_type::TEXT);
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "big_strings");
 
         const std::string first(4500, 'a');
@@ -133,7 +133,7 @@ TEST_CASE("big_strings: a >=4096-byte string survives checkpoint and reload") {
         REQUIRE(!bm.create_new_database().has_error());
         std::vector<column_definition_t> columns;
         columns.emplace_back("id", logical_type::BIGINT);
-        columns.emplace_back("payload", logical_type::STRING_LITERAL);
+        columns.emplace_back("payload", logical_type::TEXT);
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "big_strings");
 
         append_string_rows(*table, env, {big, small});
@@ -225,7 +225,7 @@ namespace {
         REQUIRE(!bm.create_new_database().has_error());
         std::vector<column_definition_t> columns;
         columns.emplace_back("id", logical_type::BIGINT);
-        columns.emplace_back("payload", logical_type::STRING_LITERAL);
+        columns.emplace_back("payload", logical_type::TEXT);
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "big_strings");
 
         append_string_rows_batched(*table, env, values);
@@ -413,7 +413,7 @@ namespace {
 
     std::pmr::vector<complex_logical_type> string_column_types(std::pmr::memory_resource* resource) {
         std::pmr::vector<complex_logical_type> types(resource);
-        types.emplace_back(logical_type::STRING_LITERAL);
+        types.emplace_back(logical_type::TEXT);
         return types;
     }
 
@@ -454,11 +454,8 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
 
     const std::string big(5000, 'z');
 
-    auto column = column_data_t::create_column(&env.resource,
-                                               block_manager,
-                                               0,
-                                               0,
-                                               complex_logical_type{logical_type::STRING_LITERAL});
+    auto column =
+        column_data_t::create_column(&env.resource, block_manager, 0, 0, complex_logical_type{logical_type::TEXT});
     auto append_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(block_manager);
     column_append_state append_state{&append_pbm};
     REQUIRE_FALSE(column->initialize_append(append_state).has_error());
@@ -472,7 +469,7 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
     REQUIRE(append_state.current != nullptr);
 
     {
-        vector_t result(&env.resource, logical_type::STRING_LITERAL, DEFAULT_VECTOR_CAPACITY);
+        vector_t result(&env.resource, logical_type::TEXT, DEFAULT_VECTOR_CAPACITY);
         column_fetch_state fetch_state;
         column->fetch_row(fetch_state, 0, result, 0);
         REQUIRE_FALSE(fetch_state.fetch_error.contains_error());
@@ -484,7 +481,7 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
 
     SECTION("fetch_row: unregistered TRANSIENT overflow block") {
         overwrite_only_overflow_marker(env, *append_state.current, bogus_transient);
-        vector_t result(&env.resource, logical_type::STRING_LITERAL, DEFAULT_VECTOR_CAPACITY);
+        vector_t result(&env.resource, logical_type::TEXT, DEFAULT_VECTOR_CAPACITY);
         column_fetch_state fetch_state;
         column->fetch_row(fetch_state, 0, result, 0);
         CHECK(fetch_state.fetch_error.contains_error());
@@ -493,7 +490,7 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
 
     SECTION("fetch_row: unregistered ON-DISK overflow block") {
         overwrite_only_overflow_marker(env, *append_state.current, bogus_on_disk);
-        vector_t result(&env.resource, logical_type::STRING_LITERAL, DEFAULT_VECTOR_CAPACITY);
+        vector_t result(&env.resource, logical_type::TEXT, DEFAULT_VECTOR_CAPACITY);
         column_fetch_state fetch_state;
         column->fetch_row(fetch_state, 0, result, 0);
         CHECK(fetch_state.fetch_error.contains_error());
@@ -502,7 +499,7 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
 
     SECTION("fetch_row that OWNS its result: unregistered overflow block") {
         overwrite_only_overflow_marker(env, *append_state.current, bogus_transient);
-        vector_t result(&env.resource, logical_type::STRING_LITERAL, DEFAULT_VECTOR_CAPACITY);
+        vector_t result(&env.resource, logical_type::TEXT, DEFAULT_VECTOR_CAPACITY);
         column_fetch_state fetch_state;
         fetch_state.result_outlives_pins = true;
         column->fetch_row(fetch_state, 0, result, 0);
@@ -513,10 +510,10 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
     SECTION("scan: unregistered overflow block") {
         overwrite_only_overflow_marker(env, *append_state.current, bogus_transient);
         column_scan_state scan_state;
-        scan_state.initialize(complex_logical_type{logical_type::STRING_LITERAL});
+        scan_state.initialize(complex_logical_type{logical_type::TEXT});
         column->initialize_scan(scan_state);
         REQUIRE_FALSE(scan_state.has_error());
-        vector_t result(&env.resource, logical_type::STRING_LITERAL, DEFAULT_VECTOR_CAPACITY);
+        vector_t result(&env.resource, logical_type::TEXT, DEFAULT_VECTOR_CAPACITY);
         column->scan(0, scan_state, result);
         CHECK(scan_state.has_error());
         CHECK(scan_state.scan_error.type == core::error_code_t::data_corruption);
@@ -532,8 +529,7 @@ TEST_CASE("big_strings: a reloaded segment reports its overflow blocks for compa
 
     std::vector<std::string> values{std::string(220000, 'm'), std::string("small"), std::string(7000, 'n')};
 
-    auto column =
-        column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::STRING_LITERAL});
+    auto column = column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::TEXT});
     {
         // Append state must be gone before the checkpoint: it re-points the still-managed
         // validity segment to disk, dropping the block_handle the append state's pin refers to.
@@ -568,16 +564,15 @@ TEST_CASE("big_strings: a reloaded segment reports its overflow blocks for compa
         CHECK(id < tstorage::MAXIMUM_BLOCK);
     }
 
-    auto reloaded =
-        column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::STRING_LITERAL});
+    auto reloaded = column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::TEXT});
     REQUIRE_FALSE(reloaded->initialize_column(persistent.value()).has_error());
     REQUIRE(reloaded->count() == values.size());
 
     {
         column_scan_state scan_state;
-        scan_state.initialize(complex_logical_type{logical_type::STRING_LITERAL});
+        scan_state.initialize(complex_logical_type{logical_type::TEXT});
         reloaded->initialize_scan(scan_state);
-        vector_t result(&env.resource, logical_type::STRING_LITERAL, DEFAULT_VECTOR_CAPACITY);
+        vector_t result(&env.resource, logical_type::TEXT, DEFAULT_VECTOR_CAPACITY);
         auto scanned = reloaded->scan(0, scan_state, result);
         REQUIRE_FALSE(scan_state.has_error());
         REQUIRE(scanned == values.size());
@@ -618,7 +613,7 @@ TEST_CASE("big_strings: a scan failure mid-compact loses no rows and frees no bl
     REQUIRE(!bm.create_new_database().has_error());
     std::vector<column_definition_t> columns;
     columns.emplace_back("id", logical_type::BIGINT);
-    columns.emplace_back("payload", logical_type::STRING_LITERAL);
+    columns.emplace_back("payload", logical_type::TEXT);
     auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "compact_loud");
 
     {
@@ -708,8 +703,7 @@ TEST_CASE("big_strings: a duplicated persisted overflow block is data_corruption
 
     std::vector<std::string> values{std::string(220000, 'q'), std::string("small")};
 
-    auto column =
-        column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::STRING_LITERAL});
+    auto column = column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::TEXT});
     {
         auto append_pbm = components::table::storage::partial_block_manager_t::for_checkpoint(bm);
         column_append_state append_state{&append_pbm};
@@ -730,8 +724,7 @@ TEST_CASE("big_strings: a duplicated persisted overflow block is data_corruption
     REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());
 
     {
-        auto clean =
-            column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::STRING_LITERAL});
+        auto clean = column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::TEXT});
         REQUIRE_FALSE(clean->initialize_column(persistent.value()).has_error());
     }
 
@@ -746,8 +739,7 @@ TEST_CASE("big_strings: a duplicated persisted overflow block is data_corruption
     }
     REQUIRE(duplicated);
 
-    auto reloaded =
-        column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::STRING_LITERAL});
+    auto reloaded = column_data_t::create_column(&env.resource, bm, 0, 0, complex_logical_type{logical_type::TEXT});
     auto loaded = reloaded->initialize_column(corrupted);
     REQUIRE(loaded.has_error());
     CHECK(loaded.error().type == core::error_code_t::data_corruption);

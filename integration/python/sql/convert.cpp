@@ -37,7 +37,7 @@ components::vector::vector_t to_value(std::pmr::memory_resource* resource, const
             resource,
             base64.attr("b64encode")(obj).attr("decode")("utf-8").cast<std::string>());
     } else if (py::isinstance<py::str>(obj)) {
-        return components::vector::make_scalar(resource, obj.cast<std::string>());
+        return components::vector::make_string_literal(resource, obj.cast<std::string>());
     }
     return components::vector::make_null(resource, complex_logical_type{logical_type::NA});
 }
@@ -195,7 +195,7 @@ expression_ptr parse_find_condition_(std::pmr::memory_resource* resource,
 components::expressions::param_storage
 parse_param(std::pmr::memory_resource* resource, const py::handle& condition, parameter_node_t* params) {
     auto value = to_value(resource, condition);
-    if (value.type().to_physical_type() == components::types::physical_type::STRING &&
+    if (value.type().to_physical_type() == components::types::physical_type::TEXT &&
         !value.get_value<std::string_view>(0).empty() && value.get_value<std::string_view>(0).at(0) == '$') {
         return ex_key_t(resource, value.get_value<std::string_view>(0).substr(1));
     } else {

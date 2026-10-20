@@ -28,8 +28,8 @@ namespace {
                                               const std::vector<pg_class_row_t>& rows) {
         std::pmr::vector<types::complex_logical_type> types{resource};
         types.emplace_back(types::logical_type::UINTEGER);
-        types.emplace_back(types::logical_type::STRING_LITERAL);
-        types.emplace_back(types::logical_type::STRING_LITERAL);
+        types.emplace_back(types::logical_type::TEXT);
+        types.emplace_back(types::logical_type::TEXT);
         types[0].set_alias("oid");
         types[1].set_alias("relname");
         types[2].set_alias("relkind");
@@ -145,8 +145,8 @@ namespace {
         using namespace components;
         std::pmr::vector<types::complex_logical_type> types{resource};
         types.emplace_back(types::logical_type::UINTEGER);
-        types.emplace_back(types::logical_type::STRING_LITERAL);
-        types.emplace_back(types::logical_type::STRING_LITERAL);
+        types.emplace_back(types::logical_type::TEXT);
+        types.emplace_back(types::logical_type::TEXT);
         types[0].set_alias("oid");
         types[1].set_alias("relname");
         types[2].set_alias("relkind");

@@ -29,7 +29,7 @@ namespace services::collection {
             if (output.type() != components::types::logical_type::NA) {
                 return output;
             }
-            return components::types::complex_logical_type(components::types::logical_type::STRING_LITERAL,
+            return components::types::complex_logical_type(components::types::logical_type::TEXT,
                                                            output.has_alias() ? output.alias() : std::string{});
         }
 

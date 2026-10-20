@@ -578,7 +578,7 @@ TEST_CASE("wal_worker::spanning_record") {
         auto* arena = &env.resource_;
         std::pmr::vector<components::types::complex_logical_type> types(arena);
         types.emplace_back(components::types::logical_type::BIGINT, "id");
-        types.emplace_back(components::types::logical_type::STRING_LITERAL, "name");
+        types.emplace_back(components::types::logical_type::TEXT, "name");
         types.emplace_back(components::types::logical_type::DOUBLE, "score");
         types.emplace_back(components::types::logical_type::BOOLEAN, "active");
         auto chunk = gen_data_chunk(500, 0, types, arena);

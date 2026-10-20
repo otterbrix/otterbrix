@@ -148,9 +148,30 @@ namespace components::casts {
             (add_integer_narrowing_from<Integers, Integers...>(registry), ...);
         }
 
-        // The engine's string type (STRING_LITERAL).
         [[nodiscard]] complex_logical_type string_type() {
             return complex_logical_type{types::to_logical_type<std::string_view>()};
+        }
+
+        [[nodiscard]] complex_logical_type literal_type() {
+            return complex_logical_type{types::logical_type::STRING_LITERAL};
+        }
+
+        void add_from_text(cast_registry_t& registry, const complex_logical_type& target, cast_function_t fn) {
+            cast_entry from_string{fn, cast_type::explicit_only, /*convertable_inplace*/ false};
+            [[maybe_unused]] auto string_error = registry.add(string_type(), target, std::move(from_string));
+            assert(!string_error.contains_error() && "duplicate default cast registration");
+
+            cast_entry from_literal{fn, cast_cost{.precision_loss = 1, .footprint = 0}, /*convertable_inplace*/ false};
+            [[maybe_unused]] auto literal_error = registry.add(literal_type(), target, std::move(from_literal));
+            assert(!literal_error.contains_error() && "duplicate default cast registration");
+        }
+
+        void add_literal_string(cast_registry_t& registry) {
+            cast_entry entry{cast_function_t{&kernels::literal_to_string_cast, nullptr},
+                             cast_cost{.precision_loss = 0, .footprint = 0},
+                             /*convertable_inplace*/ true};
+            [[maybe_unused]] auto error = registry.add(literal_type(), string_type(), std::move(entry));
+            assert(!error.contains_error() && "duplicate default cast registration");
         }
 
         // A placeholder DECIMAL used only as the registry key; (18, 0) is in-window so create_decimal cannot fail,
@@ -235,11 +256,9 @@ namespace components::casts {
         // ASSIGNMENT, not implicit: a string becomes an enum where a column says so, never in an arbitrary
         // expression. try_cast writes NULL for a string naming no label of the target enum; cast errors on it.
         void add_string_enum(cast_registry_t& registry) {
-            cast_entry to_enum{cast_function_t{&kernels::string_to_enum_cast, &kernels::string_to_enum_try_cast},
-                               cast_type::assignment,
-                               /*convertable_inplace*/ false};
-            [[maybe_unused]] auto error = registry.add(string_type(), enum_key(), std::move(to_enum));
-            assert(!error.contains_error() && "duplicate default cast registration");
+            add_from_text(registry,
+                          enum_key(),
+                          cast_function_t{&kernels::string_to_enum_cast, &kernels::string_to_enum_try_cast});
         }
 
         void add_bool_decimal(cast_registry_t& registry) {
@@ -288,14 +307,10 @@ namespace components::casts {
 
         template<typename Target>
         void add_string_to_number(cast_registry_t& registry) {
-            complex_logical_type source = string_type();
-            complex_logical_type target{types::to_logical_type<Target>()};
-            cast_entry entry{
-                cast_function_t{&kernels::string_to_number_cast<Target>, &kernels::string_to_number_try_cast<Target>},
-                cast_type::assignment,
-                /*convertable_inplace*/ false};
-            [[maybe_unused]] auto error = registry.add(source, target, std::move(entry));
-            assert(!error.contains_error() && "duplicate default cast registration");
+            add_from_text(
+                registry,
+                complex_logical_type{types::to_logical_type<Target>()},
+                cast_function_t{&kernels::string_to_number_cast<Target>, &kernels::string_to_number_try_cast<Target>});
         }
 
         template<typename... Numbers>
@@ -312,12 +327,9 @@ namespace components::casts {
             [[maybe_unused]] auto to_error = registry.add(decimal_key(), string, std::move(to_string));
             assert(!to_error.contains_error() && "duplicate default cast registration");
 
-            cast_entry from_string{
-                cast_function_t{&kernels::string_to_decimal_cast, &kernels::string_to_decimal_try_cast},
-                cast_type::assignment,
-                /*convertable_inplace*/ false};
-            [[maybe_unused]] auto from_error = registry.add(string, decimal_key(), std::move(from_string));
-            assert(!from_error.contains_error() && "duplicate default cast registration");
+            add_from_text(registry,
+                          decimal_key(),
+                          cast_function_t{&kernels::string_to_decimal_cast, &kernels::string_to_decimal_try_cast});
         }
 
         template<typename From, typename To>
@@ -344,14 +356,10 @@ namespace components::casts {
 
         template<typename To>
         void add_string_to_datetime(cast_registry_t& registry) {
-            complex_logical_type source = string_type();
-            complex_logical_type target{types::to_logical_type<To>()};
-            cast_entry entry{
-                cast_function_t{&kernels::string_to_datetime_cast<To>, &kernels::string_to_datetime_try_cast<To>},
-                cast_type::assignment,
-                /*convertable_inplace*/ false};
-            [[maybe_unused]] auto error = registry.add(source, target, std::move(entry));
-            assert(!error.contains_error() && "duplicate default cast registration");
+            add_from_text(
+                registry,
+                complex_logical_type{types::to_logical_type<To>()},
+                cast_function_t{&kernels::string_to_datetime_cast<To>, &kernels::string_to_datetime_try_cast<To>});
         }
 
         template<typename Numeric>
@@ -394,11 +402,9 @@ namespace components::casts {
             [[maybe_unused]] auto to_error = registry.add(boolean, string, std::move(to_string));
             assert(!to_error.contains_error() && "duplicate default cast registration");
 
-            cast_entry from_string{cast_function_t{&kernels::string_to_bool_cast, &kernels::string_to_bool_try_cast},
-                                   cast_type::assignment,
-                                   /*convertable_inplace*/ false};
-            [[maybe_unused]] auto from_error = registry.add(string, boolean, std::move(from_string));
-            assert(!from_error.contains_error() && "duplicate default cast registration");
+            add_from_text(registry,
+                          boolean,
+                          cast_function_t{&kernels::string_to_bool_cast, &kernels::string_to_bool_try_cast});
         }
 
         template<typename From>
@@ -556,6 +562,7 @@ namespace components::casts {
         add_bool_decimal(registry);
         add_bool_string(registry);
         add_string_enum(registry);
+        add_literal_string(registry);
     }
 
 } // namespace components::casts

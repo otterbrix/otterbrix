@@ -18,6 +18,7 @@ using namespace components::expressions;
 
 using components::vector::make_null;
 using components::vector::make_scalar;
+using components::vector::make_string_literal;
 using vec = std::vector<components::vector::vector_t>;
 
 #define TEST_PARAMS_SELECT(QUERY, RESULT, BIND)                                                                        \
@@ -83,11 +84,11 @@ TEST_CASE("components::sql::select_bind") {
     TEST_PARAMS_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = $1 AND name = $2 AND "count" = $1;)_",
         R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #0}]}})_",
-        vec({make_scalar(&resource, 10l), make_scalar(&resource, std::string("doc 10"))}));
+        vec({make_scalar(&resource, 10l), make_string_literal(&resource, std::string("doc 10"))}));
 
     TEST_PARAMS_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = $1 OR name = $2;)_",
                        R"_($aggregate: {$match: {$or: ["number": {$eq: #0}, "name": {$eq: #1}]}})_",
-                       vec({make_scalar(&resource, 42l), make_scalar(&resource, std::string("abc"))}));
+                       vec({make_scalar(&resource, 42l), make_string_literal(&resource, std::string("abc"))}));
 
     TEST_PARAMS_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE id > $1 AND flag = $2;)_",
                        R"_($aggregate: {$match: {$and: ["id": {$gt: #0}, "flag": {$eq: #1}]}})_",
@@ -123,7 +124,7 @@ TEST_CASE("components::sql::update_bind") {
 
         TEST_SIMPLE_UPDATE(R"_(UPDATE TestDatabase.TestCollection SET name = $1, flag = $2 WHERE "count" > $3;)_",
                            R"_($update: <oid:0> {$match: {"count": {$gt: #2}}})_",
-                           vec({make_scalar(&resource, std::string("ok")),
+                           vec({make_string_literal(&resource, std::string("ok")),
                                 make_scalar(&resource, true),
                                 make_scalar(&resource, 100l)}),
                            f);
@@ -154,7 +155,7 @@ TEST_CASE("components::sql::insert_bind") {
         auto stmt = linitial(raw_parser(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, make_scalar(&resource, 42l));
-        binder.bind(2, make_scalar(&resource, std::string("inserted")));
+        binder.bind(2, make_string_literal(&resource, std::string("inserted")));
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -168,7 +169,7 @@ TEST_CASE("components::sql::insert_bind") {
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(cell_equals(chunk.data[0], 0, make_scalar(&resource, 42l)));
-        REQUIRE(cell_equals(chunk.data[1], 0, make_scalar(&resource, "inserted")));
+        REQUIRE(cell_equals(chunk.data[1], 0, make_string_literal(&resource, "inserted")));
     }
 
     SECTION("insert with repeated param") {
@@ -219,10 +220,10 @@ TEST_CASE("components::sql::insert_bind") {
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 2);
         REQUIRE(cell_equals(chunk.data[0], 0, make_scalar(&resource, 1ul)));
-        REQUIRE(cell_equals(chunk.data[1], 0, make_scalar(&resource, "Name1")));
+        REQUIRE(cell_equals(chunk.data[1], 0, make_string_literal(&resource, "Name1")));
         REQUIRE(cell_equals(chunk.data[2], 0, make_scalar(&resource, 10ul)));
         REQUIRE(cell_equals(chunk.data[0], 1, make_scalar(&resource, 2ul)));
-        REQUIRE(cell_equals(chunk.data[1], 1, make_scalar(&resource, "Name2")));
+        REQUIRE(cell_equals(chunk.data[1], 1, make_string_literal(&resource, "Name2")));
         REQUIRE(cell_equals(chunk.data[2], 1, make_scalar(&resource, 20ul)));
     }
 }
@@ -253,7 +254,7 @@ TEST_CASE("components::sql::bind_row_of_column") {
         auto query = R"_(INSERT INTO TestDatabase.TestCollection (id, name) VALUES ($1, $2);)_";
         auto stmt = linitial(raw_parser(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
-        binder.bind(1, column, 2).bind(2, make_scalar(&resource, std::string("inserted")));
+        binder.bind(1, column, 2).bind(2, make_string_literal(&resource, std::string("inserted")));
         auto finalized = binder.finalize();
         REQUIRE_FALSE(finalized.has_error());
         auto node = finalized.value().sub_queries.back();
@@ -264,7 +265,7 @@ TEST_CASE("components::sql::bind_row_of_column") {
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(cell_equals(chunk.data[0], 0, make_scalar(&resource, int64_t{30})));
-        REQUIRE(cell_equals(chunk.data[1], 0, make_scalar(&resource, std::string("inserted"))));
+        REQUIRE(cell_equals(chunk.data[1], 0, make_string_literal(&resource, std::string("inserted"))));
     }
 
     SECTION("a typed NULL of another type stays NULL in an insert column") {
@@ -272,7 +273,7 @@ TEST_CASE("components::sql::bind_row_of_column") {
         auto stmt = linitial(raw_parser(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, make_scalar(&resource, int64_t{42}))
-            .bind(2, make_null(&resource, types::complex_logical_type{types::logical_type::STRING_LITERAL}));
+            .bind(2, make_null(&resource, types::complex_logical_type{types::logical_type::TEXT}));
         auto finalized = binder.finalize();
         REQUIRE_FALSE(finalized.has_error());
         auto node = finalized.value().sub_queries.back();
@@ -347,7 +348,7 @@ TEST_CASE("components::sql::limit_offset_bind") {
         auto stmt =
             linitial(raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
-        binder.bind(1, make_scalar(&resource, std::string("oops")));
+        binder.bind(1, make_string_literal(&resource, std::string("oops")));
         auto result = binder.finalize();
         REQUIRE(result.has_error());
     }
@@ -392,19 +393,19 @@ TEST_CASE("components::sql::transform_result") {
             auto binder = transformer.transform(pg_cell_to_node_cast(select));
             TEST_PARAMS(
                 R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #0}]}})_",
-                vec({make_scalar(&resource, 10l), make_scalar(&resource, std::string("doc 10"))}));
+                vec({make_scalar(&resource, 10l), make_string_literal(&resource, std::string("doc 10"))}));
         }
         {
             auto binder = transformer.transform(pg_cell_to_node_cast(select));
             TEST_PARAMS(
                 R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #0}]}})_",
-                vec({make_scalar(&resource, 3.14), make_scalar(&resource, std::string("another doc 10"))}));
+                vec({make_scalar(&resource, 3.14), make_string_literal(&resource, std::string("another doc 10"))}));
         }
         {
             auto binder = transformer.transform(pg_cell_to_node_cast(select));
             TEST_PARAMS(
                 R"_($aggregate: {$match: {$and: ["number": {$eq: #0}, "name": {$eq: #1}, "count": {$eq: #0}]}})_",
-                vec({make_scalar(&resource, false), make_scalar(&resource, std::string("another another doc 10"))}));
+                vec({make_scalar(&resource, false), make_string_literal(&resource, "another another doc 10")}));
         }
     }
 
@@ -423,7 +424,7 @@ TEST_CASE("components::sql::transform_result") {
                          return _w.value();
                      }(first_binder.finalize()))
                          .parameters;
-        REQUIRE(parameter_equals(*first, core::parameter_id_t(uint32_t(0)), make_scalar(&resource, "doc")));
+        REQUIRE(parameter_equals(*first, core::parameter_id_t(uint32_t(0)), make_string_literal(&resource, "doc")));
 
         auto second_binder = transformer.transform(pg_cell_to_node_cast(select));
         second_binder.bind(1, make_scalar(&resource, 100l));
@@ -433,7 +434,7 @@ TEST_CASE("components::sql::transform_result") {
                       }(second_binder.finalize()))
                           .parameters;
         REQUIRE(parameter_equals(*second, core::parameter_id_t(uint32_t(0)), make_scalar(&resource, 100l)));
-        REQUIRE(parameter_equals(*first, core::parameter_id_t(uint32_t(0)), make_scalar(&resource, "doc")));
+        REQUIRE(parameter_equals(*first, core::parameter_id_t(uint32_t(0)), make_string_literal(&resource, "doc")));
     }
 
     SECTION("the parameter count is the same after finalize") {
@@ -490,7 +491,7 @@ TEST_CASE("components::sql::transform_result") {
         const auto keys = static_cast<logical_plan::node_insert_t*>(first.get())->key_translation();
 
         auto second_binder = transformer.transform(pg_cell_to_node_cast(stmt));
-        second_binder.bind(1, make_scalar(&resource, true)).bind(2, make_scalar(&resource, std::string("doc 10")));
+        second_binder.bind(1, make_scalar(&resource, true)).bind(2, make_string_literal(&resource, "doc 10"));
         auto node = ([](auto _w) {
                         REQUIRE_FALSE(_w.has_error());
                         return _w.value();
@@ -504,7 +505,7 @@ TEST_CASE("components::sql::transform_result") {
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(cell_equals(chunk.data[0], 0, make_scalar(&resource, true)));
-        REQUIRE(cell_equals(chunk.data[1], 0, make_scalar(&resource, std::string("doc 10"))));
+        REQUIRE(cell_equals(chunk.data[1], 0, make_string_literal(&resource, std::string("doc 10"))));
         REQUIRE(static_cast<logical_plan::node_insert_t*>(node.get())->key_translation() == keys);
     }
 }

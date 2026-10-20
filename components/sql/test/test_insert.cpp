@@ -40,7 +40,7 @@ TEST_CASE("components::sql::insert_into") {
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(cell_equals(chunk.data[0], 0, components::vector::make_scalar(&resource, int64_t{1})));
-        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_scalar(&resource, std::string_view{"Name"})));
+        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_string_literal(&resource, "Name")));
         REQUIRE(cell_equals(chunk.data[2], 0, components::vector::make_scalar(&resource, int64_t{1})));
     }
 
@@ -57,7 +57,7 @@ TEST_CASE("components::sql::insert_into") {
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(cell_equals(chunk.data[0], 0, components::vector::make_scalar(&resource, int64_t{1})));
-        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_scalar(&resource, std::string_view{"Name"})));
+        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_string_literal(&resource, "Name")));
         REQUIRE(cell_equals(chunk.data[2], 0, components::vector::make_scalar(&resource, int64_t{1})));
     }
 
@@ -74,7 +74,7 @@ TEST_CASE("components::sql::insert_into") {
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(cell_equals(chunk.data[0], 0, components::vector::make_scalar(&resource, int64_t{1})));
-        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_scalar(&resource, std::string_view{"Name"})));
+        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_string_literal(&resource, "Name")));
         REQUIRE(cell_equals(chunk.data[2], 0, components::vector::make_scalar(&resource, int64_t{1})));
     }
 
@@ -92,8 +92,7 @@ TEST_CASE("components::sql::insert_into") {
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 1);
         REQUIRE(cell_equals(chunk.data[0], 0, components::vector::make_scalar(&resource, int64_t{43})));
-        REQUIRE(
-            cell_equals(chunk.data[1], 0, components::vector::make_scalar(&resource, std::string_view{"some text"})));
+        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_string_literal(&resource, "some text")));
     }
 
     SECTION("insert into array") {
@@ -138,10 +137,10 @@ TEST_CASE("components::sql::insert_into") {
             static_cast<components::logical_plan::node_data_t*>(node->children().front().get())->data_chunk();
         REQUIRE(chunk.size() == 5);
         REQUIRE(cell_equals(chunk.data[0], 0, components::vector::make_scalar(&resource, int64_t{1})));
-        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_scalar(&resource, std::string_view{"Name1"})));
+        REQUIRE(cell_equals(chunk.data[1], 0, components::vector::make_string_literal(&resource, "Name1")));
         REQUIRE(cell_equals(chunk.data[2], 0, components::vector::make_scalar(&resource, int64_t{1})));
         REQUIRE(cell_equals(chunk.data[0], 4, components::vector::make_scalar(&resource, int64_t{5})));
-        REQUIRE(cell_equals(chunk.data[1], 4, components::vector::make_scalar(&resource, std::string_view{"Name5"})));
+        REQUIRE(cell_equals(chunk.data[1], 4, components::vector::make_string_literal(&resource, "Name5")));
         REQUIRE(cell_equals(chunk.data[2], 4, components::vector::make_scalar(&resource, int64_t{5})));
     }
 

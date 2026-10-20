@@ -23,7 +23,7 @@ namespace components::catalog {
         complex_logical_type oid_col() { return complex_logical_type{logical_type::UINTEGER}; }
         complex_logical_type i32_col() { return complex_logical_type{logical_type::INTEGER}; }
         complex_logical_type i64_col() { return complex_logical_type{logical_type::BIGINT}; }
-        complex_logical_type str_col() { return complex_logical_type{logical_type::STRING_LITERAL}; }
+        complex_logical_type str_col() { return complex_logical_type{logical_type::TEXT}; }
         complex_logical_type bool_col() { return complex_logical_type{logical_type::BOOLEAN}; }
 
         std::vector<column_definition_t> pg_database_columns() {
@@ -308,7 +308,7 @@ namespace components::catalog {
                 return "float4";
             case LT::DOUBLE:
                 return "float8";
-            case LT::STRING_LITERAL:
+            case LT::TEXT:
                 return "text";
             case LT::TIMESTAMP:
                 return "timestamp";
@@ -360,7 +360,7 @@ namespace components::catalog {
         if (n == "float8")
             return LT::DOUBLE;
         if (n == "text")
-            return LT::STRING_LITERAL;
+            return LT::TEXT;
         if (n == "timestamp")
             return LT::TIMESTAMP;
         if (n == "timestamp with time zone")
@@ -379,7 +379,7 @@ namespace components::catalog {
             return LT::UUID;
         // Seed/alias names (manager_disk_bootstrap.cpp); this "int16" is unrelated to the PG-block one above.
         if (n == "string")
-            return LT::STRING_LITERAL;
+            return LT::TEXT;
         if (n == "blob")
             return LT::BLOB;
         if (n == "boolean")
@@ -397,7 +397,7 @@ namespace components::catalog {
         if (n == "tinyint")
             return LT::TINYINT;
         if (n == "varchar")
-            return LT::STRING_LITERAL;
+            return LT::TEXT;
         if (n == "int8_t")
             return LT::BIGINT; // BIGINT keyword in parser/gram.y
         return LT::UNKNOWN;
@@ -1072,7 +1072,7 @@ namespace components::catalog {
             case ns::float64_type:
                 return LT::DOUBLE;
             case ns::string_type:
-                return LT::STRING_LITERAL;
+                return LT::TEXT;
             case ns::timestamp_type:
                 return LT::TIMESTAMP;
             case ns::timestamp_tz_type:
@@ -1124,7 +1124,7 @@ namespace components::catalog {
                 return ns::float32_type;
             case LT::DOUBLE:
                 return ns::float64_type;
-            case LT::STRING_LITERAL:
+            case LT::TEXT:
                 return ns::string_type;
             case LT::TIMESTAMP:
                 return ns::timestamp_type;

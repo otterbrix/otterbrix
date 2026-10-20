@@ -177,7 +177,7 @@ TEST_CASE("dispatcher::stamp_scalar_types::scaffolding_gets_a_result_type") {
 }
 
 TEST_CASE("dispatcher::stamp_scalar_types::an_unresolvable_operator_stamps_nothing") {
-    auto schema = schema_of({logical_type::STRING_LITERAL, logical_type::BIGINT});
+    auto schema = schema_of({logical_type::TEXT, logical_type::BIGINT});
     components::logical_plan::storage_parameters parameters{resource()};
 
     auto expr = binary(scalar_type::multiply, column(0), column(1));

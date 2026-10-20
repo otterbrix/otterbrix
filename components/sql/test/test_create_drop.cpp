@@ -98,8 +98,7 @@ TEST_CASE("components::sql::table") {
                                            return type.alias() == "test" && type.type() == logical_type::INTEGER;
                                        }));
                                        REQUIRE(contains(sch, [](const complex_logical_type& type) {
-                                           return type.alias() == "test1" &&
-                                                  type.type() == logical_type::STRING_LITERAL;
+                                           return type.alias() == "test1" && type.type() == logical_type::TEXT;
                                        }));
                                    });
 

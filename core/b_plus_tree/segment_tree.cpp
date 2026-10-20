@@ -1056,9 +1056,9 @@ namespace core::b_plus_tree {
         string_storage_.reserve(header_->segments_count_);
         // TODO: it would be faster to load blocks in offset order, instead of their id (especially on hard drives)
         for (block_metadata* metadata = metadata_begin_; metadata < metadata_end_; metadata++) {
-            // a block is the only thing that makes a STRING-typed metadata entry usable — see abandon_leaf_()
-            const bool string_keyed = metadata->min_index.type() == physical_type::STRING ||
-                                      metadata->max_index.type() == physical_type::STRING;
+            // a block is the only thing that makes a TEXT-typed metadata entry usable — see abandon_leaf_()
+            const bool string_keyed =
+                metadata->min_index.type() == physical_type::TEXT || metadata->max_index.type() == physical_type::TEXT;
             segments_.emplace_back(node_t{nullptr, std::chrono::system_clock::now(), false});
             string_storage_.emplace_back();
             segments_.back().block =
@@ -1090,16 +1090,16 @@ namespace core::b_plus_tree {
             }
             segments_.back().block->restore_block();
             assert(segments_.back().block->count() != 0 && "block is empty");
-            if (metadata->min_index.type() == physical_type::STRING) {
+            if (metadata->min_index.type() == physical_type::TEXT) {
                 auto min_index = segments_.back().block->min_index();
                 string_storage_.back().first =
-                    std::make_unique<std::pmr::string>(min_index.value<physical_type::STRING>(), resource_);
+                    std::make_unique<std::pmr::string>(min_index.value<physical_type::TEXT>(), resource_);
                 metadata->min_index = index_t(*string_storage_.back().first);
             }
-            if (metadata->max_index.type() == physical_type::STRING) {
+            if (metadata->max_index.type() == physical_type::TEXT) {
                 auto max_index = segments_.back().block->max_index();
                 string_storage_.back().second =
-                    std::make_unique<std::pmr::string>(max_index.value<physical_type::STRING>(), resource_);
+                    std::make_unique<std::pmr::string>(max_index.value<physical_type::TEXT>(), resource_);
                 metadata->max_index = index_t(*string_storage_.back().second);
             }
         }
@@ -1136,8 +1136,8 @@ namespace core::b_plus_tree {
         for (block_metadata* metadata = metadata_begin_; metadata < metadata_end_; metadata++) {
             segments_.emplace_back(node_t{nullptr, std::chrono::system_clock::now(), false});
             string_storage_.emplace_back();
-            if (metadata->min_index.type() == physical_type::STRING ||
-                metadata->max_index.type() == physical_type::STRING) {
+            if (metadata->min_index.type() == physical_type::TEXT ||
+                metadata->max_index.type() == physical_type::TEXT) {
                 load_segment_(metadata);
                 // an unread stand-in's min/max_index() are the range's extremes, not this block's
                 if (!segments_.back().block || segments_.back().unreadable) {
@@ -1252,7 +1252,7 @@ namespace core::b_plus_tree {
     }
 
     void segment_tree_t::abandon_leaf_(load_failure_t failure) {
-        // a STRING min/max index is a pointer into this process; find_range_() must not dereference it stale
+        // a TEXT min/max index is a pointer into this process; find_range_() must not dereference it stale
         segments_.clear();
         string_storage_.clear();
         std::memset(static_cast<void*>(header_), 0, header_size);
@@ -1383,17 +1383,17 @@ namespace core::b_plus_tree {
         using components::types::physical_type;
         index_t min_index = pos->block->min_index();
         auto index_storage = string_storage_.begin() + (pos - segments_.begin());
-        if (min_index.type() == physical_type::STRING) {
+        if (min_index.type() == physical_type::TEXT) {
             index_storage->first =
-                std::make_unique<std::pmr::string>(min_index.value<physical_type::STRING>(), resource_);
+                std::make_unique<std::pmr::string>(min_index.value<physical_type::TEXT>(), resource_);
             metadata->min_index = index_t(*index_storage->first); //change reference to internal storage
         } else {
             metadata->min_index = min_index;
         }
         index_t max_index = pos->block->max_index();
-        if (max_index.type() == physical_type::STRING) {
+        if (max_index.type() == physical_type::TEXT) {
             index_storage->second =
-                std::make_unique<std::pmr::string>(max_index.value<physical_type::STRING>(), resource_);
+                std::make_unique<std::pmr::string>(max_index.value<physical_type::TEXT>(), resource_);
             metadata->max_index = index_t(*index_storage->second); //change reference to internal storage
         } else {
             metadata->max_index = max_index;

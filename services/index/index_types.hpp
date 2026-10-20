@@ -115,7 +115,7 @@ namespace services::index {
                 return fixed.template operator()<float>();
             case physical_type::DOUBLE:
                 return fixed.template operator()<double>();
-            case physical_type::STRING: {
+            case physical_type::TEXT: {
                 const auto* texts = keys.data<std::string_view>();
                 for (size_t row = 0; row < count; ++row) {
                     if (!validity.row_is_valid(row)) {

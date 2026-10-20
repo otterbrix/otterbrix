@@ -33,7 +33,7 @@ namespace {
     // A single-row cursor with `marker` in the QUERY PLAN column, standing in for a host renderer's output.
     cursor_t_ptr marker_cursor(std::pmr::memory_resource* mr, std::string_view marker) {
         std::pmr::vector<types::complex_logical_type> types(mr);
-        types.emplace_back(types::logical_type::STRING_LITERAL, "QUERY PLAN");
+        types.emplace_back(types::logical_type::TEXT, "QUERY PLAN");
         vector::data_chunk_t chunk(mr, types, 1);
         chunk.set_cardinality(1);
         chunk.set_value(0, 0, marker);

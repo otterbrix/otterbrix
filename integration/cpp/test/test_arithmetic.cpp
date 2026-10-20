@@ -1901,7 +1901,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     }
 }
 
-// UPDATE SET <col> = <col> << 1 on a DOUBLE/STRING column used to report success while writing
+// UPDATE SET <col> = <col> << 1 on a DOUBLE/TEXT column used to report success while writing
 // 0 (resp. '') — the shift kernel's non-integer branch was an assert-only stub, erased in
 // Release, leaving the destination unwritten. Such updates must fail, not corrupt silently.
 TEST_CASE("integration::cpp::test_arithmetic::update_bitshift_non_integer_rejected") {

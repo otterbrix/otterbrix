@@ -173,7 +173,7 @@ def build_setup_sql(
     """
     lines = [
         f"-- @database {db_name}",
-        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload STRING) ;",
+        f"CREATE TABLE {TABLE_NAME} (id INTEGER, payload TEXT) ;",
     ]
     if csv_path is not None:
         # Relative path: @load_csv is tokenized on spaces (no absolute paths with spaces).

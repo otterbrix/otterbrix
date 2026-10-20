@@ -159,7 +159,7 @@ namespace components::table {
         resolve_overflow_block(column_segment_t& segment, uint64_t block_id, core::error_t& error) {
             auto* raw_state = segment.segment_state();
             if (!raw_state) {
-                error = string_read_error(segment, "fetch_string: STRING segment has no segment state", block_id);
+                error = string_read_error(segment, "fetch_string: TEXT segment has no segment state", block_id);
                 return nullptr;
             }
             auto& string_state = raw_state->cast<uncompressed_string_segment_state>();
@@ -390,7 +390,7 @@ namespace components::table {
             }
             if (state.result_outlives_pins) {
                 auto aux_buffer = result.auxiliary();
-                if (!aux_buffer || aux_buffer->type() != vector::vector_buffer_type::STRING) {
+                if (!aux_buffer || aux_buffer->type() != vector::vector_buffer_type::TEXT) {
                     aux_buffer = std::make_shared<vector::string_vector_buffer_t>(result.resource());
                     result.set_auxiliary(aux_buffer);
                 }
@@ -1008,7 +1008,7 @@ namespace components::table {
             auto result_data = result.data<std::string_view>();
 
             auto aux_buffer = result.auxiliary();
-            if (!aux_buffer || aux_buffer->type() != vector::vector_buffer_type::STRING) {
+            if (!aux_buffer || aux_buffer->type() != vector::vector_buffer_type::TEXT) {
                 aux_buffer = std::make_shared<vector::string_vector_buffer_t>(result.resource());
                 result.set_auxiliary(aux_buffer);
             }
@@ -1068,7 +1068,7 @@ namespace components::table {
                     memset(pinned.value().ptr(), 0xFF, this->segment_size());
                 }
             }
-        } else if (type.type() == types::logical_type::STRING_LITERAL) {
+        } else if (type.type() == types::logical_type::TEXT) {
             auto& buffer_manager = this->block->buffer_manager;
             if (block_id_ == storage::INVALID_BLOCK) {
                 auto pinned = buffer_manager.pin(this->block);
@@ -1132,7 +1132,7 @@ namespace components::table {
     bool column_segment_t::references_string_overflow(const std::byte* segment_data,
                                                       uint64_t segment_size,
                                                       uint64_t tuple_count) const {
-        if (type.to_physical_type() != types::physical_type::STRING || !segment_data || tuple_count == 0) {
+        if (type.to_physical_type() != types::physical_type::TEXT || !segment_data || tuple_count == 0) {
             return false;
         }
         if (segment_size < impl::DICTIONARY_HEADER_SIZE + tuple_count * sizeof(int32_t)) {
@@ -1159,7 +1159,7 @@ namespace components::table {
 
         auto corrupt = [&](const char* what) {
             std::pmr::string message(resource);
-            message.append("checkpoint of STRING segment: ");
+            message.append("checkpoint of TEXT segment: ");
             message.append(what);
             return core::error_t(core::error_code_t::data_corruption, std::move(message));
         };
@@ -1236,7 +1236,7 @@ namespace components::table {
         auto* resource = block->buffer_manager.resource();
         auto corrupt = [&](const char* what) {
             std::pmr::string message(resource);
-            message.append("checkpoint of STRING segment: ");
+            message.append("checkpoint of TEXT segment: ");
             message.append(what);
             return core::error_t(core::error_code_t::data_corruption, std::move(message));
         };
@@ -1430,7 +1430,7 @@ namespace components::table {
                                                             result_idx);
             case types::physical_type::BIT:
                 return impl::validity_fetch_row(*this, state, static_cast<int64_t>(row_id - start), result, result_idx);
-            case types::physical_type::STRING:
+            case types::physical_type::TEXT:
                 return impl::string_fetch_row(*this, state, static_cast<int64_t>(row_id - start), result, result_idx);
             default:
                 state.fetch_error = impl::unsupported_segment_type_error(*this, "column_segment_t::fetch_row");
@@ -1517,7 +1517,7 @@ namespace components::table {
                 return impl::append<uint64_t, impl::list_fixed_size_t>(*state.handle, *this, data, offset, count);
             case types::physical_type::BIT:
                 return impl::validity_append(*state.handle, *this, data, offset, count);
-            case types::physical_type::STRING:
+            case types::physical_type::TEXT:
                 return impl::string_append(*this, data, offset, count);
             default:
                 return impl::unsupported_segment_type_error(*this, "column_segment_t::append");
@@ -1550,7 +1550,7 @@ namespace components::table {
             case types::physical_type::BIT:
                 return ((count + vector::DEFAULT_VECTOR_CAPACITY - 1) / vector::DEFAULT_VECTOR_CAPACITY) *
                        vector::validity_mask_t::STANDARD_MASK_SIZE;
-            case types::physical_type::STRING: {
+            case types::physical_type::TEXT: {
                 auto& buffer_manager = block->buffer_manager;
                 auto pinned = buffer_manager.pin(block);
                 if (pinned.has_error()) {
@@ -1651,7 +1651,7 @@ namespace components::table {
             case types::physical_type::BIT:
                 impl::validity_scan(*this, state, scan_count, result);
                 break;
-            case types::physical_type::STRING:
+            case types::physical_type::TEXT:
                 impl::string_scan_partial(*this, state, scan_count, result, 0);
                 break;
             default:
@@ -1727,7 +1727,7 @@ namespace components::table {
             case types::physical_type::BIT:
                 impl::validity_scan_partial(*this, state, scan_count, result, result_offset);
                 break;
-            case types::physical_type::STRING:
+            case types::physical_type::TEXT:
                 impl::string_scan_partial(*this, state, scan_count, result, result_offset);
                 break;
             default:

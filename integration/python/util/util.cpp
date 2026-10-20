@@ -43,7 +43,7 @@ namespace otterbrix { namespace util {
                 return std::to_string(value.get_value<float>(0));
             case physical_type::DOUBLE:
                 return std::to_string(value.get_value<double>(0));
-            case physical_type::STRING:
+            case physical_type::TEXT:
                 return std::string(value.get_value<std::string_view>(0));
             default:
                 return core::error_t{core::error_code_t::conversion_failure,

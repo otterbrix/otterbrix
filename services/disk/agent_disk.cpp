@@ -2625,8 +2625,8 @@ namespace services::disk {
                 }
                 auto src_type = row.data[i].type().type();
                 auto tgt_type = column_type->type();
-                if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::STRING_LITERAL) &&
-                    (is_numeric(tgt_type) || tgt_type == logical_type::STRING_LITERAL)) {
+                if (src_type != tgt_type && (is_numeric(src_type) || src_type == logical_type::TEXT) &&
+                    (is_numeric(tgt_type) || tgt_type == logical_type::TEXT)) {
                     auto& src_vec = row.data[i];
                     auto target_type = *column_type;
                     if (src_vec.type().has_alias()) {

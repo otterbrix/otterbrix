@@ -229,11 +229,11 @@ TEST_CASE("integration::cpp::correctness_bugs::alias_collision") {
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.a (name STRING, val INT);")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.a (name TEXT, val INT);")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.b (name STRING, val INT);")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.b (name TEXT, val INT);")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -281,11 +281,11 @@ TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.x (id INT, a STRING, b STRING);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.x (id INT, a TEXT, b TEXT);")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.y (id INT, c STRING);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.y (id INT, c TEXT);")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -367,7 +367,7 @@ TEST_CASE("integration::cpp::correctness_bugs::count_case_no_else") {
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.x (status STRING);")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE t.x (status TEXT);")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -552,7 +552,7 @@ TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
                 ->is_success());
     }
 
-    SECTION("6a scan-pushed STRING compare to ENUM") {
+    SECTION("6a scan-pushed TEXT compare to ENUM") {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT * FROM t.e WHERE kind=CAST('even' AS oddness_t);");
         INFO("6a error: " << (cur->is_error() ? cur->get_error().what : "none"));
@@ -2610,16 +2610,6 @@ TEST_CASE("integration::cpp::correctness_bugs::union_with_null_scalar_subquery_k
     CHECK(column_type(*reversed, 0) == components::types::logical_type::INTEGER);
 }
 
-TEST_CASE("integration::cpp::correctness_bugs::values_mixed_types_bigint_and_decimal_refused") {
-    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/values_int_dec"));
-    test_spaces space(config);
-    auto* dispatcher = space.dispatcher();
-
-    auto cur = test_helpers::exec(dispatcher, "VALUES (1), (2.5);");
-    INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
-    CHECK(cur->is_error());
-}
-
 TEST_CASE("integration::cpp::correctness_bugs::values_mixed_types_text_and_bigint_refused") {
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/values_text_int"));
     test_spaces space(config);
@@ -3723,15 +3713,23 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     CHECK_THAT(cell147.value(), Catch::Matchers::WithinULP(2.5, 0));
 }
 
-TEST_CASE("integration::cpp::correctness_bugs::values_mismatch_error_names_both_types") {
+// PostgreSQL transformValuesClause: a VALUES column takes the common type of all its values.
+TEST_CASE("integration::cpp::correctness_bugs::values_column_of_mixed_numbers") {
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/values_msg"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
     auto cur = test_helpers::exec(dispatcher, "VALUES (1), (2.5);");
-    REQUIRE(cur->is_error());
-    CHECK(cur->get_error().what.find("VALUES types bigint and double precision cannot be matched") !=
-          std::string::npos);
+    INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 2);
+    CHECK(cur->type_data().front().type() == components::types::logical_type::DOUBLE);
+    auto first = cur->get<double>(0, 0);
+    REQUIRE_FALSE(first.has_error());
+    CHECK_THAT(first.value(), Catch::Matchers::WithinULP(1.0, 0));
+    auto second = cur->get<double>(0, 1);
+    REQUIRE_FALSE(second.has_error());
+    CHECK_THAT(second.value(), Catch::Matchers::WithinULP(2.5, 0));
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::insert_values_range_error_names_the_column_type") {
@@ -3802,16 +3800,29 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_lone_empty_array_st
     CHECK(inserted);
 }
 
+// 'a' takes the column's bigint type, and is no bigint.
 TEST_CASE("integration::cpp::correctness_bugs::values_text_after_a_full_chunk_is_refused") {
     auto error = values_error_with_rows("values_chunk_text", 1024, "('a')");
-    INFO("error: " << error);
-    CHECK(error.find("cannot be matched") != std::string::npos);
+    CHECK_FALSE(error.empty());
 }
 
-TEST_CASE("integration::cpp::correctness_bugs::values_decimal_after_a_full_chunk_is_refused") {
-    auto error = values_error_with_rows("values_chunk_dec", 1024, "(2.5)");
-    INFO("error: " << error);
-    CHECK(error.find("cannot be matched") != std::string::npos);
+// The common type reaches the rows of every chunk, not only the one holding the differing value.
+TEST_CASE("integration::cpp::correctness_bugs::values_decimal_after_a_full_chunk") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/values_chunk_dec"));
+    test_spaces space(config);
+    std::string sql = "SELECT sum(column1) FROM (VALUES (1)";
+    for (size_t i = 1; i < 1024; ++i) {
+        sql += ", (1)";
+    }
+    sql += ", (2.5)) v;";
+    auto cur = test_helpers::exec(space.dispatcher(), sql);
+    INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 1);
+    CHECK(cur->type_data().front().type() == components::types::logical_type::DOUBLE);
+    auto sum = cur->get<double>(0, 0);
+    REQUIRE_FALSE(sum.has_error());
+    CHECK_THAT(sum.value(), Catch::Matchers::WithinULP(1026.5, 0));
 }
 
 TEST_CASE("integration::cpp::correctness_bugs::values_null_chunk_then_value_has_one_type") {

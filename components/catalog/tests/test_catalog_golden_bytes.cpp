@@ -87,7 +87,7 @@ TEST_CASE("catalog golden: DEFAULT scalars") {
     auto bigint = decode_spec(complex_logical_type{logical_type::BIGINT}, "V010E2A00000000000000");
     REQUIRE(bigint.has_value());
     REQUIRE(bigint->get_value<std::int64_t>(0) == 42);
-    auto text = decode_spec(complex_logical_type{logical_type::STRING_LITERAL}, "V012303000000616263");
+    auto text = decode_spec(complex_logical_type{logical_type::TEXT}, "V012303000000616263");
     REQUIRE(text.has_value());
     REQUIRE(text->get_value<std::string_view>(0) == "abc");
 }
@@ -142,7 +142,7 @@ TEST_CASE("catalog golden: DEFAULT nested LIST, ARRAY, STRUCT") {
     SECTION("STRUCT") {
         std::pmr::vector<complex_logical_type> fields{arena()};
         fields.emplace_back(complex_logical_type{logical_type::BIGINT, "a"});
-        fields.emplace_back(complex_logical_type{logical_type::STRING_LITERAL, "b"});
+        fields.emplace_back(complex_logical_type{logical_type::TEXT, "b"});
         const auto type = complex_logical_type::create_struct("s", fields);
         const vec::vector_t values[] = {scalar(std::int64_t{42}), scalar(std::string{"x"})};
         const std::string spec = "V0164"
@@ -216,10 +216,10 @@ TEST_CASE("catalog golden: DEFAULT remaining scalar widths and temporal types") 
 }
 
 TEST_CASE("catalog golden: DEFAULT further nested shapes") {
-    const complex_logical_type text{logical_type::STRING_LITERAL};
+    const complex_logical_type text{logical_type::TEXT};
     const complex_logical_type integer{logical_type::INTEGER};
 
-    SECTION("LIST of STRING") {
+    SECTION("LIST of TEXT") {
         const vec::vector_t items[] = {scalar(std::string{"a"}), scalar(std::string{"bc"})};
         const std::string spec = "V0165"
                                  "02000000"
@@ -243,7 +243,7 @@ TEST_CASE("catalog golden: DEFAULT further nested shapes") {
     SECTION("STRUCT with a NULL field") {
         std::pmr::vector<complex_logical_type> fields{arena()};
         fields.emplace_back(complex_logical_type{logical_type::BIGINT, "a"});
-        fields.emplace_back(complex_logical_type{logical_type::STRING_LITERAL, "b"});
+        fields.emplace_back(complex_logical_type{logical_type::TEXT, "b"});
         const auto type = complex_logical_type::create_struct("s", fields);
         const vec::vector_t values[] = {vec::make_null(arena(), complex_logical_type{logical_type::BIGINT}),
                                         scalar(std::string{"x"})};

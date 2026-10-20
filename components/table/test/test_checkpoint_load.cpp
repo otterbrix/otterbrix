@@ -172,7 +172,7 @@ TEST_CASE("checkpoint_load: single INT64 column, 1000 rows") {
     cleanup_test_file();
 }
 
-TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
+TEST_CASE("checkpoint_load: three columns INT64 + TEXT + DOUBLE") {
     using namespace components::table;
     using namespace components::table::storage;
     using namespace components::types;
@@ -190,7 +190,7 @@ TEST_CASE("checkpoint_load: three columns INT64 + STRING + DOUBLE") {
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("id", logical_type::BIGINT);
-        columns.emplace_back("name", logical_type::STRING_LITERAL);
+        columns.emplace_back("name", logical_type::TEXT);
         columns.emplace_back("score", logical_type::DOUBLE);
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "multi_col");
 
@@ -1139,7 +1139,7 @@ TEST_CASE("checkpoint_load: STRUCT column round-trips its fields") {
 
     std::pmr::vector<complex_logical_type> fields(&env.resource);
     fields.emplace_back(logical_type::BIGINT, "num");
-    fields.emplace_back(logical_type::STRING_LITERAL, "name");
+    fields.emplace_back(logical_type::TEXT, "name");
     auto struct_type = complex_logical_type::create_struct("pair", fields);
 
     meta_block_pointer_t table_pointer;
@@ -1230,7 +1230,7 @@ TEST_CASE("checkpoint_load: NULL validity round-trips, reopen allocates no new b
 
         std::vector<column_definition_t> columns;
         columns.emplace_back("v", logical_type::BIGINT);
-        columns.emplace_back("s", logical_type::STRING_LITERAL);
+        columns.emplace_back("s", logical_type::TEXT);
         auto table = std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "null_table");
 
         auto types = table->copy_types();

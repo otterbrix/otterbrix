@@ -3,7 +3,7 @@
 //           pin of a disk-loaded offsets segment the same exhaustion evicted.
 //   R3..R4: the transaction revert (data_table_t::revert_append after finalize_append), same read;
 //           R4 reverts two ranges in reverse order, as a multi-statement rollback does.
-//   R5:     a STRING/validity cut inside a transient segment; spilled under the exhaustion, a pin
+//   R5:     a TEXT/validity cut inside a transient segment; spilled under the exhaustion, a pin
 //           of its block would need memory too.
 //   C1..C2: STRUCT and ARRAY controls: no read in their unwind.
 
@@ -318,11 +318,11 @@ namespace {
 
 } // namespace
 
-// R1. LIST<STRING> reloaded: its offsets segment is disk-loaded. 40 x 1000-byte elements fill the
+// R1. LIST<TEXT> reloaded: its offsets segment is disk-loaded. 40 x 1000-byte elements fill the
 // element column's first transient segment; the second one is refused. Reading row 0's end offset
 // in the unwind would need a pin of the evicted offsets segment, which the pool refuses as well.
-TEST_CASE("list_revert_pin: R1 LIST<STRING> reloaded, refused append under pool exhaustion", "[list_revert_pin][r1]") {
-    const auto list_type = complex_logical_type::create_list(logical_type::STRING_LITERAL);
+TEST_CASE("list_revert_pin: R1 LIST<TEXT> reloaded, refused append under pool exhaustion", "[list_revert_pin][r1]") {
+    const auto list_type = complex_logical_type::create_list(logical_type::TEXT);
     refused_after_reload(
         "r1",
         list_type,
@@ -333,10 +333,10 @@ TEST_CASE("list_revert_pin: R1 LIST<STRING> reloaded, refused append under pool 
         check_list_ok);
 }
 
-// R2. LIST<LIST<STRING>>: both LIST levels would read a stored offset in their unwind.
-TEST_CASE("list_revert_pin: R2 LIST<LIST<STRING>> reloaded, refused append under pool exhaustion",
+// R2. LIST<LIST<TEXT>>: both LIST levels would read a stored offset in their unwind.
+TEST_CASE("list_revert_pin: R2 LIST<LIST<TEXT>> reloaded, refused append under pool exhaustion",
           "[list_revert_pin][r2]") {
-    const auto inner_type = complex_logical_type::create_list(logical_type::STRING_LITERAL);
+    const auto inner_type = complex_logical_type::create_list(logical_type::TEXT);
     const auto outer_type = complex_logical_type::create_list(inner_type);
     refused_after_reload(
         "r2",
@@ -355,12 +355,12 @@ TEST_CASE("list_revert_pin: R2 LIST<LIST<STRING>> reloaded, refused append under
         });
 }
 
-// C1. STRUCT<STRING>: the unwind cuts a fresh transient segment per child (erased, no pin).
-TEST_CASE("list_revert_pin: C1 STRUCT<STRING> reloaded, refused append under pool exhaustion (control)",
+// C1. STRUCT<TEXT>: the unwind cuts a fresh transient segment per child (erased, no pin).
+TEST_CASE("list_revert_pin: C1 STRUCT<TEXT> reloaded, refused append under pool exhaustion (control)",
           "[list_revert_pin][c1]") {
     core::pmr::otterbrix_resource type_resource;
     std::pmr::vector<complex_logical_type> field_types(&type_resource);
-    field_types.emplace_back(logical_type::STRING_LITERAL, "s");
+    field_types.emplace_back(logical_type::TEXT, "s");
     const auto struct_type = complex_logical_type::create_struct("rec", field_types, "rec_t");
     refused_after_reload(
         "c1",
@@ -382,10 +382,10 @@ TEST_CASE("list_revert_pin: C1 STRUCT<STRING> reloaded, refused append under poo
         });
 }
 
-// C2. ARRAY<STRING, 1>: same shape as C1 with the child addressed in elements.
-TEST_CASE("list_revert_pin: C2 ARRAY<STRING> reloaded, refused append under pool exhaustion (control)",
+// C2. ARRAY<TEXT, 1>: same shape as C1 with the child addressed in elements.
+TEST_CASE("list_revert_pin: C2 ARRAY<TEXT> reloaded, refused append under pool exhaustion (control)",
           "[list_revert_pin][c2]") {
-    const auto array_type = complex_logical_type::create_array(logical_type::STRING_LITERAL, 1);
+    const auto array_type = complex_logical_type::create_array(logical_type::TEXT, 1);
     refused_after_reload(
         "c2",
         array_type,
@@ -396,7 +396,7 @@ TEST_CASE("list_revert_pin: C2 ARRAY<STRING> reloaded, refused append under pool
             }
             std::vector<vector_t> values;
             values.push_back(make_scalar(&env.resource, std::string_view{big}));
-            return make_array(&env.resource, complex_logical_type{logical_type::STRING_LITERAL}, values);
+            return make_array(&env.resource, complex_logical_type{logical_type::TEXT}, values);
         },
         5,
         [](const vector_t& cell) {
@@ -406,15 +406,15 @@ TEST_CASE("list_revert_pin: C2 ARRAY<STRING> reloaded, refused append under pool
         });
 }
 
-// R3. The transaction path: a reloaded LIST<STRING> table takes an uncommitted row; the pool is
+// R3. The transaction path: a reloaded LIST<TEXT> table takes an uncommitted row; the pool is
 // exhausted when the transaction's revert runs (storage_revert_appends_inner ->
 // data_table_t::revert_append).
-TEST_CASE("list_revert_pin: R3 LIST<STRING> reloaded, transaction revert under pool exhaustion",
+TEST_CASE("list_revert_pin: R3 LIST<TEXT> reloaded, transaction revert under pool exhaustion",
           "[list_revert_pin][r3]") {
     const std::string path = db_path("r3");
     std::remove(path.c_str());
     env_t env;
-    const auto list_type = complex_logical_type::create_list(logical_type::STRING_LITERAL);
+    const auto list_type = complex_logical_type::create_list(logical_type::TEXT);
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.create_new_database().has_error());
@@ -470,14 +470,14 @@ TEST_CASE("list_revert_pin: R3 LIST<STRING> reloaded, transaction revert under p
 }
 
 // R4. A multi-statement rollback: two uncommitted one-row statements on a fresh (never reloaded)
-// LIST<STRING> table, reverted in reverse order as storage_revert_appends_inner does, with the
+// LIST<TEXT> table, reverted in reverse order as storage_revert_appends_inner does, with the
 // pool exhausted: the transient segments were spilled, so a read would need memory again.
-TEST_CASE("list_revert_pin: R4 LIST<STRING> two statements reverted in reverse order under pool exhaustion",
+TEST_CASE("list_revert_pin: R4 LIST<TEXT> two statements reverted in reverse order under pool exhaustion",
           "[list_revert_pin][r4]") {
     const std::string path = db_path("r4");
     std::remove(path.c_str());
     env_t env;
-    const auto list_type = complex_logical_type::create_list(logical_type::STRING_LITERAL);
+    const auto list_type = complex_logical_type::create_list(logical_type::TEXT);
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.create_new_database().has_error());
@@ -530,24 +530,23 @@ TEST_CASE("list_revert_pin: R4 LIST<STRING> two statements reverted in reverse o
     std::remove(path.c_str());
 }
 
-// R5. STRING: a committed row and an uncommitted row share one transient segment. The revert cuts
+// R5. TEXT: a committed row and an uncommitted row share one transient segment. The revert cuts
 // inside the segment; rolling the dictionary back through a pin of its block would need memory, the
 // block being spilled under the exhaustion.
-TEST_CASE("list_revert_pin: R5 STRING transaction revert inside a spilled transient segment", "[list_revert_pin][r5]") {
+TEST_CASE("list_revert_pin: R5 TEXT transaction revert inside a spilled transient segment", "[list_revert_pin][r5]") {
     const std::string path = db_path("r5");
     std::remove(path.c_str());
     env_t env;
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.create_new_database().has_error());
-        auto table = make_table(env, bm, complex_logical_type{logical_type::STRING_LITERAL});
+        auto table = make_table(env, bm, complex_logical_type{logical_type::TEXT});
         auto seed = one_row(env, *table, 1, make_scalar(&env.resource, std::string_view{"seed"}));
         committed_append(*table, seed, env);
         auto pending = one_row(env, *table, 7, make_scalar(&env.resource, std::string_view{"rolled-back"}));
         transaction_append(*table, pending, env, 5);
         // A NULL row too: its cleared validity bit must be valid again before the row is reused.
-        auto pending_null =
-            one_row(env, *table, 7, make_null(&env.resource, complex_logical_type{logical_type::STRING_LITERAL}));
+        auto pending_null = one_row(env, *table, 7, make_null(&env.resource, complex_logical_type{logical_type::TEXT}));
         transaction_append(*table, pending_null, env, 5);
         REQUIRE(column_of(*table, 1).count() == 3);
 
@@ -595,7 +594,7 @@ TEST_CASE("list_revert_pin: a revert from inside an append session is refused", 
     const std::string path = db_path("contract");
     std::remove(path.c_str());
     env_t env;
-    const auto list_type = complex_logical_type::create_list(logical_type::STRING_LITERAL);
+    const auto list_type = complex_logical_type::create_list(logical_type::TEXT);
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.create_new_database().has_error());
@@ -686,12 +685,12 @@ TEST_CASE("list_revert_pin: a session begun before ADD COLUMN reverts after it",
     const std::string path = db_path("alter_add");
     std::remove(path.c_str());
     env_t env;
-    const auto list_type = complex_logical_type::create_list(logical_type::STRING_LITERAL);
+    const auto list_type = complex_logical_type::create_list(logical_type::TEXT);
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.create_new_database().has_error());
         auto table = table_with_open_session(env, bm, list_type);
-        column_definition_t added("w", complex_logical_type::create_list(logical_type::STRING_LITERAL));
+        column_definition_t added("w", complex_logical_type::create_list(logical_type::TEXT));
         auto extended = std::make_unique<data_table_t>(*table, added);
         REQUIRE_FALSE(extended->has_construction_error());
 
@@ -719,7 +718,7 @@ TEST_CASE("list_revert_pin: a session begun before DROP COLUMN reverts after it"
     const std::string path = db_path("alter_drop");
     std::remove(path.c_str());
     env_t env;
-    const auto list_type = complex_logical_type::create_list(logical_type::STRING_LITERAL);
+    const auto list_type = complex_logical_type::create_list(logical_type::TEXT);
     {
         tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
         REQUIRE(!bm.create_new_database().has_error());

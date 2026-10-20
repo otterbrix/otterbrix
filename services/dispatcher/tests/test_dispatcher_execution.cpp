@@ -658,9 +658,7 @@ TEST_CASE("services::dispatcher::attdefspec_type_tag_refuses_every_wrong_type_pa
         {"UBIGINT", complex_logical_type{logical_type::UBIGINT}, vec::make_scalar(resource, std::uint64_t{7})},
         {"FLOAT", complex_logical_type{logical_type::FLOAT}, vec::make_scalar(resource, 7.0F)},
         {"DOUBLE", complex_logical_type{logical_type::DOUBLE}, vec::make_scalar(resource, 7.0)},
-        {"STRING_LITERAL",
-         complex_logical_type{logical_type::STRING_LITERAL},
-         vec::make_scalar(resource, std::string{"seven"})},
+        {"TEXT", complex_logical_type{logical_type::TEXT}, vec::make_scalar(resource, std::string{"seven"})},
         {"DATE",
          complex_logical_type{logical_type::DATE},
          vec::make_scalar(resource, complex_logical_type{logical_type::DATE}, std::int32_t{7})},
@@ -731,7 +729,7 @@ TEST_CASE("services::dispatcher::attdefspec_type_tag_spares_null_and_reaches_eve
                           vec::make_null(resource, complex_logical_type{logical_type::BIGINT}),
                           null_spec)
                           .contains_error());
-        for (const auto t : {logical_type::BIGINT, logical_type::TIMESTAMP, logical_type::STRING_LITERAL}) {
+        for (const auto t : {logical_type::BIGINT, logical_type::TIMESTAMP, logical_type::TEXT}) {
             std::optional<vec::vector_t> out;
             REQUIRE_FALSE(components::catalog::decode_default_spec(resource, complex_logical_type{t}, null_spec, out)
                               .contains_error());
@@ -775,13 +773,13 @@ TEST_CASE("services::dispatcher::attdefspec_type_tag_spares_null_and_reaches_eve
     {
         std::pmr::vector<complex_logical_type> good_fields{resource};
         good_fields.emplace_back(complex_logical_type{logical_type::BIGINT, "n"});
-        good_fields.emplace_back(complex_logical_type{logical_type::STRING_LITERAL, "s"});
+        good_fields.emplace_back(complex_logical_type{logical_type::TEXT, "s"});
         const auto good = complex_logical_type::create_struct("s", good_fields);
 
         // The ONLY difference is field 0: BIGINT becomes TIMESTAMP, same eight bytes.
         std::pmr::vector<complex_logical_type> bad_fields{resource};
         bad_fields.emplace_back(complex_logical_type{logical_type::TIMESTAMP, "n"});
-        bad_fields.emplace_back(complex_logical_type{logical_type::STRING_LITERAL, "s"});
+        bad_fields.emplace_back(complex_logical_type{logical_type::TEXT, "s"});
         const auto bad = complex_logical_type::create_struct("s", bad_fields);
 
         const vec::vector_t fields[] = {vec::make_scalar(resource, std::int64_t{42}),

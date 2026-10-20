@@ -38,7 +38,7 @@ TEST_CASE("components::sql::array_null_literal::an_array_of_only_NULL_is_text") 
     SECTION("array[NULL]") {
         auto v = inserted_literal(transformer, arena, "INSERT INTO t (v) VALUES (ARRAY[NULL]);");
         REQUIRE(v.type().type() == logical_type::ARRAY);
-        CHECK(v.type().child_type().type() == logical_type::STRING_LITERAL);
+        CHECK(v.type().child_type().type() == logical_type::TEXT);
         const auto seq = components::vector::sequence_of(v, 0);
         REQUIRE(seq.length == 1);
         CHECK(seq.child->is_null(seq.offset));
@@ -47,7 +47,7 @@ TEST_CASE("components::sql::array_null_literal::an_array_of_only_NULL_is_text") 
     SECTION("array[NULL, NULL]") {
         auto v = inserted_literal(transformer, arena, "INSERT INTO t (v) VALUES (ARRAY[NULL, NULL]);");
         REQUIRE(v.type().type() == logical_type::ARRAY);
-        CHECK(v.type().child_type().type() == logical_type::STRING_LITERAL);
+        CHECK(v.type().child_type().type() == logical_type::TEXT);
         REQUIRE(components::vector::sequence_of(v, 0).length == 2);
     }
 
@@ -55,7 +55,7 @@ TEST_CASE("components::sql::array_null_literal::an_array_of_only_NULL_is_text") 
         auto v = inserted_literal(transformer, arena, "INSERT INTO t (v) VALUES (ARRAY[ARRAY[NULL]]);");
         REQUIRE(v.type().type() == logical_type::ARRAY);
         REQUIRE(v.type().child_type().type() == logical_type::ARRAY);
-        CHECK(v.type().child_type().child_type().type() == logical_type::STRING_LITERAL);
+        CHECK(v.type().child_type().child_type().type() == logical_type::TEXT);
     }
 
     SECTION("array[NULL, 1] keeps the typed element") {

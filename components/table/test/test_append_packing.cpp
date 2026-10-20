@@ -51,7 +51,7 @@ TEST_CASE("append_packing: blocks issued while appending stay proportional to th
     REQUIRE_FALSE(bm.create_new_database().has_error());
     std::vector<column_definition_t> columns;
     columns.emplace_back("id", logical_type::BIGINT);
-    columns.emplace_back("payload", logical_type::STRING_LITERAL);
+    columns.emplace_back("payload", logical_type::TEXT);
     data_table_t table(&env.resource, bm, std::move(columns), "packing");
     auto types = table.copy_types();
 

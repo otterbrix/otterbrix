@@ -169,7 +169,7 @@ namespace components::table {
         auto& block_manager = column_data_.block_manager();
 
         const auto phys = segment.type.to_physical_type();
-        const bool is_fixed_size = (phys != types::physical_type::STRING && phys != types::physical_type::BIT &&
+        const bool is_fixed_size = (phys != types::physical_type::TEXT && phys != types::physical_type::BIT &&
                                     phys != types::physical_type::INVALID);
         const auto loaded_compression = segment.compression();
 
@@ -180,7 +180,7 @@ namespace components::table {
         if (disk_backed) {
             const bool analyzable = is_fixed_size && tuple_count > 1 && segment.type_size > 0;
             const bool final_form = loaded_compression != compression::compression_type::UNCOMPRESSED ||
-                                    phys == types::physical_type::STRING || !analyzable;
+                                    phys == types::physical_type::TEXT || !analyzable;
             if (final_form) {
                 storage::data_pointer_t dp;
                 dp.row_start = row_start;
@@ -306,10 +306,10 @@ namespace components::table {
             return true;
         }
 
-        // A STRING segment persists a TIGHT image: compact_string_dictionary trims slack left by partial fills
+        // A TEXT segment persists a TIGHT image: compact_string_dictionary trims slack left by partial fills
         // (measured before this: 8000 rows of 4090-byte text cost 9635 bytes/row, 1365 of that pure slack),
         // and persist_string_overflow moves TRANSIENT overflow blocks into real file blocks before rewriting.
-        if (phys == types::physical_type::STRING && data && segment_size > 0 && tuple_count > 0) {
+        if (phys == types::physical_type::TEXT && data && segment_size > 0 && tuple_count > 0) {
             auto* segment_data = data + segment.block_offset();
             std::pmr::vector<std::byte> rewritten(segment_size, std::byte{0}, column_data_.resource());
             std::memcpy(rewritten.data(), segment_data, segment_size);

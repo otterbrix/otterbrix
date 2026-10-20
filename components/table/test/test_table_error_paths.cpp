@@ -199,7 +199,7 @@ TEST_CASE("components::table::a_failed_add_column_backfill_refuses_loudly") {
     auto table = std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "t");
     append_bigint_rows(*table, env, 0, 3000);
 
-    column_definition_t new_column("added", complex_logical_type(logical_type::STRING_LITERAL));
+    column_definition_t new_column("added", complex_logical_type(logical_type::TEXT));
     new_column.set_default_value(components::vector::make_scalar(&env.resource, std::string(300 * 1024, 'x')));
     auto extended = std::make_unique<data_table_t>(*table, new_column);
 

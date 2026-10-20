@@ -232,8 +232,7 @@ TEST_CASE("services::disk::wal_catalog::create_table_writes_pg_class_and_pg_attr
         auto ns_oid = test_create_namespace(fx, "ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-        cols.emplace_back("name",
-                          components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
+        cols.emplace_back("name", components::types::complex_logical_type{components::types::logical_type::TEXT});
         cols.emplace_back("count", components::types::complex_logical_type{components::types::logical_type::INTEGER});
         test_create_table(fx, ns_oid, "t", cols);
     }
@@ -527,11 +526,11 @@ TEST_CASE("services::disk::wal_catalog::a_refused_catalog_cast_leaves_no_journal
             REQUIRE(appended.has_error());
             CHECK(appended.error().type == core::error_code_t::conversion_failure);
         }
-        SECTION("a STRING for the UINTEGER oid column") {
-            auto row = pg_class_probe_row(
-                &fx.resource,
-                components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL},
-                FIRST_USER_OID);
+        SECTION("a TEXT for the UINTEGER oid column") {
+            auto row =
+                pg_class_probe_row(&fx.resource,
+                                   components::types::complex_logical_type{components::types::logical_type::TEXT},
+                                   FIRST_USER_OID);
             row.set_value(0, 0, std::string_view("12345"));
             auto appended = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_class, std::move(row));
             REQUIRE(appended.has_error());
@@ -583,7 +582,7 @@ TEST_CASE("services::disk::wal_catalog::a_partial_aliased_row_is_casted_by_colum
         };
         // Table order is oid, relname, relnamespace, ...; the row is shorter and in another order.
         std::pmr::vector<ct::complex_logical_type> types(&fx.resource);
-        types.push_back(alias(ct::logical_type::STRING_LITERAL, "relname"));
+        types.push_back(alias(ct::logical_type::TEXT, "relname"));
         types.push_back(alias(ct::logical_type::DOUBLE, "oid"));
         types.push_back(alias(ct::logical_type::UINTEGER, "relnamespace"));
         components::vector::data_chunk_t row(&fx.resource, types, 1);

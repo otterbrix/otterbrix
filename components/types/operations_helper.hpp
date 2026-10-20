@@ -133,7 +133,7 @@ namespace components::types {
                 return callback.template operator()<float>(std::forward<Args>(args)...);
             case physical_type::DOUBLE:
                 return callback.template operator()<double>(std::forward<Args>(args)...);
-            case physical_type::STRING:
+            case physical_type::TEXT:
                 return callback.template operator()<std::string_view>(std::forward<Args>(args)...);
             // case physical_type::NA:
             //     return callback.template operator()<std::nullptr_t>(std::forward<Args>(args)...);
@@ -177,7 +177,7 @@ namespace components::types {
                 return double_callback.template operator()<TypeLeft, float>(std::forward<Args>(args)...);
             case physical_type::DOUBLE:
                 return double_callback.template operator()<TypeLeft, double>(std::forward<Args>(args)...);
-            case physical_type::STRING:
+            case physical_type::TEXT:
                 return double_callback.template operator()<TypeLeft, std::string_view>(std::forward<Args>(args)...);
             // case physical_type::NA:
             //     return double_callback.template operator()<TypeLeft, std::nullptr_t>(std::forward<Args>(args)...);
@@ -218,7 +218,7 @@ namespace components::types {
                 return simple_physical_type_switch<DoubleCallback, float>(type_right, std::forward<Args>(args)...);
             case physical_type::DOUBLE:
                 return simple_physical_type_switch<DoubleCallback, double>(type_right, std::forward<Args>(args)...);
-            case physical_type::STRING:
+            case physical_type::TEXT:
                 return simple_physical_type_switch<DoubleCallback, std::string_view>(type_right,
                                                                                      std::forward<Args>(args)...);
             // case physical_type::NA:

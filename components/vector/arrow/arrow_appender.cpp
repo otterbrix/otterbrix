@@ -181,7 +181,7 @@ namespace components::vector::arrow {
                 }
                 break;
             }
-            case logical_type::STRING_LITERAL:
+            case logical_type::TEXT:
             case logical_type::BLOB:
                 initialize_appender_templated<appender::arrow_string_data_t<>>(append_data);
                 break;

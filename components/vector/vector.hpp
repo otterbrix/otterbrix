@@ -302,11 +302,11 @@ namespace components::vector {
         validity_.set(row_index, true);
 
         if constexpr (std::is_same_v<value_type, std::string_view>) {
-            assert(type_.type() == types::logical_type::STRING_LITERAL);
+            assert(type_.type() == types::logical_type::TEXT || type_.type() == types::logical_type::STRING_LITERAL);
             if (!auxiliary_) {
                 auxiliary_ = std::make_unique<string_vector_buffer_t>(resource());
             }
-            assert(auxiliary_->type() == vector_buffer_type::STRING);
+            assert(auxiliary_->type() == vector_buffer_type::TEXT);
             std::string_view stored = value;
             reinterpret_cast<std::string_view*>(data_)[row_index] = std::string_view(
                 reinterpret_cast<char*>(static_cast<string_vector_buffer_t*>(auxiliary_.get())->insert(stored)),

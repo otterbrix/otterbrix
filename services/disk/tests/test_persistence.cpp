@@ -218,8 +218,7 @@ TEST_CASE("services::disk::persistence::test_oid_persistence") {
 
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-        cols.emplace_back("name",
-                          components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
+        cols.emplace_back("name", components::types::complex_logical_type{components::types::logical_type::TEXT});
         table_oid = test_create_table(fd, ns_oid, "widgets", std::move(cols));
 
         auto rr = test_probe::probe_table(fd, fd.ctx(), ns_oid, std::string("widgets"));

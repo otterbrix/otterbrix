@@ -198,7 +198,7 @@ namespace services::index {
                 }
                 key_type = std::move(decimal.value());
             }
-            const bool is_string = key_type.to_physical_type() == physical_type::STRING;
+            const bool is_string = key_type.to_physical_type() == physical_type::TEXT;
             const size_t key_width = key_type.size();
             const auto remaining = [&cursor, end]() { return static_cast<size_t>(end - cursor); };
 
@@ -1217,13 +1217,13 @@ namespace services::index {
                 batch_header.decimal_width = decimal->width();
                 batch_header.decimal_scale = decimal->scale();
             }
-            is_string = key_type.to_physical_type() == physical_type::STRING;
+            is_string = key_type.to_physical_type() == physical_type::TEXT;
             key_width = key_type.size();
         }
 
         // Payload: [batch_header_t][row ids][keys]. Every row is written, a key as [value][is_valid u8]: a
-        // fixed-width value is its raw bytes, a STRING value [length u32][bytes]. An invalid row's value bytes are
-        // ignored on read; its STRING length is written as 0, so a NULL slot's view is never read.
+        // fixed-width value is its raw bytes, a TEXT value [length u32][bytes]. An invalid row's value bytes are
+        // ignored on read; its TEXT length is written as 0, so a NULL slot's view is never read.
         // TODO: pack validity bits together
         size_t key_bytes = 0;
         for (const auto& [keys, rows] : values.keys) {

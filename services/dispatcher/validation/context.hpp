@@ -6,9 +6,18 @@
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <services/dispatcher/validation/schema.hpp>
 
+#include <cstdint>
 #include <memory_resource>
 
 namespace services::dispatcher::validation {
+
+    // Plain SELECT transforms literals into TEXT,
+    // but if is included in INSERT, it has to stay untyped
+    enum class untyped_literals : uint8_t
+    {
+        become_text,
+        stay_untyped,
+    };
 
     struct validation_context_t {
         std::pmr::memory_resource* resource;

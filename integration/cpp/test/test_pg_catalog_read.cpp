@@ -19,7 +19,7 @@ TEST_CASE("integration::cpp::pg_catalog_read::pg_class_lists_user_tables") {
     auto* dispatcher = space.dispatcher();
 
     REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE readdb;")->is_success());
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE readdb.alpha (id BIGINT, name STRING);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE readdb.alpha (id BIGINT, name TEXT);")->is_success());
 
     {
         auto cursor =

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "context.hpp"
 #include "schema.hpp"
 
 #include <components/casts/cast_registry.hpp>
@@ -38,6 +39,9 @@ namespace services::dispatcher::validation {
         const named_schema* schema_right{nullptr};
         const std::pmr::vector<precomputed_column_t>* precomputed{nullptr};
         components::types::complex_logical_type required_type{components::types::logical_type::ANY};
+        // How the result may be converted to required_type: an assigned value (UPDATE SET) allows assignment casts.
+        components::casts::cast_type required_level{components::casts::cast_type::implicit};
+        untyped_literals literals{untyped_literals::become_text};
     };
 
     [[nodiscard]] core::error_t resolve_expression(components::expressions::expression_ptr& expression,

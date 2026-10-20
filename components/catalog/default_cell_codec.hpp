@@ -179,7 +179,7 @@ namespace components::catalog::cell_codec {
             case logical_type::DOUBLE:
                 append_le<double>(out, cell->data<double>()[at]);
                 return true;
-            case logical_type::STRING_LITERAL: {
+            case logical_type::TEXT: {
                 const auto s = cell->data<std::string_view>()[at];
                 append_le<uint32_t>(out, static_cast<uint32_t>(s.size()));
                 out.append(s.data(), s.size());
@@ -314,7 +314,7 @@ namespace components::catalog::cell_codec {
                 const auto v = read_le<double>(in, pos, &read_ok);
                 return read_ok ? scalar(v) : fail();
             }
-            case logical_type::STRING_LITERAL: {
+            case logical_type::TEXT: {
                 const auto n = read_le<uint32_t>(in, pos, &read_ok);
                 if (!read_ok || pos > in.size() || in.size() - pos < n) {
                     return fail();

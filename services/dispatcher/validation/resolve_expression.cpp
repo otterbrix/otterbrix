@@ -253,7 +253,7 @@ namespace services::dispatcher::validation {
                 std::pmr::vector<complex_logical_type> arguments(context_.resource);
                 arguments.push_back(subject);
                 arguments.push_back(pattern);
-                arguments.emplace_back(logical_type::STRING_LITERAL);
+                arguments.emplace_back(logical_type::TEXT);
                 auto resolved = resolve_function(context_.resource,
                                                  context_.cast_registry,
                                                  context_.execution_context,
@@ -293,7 +293,7 @@ namespace services::dispatcher::validation {
 
             // `probe <op> ANY|ALL (set)`: the set is a LIST or an ARRAY
             void resolve_quantified(compare_expression_t* comparison, bool inside_aggregate) {
-                const auto probe = slot(comparison->left(), inside_aggregate);
+                auto probe = slot(comparison->left(), inside_aggregate);
                 if (error_.contains_error()) {
                     return;
                 }
@@ -336,16 +336,24 @@ namespace services::dispatcher::validation {
                                  " ",
                                  components::catalog::format_type_be(right, false)));
                 };
+                // Text is the only type both checks below accept, so an untyped literal probe is text here.
+                if (probe.type() == logical_type::STRING_LITERAL && (match || element.type() == logical_type::NA)) {
+                    const complex_logical_type text{logical_type::TEXT};
+                    if (!require_type(comparison->left(), probe, text, "left side of ANY/ALL")) {
+                        return;
+                    }
+                    probe = text;
+                }
                 if (element.type() == logical_type::NA) {
                     // PostgreSQL resolves an untyped NULL column of a sub-select as text
-                    if (probe.type() != logical_type::STRING_LITERAL) {
-                        no_operator(probe, complex_logical_type{logical_type::STRING_LITERAL});
+                    if (probe.type() != logical_type::TEXT) {
+                        no_operator(probe, complex_logical_type{logical_type::TEXT});
                     }
                     return;
                 }
                 if (match) {
-                    if ((probe.type() != logical_type::STRING_LITERAL && probe.type() != logical_type::NA) ||
-                        element.type() != logical_type::STRING_LITERAL) {
+                    if ((probe.type() != logical_type::TEXT && probe.type() != logical_type::NA) ||
+                        element.type() != logical_type::TEXT) {
                         no_operator(probe, element);
                     }
                     return;
@@ -396,16 +404,28 @@ namespace services::dispatcher::validation {
                     case compare_type::all_unknown:
                         break;
                     case compare_type::regex: {
-                        const auto subject = slot(comparison->left(), inside_aggregate);
+                        auto subject = slot(comparison->left(), inside_aggregate);
                         if (error_.contains_error()) {
                             return;
                         }
                         auto combined = last_cardinality_;
-                        const auto pattern = slot(comparison->right(), inside_aggregate);
+                        auto pattern = slot(comparison->right(), inside_aggregate);
                         if (error_.contains_error()) {
                             return;
                         }
                         combined = combine(combined, last_cardinality_);
+                        // Both sides of a match are text; an untyped literal on either is text.
+                        const complex_logical_type text{logical_type::TEXT};
+                        for (auto [operand, operand_type] :
+                             {std::pair{&comparison->left(), &subject}, std::pair{&comparison->right(), &pattern}}) {
+                            if (operand_type->type() != logical_type::STRING_LITERAL) {
+                                continue;
+                            }
+                            if (!require_type(*operand, *operand_type, text, "operand of a match")) {
+                                return;
+                            }
+                            *operand_type = text;
+                        }
                         resolve_regex_uid(comparison, subject, pattern);
                         if (error_.contains_error()) {
                             return;
@@ -473,7 +493,8 @@ namespace services::dispatcher::validation {
                     combined = combine(combined, last_cardinality_);
                 }
 
-                if (binary && left_type != right_type) {
+                // Two literals still meet at a real type: text.
+                if (binary && (left_type != right_type || left_type.type() == logical_type::STRING_LITERAL)) {
                     std::pmr::vector<param_storage*> sides(context_.resource);
                     sides.push_back(&comparison->left());
                     sides.push_back(&comparison->right());
@@ -847,11 +868,12 @@ namespace services::dispatcher::validation {
             bool require_type(param_storage& operand,
                               const complex_logical_type& actual,
                               const complex_logical_type& wanted,
-                              std::string_view what) {
+                              std::string_view what,
+                              components::casts::cast_type level = components::casts::cast_type::implicit) {
                 if (wanted.type() == logical_type::ANY || actual.type() == wanted.type()) {
                     return true;
                 }
-                auto cast = context_.cast_registry.resolve(actual, wanted, components::casts::cast_type::implicit);
+                auto cast = context_.cast_registry.resolve(actual, wanted, level);
                 if (!cast.has_value()) {
                     fail(core::error_code_t::schema_error,
                          message(context_.resource,
@@ -884,8 +906,35 @@ namespace services::dispatcher::validation {
                 core::error_code_t::schema_error,
                 std::pmr::string{"could not resolve a concrete type for expression", context.resource});
         }
+        if (result_type.type() == logical_type::STRING_LITERAL && context.required_type.type() == logical_type::ANY &&
+            context.literals == untyped_literals::become_text) {
+            // Nothing gave the literal a type, so it is text (PostgreSQL resolveTargetListUnknowns).
+            complex_logical_type text{logical_type::TEXT};
+            if (result_type.has_alias()) {
+                text.set_alias(std::string(result_type.alias()));
+            }
+            if (expression->group() == expression_group::scalar &&
+                static_cast<scalar_expression_t*>(expression.get())->type() == scalar_type::constant) {
+                auto* constant = static_cast<scalar_expression_t*>(expression.get());
+                if (!resolver.require_type(constant->params()[0], result_type, text, "a literal")) {
+                    return resolver.take_error();
+                }
+                constant->set_result_type(text);
+                return core::error_t::no_error();
+            }
+            param_storage literal{expression};
+            if (!resolver.require_type(literal, result_type, text, "a literal")) {
+                return resolver.take_error();
+            }
+            expression = std::get<expression_ptr>(literal);
+            return core::error_t::no_error();
+        }
         param_storage required{expression};
-        if (!resolver.require_type(required, result_type, context.required_type, "argument of the clause")) {
+        if (!resolver.require_type(required,
+                                   result_type,
+                                   context.required_type,
+                                   "argument of the clause",
+                                   context.required_level)) {
             return resolver.take_error();
         }
         expression = std::get<expression_ptr>(required);

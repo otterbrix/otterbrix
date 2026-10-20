@@ -966,7 +966,7 @@ namespace {
 } // namespace
 
 TEST_CASE("execution_dag::membership over strings") {
-    const complex_logical_type text{logical_type::STRING_LITERAL};
+    const complex_logical_type text{logical_type::TEXT};
     check_family(
         text,
         [&](int id) { return make_scalar(resource(), std::string("value-") + std::to_string(id)); },

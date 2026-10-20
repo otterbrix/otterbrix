@@ -128,7 +128,7 @@ namespace otterbrix { namespace type_creation {
     }
 
     std::shared_ptr<otterbrix_py_type_t> string_type(const module_arena_ptr& arena, const std::string& /*collation*/) {
-        complex_logical_type type(logical_type::STRING_LITERAL);
+        complex_logical_type type(logical_type::TEXT);
         /*if (collation.empty()) {
         		type = LogicalType::VARCHAR;
         	} else {
@@ -141,7 +141,7 @@ namespace otterbrix { namespace type_creation {
                                                                 std::pmr::memory_resource* resource) {
         static const std::unordered_map<std::string, logical_type> fromStrToType = {
             {"NULL", logical_type::NA},
-            {"VARCHAR", logical_type::STRING_LITERAL},
+            {"VARCHAR", logical_type::TEXT},
             {"BIT", logical_type::BIT},
             {"UUID", logical_type::UUID},
             {"BLOB", logical_type::BLOB},

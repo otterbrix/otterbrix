@@ -75,8 +75,8 @@ TEST_CASE("components::types::physical_value") {
         REQUIRE(values[10].value<physical_type::INT64>() == int64_t(-478346));
         REQUIRE(core::is_equals(values[11].value<physical_type::FLOAT>(), -63.239f));
         REQUIRE(core::is_equals(values[12].value<physical_type::DOUBLE>(), 577.3910246));
-        REQUIRE(values[13].value<physical_type::STRING>() == str1);
-        REQUIRE(values[14].value<physical_type::STRING>() == str2);
+        REQUIRE(values[13].value<physical_type::TEXT>() == str1);
+        REQUIRE(values[14].value<physical_type::TEXT>() == str2);
     }
 
     INFO("sort");
@@ -96,10 +96,10 @@ TEST_CASE("components::types::physical_value") {
         REQUIRE(values[9].type() == physical_type::UINT16);
         REQUIRE(values[10].type() == physical_type::UINT32);
         REQUIRE(values[11].type() == physical_type::UINT64);
-        REQUIRE(values[12].type() == physical_type::STRING);
-        REQUIRE(values[12].value<physical_type::STRING>() == str2);
-        REQUIRE(values[13].type() == physical_type::STRING);
-        REQUIRE(values[13].value<physical_type::STRING>() == str1);
+        REQUIRE(values[12].type() == physical_type::TEXT);
+        REQUIRE(values[12].value<physical_type::TEXT>() == str2);
+        REQUIRE(values[13].type() == physical_type::TEXT);
+        REQUIRE(values[13].value<physical_type::TEXT>() == str1);
         REQUIRE(values[14].type() == physical_type::NA);
     }
 }

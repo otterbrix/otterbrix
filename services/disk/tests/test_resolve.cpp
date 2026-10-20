@@ -124,7 +124,7 @@ TEST_CASE("services::disk::resolve::table_finds_after_create") {
     fixture fx;
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    cols.emplace_back("name", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
+    cols.emplace_back("name", components::types::complex_logical_type{components::types::logical_type::TEXT});
 
     const auto table_oid = disk_test_helpers::test_create_table(fx,
                                                                 well_known_oid::public_namespace,

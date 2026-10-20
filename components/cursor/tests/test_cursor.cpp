@@ -105,7 +105,7 @@ namespace {
     complex_logical_type point_type(std::pmr::memory_resource* resource) {
         std::pmr::vector<complex_logical_type> fields(resource);
         fields.emplace_back(logical_type::BIGINT, "a");
-        fields.emplace_back(logical_type::STRING_LITERAL, "b");
+        fields.emplace_back(logical_type::TEXT, "b");
         return complex_logical_type::create_struct("point", fields);
     }
 } // namespace
@@ -352,7 +352,7 @@ TEST_CASE("components::cursor::NA-typed nested leaf is NULL") {
 TEST_CASE("components::cursor::list_size on a MAP and on a NULL list") {
     auto resource = core::pmr::otterbrix_resource();
     using components::vector::make_scalar;
-    const complex_logical_type varchar{logical_type::STRING_LITERAL};
+    const complex_logical_type varchar{logical_type::TEXT};
     std::array<vector_t, 2> keys{make_scalar<std::string_view>(&resource, "a"),
                                  make_scalar<std::string_view>(&resource, "b")};
     std::array<vector_t, 2> values{make_scalar<int64_t>(&resource, 1), make_scalar<int64_t>(&resource, 2)};

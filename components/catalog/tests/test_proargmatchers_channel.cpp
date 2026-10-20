@@ -30,8 +30,7 @@ TEST_CASE("catalog::proargmatchers::exact_and_variable_matchers_round_trip") {
     const components::compute::kernel_signature_t stored(components::compute::function_type_t::vector,
                                                          std::move(decoded.value()),
                                                          std::pmr::vector<components::compute::output_type>{&resource});
-    CHECK(
-        stored.matches_inputs({{logical_type::BIGINT, logical_type::DOUBLE, logical_type::STRING_LITERAL}, &resource}));
+    CHECK(stored.matches_inputs({{logical_type::BIGINT, logical_type::DOUBLE, logical_type::TEXT}, &resource}));
     CHECK_FALSE(stored.matches_inputs({{logical_type::BIGINT, logical_type::BIGINT, logical_type::BIGINT}, &resource}));
 }
 

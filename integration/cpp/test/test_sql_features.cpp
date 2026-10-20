@@ -3752,7 +3752,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_then_readd_p
         REQUIRE_FALSE(has_column(*cur, "b"));
     }
 
-    INFO("re-INSERT b='y' (same STRING type as the dropped column)");
+    INFO("re-INSERT b='y' (same TEXT type as the dropped column)");
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "INSERT INTO TestDatabase.foo (b) VALUES ('y');");
@@ -4520,7 +4520,7 @@ TEST_CASE("integration::cpp::test_sql_features::create_view_e2e") {
     auto session = otterbrix::session_id_t();
 
     REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase")->is_success());
-    REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t (col_a STRING, col_b BIGINT)")->is_success());
+    REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t (col_a TEXT, col_b BIGINT)")->is_success());
     REQUIRE(dispatcher
                 ->execute_sql(session,
                               "INSERT INTO TestDatabase.t (col_a, col_b) VALUES "
@@ -4549,7 +4549,7 @@ TEST_CASE("integration::cpp::test_sql_features::create_matview_e2e") {
     auto session = otterbrix::session_id_t();
 
     REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase")->is_success());
-    REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t (col_a STRING, col_b BIGINT)")->is_success());
+    REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t (col_a TEXT, col_b BIGINT)")->is_success());
     REQUIRE(dispatcher
                 ->execute_sql(session,
                               "INSERT INTO TestDatabase.t (col_a, col_b) VALUES "
@@ -5200,8 +5200,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl statements return an empty c
     {
         {
             auto session = otterbrix::session_id_t();
-            auto cur =
-                dispatcher->execute_sql(session, "CREATE TABLE DdlEmptyDb.ddl_base (col_a STRING, col_b BIGINT);");
+            auto cur = dispatcher->execute_sql(session, "CREATE TABLE DdlEmptyDb.ddl_base (col_a TEXT, col_b BIGINT);");
             REQUIRE(cur->is_success());
             REQUIRE_FALSE(cur->is_error());
             REQUIRE(cur->size() == 0);

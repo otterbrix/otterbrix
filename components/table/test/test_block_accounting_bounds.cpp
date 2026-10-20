@@ -54,7 +54,7 @@ namespace {
     std::unique_ptr<data_table_t> make_table(bounds_env_t& env, tstorage::single_file_block_manager_t& bm) {
         std::vector<column_definition_t> columns;
         columns.emplace_back("id", logical_type::BIGINT);
-        columns.emplace_back("name", logical_type::STRING_LITERAL);
+        columns.emplace_back("name", logical_type::TEXT);
         return std::make_unique<data_table_t>(&env.resource, bm, std::move(columns), "bounds_table");
     }
 
@@ -367,7 +367,7 @@ TEST_CASE("components::table::column_segment::a_segment_larger_than_its_block_is
     const uint64_t limit = block->block_size();
     REQUIRE(limit > 0);
 
-    // BIGINT on purpose: VALIDITY/STRING_LITERAL types would overrun the block before reaching the guard.
+    // BIGINT on purpose: VALIDITY/TEXT types would overrun the block before reaching the guard.
     const pid_t child = ::fork();
     REQUIRE(child >= 0);
     if (child == 0) {

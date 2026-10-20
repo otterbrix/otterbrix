@@ -839,7 +839,7 @@ ENTRY_POINTS = {'named': {"getitem 's'": ('ok', "'a'"),
              'len': ('ok', '1')}}
 
 UUID_INSERT_ERROR = ('',
- "insert_node: column 'v' is of type uuid but the inserted value is of type text; no cast between them may "
+ "insert_node: column 'v' is of type uuid but the inserted value is of type unknown; no cast between them may "
  'be applied on assignment')
 
 UUID_NULL_FETCH = ('ok', '[(None,)]')

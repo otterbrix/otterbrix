@@ -40,7 +40,7 @@ namespace {
     complex_logical_type struct_sample() {
         std::pmr::vector<complex_logical_type> fields{g_resource};
         fields.emplace_back(logical_type::INTEGER, "a");
-        fields.emplace_back(logical_type::STRING_LITERAL, "b");
+        fields.emplace_back(logical_type::TEXT, "b");
         return complex_logical_type::create_struct("point", fields);
     }
 
@@ -54,12 +54,12 @@ namespace {
 
 TEST_CASE("catalog::encoder_domains::every_plain_scalar_the_gate_blesses_survives_the_flat_writer") {
     const logical_type plain_scalars[] = {
-        logical_type::ANY,      logical_type::BOOLEAN,   logical_type::TINYINT,        logical_type::SMALLINT,
-        logical_type::INTEGER,  logical_type::BIGINT,    logical_type::HUGEINT,        logical_type::DATE,
-        logical_type::TIME,     logical_type::TIME_TZ,   logical_type::TIMESTAMP,      logical_type::TIMESTAMP_TZ,
-        logical_type::INTERVAL, logical_type::FLOAT,     logical_type::DOUBLE,         logical_type::BLOB,
-        logical_type::UTINYINT, logical_type::USMALLINT, logical_type::UINTEGER,       logical_type::UBIGINT,
-        logical_type::UHUGEINT, logical_type::BIT,       logical_type::STRING_LITERAL, logical_type::INTEGER_LITERAL,
+        logical_type::ANY,      logical_type::BOOLEAN,   logical_type::TINYINT,   logical_type::SMALLINT,
+        logical_type::INTEGER,  logical_type::BIGINT,    logical_type::HUGEINT,   logical_type::DATE,
+        logical_type::TIME,     logical_type::TIME_TZ,   logical_type::TIMESTAMP, logical_type::TIMESTAMP_TZ,
+        logical_type::INTERVAL, logical_type::FLOAT,     logical_type::DOUBLE,    logical_type::BLOB,
+        logical_type::UTINYINT, logical_type::USMALLINT, logical_type::UINTEGER,  logical_type::UBIGINT,
+        logical_type::UHUGEINT, logical_type::BIT,       logical_type::TEXT,      logical_type::INTEGER_LITERAL,
         logical_type::POINTER,  logical_type::VALIDITY,  logical_type::UUID,
     };
     for (auto lt : plain_scalars) {
@@ -115,7 +115,7 @@ TEST_CASE("catalog::encoder_domains::every_composite_the_gate_blesses_survives_t
     samples.push_back(complex_logical_type::create_list(complex_logical_type{logical_type::BIGINT}));
     samples.push_back(complex_logical_type::create_array(complex_logical_type{logical_type::INTEGER}, 4));
     samples.push_back(complex_logical_type::create_map(g_resource,
-                                                       complex_logical_type{logical_type::STRING_LITERAL},
+                                                       complex_logical_type{logical_type::TEXT},
                                                        complex_logical_type{logical_type::INTEGER}));
     samples.push_back(struct_sample());
     samples.push_back(union_sample());

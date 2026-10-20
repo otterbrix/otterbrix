@@ -457,7 +457,7 @@ namespace components::vector::vector_ops {
                 return index<float, COMP>(left, right, count, true_indexing, false_indexing);
             case types::physical_type::DOUBLE:
                 return index<double, COMP>(left, right, count, true_indexing, false_indexing);
-            case types::physical_type::STRING:
+            case types::physical_type::TEXT:
                 return index<std::string_view, COMP>(left, right, count, true_indexing, false_indexing);
             default:
                 throw std::runtime_error("Invalid type for comparison");

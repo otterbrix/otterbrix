@@ -206,7 +206,7 @@ namespace otterbrix {
             case logical_type::DOUBLE:
             case logical_type::DECIMAL:
             case logical_type::ENUM:
-            case logical_type::STRING_LITERAL:
+            case logical_type::TEXT:
             case logical_type::BLOB:
             case logical_type::BIT:
             case logical_type::TIMESTAMP:

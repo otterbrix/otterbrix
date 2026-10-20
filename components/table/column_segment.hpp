@@ -79,7 +79,7 @@ namespace components::table {
 
         uint64_t segment_size() const;
 
-        // Big-string overflow persistence: a STRING value >= DEFAULT_STRING_BLOCK_LIMIT lives in
+        // Big-string overflow persistence: a TEXT value >= DEFAULT_STRING_BLOCK_LIMIT lives in
         // a separate overflow block, and the dictionary marker naming it is TRANSIENT. These two
         // entry points let column_checkpoint_state_t move the payload into the file and rewrite
         // the markers on-disk. They live here because the dictionary layout is private to the .cpp.
@@ -100,7 +100,7 @@ namespace components::table {
                                                                            storage::partial_block_manager_t& pbm,
                                                                            std::vector<uint64_t>& out_blocks);
 
-        // A partially-filled STRING segment keeps its dictionary pressed against the END of the
+        // A partially-filled TEXT segment keeps its dictionary pressed against the END of the
         // allocation, leaving the unused middle as zero slack; persisting the whole allocation
         // writes that slack to the file. This slides the dictionary of `segment_copy` down
         // against the offset array, rewrites the stored dictionary end, and returns the tight

@@ -2,7 +2,7 @@
 // stores ITS OWN metadata in ordinary engine tables and must be able to drive
 // them with plain SQL DML — plus read them back after a restart (.otbx + WAL).
 //
-// The kafka connector's `kafka.__sources` table (8 STRING_LITERAL columns,
+// The kafka connector's `kafka.__sources` table (8 TEXT columns,
 // created node-based like KafkaManager::ensure_sources_table) crashed the engine
 // when written with a SQL INSERT string (see
 // otterstax integration/kafka/detail/kafka_manager_persistence.cpp: "Insert the
@@ -22,14 +22,14 @@ namespace {
         using types::complex_logical_type;
         using types::logical_type;
         std::vector<components::table::column_definition_t> cols;
-        cols.emplace_back("name", complex_logical_type(logical_type::STRING_LITERAL));
-        cols.emplace_back("kind", complex_logical_type(logical_type::STRING_LITERAL));
-        cols.emplace_back("topic", complex_logical_type(logical_type::STRING_LITERAL));
-        cols.emplace_back("bootstrap", complex_logical_type(logical_type::STRING_LITERAL));
-        cols.emplace_back("group_id", complex_logical_type(logical_type::STRING_LITERAL));
-        cols.emplace_back("offset_reset", complex_logical_type(logical_type::STRING_LITERAL));
-        cols.emplace_back("transactional", complex_logical_type(logical_type::STRING_LITERAL));
-        cols.emplace_back("as_select", complex_logical_type(logical_type::STRING_LITERAL));
+        cols.emplace_back("name", complex_logical_type(logical_type::TEXT));
+        cols.emplace_back("kind", complex_logical_type(logical_type::TEXT));
+        cols.emplace_back("topic", complex_logical_type(logical_type::TEXT));
+        cols.emplace_back("bootstrap", complex_logical_type(logical_type::TEXT));
+        cols.emplace_back("group_id", complex_logical_type(logical_type::TEXT));
+        cols.emplace_back("offset_reset", complex_logical_type(logical_type::TEXT));
+        cols.emplace_back("transactional", complex_logical_type(logical_type::TEXT));
+        cols.emplace_back("as_select", complex_logical_type(logical_type::TEXT));
         return cols;
     }
 } // namespace

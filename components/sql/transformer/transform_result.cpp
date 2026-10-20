@@ -1,5 +1,6 @@
 #include "transform_result.hpp"
 
+#include <cassert>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -7,6 +8,7 @@
 #include <core/result_wrapper.hpp>
 
 #include <components/catalog/type_display.hpp>
+#include <components/logical_plan/node_data.hpp>
 #include <components/vector/vector_builders.hpp>
 #include <components/vector/vector_operations.hpp>
 
@@ -207,6 +209,15 @@ namespace components::sql::transform {
                                         std::pmr::string{"transform_result was already finalized", resource_});
             return *this;
         }
+        // Bound text is untyped, like a quoted literal: the statement decides what it reads as.
+        if (value.type().type() == types::logical_type::TEXT) {
+            const auto cell = vector::make_constant_copy(resource_, value, source_row);
+            const types::complex_logical_type literal{types::logical_type::STRING_LITERAL};
+            return bind(id,
+                        cell.is_null(0) ? vector::make_null(resource_, literal)
+                                        : vector::make_string_literal(resource_, cell.get_value<std::string_view>(0)),
+                        0);
+        }
 
         // TODO?: check all sub queries
         auto& node = plan_.sub_queries.back();
@@ -361,8 +372,12 @@ namespace components::sql::transform {
             if (effective_consumer_type(node) == logical_plan::node_type::insert_t) {
                 // Reach the insert_t consumer through its wraps and rewrite its data child with the bound row chunk.
                 auto* consumer = consumer_of(node);
-                consumer->children().front() =
-                    logical_plan::make_node_raw_data(node->resource(), std::move(param_insert_rows_));
+                auto bound = logical_plan::make_node_raw_data(node->resource(), std::move(param_insert_rows_));
+                auto& placeholder = consumer->children().front();
+                assert(placeholder->type() == logical_plan::node_type::data_t);
+                bound->set_deferred_cells(
+                    std::move(static_cast<logical_plan::node_data_t*>(placeholder.get())->deferred_cells()));
+                placeholder = std::move(bound);
             }
         }
 

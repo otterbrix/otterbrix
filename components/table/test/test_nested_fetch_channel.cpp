@@ -68,14 +68,14 @@ namespace {
     complex_logical_type field_type(nested_env_t& env, shape_t shape) {
         switch (shape) {
             case shape_t::STRUCT_OF_STRING:
-                return complex_logical_type(logical_type::STRING_LITERAL, "payload");
+                return complex_logical_type(logical_type::TEXT, "payload");
             case shape_t::STRUCT_OF_STRUCT_STRING: {
                 std::pmr::vector<complex_logical_type> inner_fields(&env.resource);
-                inner_fields.emplace_back(logical_type::STRING_LITERAL, "payload");
+                inner_fields.emplace_back(logical_type::TEXT, "payload");
                 return complex_logical_type::create_struct("payload_box", inner_fields, "inner");
             }
             case shape_t::STRUCT_OF_LIST_STRING:
-                return complex_logical_type::create_list(complex_logical_type{logical_type::STRING_LITERAL}, "items");
+                return complex_logical_type::create_list(complex_logical_type{logical_type::TEXT}, "items");
         }
         return complex_logical_type{logical_type::NA};
     }
@@ -103,8 +103,7 @@ namespace {
             case shape_t::STRUCT_OF_LIST_STRING: {
                 std::vector<vector_t> elements;
                 elements.push_back(make_scalar(&env.resource, std::string_view{big}));
-                members.push_back(
-                    make_list(&env.resource, complex_logical_type{logical_type::STRING_LITERAL}, elements));
+                members.push_back(make_list(&env.resource, complex_logical_type{logical_type::TEXT}, elements));
                 break;
             }
         }
@@ -146,7 +145,7 @@ namespace {
         }
         out.leaf_segment = field_append->current;
         REQUIRE(out.leaf_segment != nullptr);
-        REQUIRE(out.leaf_segment->type.to_physical_type() == physical_type::STRING);
+        REQUIRE(out.leaf_segment->type.to_physical_type() == physical_type::TEXT);
         out.table->finalize_append(state, transaction_data::committed());
         return out;
     }
@@ -215,9 +214,9 @@ TEST_CASE("nested scan: a data_corruption raised under a struct stops the scan")
     const std::string big(5000, 's');
 
     shape_t shape = shape_t::STRUCT_OF_STRING;
-    SECTION("STRUCT(payload STRING)") { shape = shape_t::STRUCT_OF_STRING; }
-    SECTION("STRUCT(inner STRUCT(payload STRING))") { shape = shape_t::STRUCT_OF_STRUCT_STRING; }
-    SECTION("STRUCT(items LIST(STRING))") { shape = shape_t::STRUCT_OF_LIST_STRING; }
+    SECTION("STRUCT(payload TEXT)") { shape = shape_t::STRUCT_OF_STRING; }
+    SECTION("STRUCT(inner STRUCT(payload TEXT))") { shape = shape_t::STRUCT_OF_STRUCT_STRING; }
+    SECTION("STRUCT(items LIST(TEXT))") { shape = shape_t::STRUCT_OF_LIST_STRING; }
 
     auto built = build(env, bm, shape, big);
     components::storage::table_storage_adapter_t adapter(*built.table, &env.resource);
@@ -247,9 +246,9 @@ TEST_CASE("nested fetch: a data_corruption raised under a struct reaches the sta
     const std::string big(5000, 'n');
 
     shape_t shape = shape_t::STRUCT_OF_STRING;
-    SECTION("STRUCT(payload STRING)") { shape = shape_t::STRUCT_OF_STRING; }
-    SECTION("STRUCT(inner STRUCT(payload STRING))") { shape = shape_t::STRUCT_OF_STRUCT_STRING; }
-    SECTION("STRUCT(items LIST(STRING))") { shape = shape_t::STRUCT_OF_LIST_STRING; }
+    SECTION("STRUCT(payload TEXT)") { shape = shape_t::STRUCT_OF_STRING; }
+    SECTION("STRUCT(inner STRUCT(payload TEXT))") { shape = shape_t::STRUCT_OF_STRUCT_STRING; }
+    SECTION("STRUCT(items LIST(TEXT))") { shape = shape_t::STRUCT_OF_LIST_STRING; }
 
     auto built = build(env, bm, shape, big);
 
@@ -278,8 +277,8 @@ TEST_CASE("nested fetch: a big string in a struct field outlives the pins that r
     const std::string big(5000, 'p');
 
     shape_t shape = shape_t::STRUCT_OF_STRING;
-    SECTION("STRUCT(payload STRING)") { shape = shape_t::STRUCT_OF_STRING; }
-    SECTION("STRUCT(inner STRUCT(payload STRING))") { shape = shape_t::STRUCT_OF_STRUCT_STRING; }
+    SECTION("STRUCT(payload TEXT)") { shape = shape_t::STRUCT_OF_STRING; }
+    SECTION("STRUCT(inner STRUCT(payload TEXT))") { shape = shape_t::STRUCT_OF_STRUCT_STRING; }
 
     auto built = build(env, bm, shape, big);
 

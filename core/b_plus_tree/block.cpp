@@ -140,8 +140,8 @@ namespace core::b_plus_tree {
         buffer_ += item.size;
         available_memory_ -= item.size + metadata_size;
 
-        if (index.type() == components::types::physical_type::STRING) {
-            auto sv = index.value<components::types::physical_type::STRING>();
+        if (index.type() == components::types::physical_type::TEXT) {
+            auto sv = index.value<components::types::physical_type::TEXT>();
             range.begin->index = index_t(internal_buffer_ + range.begin->offset + (sv.data() - item.data),
                                          static_cast<uint32_t>(sv.size()));
         } else {
@@ -187,8 +187,8 @@ namespace core::b_plus_tree {
                 for (auto it_ = last_metadata_; it_ != end_; it_++) {
                     if (it_->offset > offset) {
                         it_->offset -= chunk_size;
-                        if (it_->index.type() == components::types::physical_type::STRING) {
-                            auto sv = it_->index.value<components::types::physical_type::STRING>();
+                        if (it_->index.type() == components::types::physical_type::TEXT) {
+                            auto sv = it_->index.value<components::types::physical_type::TEXT>();
                             it_->index = index_t(sv.data() - chunk_size, static_cast<uint32_t>(sv.size()));
                         }
                     }
@@ -315,7 +315,7 @@ namespace core::b_plus_tree {
         buffer_ = internal_buffer_ + header_size;
         for (auto it = last_metadata_; it < end_; it++) {
             buffer_ += it->size;
-            if (it->index.type() == components::types::physical_type::STRING) {
+            if (it->index.type() == components::types::physical_type::TEXT) {
                 it->index = key_func_({internal_buffer_ + it->offset, it->size});
             }
         }
@@ -342,14 +342,14 @@ namespace core::b_plus_tree {
         auto* new_last_metadata = new_end - metadata_count;
         std::memcpy(new_last_metadata, last_metadata_, metadata_count * metadata_size);
 
-        // STRING keys borrow their bytes from the block buffer, so re-base them onto the
+        // TEXT keys borrow their bytes from the block buffer, so re-base them onto the
         // new allocation. Walk both ranges in lockstep, bounded by the entry count.
         {
             metadata* src = last_metadata_;
             metadata* dst = new_last_metadata;
             for (size_t i = 0; i < metadata_count; ++i, ++src, ++dst) {
-                if (src->index.type() == components::types::physical_type::STRING) {
-                    auto sv = src->index.value<components::types::physical_type::STRING>();
+                if (src->index.type() == components::types::physical_type::TEXT) {
+                    auto sv = src->index.value<components::types::physical_type::TEXT>();
                     dst->index = index_t(new_buffer + (sv.data() - internal_buffer_), static_cast<uint32_t>(sv.size()));
                 }
             }
@@ -538,8 +538,8 @@ namespace core::b_plus_tree {
             for (size_t i = 0; i < other->count(); i++) {
                 uint32_t old_offset = (--last_metadata_)->offset;
                 last_metadata_->offset += delta_offset;
-                if (last_metadata_->index.type() == components::types::physical_type::STRING) {
-                    auto sv = last_metadata_->index.value<components::types::physical_type::STRING>();
+                if (last_metadata_->index.type() == components::types::physical_type::TEXT) {
+                    auto sv = last_metadata_->index.value<components::types::physical_type::TEXT>();
                     last_metadata_->index = index_t(internal_buffer_ + last_metadata_->offset +
                                                         (sv.data() - (other->internal_buffer_ + old_offset)),
                                                     static_cast<uint32_t>(sv.size()));
@@ -556,8 +556,8 @@ namespace core::b_plus_tree {
             buffer_ += additional_offset;
             std::memcpy(last_metadata_ - other->count(), last_metadata_, metadata_size * other->count());
             for (metadata* it = last_metadata_ - other->count(); it != end_ - other->count(); it++) {
-                if (it->index.type() == components::types::physical_type::STRING) {
-                    auto sv = it->index.value<components::types::physical_type::STRING>();
+                if (it->index.type() == components::types::physical_type::TEXT) {
+                    auto sv = it->index.value<components::types::physical_type::TEXT>();
                     it->index = index_t(sv.data() - metadata_size * other->count(), static_cast<uint32_t>(sv.size()));
                 }
             }
@@ -565,8 +565,8 @@ namespace core::b_plus_tree {
             for (metadata* it = last_metadata_; it < end_; it++) {
                 uint32_t old_offset = it->offset;
                 it->offset += delta_offset;
-                if (it->index.type() == components::types::physical_type::STRING) {
-                    auto sv = it->index.value<components::types::physical_type::STRING>();
+                if (it->index.type() == components::types::physical_type::TEXT) {
+                    auto sv = it->index.value<components::types::physical_type::TEXT>();
                     it->index =
                         index_t(internal_buffer_ + it->offset + (sv.data() - (other->internal_buffer_ + old_offset)),
                                 static_cast<uint32_t>(sv.size()));
@@ -654,8 +654,8 @@ namespace core::b_plus_tree {
             for (metadata* meta = last_metadata_; meta != end_; meta++) {
                 if (meta->offset >= next_it->first && meta->offset < next_it->first + next_it->second) {
                     meta->offset -= required_offset;
-                    if (meta->index.type() == components::types::physical_type::STRING) {
-                        auto sv = meta->index.value<components::types::physical_type::STRING>();
+                    if (meta->index.type() == components::types::physical_type::TEXT) {
+                        auto sv = meta->index.value<components::types::physical_type::TEXT>();
                         meta->index = index_t(sv.data() - required_offset, static_cast<uint32_t>(sv.size()));
                     }
                 }

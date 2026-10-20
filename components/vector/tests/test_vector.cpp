@@ -32,7 +32,7 @@ TEST_CASE("components::vector::vector") {
     std::pmr::vector<components::types::complex_logical_type> fields(&resource);
     fields.emplace_back(components::types::logical_type::BOOLEAN, "flag");
     fields.emplace_back(components::types::logical_type::INTEGER, "number");
-    fields.emplace_back(components::types::logical_type::STRING_LITERAL, "name");
+    fields.emplace_back(components::types::logical_type::TEXT, "name");
     fields.emplace_back(
         components::types::complex_logical_type::create_list(components::types::logical_type::USMALLINT, "array"));
     components::types::complex_logical_type struct_type =
@@ -52,13 +52,13 @@ TEST_CASE("components::vector::vector") {
     }
     INFO("string");
     {
-        components::vector::vector_t v(&resource, components::types::logical_type::STRING_LITERAL, test_size);
+        components::vector::vector_t v(&resource, components::types::logical_type::TEXT, test_size);
         for (size_t i = 0; i < test_size; i++) {
             std::string value{"long_string_with_index_" + std::to_string(i)};
             v.set_value(i, std::string_view{value});
         }
 
-        REQUIRE(v.type().type() == components::types::logical_type::STRING_LITERAL);
+        REQUIRE(v.type().type() == components::types::logical_type::TEXT);
         for (size_t i = 0; i < test_size; i++) {
             std::string result{v.get_value<std::string_view>(i)};
             REQUIRE(result == std::string{"long_string_with_index_" + std::to_string(i)});
@@ -92,8 +92,7 @@ TEST_CASE("components::vector::vector") {
     {
         components::vector::vector_t v(
             &resource,
-            components::types::complex_logical_type::create_array(components::types::logical_type::STRING_LITERAL,
-                                                                  array_size),
+            components::types::complex_logical_type::create_array(components::types::logical_type::TEXT, array_size),
             test_size);
         for (size_t i = 0; i < test_size; i++) {
             // storage keeps the strings alive while their views are written
@@ -149,7 +148,7 @@ TEST_CASE("components::vector::vector") {
     {
         components::vector::vector_t v(
             &resource,
-            components::types::complex_logical_type::create_list(components::types::logical_type::STRING_LITERAL),
+            components::types::complex_logical_type::create_list(components::types::logical_type::TEXT),
             test_size);
         for (size_t i = 0; i < test_size; i++) {
             // test that each list entry can be a different length; storage keeps the
@@ -206,7 +205,7 @@ TEST_CASE("components::vector::vector") {
         REQUIRE(v.type().child_types()[0].alias() == "flag");
         REQUIRE(v.type().child_types()[1].type() == components::types::logical_type::INTEGER);
         REQUIRE(v.type().child_types()[1].alias() == "number");
-        REQUIRE(v.type().child_types()[2].type() == components::types::logical_type::STRING_LITERAL);
+        REQUIRE(v.type().child_types()[2].type() == components::types::logical_type::TEXT);
         REQUIRE(v.type().child_types()[2].alias() == "name");
         REQUIRE(v.type().child_types()[3].type() == components::types::logical_type::LIST);
         REQUIRE(v.type().child_types()[3].child_type().type() == components::types::logical_type::USMALLINT);
@@ -230,9 +229,7 @@ TEST_CASE("components::vector::vector") {
         }
         std::shuffle(indices.begin(), indices.end(), std::default_random_engine{0});
 
-        components::vector::vector_t string_array(&resource,
-                                                  components::types::logical_type::STRING_LITERAL,
-                                                  string_count);
+        components::vector::vector_t string_array(&resource, components::types::logical_type::TEXT, string_count);
         for (size_t i = 0; i < string_count; i++) {
             std::string value{"long_string_with_index_" + std::to_string(i)};
             string_array.set_value(i, std::string_view{value});
@@ -243,7 +240,7 @@ TEST_CASE("components::vector::vector") {
             indexing.set_index(i, indices[i]);
         }
 
-        components::vector::vector_t dictionary(&resource, components::types::logical_type::STRING_LITERAL, test_size);
+        components::vector::vector_t dictionary(&resource, components::types::logical_type::TEXT, test_size);
         dictionary.slice(string_array, indexing, test_size);
         for (size_t i = 0; i < test_size; i++) {
             indexing.set_index(i, indices[i]);
@@ -259,7 +256,7 @@ TEST_CASE("components::vector::vector") {
         std::pmr::vector<components::types::complex_logical_type> union_fields(&resource);
         union_fields.emplace_back(components::types::logical_type::BOOLEAN, "bool");
         union_fields.emplace_back(components::types::logical_type::INTEGER, "int");
-        union_fields.emplace_back(components::types::logical_type::STRING_LITERAL, "string");
+        union_fields.emplace_back(components::types::logical_type::TEXT, "string");
         auto union_type = components::types::complex_logical_type::create_union(union_fields, "union_type");
 
         components::vector::vector_t union_vector(&resource, union_type, test_size);
@@ -294,8 +291,7 @@ TEST_CASE("components::vector::vector") {
                     REQUIRE(union_vector.entries()[2]->get_value<int32_t>(i) == static_cast<int32_t>(i));
                     break;
                 default:
-                    REQUIRE(union_vector.entries()[3]->type().type() ==
-                            components::types::logical_type::STRING_LITERAL);
+                    REQUIRE(union_vector.entries()[3]->type().type() == components::types::logical_type::TEXT);
                     REQUIRE(union_vector.entries()[3]->get_value<std::string_view>(i) ==
                             std::string{"long_string_with_index_" + std::to_string(i)});
                     break;
@@ -496,7 +492,7 @@ TEST_CASE("components::vector::apply vector ops refuse string operands loudly") 
     using components::vector::vector_ops::unary_vector_op;
 
     constexpr uint64_t count = 2;
-    vector_t strings(&resource, complex_logical_type{logical_type::STRING_LITERAL}, count);
+    vector_t strings(&resource, complex_logical_type{logical_type::TEXT}, count);
     strings.set_value(0, std::string_view{"a"});
     strings.set_value(1, std::string_view{"b"});
     vector_t ints(&resource, complex_logical_type{logical_type::INTEGER}, count);
@@ -588,7 +584,7 @@ TEST_CASE("components::vector::cells_equal: UNION compares the tag and the activ
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::vector<types::complex_logical_type> members(&resource);
     members.emplace_back(types::logical_type::INTEGER, "i");
-    members.emplace_back(types::logical_type::STRING_LITERAL, "s");
+    members.emplace_back(types::logical_type::TEXT, "s");
     vector::vector_t u(&resource, types::complex_logical_type::create_union(members), 5);
 
     auto put = [&](uint64_t row, uint8_t tag, int32_t i, std::string_view s) {

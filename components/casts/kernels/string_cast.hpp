@@ -236,6 +236,21 @@ namespace components::casts::kernels {
         return core::error_t::no_error();
     }
 
+    // STRING_LITERAL -> TEXT: the text is kept as written. Infallible.
+    inline core::error_t literal_to_string_cast(const vector::vector_t& source,
+                                                vector::vector_t* result,
+                                                const graph_execution_context&,
+                                                uint64_t count) noexcept {
+        for (uint64_t row = 0; row < count; ++row) {
+            if (source.is_null(row)) {
+                result->set_null(row, true);
+                continue;
+            }
+            result->set_value(row, source.get_value<std::string_view>(row));
+        }
+        return core::error_t::no_error();
+    }
+
     template<typename Target>
     core::error_t string_to_number_cast(const vector::vector_t& source,
                                         vector::vector_t* result,

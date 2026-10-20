@@ -43,7 +43,7 @@ TEST_CASE("components::table::column_type_without_storage::refused_top_level_and
     CHECK(refused(complex_logical_type::create_struct("box", fields, "b"), &resource));
 
     CHECK_FALSE(refused(complex_logical_type{logical_type::BIGINT}, &resource));
-    CHECK_FALSE(refused(complex_logical_type{logical_type::STRING_LITERAL}, &resource));
+    CHECK_FALSE(refused(complex_logical_type{logical_type::TEXT}, &resource));
     CHECK_FALSE(refused(complex_logical_type::create_array(complex_logical_type{logical_type::BIGINT}, 2), &resource));
     CHECK_FALSE(refused(complex_logical_type::create_list(complex_logical_type{logical_type::BIGINT}), &resource));
     std::pmr::vector<complex_logical_type> stored_fields(&resource);

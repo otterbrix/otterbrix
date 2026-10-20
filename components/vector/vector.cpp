@@ -81,7 +81,7 @@ namespace components::vector {
                 auxiliary_ = std::make_shared<list_vector_buffer_t>(resource, type_, capacity);
             } else if (internal_type == types::physical_type::ARRAY) {
                 auxiliary_ = std::make_shared<array_vector_buffer_t>(resource, type_, capacity);
-            } else if (internal_type == types::physical_type::STRING) {
+            } else if (internal_type == types::physical_type::TEXT) {
                 auxiliary_ = std::make_shared<string_vector_buffer_t>(resource);
             }
             auto type_size = type_.size();
@@ -136,7 +136,7 @@ namespace components::vector {
             return;
         }
         switch (auxiliary_->type()) {
-            case vector_buffer_type::STRING:
+            case vector_buffer_type::TEXT:
                 static_cast<string_vector_buffer_t*>(auxiliary_.get())->reset();
                 break;
             case vector_buffer_type::STRUCT:
@@ -770,7 +770,7 @@ namespace components::vector {
                     case types::physical_type::DOUBLE:
                         templated_flatten_constant_vector<double>(data_, old_data, count);
                         break;
-                    case types::physical_type::STRING:
+                    case types::physical_type::TEXT:
                         templated_flatten_constant_vector<std::string_view>(data_, old_data, count);
                         break;
                     case types::physical_type::LIST: {
@@ -927,7 +927,7 @@ namespace components::vector {
                         // case types::physical_type::INTERVAL:
                         //     flatten_const_vector<interval_t>(data_, old_data, count);
                         //     break;
-                    case types::physical_type::STRING:
+                    case types::physical_type::TEXT:
                         flatten_const_vector<std::string_view>(data_, old_data, count);
                         break;
                     case types::physical_type::LIST: {

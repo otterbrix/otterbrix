@@ -101,10 +101,12 @@ namespace services::dispatcher {
 
     // `cte_schemas` carries recursive-CTE anchor schemas between the recursive_cte_t and
     // cte_scan_t arms; callers pass nullptr and the map is owned internally.
+    // `literals` applies to this node's own output only; the nodes it reads from always turn theirs into text.
     [[nodiscard]] core::result_wrapper_t<named_schema>
     validate_schema(const validation::validation_context_t& context,
                     components::logical_plan::node_t* node,
                     const components::logical_plan::storage_parameters& parameters,
-                    cte_schemas_t* cte_schemas = nullptr);
+                    cte_schemas_t* cte_schemas = nullptr,
+                    validation::untyped_literals literals = validation::untyped_literals::become_text);
 
 } // namespace services::dispatcher

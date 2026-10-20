@@ -48,7 +48,7 @@ namespace components::types {
         // HALF_FLOAT = 12,
         FLOAT = 13,
         DOUBLE = 14,
-        STRING = 15,
+        TEXT = 15,
         // BINARY = 16,                // Variable-length bytes (no guarantee of UTF8-ness)
         // FIXED_SIZE_BINARY = 17,     // Fixed-size binary. Each value occupies the same number of bytes
         LIST = 25,
@@ -64,7 +64,7 @@ namespace components::types {
         // EXTENSION = 29,             // Custom data type, implemented by user
         ARRAY = 30, // Fixed-size list, unlike LIST
         // DURATION = 31,              // Measure of elapsed time in either seconds, ms, us or ns.
-        // LARGE_STRING = 32,          // Like STRING, but with 64-bit offsets
+        // LARGE_STRING = 32,          // Like TEXT, but with 64-bit offsets
         // LARGE_BINARY = 33,          // Like BINARY, but with 64-bit offsets
         // LARGE_LIST = 34,            // Like LIST, but with 64-bit offsets
 
@@ -101,8 +101,9 @@ namespace components::types {
         UBIGINT = 30,
         UHUGEINT = 31,
         BIT = 34,
-        STRING_LITERAL = 35,  // Used for constant strings
+        TEXT = 35,
         INTEGER_LITERAL = 36, // Used for constant integers
+        STRING_LITERAL = 37,  // Untyped quoted text
 
         POINTER = 51,
         VALIDITY = 53,
@@ -136,16 +137,16 @@ namespace components::types {
                                                                                            physical_type::INT128,
                                                                                            physical_type::FLOAT,
                                                                                            physical_type::DOUBLE,
-                                                                                           physical_type::STRING,
+                                                                                           physical_type::TEXT,
                                                                                            physical_type::LIST,
                                                                                            physical_type::ARRAY};
 
     [[maybe_unused]] static constexpr std::array<logical_type, 20> DEFAULT_LOGICAL_TYPES{
-        logical_type::BOOLEAN,   logical_type::UTINYINT,       logical_type::TINYINT, logical_type::USMALLINT,
-        logical_type::SMALLINT,  logical_type::UINTEGER,       logical_type::INTEGER, logical_type::UBIGINT,
-        logical_type::BIGINT,    logical_type::UHUGEINT,       logical_type::HUGEINT, logical_type::FLOAT,
-        logical_type::DOUBLE,    logical_type::STRING_LITERAL, logical_type::DATE,    logical_type::TIME,
-        logical_type::TIMESTAMP, logical_type::DECIMAL,        logical_type::LIST,    logical_type::ARRAY};
+        logical_type::BOOLEAN,   logical_type::UTINYINT, logical_type::TINYINT, logical_type::USMALLINT,
+        logical_type::SMALLINT,  logical_type::UINTEGER, logical_type::INTEGER, logical_type::UBIGINT,
+        logical_type::BIGINT,    logical_type::UHUGEINT, logical_type::HUGEINT, logical_type::FLOAT,
+        logical_type::DOUBLE,    logical_type::TEXT,     logical_type::DATE,    logical_type::TIME,
+        logical_type::TIMESTAMP, logical_type::DECIMAL,  logical_type::LIST,    logical_type::ARRAY};
 
     constexpr logical_type to_logical(physical_type type) {
         switch (type) {
@@ -175,8 +176,8 @@ namespace components::types {
                 return logical_type::FLOAT;
             case physical_type::DOUBLE:
                 return logical_type::DOUBLE;
-            case physical_type::STRING:
-                return logical_type::STRING_LITERAL;
+            case physical_type::TEXT:
+                return logical_type::TEXT;
             case physical_type::NA:
                 return logical_type::NA;
             case physical_type::UNKNOWN:
@@ -216,6 +217,7 @@ namespace components::types {
 
     constexpr bool is_string(logical_type type) {
         switch (type) {
+            case logical_type::TEXT:
             case logical_type::STRING_LITERAL:
             case logical_type::BLOB:
                 return true;
@@ -337,7 +339,7 @@ namespace components::types {
             return logical_type::DOUBLE;
         } else if constexpr (std::is_same<T, std::string>::value || std::is_same<T, std::pmr::string>::value ||
                              std::is_same<T, std::string_view>::value) {
-            return logical_type::STRING_LITERAL;
+            return logical_type::TEXT;
         } else {
             return logical_type::INVALID;
         }

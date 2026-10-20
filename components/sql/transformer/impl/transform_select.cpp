@@ -2,7 +2,6 @@
 #include <limits>
 #include <unordered_set>
 
-#include <components/catalog/type_display.hpp>
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/expression.hpp>
 #include <components/expressions/function_expression.hpp>
@@ -674,6 +673,9 @@ namespace components::sql::transform {
             const uint64_t total = node.valuesLists->lst.size();
             std::pmr::vector<vector::data_chunk_t> chunks(resource_);
             std::pmr::vector<types::complex_logical_type> schema(resource_);
+            // A value of another type than its column took from the first one waits for validation, which picks the
+            // column's common type.
+            logical_plan::deferred_cells_t deferred_cells(resource_);
             auto row_it = node.valuesLists->lst.begin();
             uint64_t global_row = 0;
             while (global_row < total) {
@@ -709,12 +711,10 @@ namespace components::sql::transform {
                             }
                             column = std::move(retyped);
                         } else if (column.type() != value.type()) {
-                            return core::error_t(
-                                core::error_code_t::sql_parse_error,
-                                std::pmr::string{"VALUES types " + components::catalog::format_type_be(column.type()) +
-                                                     " and " + components::catalog::format_type_be(value.type()) +
-                                                     " cannot be matched",
-                                                 resource_});
+                            column.set_null(chunk_row, true);
+                            deferred_cells.push_back(
+                                logical_plan::deferred_cell_t{global_row, column_index, std::move(value), {}});
+                            continue;
                         }
                         vector::vector_ops::copy(value, column, 1, 0, chunk_row);
                     }
@@ -736,6 +736,7 @@ namespace components::sql::transform {
             }
 
             auto raw = logical_plan::make_node_raw_data(resource_, std::move(chunks));
+            raw->set_deferred_cells(std::move(deferred_cells));
             const bool values_has_sort = node.sortClause && !node.sortClause->lst.empty();
             if (!values_has_sort && !node.limitCount && !node.limitOffset) {
                 return raw;

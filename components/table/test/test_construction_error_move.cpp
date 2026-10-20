@@ -53,7 +53,7 @@ namespace {
 
         auto handle = env.block_manager.register_block(3);
         auto segment = std::make_unique<column_segment_t>(handle,
-                                                          complex_logical_type(logical_type::STRING_LITERAL),
+                                                          complex_logical_type(logical_type::TEXT),
                                                           0,
                                                           1,
                                                           3,

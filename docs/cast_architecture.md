@@ -29,8 +29,8 @@ Type promotion also relies on casts, so it is included in the scope.
 | Visibility | Where it applies | Examples |
 | --- | --- | --- |
 | Implicit | Anywhere: arithmetic, operators, function arguments, common type search | `INTEGER -> BIGINT`, `INTEGER -> DOUBLE`, `DATE -> TIMESTAMP` |
-| Assignment | Storing a value: INSERT/UPDATE target columns | `DOUBLE -> INTEGER`, `BIGINT -> INTEGER`, `TIMESTAMP -> DATE`, `INTEGER -> STRING` |
-| Explicit | Only when written in the query | `STRING -> INTEGER`, `INTEGER -> BOOLEAN`, `DECIMAL -> BOOLEAN` |
+| Assignment | Storing a value: INSERT/UPDATE target columns | `DOUBLE -> INTEGER`, `BIGINT -> INTEGER`, `TIMESTAMP -> DATE`, `INTEGER -> TEXT` |
+| Explicit | Only when written in the query | `TEXT -> INTEGER`, `INTEGER -> BOOLEAN`, `DECIMAL -> BOOLEAN` |
 
 A site asks for the most permissive visibility it accepts, and a cast is available there if its own
 visibility is no more permissive than that. So an implicit cast is available everywhere, and an explicit
@@ -42,7 +42,7 @@ INSERT INTO t(int_col)
        VALUES (1.5)            -- DOUBLE -> INTEGER, assignment: rounds to 2
 SELECT int_col + double_col    -- the same DOUBLE -> INTEGER is NOT available here,
 FROM t                         -- so nothing silently truncates in arithmetic
-CAST('42' AS INTEGER)          -- STRING -> INTEGER, explicit only
+CAST('42' AS INTEGER)          -- TEXT -> INTEGER, explicit only
 ```
 
 There is no assignment fallback for function and operator arguments: they resolve over implicit casts

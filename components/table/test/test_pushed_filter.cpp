@@ -35,7 +35,7 @@ TEST_CASE("components::table::pushed_filter::parameters are a deep copy on the a
     CHECK(filter->parameters.at(id).get_value<std::string_view>(0) == "a string past the inline buffer");
 
     std::pmr::vector<types::complex_logical_type> types(&builder);
-    types.emplace_back(types::complex_logical_type{types::logical_type::STRING_LITERAL});
+    types.emplace_back(types::complex_logical_type{types::logical_type::TEXT});
     auto built = table::build_table_filter(&builder, *filter, types);
     REQUIRE_FALSE(built.has_error());
     CHECK(built.value()->parameters.resource() == &builder);

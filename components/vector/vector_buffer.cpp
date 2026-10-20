@@ -26,7 +26,7 @@ namespace components::vector {
                 core::pmr::array_deleter_t(resource, capacity * type.size(), type.align())) {}
 
     string_vector_buffer_t::string_vector_buffer_t(std::pmr::memory_resource* resource)
-        : vector_buffer_t(resource, vector_buffer_type::STRING)
+        : vector_buffer_t(resource, vector_buffer_type::TEXT)
         , string_buffer_(resource) {}
 
     void* string_vector_buffer_t::insert(void* data, size_t size) { return string_buffer_.insert(data, size); }

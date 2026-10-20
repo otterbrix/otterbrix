@@ -28,7 +28,7 @@ namespace components::index::codec {
             case logical_type_t::UBIGINT:
             case logical_type_t::FLOAT:
             case logical_type_t::DOUBLE:
-            case logical_type_t::STRING_LITERAL:
+            case logical_type_t::TEXT:
             case logical_type_t::DATE:
             case logical_type_t::TIME:
             case logical_type_t::TIMESTAMP:
@@ -147,7 +147,7 @@ namespace components::index::codec {
                 return scalar.template operator()<float>();
             case physical_type_t::DOUBLE:
                 return scalar.template operator()<double>();
-            case physical_type_t::STRING: {
+            case physical_type_t::TEXT: {
                 const auto n = read_le_raw<uint32_t>(data, size, pos, &read_ok);
                 if (!read_ok) {
                     return refuse();
@@ -237,7 +237,7 @@ namespace components::index::codec {
             case physical_type_t::DOUBLE:
                 advance(sizeof(double));
                 return;
-            case physical_type_t::STRING: {
+            case physical_type_t::TEXT: {
                 const auto n = read_le_raw<uint32_t>(data, size, pos, &read_ok);
                 if (!read_ok) {
                     refuse();

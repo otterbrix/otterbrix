@@ -50,7 +50,7 @@ namespace components::types {
     }
 
     physical_value::physical_value(const char* data, uint32_t size)
-        : type_(physical_type::STRING)
+        : type_(physical_type::TEXT)
         , size_(size)
         , data_(reinterpret_cast<uint64_t>(data)) {
         assert(size <= uint32_t(-1));
@@ -99,7 +99,7 @@ namespace components::types {
 
         // handle strings
 
-        if (type_ == physical_type::STRING && other.type_ == physical_type::STRING) {
+        if (type_ == physical_type::TEXT && other.type_ == physical_type::TEXT) {
             return std::string_view(reinterpret_cast<char*>(data_), size_) <
                    std::string_view(reinterpret_cast<char*>(other.data_), other.size_);
         }
@@ -232,7 +232,7 @@ namespace components::types {
             return static_cast<double>(as_int128(v));
         };
 
-        // Non-numeric other side (STRING / NA already handled upstream / BOOL handled
+        // Non-numeric other side (TEXT / NA already handled upstream / BOOL handled
         // upstream): stable type-order.
         auto numeric = [&](const physical_value& v) {
             return is_integral_type(v.type_) || v.type_ == physical_type::INT128 || v.type_ == physical_type::UINT128;
@@ -347,9 +347,8 @@ namespace components::types {
         return absl::MakeUint128(data_hi_, data_);
     }
 
-    std::string_view
-    physical_value::value_(std::integral_constant<physical_type, physical_type::STRING>) const noexcept {
-        assert(type_ == physical_type::STRING);
+    std::string_view physical_value::value_(std::integral_constant<physical_type, physical_type::TEXT>) const noexcept {
+        assert(type_ == physical_type::TEXT);
         return {reinterpret_cast<const char*>(data_), size_};
     }
 

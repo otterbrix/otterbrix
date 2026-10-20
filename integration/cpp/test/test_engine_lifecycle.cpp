@@ -19,7 +19,7 @@ namespace {
 
     std::vector<components::table::column_definition_t> lifecycle_columns(std::pmr::memory_resource* resource) {
         std::pmr::vector<components::types::complex_logical_type> types(resource);
-        types.emplace_back(components::types::logical_type::STRING_LITERAL, "name");
+        types.emplace_back(components::types::logical_type::TEXT, "name");
         types.emplace_back(components::types::logical_type::BIGINT, "count");
         std::vector<components::table::column_definition_t> columns;
         columns.reserve(types.size());

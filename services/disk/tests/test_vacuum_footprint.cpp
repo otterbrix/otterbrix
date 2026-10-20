@@ -114,7 +114,7 @@ namespace {
     std::vector<components::table::column_definition_t> vacuum_columns() {
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", complex_logical_type{logical_type::BIGINT});
-        cols.emplace_back("name", complex_logical_type{logical_type::STRING_LITERAL});
+        cols.emplace_back("name", complex_logical_type{logical_type::TEXT});
         return cols;
     }
 
@@ -141,7 +141,7 @@ namespace {
                 complex_logical_type id_t{logical_type::BIGINT};
                 id_t.set_alias("id");
                 types.push_back(std::move(id_t));
-                complex_logical_type name_t{logical_type::STRING_LITERAL};
+                complex_logical_type name_t{logical_type::TEXT};
                 name_t.set_alias("name");
                 types.push_back(std::move(name_t));
             }
@@ -173,7 +173,7 @@ namespace {
             complex_logical_type id_t{logical_type::BIGINT};
             id_t.set_alias("id");
             types.push_back(std::move(id_t));
-            complex_logical_type name_t{logical_type::STRING_LITERAL};
+            complex_logical_type name_t{logical_type::TEXT};
             name_t.set_alias("name");
             types.push_back(std::move(name_t));
         }

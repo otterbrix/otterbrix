@@ -150,7 +150,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead
 
 // A pair of TYPES that cannot be compared at all must stay a refusal, not an empty bucket: ON
 // DELETE CASCADE/RESTRICT reads an empty bucket as "this parent has no children". Without a
-// per-column probe, a STRING key against a BIGINT parent would silently match nothing instead.
+// per-column probe, a TEXT key against a BIGINT parent would silently match nothing instead.
 TEST_CASE("services::disk::fk_hash_semijoin::an_uncomparable_type_pair_refuses_instead_of_missing") {
     core::pmr::otterbrix_resource resource;
 
@@ -171,7 +171,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::an_uncomparable_type_pair_refuses_i
     table_storage_adapter_t adapter(ts.table(), &resource);
 
     std::pmr::vector<complex_logical_type> ktypes{&resource};
-    ktypes.emplace_back(logical_type::STRING_LITERAL);
+    ktypes.emplace_back(logical_type::TEXT);
     data_chunk_t keys(&resource, ktypes, 2);
     keys.set_cardinality(2);
     keys.set_value(0, 0, std::string_view{"10"});

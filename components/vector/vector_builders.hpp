@@ -24,10 +24,10 @@ namespace components::vector {
     } // namespace detail
 
     // `type` must have the physical storage of T (DATE <- date_t or int32_t, UUID <- int128_t, ...;
-    // string-like T needs STRING_LITERAL storage). A mismatch aborts in every build.
+    // string-like T needs TEXT storage). A mismatch aborts in every build.
     template<typename T>
     vector_t make_scalar(std::pmr::memory_resource* resource, const types::complex_logical_type& type, T value) {
-        const auto expected = detail::is_string_like_v<T> ? types::physical_type::STRING
+        const auto expected = detail::is_string_like_v<T> ? types::physical_type::TEXT
                                                           : types::to_physical_type(types::to_logical_type<T>());
         if (type.to_physical_type() != expected) {
             assert(false && "make_scalar: the value's physical type does not match the vector type");
@@ -42,20 +42,21 @@ namespace components::vector {
         return result;
     }
 
-    // The type is to_logical_type<T>(), and STRING_LITERAL for the
+    // The type is to_logical_type<T>(), and TEXT for the
     // string-like T (to_logical_type<const char*> alone would answer POINTER).
     template<typename T>
     vector_t make_scalar(std::pmr::memory_resource* resource, T value) {
         if constexpr (detail::is_string_like_v<T>) {
-            return make_scalar(resource,
-                               types::complex_logical_type{types::logical_type::STRING_LITERAL},
-                               std::move(value));
+            return make_scalar(resource, types::complex_logical_type{types::logical_type::TEXT}, std::move(value));
         } else {
             static_assert(types::to_logical_type<T>() != types::logical_type::INVALID,
                           "make_scalar<T>: no logical type for T; pass the type explicitly");
             return make_scalar(resource, types::complex_logical_type{types::to_logical_type<T>()}, std::move(value));
         }
     }
+
+    // A one-row STRING_LITERAL: untyped text whose type is decided where it is used.
+    vector_t make_string_literal(std::pmr::memory_resource* resource, std::string_view text);
 
     // A deep one-row CONSTANT copy of row `row` of `source`: it shares no buffer with `source`, so it may cross
     // an actor boundary or be flattened without touching the original.

@@ -842,7 +842,7 @@ TEST_CASE("components::table::mvcc::aborted_update_revert_restores_row") {
     test_env env;
     std::vector<column_definition_t> columns;
     columns.emplace_back("id", complex_logical_type(logical_type::BIGINT));
-    columns.emplace_back("val", complex_logical_type(logical_type::STRING_LITERAL));
+    columns.emplace_back("val", complex_logical_type(logical_type::TEXT));
     auto table = std::make_unique<data_table_t>(&env.resource, env.block_manager, std::move(columns), "t");
 
     auto types = table->copy_types();

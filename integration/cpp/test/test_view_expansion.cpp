@@ -18,7 +18,7 @@ namespace {
     // Threshold 10 lives in the body on purpose: only there can it catch a parameter-id collision with an outer WHERE.
     void seed(otterbrix::wrapper_dispatcher_t* d) {
         REQUIRE(exec(d, "CREATE DATABASE vx;")->is_success());
-        REQUIRE(exec(d, "CREATE TABLE vx.t (col_a STRING, col_b BIGINT);")->is_success());
+        REQUIRE(exec(d, "CREATE TABLE vx.t (col_a TEXT, col_b BIGINT);")->is_success());
         REQUIRE(
             exec(d, "INSERT INTO vx.t (col_a, col_b) VALUES ('a', 5), ('b', 15), ('c', 20), ('d', 8);")->is_success());
         REQUIRE(exec(d, "CREATE VIEW vx.v AS SELECT col_a, col_b FROM vx.t WHERE col_b > 10;")->is_success());
@@ -129,7 +129,7 @@ TEST_CASE("integration::cpp::test_view_expansion::join_with_view_side") {
     test_spaces space(config);
     auto* d = space.dispatcher();
     seed(d);
-    REQUIRE(exec(d, "CREATE TABLE vx.t2 (col_a STRING, tag STRING);")->is_success());
+    REQUIRE(exec(d, "CREATE TABLE vx.t2 (col_a TEXT, tag TEXT);")->is_success());
     REQUIRE(exec(d, "INSERT INTO vx.t2 (col_a, tag) VALUES ('b', 'B'), ('c', 'C'), ('d', 'D');")->is_success());
 
     auto cur = exec(d, "SELECT vx.v.col_a, vx.t2.tag FROM vx.v JOIN vx.t2 ON vx.v.col_a = vx.t2.col_a;");

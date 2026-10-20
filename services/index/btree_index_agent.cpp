@@ -13,7 +13,7 @@ namespace services::index {
 
         namespace codec = components::index::codec;
 
-        // A STRING physical_value is a VIEW into `encoded`; every use below keeps the owning buffer alive.
+        // A TEXT physical_value is a VIEW into `encoded`; every use below keeps the owning buffer alive.
         components::types::physical_value decode_as_tree_key(std::string_view encoded, bool& ok) {
             size_t pos = 0;
             return codec::read_tagged_value(encoded.data(), encoded.size(), pos, &ok);
@@ -313,7 +313,7 @@ namespace services::index {
             co_return std::move(rows);
         }
 
-        // A STRING physical_value is a VIEW into `encoded_probe`, which therefore outlives every use below.
+        // A TEXT physical_value is a VIEW into `encoded_probe`, which therefore outlives every use below.
         std::pmr::string encoded_probe(resource());
         components::types::physical_value probe;
         bool staged_ok = true;

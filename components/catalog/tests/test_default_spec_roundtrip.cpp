@@ -157,7 +157,7 @@ TEST_CASE("catalog::default_spec::composite_round_trip") {
 
     std::pmr::vector<complex_logical_type> fields{g_resource};
     fields.emplace_back(complex_logical_type{logical_type::BIGINT, "a"});
-    fields.emplace_back(complex_logical_type{logical_type::STRING_LITERAL, "b"});
+    fields.emplace_back(complex_logical_type{logical_type::TEXT, "b"});
     const auto struct_type = complex_logical_type::create_struct("s", fields);
     const vec::vector_t field_values[] = {scalar(std::int64_t{42}), scalar(std::string{"x"})};
     auto struct_back = round_trip(vec::make_struct(g_resource, struct_type, field_values), struct_type);

@@ -621,11 +621,11 @@ TEST_CASE("integration::cpp::limit_bounds::a_parameter_of_the_wrong_type_is_refu
     expect_param_error_text(d,
                             "SELECT x FROM m.t LIMIT $1;",
                             {{1, oops()}},
-                            "argument of LIMIT must be type bigint, not type text");
+                            "argument of LIMIT must be type bigint, not type unknown");
     expect_param_error_text(d,
                             "SELECT x FROM m.t OFFSET $1;",
                             {{1, oops()}},
-                            "argument of OFFSET must be type bigint, not type text");
+                            "argument of OFFSET must be type bigint, not type unknown");
     // a UINT64 past INT64_MAX is neither NULL (no limit) nor a count
     const auto too_big = [d] {
         return components::vector::make_scalar(d->resource(), std::numeric_limits<uint64_t>::max());

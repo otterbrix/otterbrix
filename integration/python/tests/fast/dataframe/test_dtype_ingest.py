@@ -2,7 +2,7 @@
 
 After dropping the bespoke numpy column scanner, every pandas/numpy frame is ingested through
 pandas' from_pandas export. These tests pin the edge-case semantics described in the migration:
-NaN->NULL is preserved, object columns keep MAP / lenient-STRING handling via the prepare shim,
+NaN->NULL is preserved, object columns keep MAP / lenient-TEXT handling via the prepare shim,
 and categoricals (previously rejected) now ingest.
 """
 
@@ -33,7 +33,7 @@ def test_datetime_with_nat(conn):
 
 def test_mixed_object_column_falls_back_to_string(conn):
     # Heterogeneous object column: pyarrow cannot infer a clean type, so the prepare shim
-    # stringifies it (the lenient STRING fallback the old pandas_analyzer applied).
+    # stringifies it (the lenient TEXT fallback the old pandas_analyzer applied).
     rel = conn.from_df(pd.DataFrame({"x": [1, "two", 3.0]}))
     assert rel.columns == ["x"]
     assert rel.fetchall() == [("1",), ("two",), ("3.0",)]

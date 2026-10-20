@@ -284,7 +284,7 @@ namespace {
         if (type.type() == logical_type::LIST || type.type() == logical_type::ARRAY) {
             return is_orderable(type.child_type());
         }
-        if (type.to_physical_type() == physical_type::STRING) {
+        if (type.to_physical_type() == physical_type::TEXT) {
             return true;
         }
         return ordered_dispatch<orderable_t>(type, [] { return false; });

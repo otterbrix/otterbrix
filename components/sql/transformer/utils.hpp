@@ -286,10 +286,10 @@ namespace components::sql::transform {
             {"uhugeint", types::logical_type::UHUGEINT},
             {"pointer", types::logical_type::POINTER},
             {"uuid", types::logical_type::UUID},
-            {"string", types::logical_type::STRING_LITERAL},
-            {"varchar", types::logical_type::STRING_LITERAL},
-            {"text", types::logical_type::STRING_LITERAL},
-            {"bpchar", types::logical_type::STRING_LITERAL},
+            {"string", types::logical_type::TEXT},
+            {"varchar", types::logical_type::TEXT},
+            {"text", types::logical_type::TEXT},
+            {"bpchar", types::logical_type::TEXT},
         };
 
         if (auto it = lookup.find(str); it != lookup.end()) {

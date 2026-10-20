@@ -65,6 +65,7 @@ namespace services::dispatcher {
         struct total_cost_t {
             uint64_t precision_loss{0};
             uint64_t footprint{0};
+            uint64_t matched_arguments{0};
 
             void add(cast_cost cost) {
                 precision_loss += cost.precision_loss;
@@ -72,11 +73,17 @@ namespace services::dispatcher {
             }
 
             bool operator<(const total_cost_t& other) const {
-                return precision_loss != other.precision_loss ? precision_loss < other.precision_loss
-                                                              : footprint < other.footprint;
+                if (precision_loss != other.precision_loss) {
+                    return precision_loss < other.precision_loss;
+                }
+                if (footprint != other.footprint) {
+                    return footprint < other.footprint;
+                }
+                return matched_arguments > other.matched_arguments;
             }
             bool operator==(const total_cost_t& other) const {
-                return precision_loss == other.precision_loss && footprint == other.footprint;
+                return precision_loss == other.precision_loss && footprint == other.footprint &&
+                       matched_arguments == other.matched_arguments;
             }
         };
 
@@ -94,9 +101,15 @@ namespace services::dispatcher {
                                                            const std::pmr::vector<complex_logical_type>& arguments,
                                                            parameter_type::variable_id id) {
             std::optional<complex_logical_type> unified;
+            bool saw_literal = false;
             for (size_t i = 0; i < arguments.size(); ++i) {
                 const auto& parameter = signature.input_types[i];
                 if (!parameter.is_variable() || parameter.id() != id || is_null_argument(arguments[i])) {
+                    continue;
+                }
+                // An untyped literal takes the type the other arguments settle on.
+                if (arguments[i].type() == logical_type::STRING_LITERAL) {
+                    saw_literal = true;
                     continue;
                 }
                 if (!unified.has_value() || *unified == arguments[i]) {
@@ -110,7 +123,7 @@ namespace services::dispatcher {
                 unified = common->type;
             }
             if (!unified.has_value()) {
-                return complex_logical_type{logical_type::NA};
+                return complex_logical_type{saw_literal ? logical_type::TEXT : logical_type::NA};
             }
             return unified;
         }
@@ -234,7 +247,9 @@ namespace services::dispatcher {
 
                 resolved_argument_t argument;
                 argument.target = target;
-                if (!is_null_argument(arguments[i]) && arguments[i] != target) {
+                if (!is_null_argument(arguments[i]) && arguments[i] == target) {
+                    ++candidate.cost.matched_arguments;
+                } else if (!is_null_argument(arguments[i])) {
                     auto info = cast_registry.lookup(arguments[i], target);
                     if (!info.has_value() || !allowed_in(info->level, cast_type::implicit)) {
                         return std::nullopt;
@@ -244,7 +259,9 @@ namespace services::dispatcher {
                         return std::nullopt;
                     }
                     argument.cast = std::move(cast.value());
-                    candidate.cost.add(info->cost);
+                    if (arguments[i].type() != logical_type::STRING_LITERAL) {
+                        candidate.cost.add(info->cost);
+                    }
                 }
                 targets.emplace_back(target);
                 candidate.arguments.emplace_back(std::move(argument));

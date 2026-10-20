@@ -52,7 +52,7 @@ namespace impl {
             case logical_type::UHUGEINT:
                 column.set_value(slot, static_cast<uint128_t>(n));
                 return;
-            case logical_type::STRING_LITERAL: {
+            case logical_type::TEXT: {
                 const std::string text = std::to_string(n64);
                 column.set_value(slot, std::string_view{text});
                 return;
@@ -99,7 +99,7 @@ components::vector::data_chunk_t gen_data_chunk(size_t size, int start, std::pmr
     std::pmr::vector<complex_logical_type> types(resource);
 
     types.emplace_back(logical_type::BIGINT, "count");
-    types.emplace_back(logical_type::STRING_LITERAL, "count_str");
+    types.emplace_back(logical_type::TEXT, "count_str");
     types.emplace_back(logical_type::DOUBLE, "count_double");
     types.emplace_back(logical_type::BOOLEAN, "count_bool");
     types.emplace_back(complex_logical_type::create_array(logical_type::UBIGINT, array_size, "count_array"));

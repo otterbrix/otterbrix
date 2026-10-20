@@ -260,99 +260,38 @@ namespace services::dispatcher { namespace {
     // chunk, so the binding's cast, resolved against the typed rows, no longer applies.
     core::error_t spend_deferred_cells(components::logical_plan::node_insert_t* node,
                                        core::date::timezone_offset_t session_tz) {
-        const auto& cells = node->deferred_cells();
-        if (cells.empty()) {
-            return core::error_t::no_error();
-        }
         auto* resource = node->resource();
         auto* source = node->children().empty() ? nullptr : node->children().front().get();
-        if (node->column_bindings().empty() || source == nullptr ||
-            source->type() != components::logical_plan::node_type::data_t) {
-            return core::error_t(core::error_code_t::schema_error,
-                                 std::pmr::string{"INSERT: VALUES cells of differing types cannot be resolved "
-                                                  "against the target columns",
-                                                  resource});
+        if (source == nullptr || source->type() != components::logical_plan::node_type::data_t) {
+            return core::error_t::no_error();
         }
-        auto& chunks = static_cast<components::logical_plan::node_data_t*>(source)->chunks();
-        std::pmr::vector<uint64_t> chunk_start(chunks.size() + 1, 0, resource);
-        for (std::size_t i = 0; i < chunks.size(); ++i) {
-            chunk_start[i + 1] = chunk_start[i] + chunks[i].size();
+        auto* data = static_cast<components::logical_plan::node_data_t*>(source);
+        if (data->deferred_cells().empty()) {
+            return core::error_t::no_error();
         }
-        const uint64_t total_rows = chunk_start.back();
-
-        using cell_ptrs = std::pmr::vector<const components::logical_plan::insert_deferred_cell_t*>;
-        std::pmr::unordered_map<uint64_t, cell_ptrs> by_column(resource);
-        for (const auto& cell : cells) {
-            if (cell.row >= total_rows || cell.column >= node->column_bindings().size()) {
+        std::pmr::vector<uint64_t> columns(resource);
+        for (const auto& cell : data->deferred_cells()) {
+            if (cell.column >= node->column_bindings().size()) {
                 return core::error_t(
                     core::error_code_t::schema_error,
                     std::pmr::string{"INSERT: a deferred VALUES cell points outside the VALUES list", resource});
             }
-            auto found = by_column.find(cell.column);
-            if (found == by_column.end()) {
-                found = by_column.emplace(cell.column, cell_ptrs(resource)).first;
-            }
-            found->second.push_back(&cell);
+            columns.push_back(cell.column);
         }
+        std::sort(columns.begin(), columns.end());
+        columns.erase(std::unique(columns.begin(), columns.end()), columns.end());
 
         const components::graph_execution_context settings{.timezone_offset = session_tz,
                                                            .decimal_width = 0,
                                                            .decimal_scale = 0};
-        for (const auto& [column, column_cells] : by_column) {
+        for (const auto column : columns) {
             auto& binding = node->column_bindings()[column];
+            if (auto error = data->settle_column(column, binding.target_type, binding.cast, settings);
+                error.contains_error()) {
+                return error;
+            }
             auto target_type = binding.target_type;
-            const auto first_chunk_type = chunks.front().data[column].type();
-            target_type.set_alias(std::string(first_chunk_type.alias()));
-            cell_ptrs by_row(total_rows, nullptr, resource);
-            for (const auto* cell : column_cells) {
-                by_row[cell->row] = cell;
-            }
-            for (std::size_t ci = 0; ci < chunks.size(); ++ci) {
-                auto& chunk = chunks[ci];
-                const auto& stored = chunk.data[column];
-                const uint64_t count = chunk.size();
-                if (stored.type() != first_chunk_type) {
-                    return core::error_t(core::error_code_t::schema_error,
-                                         std::pmr::string{"INSERT: a VALUES column of differing types spans several "
-                                                          "chunks",
-                                                          resource});
-                }
-                std::optional<components::vector::vector_t> casted;
-                if (binding.cast) {
-                    components::vector::vector_t converted(resource, target_type, count);
-                    if (auto error =
-                            binding.cast(components::casts::cast_kind::cast, stored, &converted, settings, count);
-                        error.contains_error()) {
-                        return error;
-                    }
-                    casted.emplace(std::move(converted));
-                }
-                components::vector::vector_t rebuilt(resource, target_type, chunk.capacity());
-                for (uint64_t row = 0; row < count; ++row) {
-                    const auto* cell = by_row[chunk_start[ci] + row];
-                    if (cell != nullptr) {
-                        if (cell->cast) {
-                            components::vector::vector_t cell_value(resource, target_type, 1);
-                            auto error = cell->cast(components::casts::cast_kind::cast,
-                                                    components::vector::make_flat_copy(resource, cell->value, 1),
-                                                    &cell_value,
-                                                    settings,
-                                                    1);
-                            if (error.contains_error()) {
-                                return error;
-                            }
-                            components::vector::vector_ops::copy(cell_value, rebuilt, 1, 0, row);
-                        } else {
-                            components::vector::vector_ops::copy(cell->value, rebuilt, 1, 0, row);
-                        }
-                    } else if (stored.is_null(row)) {
-                        rebuilt.set_null(row, true);
-                    } else {
-                        components::vector::vector_ops::copy(casted ? *casted : stored, rebuilt, row + 1, row, row);
-                    }
-                }
-                chunk.data[column] = std::move(rebuilt);
-            }
+            target_type.set_alias(std::string(data->data_chunk().data[column].type().alias()));
             binding.cast = {};
             if (source->has_output_types()) {
                 auto declared = source->output_types();

@@ -17,7 +17,7 @@ namespace {
     vector::data_chunk_t make_dictionary_chunk(std::pmr::memory_resource* resource, uint64_t rows) {
         std::pmr::vector<types::complex_logical_type> types{resource};
         types.emplace_back(types::logical_type::BIGINT);
-        types.emplace_back(types::logical_type::STRING_LITERAL);
+        types.emplace_back(types::logical_type::TEXT);
         vector::data_chunk_t flat(resource, types, rows);
         const std::string value(32, 'x');
         for (uint64_t row = 0; row < rows; row++) {

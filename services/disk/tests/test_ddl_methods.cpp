@@ -680,8 +680,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     REQUIRE(attoid_b >= FIRST_USER_OID);
     {
         auto chunk = build_chunk(
-            {{"a", complex_logical_type{logical_type::BIGINT}},
-             {"b", complex_logical_type{logical_type::STRING_LITERAL}}},
+            {{"a", complex_logical_type{logical_type::BIGINT}}, {"b", complex_logical_type{logical_type::TEXT}}},
             [&](data_chunk_t& c) {
                 c.set_value(0, 0, std::int64_t{2});
                 c.set_value(1, 0, std::string_view("x"));
@@ -706,7 +705,7 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
     {
         auto chunk = build_chunk(
             {{"a", complex_logical_type{logical_type::BIGINT}},
-             {"b", complex_logical_type{logical_type::STRING_LITERAL}},
+             {"b", complex_logical_type{logical_type::TEXT}},
              {"c", complex_logical_type{logical_type::DOUBLE}}},
             [&](data_chunk_t& c) {
                 c.set_value(0, 0, std::int64_t{3});
@@ -986,7 +985,7 @@ TEST_CASE("services::disk::ddl::catalog_append_stores_the_cast_result_not_the_ra
     CHECK(probe.oid == probe_oid);
 }
 
-// A STRING cell for a numeric catalog column has no cast: the append refuses, no row is stored.
+// A TEXT cell for a numeric catalog column has no cast: the append refuses, no row is stored.
 TEST_CASE("services::disk::ddl::catalog_append_refuses_a_string_cell_for_a_numeric_column") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "nsstrcast");
@@ -998,7 +997,7 @@ TEST_CASE("services::disk::ddl::catalog_append_refuses_a_string_cell_for_a_numer
         types.push_back(c.type());
     }
     constexpr catalog::oid_t probe_oid = FIRST_USER_OID + 778;
-    types[0] = components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL};
+    types[0] = components::types::complex_logical_type{components::types::logical_type::TEXT};
     components::vector::data_chunk_t row(&fx.resource, types, 1);
     row.set_cardinality(1);
     row.set_value(0, 0, std::string_view(std::to_string(static_cast<unsigned>(probe_oid))));

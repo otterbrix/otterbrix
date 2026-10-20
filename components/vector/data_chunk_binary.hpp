@@ -17,7 +17,7 @@ namespace components::vector {
     ///     [payload       : data_size bytes]
     /// Recursive (shape follows the type spec, no tag); child order mirrors .otbx, [validity, ...children]:
     ///   fixed-size types : raw memcpy of the column buffer
-    ///   STRING           : [(count+1)*4 LE offsets][concatenated string data]
+    ///   TEXT           : [(count+1)*4 LE offsets][concatenated string data]
     ///   STRUCT           : per field [validity][payload]      (also TIME_TZ, INTERVAL, UNION)
     ///   ARRAY            : [validity][payload] over count*stride child elements
     ///   LIST             : [count*(offset:8)(length:8)][child_count:8][validity][payload]

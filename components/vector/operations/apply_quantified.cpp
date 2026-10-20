@@ -359,7 +359,7 @@ namespace components::vector::operations {
                                                       output->resource()});
             }
             if (test.is_match() && element.type() != types::logical_type::NA &&
-                element.to_physical_type() != types::physical_type::STRING) {
+                element.to_physical_type() != types::physical_type::TEXT) {
                 return core::error_t(core::error_code_t::invalid_parameter,
                                      std::pmr::string{"quantified match: the probe and the patterns must be strings",
                                                       output->resource()});

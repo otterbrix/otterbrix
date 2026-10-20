@@ -16,7 +16,7 @@ namespace {
     constexpr int32_t LT_INTEGER = 13;
     constexpr int32_t LT_BIGINT = 14;
     constexpr int32_t LT_DOUBLE = 24;
-    constexpr int32_t LT_STRING_LITERAL = 35;
+    constexpr int32_t LT_TEXT = 35;
 
     // core::error_code_t::invalid_parameter, mirrored like the logical types above.
     constexpr int32_t EC_INVALID_PARAMETER = 22;
@@ -329,7 +329,7 @@ TEST_CASE("c-api: cursor_column_logical_type reports basic types", "[c-api][curs
     REQUIRE(cursor_column_logical_type(cur, 1) == LT_BIGINT);
     REQUIRE(cursor_column_logical_type(cur, 2) == LT_BOOLEAN);
     REQUIRE(cursor_column_logical_type(cur, 3) == LT_DOUBLE);
-    REQUIRE(cursor_column_logical_type(cur, 4) == LT_STRING_LITERAL);
+    REQUIRE(cursor_column_logical_type(cur, 4) == LT_TEXT);
 
     release_cursor(cur);
 }

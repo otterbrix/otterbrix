@@ -209,14 +209,14 @@ namespace components::vector::arrow {
                         std::pmr::string("Unsupported bit-width value for Arrow Decimal type", resource));
             }
         } else if (format == "u") {
-            return std::make_unique<arrow_type>(types::logical_type::STRING_LITERAL,
+            return std::make_unique<arrow_type>(types::logical_type::TEXT,
                                                 std::make_unique<arrow_string_info>(arrow_variable_size_type::NORMAL));
         } else if (format == "U") {
             return std::make_unique<arrow_type>(
-                types::logical_type::STRING_LITERAL,
+                types::logical_type::TEXT,
                 std::make_unique<arrow_string_info>(arrow_variable_size_type::SUPER_SIZE));
         } else if (format == "vu") {
-            return std::make_unique<arrow_type>(types::logical_type::STRING_LITERAL,
+            return std::make_unique<arrow_type>(types::logical_type::TEXT,
                                                 std::make_unique<arrow_string_info>(arrow_variable_size_type::VIEW));
         } else if (format == "tdD") {
             return std::make_unique<arrow_type>(types::logical_type::DATE,

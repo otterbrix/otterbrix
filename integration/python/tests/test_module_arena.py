@@ -185,10 +185,10 @@ def test_type_surface_survives_the_call_that_built_it():
     assert len(structs) == 200
     for built in structs:
         assert [name for name, _ in built.children] == ["a", "b"]
-        assert [repr(child) for _, child in built.children] == ["INTEGER", "STRING_LITERAL"]
+        assert [repr(child) for _, child in built.children] == ["INTEGER", "TEXT"]
     for built in maps:
         assert [name for name, _ in built.children] == ["key", "value"]
-        assert repr(built.key) == "STRING_LITERAL"
+        assert repr(built.key) == "TEXT"
         assert repr(built.value) == "BIGINT"
     for built in decimals:
         assert built.children == [("precision", 18), ("scale", 4)]

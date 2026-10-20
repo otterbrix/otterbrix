@@ -1605,13 +1605,17 @@ namespace services::collection::executor {
                             if (!child || child->type() != components::logical_plan::node_type::data_t) {
                                 continue;
                             }
-                            auto* data_node = static_cast<const components::logical_plan::node_data_t*>(child.get());
-                            const auto& chunk = data_node->data_chunk();
-                            registered_cols.reserve(chunk.column_count());
-                            for (size_t i = 0; i < chunk.column_count(); ++i) {
-                                const auto& type = chunk.data[i].type();
-                                assert(type.has_alias());
-                                registered_cols.emplace_back(type.alias(), type);
+                            assert(effective_insert->type() == node_type::insert_t);
+                            const auto& bindings =
+                                static_cast<const components::logical_plan::node_insert_t*>(effective_insert)
+                                    ->column_bindings();
+                            assert(bindings.size() ==
+                                   static_cast<const components::logical_plan::node_data_t*>(child.get())
+                                       ->data_chunk()
+                                       .column_count());
+                            registered_cols.reserve(bindings.size());
+                            for (const auto& binding : bindings) {
+                                registered_cols.emplace_back(std::string(binding.target_name), binding.target_type);
                             }
                             break;
                         }

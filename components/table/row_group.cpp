@@ -383,7 +383,7 @@ namespace components::table {
                             fetch_state.result_outlives_pins = true;
 #ifdef DEV_MODE
                             if (!fetch_state.result_outlives_pins &&
-                                result.data[i].type().to_physical_type() == types::physical_type::STRING) {
+                                result.data[i].type().to_physical_type() == types::physical_type::TEXT) {
                                 g_gathered_borrowed_strings.fetch_add(approved_tuple_count, std::memory_order_relaxed);
                             }
 #endif

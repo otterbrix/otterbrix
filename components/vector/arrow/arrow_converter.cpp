@@ -124,7 +124,7 @@ namespace components::vector::arrow {
             case logical_type::DOUBLE:
                 child.format = "g";
                 break;
-            case logical_type::STRING_LITERAL:
+            case logical_type::TEXT:
                 child.format = "U";
                 break;
             case logical_type::DECIMAL: {

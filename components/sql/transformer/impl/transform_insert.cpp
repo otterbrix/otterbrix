@@ -6,6 +6,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/jsonb_path.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_insert_on_conflict.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -22,11 +23,6 @@
 using namespace components::expressions;
 
 namespace {
-
-    bool is_quoted_literal(Node* node) {
-        using components::sql::transform::pg_ptr_cast;
-        return nodeTag(node) == T_A_Const && pg_ptr_cast<A_Const>(node)->val.type == T_String;
-    }
 
     core::error_t empty_array_untyped(std::pmr::memory_resource* resource) {
         return core::error_t(core::error_code_t::sql_parse_error,
@@ -316,7 +312,7 @@ namespace components::sql::transform {
             }
 
             logical_plan::insert_literal_digits_list_t literal_digits(resource_);
-            logical_plan::insert_deferred_cells_t deferred_cells(resource_);
+            logical_plan::deferred_cells_t deferred_cells(resource_);
 
             auto fill_row = [&](vector::data_chunk_t& chunk,
                                 size_t chunk_index,
@@ -428,7 +424,6 @@ namespace components::sql::transform {
                         auto& column = *it;
                         const auto col_type = column.type().type();
                         const auto val_type = value.type().type();
-                        const bool quoted = is_quoted_literal(pg_ptr_cast<Node>(it_value->data));
 
                         if (value.is_null(0)) {
                             column.set_null(chunk_row, true);
@@ -436,13 +431,10 @@ namespace components::sql::transform {
                         }
                         // PostgreSQL coerces each row to the TABLE column's type; a cell that is not of the type
                         // the column took waits for it, and validate/enrich cast it there.
-                        const auto defer = [&](vector::vector_t cell, bool was_quoted, uint64_t row) {
+                        const auto defer = [&](vector::vector_t cell, uint64_t row) {
                             column.set_null(row - (global_row - chunk_row), true);
-                            deferred_cells.push_back(logical_plan::insert_deferred_cell_t{row,
-                                                                                          column_index,
-                                                                                          was_quoted,
-                                                                                          std::move(cell),
-                                                                                          {}});
+                            deferred_cells.push_back(
+                                logical_plan::deferred_cell_t{row, column_index, std::move(cell), {}});
                         };
                         if (col_type == types::logical_type::NA) {
                             // Column came from a leading NULL literal; it takes the first value's whole type.
@@ -452,8 +444,9 @@ namespace components::sql::transform {
                             column = std::move(na_promoted);
                         } else if (column.type() == value.type()) {
                             // Same type: stored in place.
-                        } else if (col_type == types::logical_type::STRING_LITERAL) {
-                            // The rows so far are text (quoted or cast to text); the column takes this value's type
+                        } else if (col_type == types::logical_type::STRING_LITERAL ||
+                                   col_type == types::logical_type::TEXT) {
+                            // The rows so far are text (literals, or cast to text); the column takes this value's type
                             // and the text rows wait for the table column's.
                             auto row_node =
                                 std::next(vals.begin(), static_cast<std::ptrdiff_t>(global_row - chunk_row));
@@ -470,8 +463,7 @@ namespace components::sql::transform {
                                     continue;
                                 }
                                 const std::string_view text = column.get_value<std::string_view>(row);
-                                defer(vector::make_scalar(resource_, text),
-                                      is_quoted_literal(written),
+                                defer(vector::make_scalar(resource_, types::complex_logical_type{col_type}, text),
                                       global_row - chunk_row + row);
                             }
                             auto retyped_type = value.type();
@@ -481,8 +473,8 @@ namespace components::sql::transform {
                                 retyped.set_null(row, true);
                             }
                             column = std::move(retyped);
-                        } else if (quoted) {
-                            defer(std::move(value), true, global_row);
+                        } else if (val_type == types::logical_type::STRING_LITERAL) {
+                            defer(std::move(value), global_row);
                             continue;
                         } else if (col_type == types::logical_type::DECIMAL ||
                                    val_type == types::logical_type::DECIMAL) {
@@ -515,7 +507,7 @@ namespace components::sql::transform {
                             if (column_element != value_element) {
                                 if (!types::is_arithmetic_numeric(column_element.type()) ||
                                     !types::is_arithmetic_numeric(value_element.type())) {
-                                    defer(std::move(value), false, global_row);
+                                    defer(std::move(value), global_row);
                                     continue;
                                 }
                                 element = types::complex_logical_type{
@@ -527,14 +519,14 @@ namespace components::sql::transform {
                                     promote_array_to_list(resource_, column, chunk_row, element, chunk.capacity()));
                                 column = std::move(list_col);
                             } else if (column_element != element) {
-                                defer(std::move(value), false, global_row);
+                                defer(std::move(value), global_row);
                                 continue;
                             }
                             value.set_type_alias(field_name);
                             VALUE_OR_RETURN(auto list_value, promote_array_to_list(resource_, value, 1, element, 1));
                             value = std::move(list_value);
                         } else {
-                            defer(std::move(value), false, global_row);
+                            defer(std::move(value), global_row);
                             continue;
                         }
                         vector::vector_ops::copy(value, column, 1, 0, chunk_row);
@@ -596,7 +588,9 @@ namespace components::sql::transform {
             }
             auto* ins_node = static_cast<logical_plan::node_insert_t*>(ins.get());
             ins_node->set_literal_digits(std::move(literal_digits));
-            ins_node->set_deferred_cells(std::move(deferred_cells));
+            // With $N parameters this data node is a placeholder; transform_result moves the cells to the bound rows.
+            static_cast<logical_plan::node_data_t*>(ins_node->children().front().get())
+                ->set_deferred_cells(std::move(deferred_cells));
             ins_node->returning() = returning;
             set_target(*ins_node, qn, target_slots::relation_with_schema);
             register_write_target(qn, constraint_resolve_kind::outgoing);

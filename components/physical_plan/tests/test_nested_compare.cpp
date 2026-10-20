@@ -21,7 +21,7 @@ using components::types::logical_type;
 namespace {
 
     complex_logical_type bigint() { return complex_logical_type{logical_type::BIGINT}; }
-    complex_logical_type varchar() { return complex_logical_type{logical_type::STRING_LITERAL}; }
+    complex_logical_type varchar() { return complex_logical_type{logical_type::TEXT}; }
 
     template<typename... Vectors>
     std::array<vector_t, sizeof...(Vectors)> pack(Vectors&&... vectors) {
@@ -89,7 +89,7 @@ TEST_CASE("nested compare: STRUCT and LIST of STRUCT") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::vector<complex_logical_type> fields(&resource);
     fields.emplace_back(logical_type::BIGINT, "a");
-    fields.emplace_back(logical_type::STRING_LITERAL, "b");
+    fields.emplace_back(logical_type::TEXT, "b");
     const auto point = complex_logical_type::create_struct("point", fields);
     auto make_point = [&](int64_t a, std::string_view b) {
         return make_struct(&resource,

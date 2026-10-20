@@ -323,16 +323,18 @@ namespace services::dispatcher {
                                                  const components::logical_plan::storage_parameters& parameters,
                                                  components::compute::function_types_mask allowed_functions,
                                                  const named_schema* schema_right = nullptr,
-                                                 bool* saw_reduction = nullptr) {
-            const validation::expression_context_t expression_context{context.resource,
-                                                                      schema,
-                                                                      parameters,
-                                                                      context.cast_registry,
-                                                                      context.function_registry,
-                                                                      context.execution_context,
-                                                                      allowed_functions,
-                                                                      context.column_uses,
-                                                                      schema_right};
+                                                 bool* saw_reduction = nullptr,
+                                                 untyped_literals literals = untyped_literals::become_text) {
+            validation::expression_context_t expression_context{context.resource,
+                                                                schema,
+                                                                parameters,
+                                                                context.cast_registry,
+                                                                context.function_registry,
+                                                                context.execution_context,
+                                                                allowed_functions,
+                                                                context.column_uses,
+                                                                schema_right};
+            expression_context.literals = literals;
             expression_ptr expression{scalar_expr};
             return validation::resolve_expression(expression, expression_context, saw_reduction);
         }
@@ -908,11 +910,53 @@ namespace services::dispatcher {
         return core::error_t::no_error();
     }
 
+    [[nodiscard]] static core::error_t settle_values_columns(const validation::validation_context_t& context,
+                                                             node_data_t* values) {
+        auto* resource = context.resource;
+        auto column_count = values->data_chunk().column_count();
+        for (uint64_t column = 0; column < column_count; ++column) {
+            const auto& written = values->data_chunk().data[column].type();
+            std::pmr::vector<complex_logical_type> types(resource);
+            types.push_back(written);
+            for (const auto& cell : values->deferred_cells()) {
+                if (cell.column == column) {
+                    types.push_back(cell.value.type());
+                }
+            }
+            if (types.size() == 1 && written.type() != logical_type::STRING_LITERAL) {
+                continue;
+            }
+            auto common = context.cast_registry.find_best_common_type(std::span<const complex_logical_type>{types});
+            if (!common.has_value()) {
+                std::string listed;
+                for (const auto& type : types) {
+                    listed += (listed.empty() ? "" : ", ") + components::catalog::format_type_be(type, false);
+                }
+                return core::error_t(core::error_code_t::schema_error,
+                                     std::pmr::string{"VALUES column " + std::to_string(column + 1) +
+                                                          " holds types that cannot be matched: " + listed,
+                                                      resource});
+            }
+            size_t input = 1;
+            for (auto& cell : values->deferred_cells()) {
+                if (cell.column == column) {
+                    cell.cast = std::move(common->casts[input++]);
+                }
+            }
+            if (auto error = values->settle_column(column, common->type, common->casts[0], context.execution_context);
+                error.contains_error()) {
+                return error;
+            }
+        }
+        return core::error_t::no_error();
+    }
+
     [[nodiscard]] static core::result_wrapper_t<named_schema>
     validate_schema_impl(const validation::validation_context_t& context,
                          node_t* node,
                          const components::logical_plan::storage_parameters& parameters,
-                         cte_schemas_t* cte_schemas) {
+                         cte_schemas_t* cte_schemas,
+                         validation::untyped_literals literals) {
         auto* resource = context.resource;
         const auto* resolves = context.resolves;
         const auto* cast_registry = &context.cast_registry;
@@ -1042,7 +1086,7 @@ namespace services::dispatcher {
                     }
                     if (!grouped) {
                         bool reduces = false;
-                        const validation::expression_context_t expression_context{
+                        validation::expression_context_t expression_context{
                             context.resource,
                             incoming_schema,
                             parameters,
@@ -1052,6 +1096,7 @@ namespace services::dispatcher {
                             components::compute::create_mask(components::compute::function_type_t::vector,
                                                              components::compute::function_type_t::aggregate),
                             context.column_uses};
+                        expression_context.literals = literals;
                         for (auto& expr : node_group->expressions()) {
                             if (expr->group() == expression_group::aggregate) {
                                 reduces = true;
@@ -1422,7 +1467,10 @@ namespace services::dispatcher {
                                     incoming_schema,
                                     parameters,
                                     components::compute::create_mask(components::compute::function_type_t::vector,
-                                                                     components::compute::function_type_t::aggregate));
+                                                                     components::compute::function_type_t::aggregate),
+                                    nullptr,
+                                    nullptr,
+                                    literals);
                                 if (resolve_error.contains_error()) {
                                     return resolve_error;
                                 }
@@ -1577,7 +1625,7 @@ namespace services::dispatcher {
                         [&](scalar_expression_t* scalar_expr,
                             const named_schema& schema,
                             const std::pmr::vector<validation::precomputed_column_t>* keys) -> type_from_t {
-                        const validation::expression_context_t expression_context{
+                        validation::expression_context_t expression_context{
                             context.resource,
                             schema,
                             parameters,
@@ -1588,6 +1636,7 @@ namespace services::dispatcher {
                             context.column_uses,
                             nullptr,
                             keys};
+                        expression_context.literals = literals;
                         expression_ptr expression{scalar_expr};
                         if (auto error = validation::resolve_expression(expression, expression_context);
                             error.contains_error()) {
@@ -1601,7 +1650,7 @@ namespace services::dispatcher {
                         return type_from_t{node->result_alias(), std::move(result_type)};
                     };
 
-                    const validation::expression_context_t projection_context{
+                    validation::expression_context_t projection_context{
                         context.resource,
                         grouping_schema,
                         parameters,
@@ -1614,6 +1663,7 @@ namespace services::dispatcher {
                         context.column_uses,
                         nullptr,
                         &group_keys};
+                    projection_context.literals = literals;
                     for (auto& expr : node_group->expressions()) {
                         if (expr->group() == expression_group::scalar) {
                             const auto kind = static_cast<scalar_expression_t*>(expr.get())->type();
@@ -1691,15 +1741,7 @@ namespace services::dispatcher {
                                     }
                                 }
                             } else if (scalar_expr->type() == scalar_type::constant) {
-                                if (scalar_expr->params().empty() ||
-                                    !components::expressions::is_parameter(scalar_expr->params().front())) {
-                                    return core::error_t(
-                                        core::error_code_t::invalid_parameter,
-                                        std::pmr::string{"constant in a grouped projection carries no parameter",
-                                                         resource});
-                                }
-                                complex_logical_type constant_type = parameters.type(
-                                    components::expressions::as_parameter(scalar_expr->params().front()));
+                                complex_logical_type constant_type = scalar_expr->result_type();
                                 if (!scalar_expr->key().is_null()) {
                                     constant_type.set_alias(scalar_expr->key().as_string());
                                 }
@@ -1914,7 +1956,12 @@ namespace services::dispatcher {
                 break;
             }
             case node_type::data_t: {
-                const auto* node_data = reinterpret_cast<node_data_t*>(node);
+                auto* node_data = reinterpret_cast<node_data_t*>(node);
+                if (literals == untyped_literals::become_text) {
+                    if (auto error = settle_values_columns(context, node_data); error.contains_error()) {
+                        return error;
+                    }
+                }
                 const auto& chunk = node_data->data_chunk();
                 result.reserve(chunk.column_count());
                 for (const auto& column : chunk.data) {
@@ -2056,8 +2103,12 @@ namespace services::dispatcher {
                                          std::pmr::string{"INSERT target collection does not exist", resource});
                 }
 
-                auto incoming_schema =
-                    validate_schema(context, node->children().front().get(), parameters, cte_schemas);
+                // The target columns type the literals of the source (PostgreSQL: p_resolve_unknowns off).
+                auto incoming_schema = validate_schema(context,
+                                                       node->children().front().get(),
+                                                       parameters,
+                                                       cte_schemas,
+                                                       untyped_literals::stay_untyped);
                 if (incoming_schema.has_error()) {
                     return incoming_schema;
                 }
@@ -2147,11 +2198,23 @@ namespace services::dispatcher {
                     bindings.reserve(incoming_schema.value().size());
                     for (size_t i = 0; i < incoming_schema.value().size(); i++) {
                         std::string target_name = insert_node->key_translation()[i].as_string();
-                        bindings.emplace_back(components::logical_plan::insert_column_binding_t{
+                        // The column takes the written type; an untyped literal is stored as text.
+                        const auto& incoming_type = incoming_schema.value()[i].type;
+                        components::logical_plan::insert_column_binding_t binding{
                             .target_index = i,
                             .target_name = std::pmr::string{target_name.c_str(), insert_node->resource()},
-                            .target_type = incoming_schema.value()[i].type,
-                            .cast = {}});
+                            .target_type = incoming_type,
+                            .cast = {}};
+                        if (incoming_type.type() == logical_type::STRING_LITERAL) {
+                            binding.target_type = complex_logical_type{logical_type::TEXT};
+                            binding.target_type.set_alias(std::string(incoming_type.alias()));
+                            auto cast = cast_registry->resolve(incoming_type,
+                                                               binding.target_type,
+                                                               components::casts::cast_type::implicit);
+                            assert(cast.has_value() && "a literal always reaches text");
+                            binding.cast = std::move(*cast);
+                        }
+                        bindings.emplace_back(std::move(binding));
                     }
                     insert_node->set_column_bindings(std::move(bindings));
                     auto* source_child = node->children().front().get();
@@ -2167,7 +2230,10 @@ namespace services::dispatcher {
                 };
                 // VALUES without a column list names its columns by position only; a dynamic-schema table
                 // takes its column names from the INSERT.
-                if (is_computed && !insert_node->deferred_cells().empty()) {
+                auto* source_values = node->children().front()->type() == node_type::data_t
+                                          ? static_cast<node_data_t*>(node->children().front().get())
+                                          : nullptr;
+                if (is_computed && source_values != nullptr && !source_values->deferred_cells().empty()) {
                     return core::error_t(core::error_code_t::schema_error,
                                          std::pmr::string{"INSERT into dynamic-schema table \"" + target_relname_ins +
                                                               "\": a column holds values of differing types, so "
@@ -2282,10 +2348,11 @@ namespace services::dispatcher {
                     insert_node->set_column_bindings(std::move(bindings));
 
                     // Each deferred cell is cast to the TABLE column's type by assignment, as PostgreSQL's
-                    // transformInsertRow does. A cell of type text only reaches a non-text column through an
-                    // unknown (quoted) literal; `x::text` has no assignment cast to it.
+                    // transformInsertRow does.
                     std::pmr::unordered_set<std::uint64_t> deferred_positions(resource);
-                    for (auto& cell : insert_node->deferred_cells()) {
+                    components::logical_plan::deferred_cells_t no_cells(resource);
+                    auto& cells = source_values != nullptr ? source_values->deferred_cells() : no_cells;
+                    for (auto& cell : cells) {
                         if (cell.column >= insert_node->column_bindings().size()) {
                             return core::error_t(core::error_code_t::schema_error,
                                                  std::pmr::string{"insert_node: a deferred VALUES cell points outside "
@@ -2294,16 +2361,13 @@ namespace services::dispatcher {
                         }
                         deferred_positions.insert(cell.row * incoming_schema.value().size() + cell.column);
                         const auto& binding = insert_node->column_bindings()[cell.column];
-                        const bool text_to_other = !cell.quoted &&
-                                                   cell.value.type().type() == logical_type::STRING_LITERAL &&
-                                                   binding.target_type.type() != logical_type::STRING_LITERAL;
                         if (cell.value.type() == binding.target_type) {
                             continue;
                         }
                         auto cast = cast_registry->resolve(cell.value.type(),
                                                            binding.target_type,
                                                            components::casts::cast_type::assignment);
-                        if (text_to_other || !cast.has_value()) {
+                        if (!cast.has_value()) {
                             return core::error_t(
                                 core::error_code_t::conversion_failure,
                                 std::pmr::string{"column \"" + std::string(binding.target_name) + "\" is of type " +
@@ -2465,7 +2529,10 @@ namespace services::dispatcher {
                         }
                         expr->key().set_side(side_t::left);
                         expr->key().set_path(target_res.value().front().path);
+                        const auto& target_type = target_res.value().front().type;
 
+                        // The value is resolved toward the column it is assigned to, so an untyped literal takes
+                        // the column's type (PostgreSQL transformAssignedExpr).
                         const validation::expression_context_t assignment_context{
                             resource,
                             table_schema,
@@ -2475,13 +2542,17 @@ namespace services::dispatcher {
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector),
                             context.column_uses,
-                            source_schema};
+                            source_schema,
+                            nullptr,
+                            target_type,
+                            components::casts::cast_type::assignment};
+                        // The target column rides on the root expression; a cast wrapped around the value takes it.
+                        const auto target_key = expr->key();
                         if (auto error = validation::resolve_expression(expr, assignment_context);
                             error.contains_error()) {
                             return error;
                         }
-
-                        const auto& target_type = target_res.value().front().type;
+                        expr->key() = target_key;
 
                         const auto& value_type = expr->result_type();
                         if (value_type.type() != logical_type::INVALID && value_type != target_type) {
@@ -2776,12 +2847,13 @@ namespace services::dispatcher {
     core::result_wrapper_t<named_schema> validate_schema(const validation::validation_context_t& context,
                                                          node_t* node,
                                                          const components::logical_plan::storage_parameters& parameters,
-                                                         cte_schemas_t* cte_schemas) {
+                                                         cte_schemas_t* cte_schemas,
+                                                         validation::untyped_literals literals) {
         cte_schemas_t local_cte_schemas;
         if (cte_schemas == nullptr) {
             cte_schemas = &local_cte_schemas;
         }
-        auto res = validate_schema_impl(context, node, parameters, cte_schemas);
+        auto res = validate_schema_impl(context, node, parameters, cte_schemas, literals);
         if (!res.has_error() && !res.value().empty()) {
             std::pmr::vector<complex_logical_type> types{node->resource()};
             types.reserve(res.value().size());

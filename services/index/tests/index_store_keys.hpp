@@ -95,7 +95,7 @@ namespace services::index::tests {
             core::b_plus_tree::btree_t::item_data{record.data(), static_cast<uint32_t>(record.size())});
     }
 
-    // A STRING physical_value is a VIEW into the encoded key, so the probe owns the bytes it views.
+    // A TEXT physical_value is a VIEW into the encoded key, so the probe owns the bytes it views.
     struct tree_probe_t {
         std::pmr::string encoded;
         components::types::physical_value value;

@@ -24,7 +24,7 @@ namespace {
 
     void seed_user_table(otterbrix::wrapper_dispatcher_t* dispatcher) {
         REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE guarddb;")->is_success());
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE guarddb.alpha (id BIGINT, name STRING);")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE guarddb.alpha (id BIGINT, name TEXT);")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO guarddb.alpha (id, name) VALUES (1, 'one'), (2, 'two');")
                     ->is_success());
     }

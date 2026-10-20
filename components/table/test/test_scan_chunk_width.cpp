@@ -43,7 +43,7 @@ namespace {
     }
 
     const complex_logical_type& list_type() {
-        static const auto t = complex_logical_type::create_list(logical_type::STRING_LITERAL);
+        static const auto t = complex_logical_type::create_list(logical_type::TEXT);
         return t;
     }
 
@@ -55,7 +55,7 @@ namespace {
         return make_list(&env.resource, list_type().child_type(), values);
     }
 
-    // (k BIGINT, v LIST<STRING>), three committed rows, row i's list has i + 1 elements; nullptr on any error.
+    // (k BIGINT, v LIST<TEXT>), three committed rows, row i's list has i + 1 elements; nullptr on any error.
     // No Catch macros: the death test's forked child runs it too.
     std::unique_ptr<data_table_t> seeded_table(env_t& env, tstorage::single_file_block_manager_t& bm) {
         std::vector<column_definition_t> columns;

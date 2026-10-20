@@ -61,7 +61,7 @@ static std::pmr::vector<components::types::complex_logical_type> wal_test_types(
     using namespace components::types;
     std::pmr::vector<complex_logical_type> types(r);
     types.emplace_back(logical_type::BIGINT, "count");
-    types.emplace_back(logical_type::STRING_LITERAL, "count_str");
+    types.emplace_back(logical_type::TEXT, "count_str");
     types.emplace_back(logical_type::DOUBLE, "count_double");
     types.emplace_back(logical_type::BOOLEAN, "count_bool");
     return types;
@@ -261,7 +261,7 @@ TEST_CASE("wal_binary::data_chunk_binary_mixed_types") {
     std::pmr::vector<complex_logical_type> types(&resource);
     types.emplace_back(logical_type::BIGINT, "id");
     types.emplace_back(logical_type::DOUBLE, "score");
-    types.emplace_back(logical_type::STRING_LITERAL, "name");
+    types.emplace_back(logical_type::TEXT, "name");
     types.emplace_back(logical_type::BOOLEAN, "active");
 
     auto chunk = gen_data_chunk(8, 0, types, &resource);
@@ -506,7 +506,7 @@ TEST_CASE("wal_binary::data_chunk_binary_list_payload_roundtrip") {
 TEST_CASE("wal_binary::data_chunk_binary_null_string_payload_is_not_read") {
     std::pmr::monotonic_buffer_resource resource(1024 * 64);
     std::pmr::vector<complex_logical_type> types(&resource);
-    types.emplace_back(logical_type::STRING_LITERAL, "s");
+    types.emplace_back(logical_type::TEXT, "s");
 
     data_chunk_t chunk(&resource, types, 3);
     chunk.set_cardinality(3);
@@ -533,7 +533,7 @@ TEST_CASE("wal_binary::data_chunk_binary_null_string_payload_is_not_read") {
 
 TEST_CASE("wal_binary::data_chunk_binary_null_list_element_string_payload_is_not_read") {
     std::pmr::monotonic_buffer_resource resource(1024 * 64);
-    auto element_type = complex_logical_type{logical_type::STRING_LITERAL};
+    auto element_type = complex_logical_type{logical_type::TEXT};
     auto list_type = complex_logical_type::create_list(element_type);
     std::pmr::vector<complex_logical_type> types(&resource);
     types.push_back(list_type);
@@ -651,7 +651,7 @@ TEST_CASE("wal_binary::data_chunk_binary_null_fixed_width_payload_is_not_read") 
 TEST_CASE("wal_binary::data_chunk_binary_null_struct_row_children_are_not_read") {
     std::pmr::monotonic_buffer_resource resource(1024 * 64);
     std::pmr::vector<complex_logical_type> fields(&resource);
-    fields.emplace_back(logical_type::STRING_LITERAL, "s");
+    fields.emplace_back(logical_type::TEXT, "s");
     fields.emplace_back(logical_type::BIGINT, "n");
     auto struct_type = complex_logical_type::create_struct("np_pair", fields);
     std::pmr::vector<complex_logical_type> types(&resource);
@@ -689,7 +689,7 @@ TEST_CASE("wal_binary::data_chunk_binary_null_struct_row_children_are_not_read")
 
 TEST_CASE("wal_binary::data_chunk_binary_null_array_row_elements_are_not_read") {
     std::pmr::monotonic_buffer_resource resource(1024 * 64);
-    auto element_type = complex_logical_type{logical_type::STRING_LITERAL};
+    auto element_type = complex_logical_type{logical_type::TEXT};
     auto array_type = complex_logical_type::create_array(element_type, 2);
     std::pmr::vector<complex_logical_type> types(&resource);
     types.push_back(array_type);
@@ -787,7 +787,7 @@ TEST_CASE("wal_binary::data_chunk_binary_second_level_nesting_roundtrip") {
 
     std::pmr::vector<complex_logical_type> fields(&resource);
     fields.emplace_back(logical_type::BIGINT, "a");
-    fields.emplace_back(logical_type::STRING_LITERAL, "s");
+    fields.emplace_back(logical_type::TEXT, "s");
     auto pair_type = complex_logical_type::create_struct("np_pair", fields);
     auto list_of_structs = complex_logical_type::create_list(pair_type);
 

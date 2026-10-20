@@ -49,8 +49,7 @@ TEST_CASE("catalog::ddl::create_table_writes_the_mvcc_columns_of_pg_attribute") 
 
     std::vector<components::table::column_definition_t> columns;
     columns.emplace_back("id", components::types::complex_logical_type(components::types::logical_type::BIGINT));
-    columns.emplace_back("name",
-                         components::types::complex_logical_type(components::types::logical_type::STRING_LITERAL));
+    columns.emplace_back("name", components::types::complex_logical_type(components::types::logical_type::TEXT));
 
     oid_batch_t oids;
     for (oid_t i = 0; i < 64; ++i) {

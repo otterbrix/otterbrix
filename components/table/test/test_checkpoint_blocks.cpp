@@ -96,7 +96,7 @@ namespace {
         return static_cast<uint64_t>(st.st_size);
     }
 
-    // --- the refusal case: 4 INTEGER columns and a STRING column with three big strings ---
+    // --- the refusal case: 4 INTEGER columns and a TEXT column with three big strings ---
 
     constexpr uint64_t MIXED_ROWS = 100;
     constexpr uint64_t MIXED_INTS = 4;
@@ -119,7 +119,7 @@ namespace {
         for (uint64_t col = 0; col < MIXED_INTS; col++) {
             columns.emplace_back("c" + std::to_string(col), logical_type::INTEGER);
         }
-        columns.emplace_back("s", logical_type::STRING_LITERAL);
+        columns.emplace_back("s", logical_type::TEXT);
         return std::make_unique<data_table_t>(resource, bm, std::move(columns), "checkpoint_refusal");
     }
 
@@ -384,7 +384,7 @@ namespace {
     complex_logical_type pair_type(std::pmr::memory_resource* resource) {
         std::pmr::vector<complex_logical_type> fields(resource);
         fields.emplace_back(logical_type::BIGINT, "num");
-        fields.emplace_back(logical_type::STRING_LITERAL, "name");
+        fields.emplace_back(logical_type::TEXT, "name");
         return complex_logical_type::create_struct("pair", fields);
     }
 
@@ -393,7 +393,7 @@ namespace {
             case shape_t::INTEGER:
                 return logical_type::INTEGER;
             case shape_t::VARCHAR:
-                return logical_type::STRING_LITERAL;
+                return logical_type::TEXT;
             case shape_t::LIST:
                 return complex_logical_type::create_list(logical_type::UBIGINT);
             case shape_t::STRUCT:

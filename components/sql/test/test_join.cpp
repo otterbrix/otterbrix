@@ -131,7 +131,7 @@ TEST_CASE("components::sql::join") {
         TEST_JOIN(
             R"_(select * from a left outer join b on a.id = b.fk where b.status = 'active';)_",
             R"_($aggregate: {$join: {$type: left, $aggregate: {}, $aggregate: {}, "id": {$eq: "fk"}}, $match: {"status": {$eq: #0}}})_",
-            vec({make_scalar(&resource, "active")}));
+            vec({components::vector::make_string_literal(&resource, "active")}));
     }
 
     // ----------------------------------------------------------------------

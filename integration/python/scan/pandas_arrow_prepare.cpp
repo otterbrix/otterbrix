@@ -139,7 +139,7 @@ namespace otterbrix {
             }
 
             // Generic scalar object column: keep it if pyarrow can infer a clean type, otherwise
-            // stringify (the lenient STRING fallback the old analyzer applied).
+            // stringify (the lenient TEXT fallback the old analyzer applied).
             try {
                 pa.attr("array")(series, py::arg("from_pandas") = true);
             } catch (const py::error_already_set&) {

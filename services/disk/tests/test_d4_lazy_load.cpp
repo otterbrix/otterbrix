@@ -153,7 +153,7 @@ TEST_CASE("services::disk::d4::alter_unloaded_table_add_column") {
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
     components::table::column_definition_t new_col(
         "name",
-        components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
+        components::types::complex_logical_type{components::types::logical_type::TEXT});
     test_add_column(fx, rt_oid, std::move(new_col), 2);
     REQUIRE_FALSE(fx.manager->has_storage(rt_oid));
     auto resolved = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("alter_me"));
@@ -179,7 +179,7 @@ TEST_CASE("services::disk::d4::resolve_table_collects_columns_by_attrelid") {
     auto ns_oid = test_create_namespace(fx, "ns_d4f");
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("a", components::types::complex_logical_type{components::types::logical_type::BIGINT});
-    cols.emplace_back("b", components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL});
+    cols.emplace_back("b", components::types::complex_logical_type{components::types::logical_type::TEXT});
     cols.emplace_back("c", components::types::complex_logical_type{components::types::logical_type::DOUBLE});
     auto rt_oid = test_create_table(fx, ns_oid, "multi", std::move(cols));
     auto r = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("multi"));

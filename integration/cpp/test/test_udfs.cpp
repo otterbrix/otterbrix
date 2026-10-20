@@ -66,7 +66,7 @@ core::pmr::polymorphic_unique_ptr<aggregate_function> make_concat_func(std::pmr:
                                                                      false);
 
     kernel_signature_t sig(function_type_t::aggregate,
-                           {parameter_type::exact(types::logical_type::STRING_LITERAL)},
+                           {parameter_type::exact(types::logical_type::TEXT)},
                            {output_type::computed(same_type_resolver(0))});
     aggregate_kernel k{std::move(sig), concat_layout, concat_update, concat_finalize};
 
@@ -417,7 +417,7 @@ TEST_CASE("integration::cpp::test_udfs") {
     {
         {
             auto session = otterbrix::session_id_t();
-            auto result = dispatcher->unregister_udf(session, udf1_name, {types::logical_type::STRING_LITERAL});
+            auto result = dispatcher->unregister_udf(session, udf1_name, {types::logical_type::TEXT});
             REQUIRE_FALSE(result.contains_error());
         }
         // Trying to delete function with non-existent signature

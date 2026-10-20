@@ -37,7 +37,8 @@ namespace components::types {
             t[uint8_t(logical_type::UUID)] = physical_type::INT128;
             t[uint8_t(logical_type::FLOAT)] = physical_type::FLOAT;
             t[uint8_t(logical_type::DOUBLE)] = physical_type::DOUBLE;
-            t[uint8_t(logical_type::STRING_LITERAL)] = physical_type::STRING;
+            t[uint8_t(logical_type::TEXT)] = physical_type::TEXT;
+            t[uint8_t(logical_type::STRING_LITERAL)] = physical_type::TEXT;
             t[uint8_t(logical_type::VALIDITY)] = physical_type::BIT;
             t[uint8_t(logical_type::ARRAY)] = physical_type::ARRAY;
             t[uint8_t(logical_type::STRUCT)] = physical_type::STRUCT;
@@ -241,7 +242,7 @@ namespace components::types {
                 return sizeof(uint64_t);
             case physical_type::UINT128:
                 return sizeof(uint128_t);
-            case physical_type::STRING:
+            case physical_type::TEXT:
                 return sizeof(std::string_view);
             case physical_type::LIST:
                 return sizeof(list_entry_t);
@@ -287,7 +288,7 @@ namespace components::types {
                 return alignof(uint64_t);
             case physical_type::UINT128:
                 return alignof(uint128_t);
-            case physical_type::STRING:
+            case physical_type::TEXT:
                 return alignof(std::string_view);
             case physical_type::LIST:
                 return alignof(list_entry_t);
@@ -478,8 +479,8 @@ namespace components::types {
             return true;
         }
 
-        if (is_numeric(type_) && (is_numeric(other.type_) || other.type_ == logical_type::STRING_LITERAL ||
-                                  other.type_ == logical_type::DECIMAL)) {
+        if (is_numeric(type_) &&
+            (is_numeric(other.type_) || other.type_ == logical_type::TEXT || other.type_ == logical_type::DECIMAL)) {
             return true;
         }
         if (type_ == logical_type::DECIMAL && is_numeric(other.type_)) {
@@ -524,7 +525,7 @@ namespace components::types {
 
             return element_convertable(list_ext->node(), other_arr_ext->internal_type());
         }
-        if (type_ == logical_type::STRING_LITERAL && other.type_ == logical_type::ENUM) {
+        if (type_ == logical_type::TEXT && other.type_ == logical_type::ENUM) {
             return true;
         }
         if (type_ == logical_type::STRUCT && other.type_ == logical_type::STRUCT) {
@@ -541,7 +542,7 @@ namespace components::types {
             }
             return true;
         }
-        if (type_ == logical_type::STRING_LITERAL && other.type_ == logical_type::ENUM) {
+        if (type_ == logical_type::TEXT && other.type_ == logical_type::ENUM) {
             return true;
         }
 
@@ -628,7 +629,7 @@ namespace components::types {
     complex_logical_type complex_logical_type::create_variant(std::pmr::memory_resource* resource, std::string alias) {
         std::pmr::vector<complex_logical_type> children(resource);
         children.reserve(4);
-        children.emplace_back(create_list(logical_type::STRING_LITERAL, "keys"));
+        children.emplace_back(create_list(logical_type::TEXT, "keys"));
         {
             std::pmr::vector<complex_logical_type> inner(resource);
             inner.reserve(2);

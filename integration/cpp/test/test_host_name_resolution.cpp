@@ -184,7 +184,7 @@ namespace {
             for (std::size_t row = 0; row < rows.size(); ++row) {
                 chunk.row_ids.data<int64_t>()[row] = storage_->number(position_++);
                 for (std::size_t col = 0; col < columns.size(); ++col) {
-                    if (columns[col].type() == types::logical_type::STRING_LITERAL) {
+                    if (columns[col].type() == types::logical_type::TEXT) {
                         chunk.set_value(col, row, std::string_view{"s" + std::to_string(rows[row][col])});
                     } else if (columns[col].type() == types::logical_type::INTEGER) {
                         chunk.set_value(col, row, static_cast<int32_t>(rows[row][col]));
@@ -469,8 +469,7 @@ namespace {
                         continue;
                     }
                     ordered.emplace_back(chunk.data[3].get_value<int64_t>(row),
-                                         types::complex_logical_type{type == "TEXT"
-                                                                         ? types::logical_type::STRING_LITERAL
+                                         types::complex_logical_type{type == "TEXT"  ? types::logical_type::TEXT
                                                                      : type == "INT" ? types::logical_type::INTEGER
                                                                                      : types::logical_type::BIGINT,
                                                                      col});
@@ -796,7 +795,7 @@ TEST_CASE("integration::cpp::host_names::declared_columns_drive_validation_and_t
     auto labels = run(dispatcher, "SELECT label FROM m2.shop.orders WHERE id = 2;");
     REQUIRE(labels->is_success());
     REQUIRE(labels->size() == 1);
-    REQUIRE(labels->chunks().front().data[0].type().type() == types::logical_type::STRING_LITERAL);
+    REQUIRE(labels->chunks().front().data[0].type().type() == types::logical_type::TEXT);
     auto cell0 = labels->get<std::string_view>(0, 0);
     REQUIRE_FALSE(cell0.has_error());
     REQUIRE(cell0.value() == "s200");

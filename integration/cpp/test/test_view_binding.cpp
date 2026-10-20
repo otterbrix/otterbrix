@@ -248,7 +248,7 @@ namespace {
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
         run_ok(d, "CREATE DATABASE vb;");
-        run_ok(d, "CREATE TABLE vb.t (a BIGINT, b STRING);");
+        run_ok(d, "CREATE TABLE vb.t (a BIGINT, b TEXT);");
         run_ok(d, "INSERT INTO vb.t (a, b) VALUES (1, 'x'), (2, 'y');");
     }
 
@@ -499,7 +499,7 @@ TEST_CASE("integration::cpp::view_binding::a_view_whose_relation_is_gone_is_stal
     run_ok(d, "CREATE VIEW vb.v AS SELECT a FROM vb.t;");
     forget_dependencies(space, oid_of(d, "v"));
     run_ok(d, "DROP TABLE vb.t;");
-    run_ok(d, "CREATE TABLE vb.t (a BIGINT, b STRING);");
+    run_ok(d, "CREATE TABLE vb.t (a BIGINT, b TEXT);");
     run_ok(d, "INSERT INTO vb.t (a, b) VALUES (7, 'z');");
 
     auto stale = exec(d, "SELECT a FROM vb.v;");
@@ -718,7 +718,7 @@ TEST_CASE("integration::cpp::view_binding::refresh_does_not_read_a_relation_that
     run_ok(d, "REFRESH MATERIALIZED VIEW vb.mv;");
     forget_dependencies(space, oid_of(d, "mv"));
     run_ok(d, "DROP TABLE vb.t;");
-    run_ok(d, "CREATE TABLE vb.t (a BIGINT, b STRING);");
+    run_ok(d, "CREATE TABLE vb.t (a BIGINT, b TEXT);");
     run_ok(d, "INSERT INTO vb.t (a, b) VALUES (7, 'z');");
 
     auto stale = exec(d, "REFRESH MATERIALIZED VIEW vb.mv;");

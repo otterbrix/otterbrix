@@ -51,7 +51,7 @@ TEST_CASE("integration::cpp::matview_null_column::a_NULL_only_column_is_text_and
         auto empty = run_ok(d, "SELECT * FROM d.mv;");
         REQUIRE(empty->chunks().size() == 1);
         REQUIRE(empty->chunks().front().types().size() == 2);
-        CHECK(empty->chunks().front().types()[1].type() == types::logical_type::STRING_LITERAL);
+        CHECK(empty->chunks().front().types()[1].type() == types::logical_type::TEXT);
 
         run_ok(d, "REFRESH MATERIALIZED VIEW d.mv;");
         auto filled = run_ok(d, "SELECT a, n FROM d.mv;");
@@ -103,7 +103,7 @@ TEST_CASE("integration::cpp::matview_null_column::a_matview_over_an_array_of_NUL
         REQUIRE(filled->size() == 2);
         const auto x = filled->chunks().front().types()[1];
         REQUIRE(x.type() == types::logical_type::ARRAY);
-        CHECK(x.child_type().type() == types::logical_type::STRING_LITERAL);
+        CHECK(x.child_type().type() == types::logical_type::TEXT);
         auto cell4 = filled->list_size(1, 0);
         REQUIRE_FALSE(cell4.has_error());
         REQUIRE(cell4.value() == 1);
@@ -137,13 +137,13 @@ TEST_CASE("integration::cpp::matview_null_column::a_view_over_an_array_of_NULL_a
     REQUIRE(read->size() == 1);
     const auto x = read->chunks().front().types()[0];
     REQUIRE(x.type() == types::logical_type::ARRAY);
-    CHECK(x.child_type().type() == types::logical_type::STRING_LITERAL);
+    CHECK(x.child_type().type() == types::logical_type::TEXT);
     run_ok(d, "CREATE VIEW d.vv AS SELECT array[array[NULL]] AS x;");
     auto nested = run_ok(d, "SELECT * FROM d.vv;");
     const auto xx = nested->chunks().front().types()[0];
     REQUIRE(xx.type() == types::logical_type::ARRAY);
     REQUIRE(xx.child_type().type() == types::logical_type::ARRAY);
-    CHECK(xx.child_type().child_type().type() == types::logical_type::STRING_LITERAL);
+    CHECK(xx.child_type().child_type().type() == types::logical_type::TEXT);
 }
 
 TEST_CASE("integration::cpp::matview_null_column::a_matview_over_an_empty_array_is_refused") {

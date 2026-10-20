@@ -192,7 +192,7 @@ namespace {
         {
             tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
             REQUIRE(!bm.create_new_database().has_error());
-            auto table = make_table(env, bm, complex_logical_type{logical_type::STRING_LITERAL});
+            auto table = make_table(env, bm, complex_logical_type{logical_type::TEXT});
             {
                 auto chunk = string_chunk(env, *table, std::vector<std::string>(kept_rows, "kept"), 0);
                 committed_append(*table, chunk, env);
@@ -235,7 +235,7 @@ namespace {
         {
             tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
             REQUIRE(!bm.create_new_database().has_error());
-            auto table = make_table(env, bm, complex_logical_type{logical_type::STRING_LITERAL});
+            auto table = make_table(env, bm, complex_logical_type{logical_type::TEXT});
             REQUIRE(table->row_group()->row_group_size() == DEFAULT_VECTOR_CAPACITY);
             {
                 auto chunk = string_chunk(env, *table, std::vector<std::string>(kept_rows, "kept"), 0);
@@ -304,7 +304,7 @@ namespace {
         {
             tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
             REQUIRE(!bm.create_new_database().has_error());
-            auto table = make_table(env, bm, complex_logical_type{logical_type::STRING_LITERAL});
+            auto table = make_table(env, bm, complex_logical_type{logical_type::TEXT});
             {
                 auto chunk = string_chunk(env, *table, std::vector<std::string>(rows, "kept"), 0);
                 committed_append(*table, chunk, env);
@@ -367,7 +367,7 @@ namespace {
         {
             tstorage::single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
             REQUIRE(!bm.create_new_database().has_error());
-            auto table = make_table(env, bm, complex_logical_type{logical_type::STRING_LITERAL});
+            auto table = make_table(env, bm, complex_logical_type{logical_type::TEXT});
             REQUIRE(table->row_group()->row_group_size() == rg);
             {
                 auto chunk = string_chunk(env, *table, std::vector<std::string>(rg - 2, "a"), 0);

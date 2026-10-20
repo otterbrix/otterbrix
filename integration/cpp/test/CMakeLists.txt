@@ -24,6 +24,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_log_laziness.cpp
         test_index_mirror_gate.cpp
         test_insert_type_promotion.cpp
+        test_string_literal.cpp
         test_index_key_binding.cpp
         test_s3_commit_scaling.cpp
         test_s3_cleanup_scaling.cpp

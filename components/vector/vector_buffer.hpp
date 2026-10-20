@@ -34,7 +34,7 @@ namespace components::vector {
     enum class vector_buffer_type : uint8_t
     {
         STANDARD,
-        STRING,
+        TEXT,
         DICTIONARY,
         VECTOR_CHILD,
         STRUCT,

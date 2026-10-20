@@ -151,7 +151,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::extract_scalar") {
     SECTION("the extracted value keeps its native column type — ->> does NOT return text") {
         auto cur = exec(d, "SELECT t ->> 'x' AS s, t #>> 'a.b' AS n FROM jp.t;");
         REQUIRE(cur->is_success());
-        CHECK(type_of(cur, "s") == components::types::logical_type::STRING_LITERAL);
+        CHECK(type_of(cur, "s") == components::types::logical_type::TEXT);
         CHECK(type_of(cur, "n") == components::types::logical_type::BIGINT);
     }
 
@@ -231,9 +231,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::predicates_and_dml") {
 
     SECTION("comparison, BETWEEN, boolean composition") {
         CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' = 10;")) == std::set<int64_t>{1});
-        auto coerced = exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' = '10';");
-        REQUIRE_FALSE(coerced->is_success());
-        CHECK(std::string(coerced->get_error().what).find("no type is common") != std::string::npos);
+        CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' = '10';")) == std::set<int64_t>{1});
         CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' BETWEEN 5 AND 15;")) == std::set<int64_t>{1});
         CHECK(ids(exec(d, "SELECT id FROM jp.t WHERE t #>> 'a.b' = 10 OR t #>> 'a.c' = 40;")) ==
               std::set<int64_t>{1, 2});

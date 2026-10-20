@@ -52,7 +52,7 @@ namespace {
                 return py::object(py::float_(leaf.data<float>()[index]));
             case physical_type::DOUBLE:
                 return py::object(py::float_(leaf.data<double>()[index]));
-            case physical_type::STRING:
+            case physical_type::TEXT:
                 return py::object(py::str(std::string(leaf.data<std::string_view>()[index])));
             case physical_type::LIST: {
                 const auto entry = leaf.data<list_entry_t>()[index];

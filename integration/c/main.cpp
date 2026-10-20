@@ -357,7 +357,7 @@ extern "C" value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t
                     value->floating = cell.value();
                     break;
                 }
-                case physical_type::STRING: {
+                case physical_type::TEXT: {
                     const auto cell = cursor.get<std::string_view>(col, row);
                     if (cell.has_error()) {
                         return nullptr;

@@ -247,8 +247,8 @@ namespace {
         // matchers (kernel_signature.cpp); the kernel body propagates it through the validity mask.
         kernel_signature_t sig2(
             function_type_t::vector,
-            {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::BIGINT)},
-            {output_type::fixed(logical_type::STRING_LITERAL)});
+            {parameter_type::exact(logical_type::TEXT), parameter_type::exact(logical_type::BIGINT)},
+            {output_type::fixed(logical_type::TEXT)});
         vector_kernel k2(std::move(sig2), vector_substring_2);
         // Bound, not (void)-cast, which is banned: add_kernel only refuses on a full slot
         // table or an arity mismatch, both compile-time constants at these registration sites, so
@@ -257,10 +257,10 @@ namespace {
         assert(!added_k2.contains_error() && "string kernel must fit the declared slots and arity");
 
         kernel_signature_t sig3(function_type_t::vector,
-                                {parameter_type::exact(logical_type::STRING_LITERAL),
+                                {parameter_type::exact(logical_type::TEXT),
                                  parameter_type::exact(logical_type::BIGINT),
                                  parameter_type::exact(logical_type::BIGINT)},
-                                {output_type::fixed(logical_type::STRING_LITERAL)});
+                                {output_type::fixed(logical_type::TEXT)});
         vector_kernel k3(std::move(sig3), vector_substring_3);
         [[maybe_unused]] const auto added_k3 = fn->add_kernel(resource, std::move(k3));
         assert(!added_k3.contains_error() && "string kernel must fit the declared slots and arity");
@@ -281,7 +281,7 @@ namespace {
                                                                       /*available_kernel_slots=*/size_t{1});
 
         kernel_signature_t sig(function_type_t::vector,
-                               {parameter_type::exact(logical_type::STRING_LITERAL)},
+                               {parameter_type::exact(logical_type::TEXT)},
                                {output_type::fixed(logical_type::BIGINT)});
         vector_kernel k(std::move(sig), vector_length);
         [[maybe_unused]] const auto added_k = fn->add_kernel(resource, std::move(k));
@@ -304,8 +304,8 @@ namespace {
                                                                       /*available_kernel_slots=*/size_t{1});
 
         kernel_signature_t sig(function_type_t::vector,
-                               {parameter_type::exact(logical_type::STRING_LITERAL)},
-                               {output_type::fixed(logical_type::STRING_LITERAL)});
+                               {parameter_type::exact(logical_type::TEXT)},
+                               {output_type::fixed(logical_type::TEXT)});
         vector_kernel k(std::move(sig), fold);
         [[maybe_unused]] const auto added_k = fn->add_kernel(resource, std::move(k));
         assert(!added_k.contains_error() && "string kernel must fit the declared slots and arity");
@@ -326,10 +326,10 @@ namespace {
                                                                       /*available_kernel_slots=*/size_t{1});
 
         kernel_signature_t sig(function_type_t::vector,
-                               {parameter_type::exact(logical_type::STRING_LITERAL),
-                                parameter_type::exact(logical_type::STRING_LITERAL),
-                                parameter_type::exact(logical_type::STRING_LITERAL)},
-                               {output_type::fixed(logical_type::STRING_LITERAL)});
+                               {parameter_type::exact(logical_type::TEXT),
+                                parameter_type::exact(logical_type::TEXT),
+                                parameter_type::exact(logical_type::TEXT)},
+                               {output_type::fixed(logical_type::TEXT)});
         vector_kernel k(std::move(sig), vector_regexp_replace, init_regexp_replace);
         [[maybe_unused]] const auto added_k = fn->add_kernel(resource, std::move(k));
         assert(!added_k.contains_error() && "string kernel must fit the declared slots and arity");
@@ -349,18 +349,17 @@ namespace {
                                                                       doc,
                                                                       /*available_kernel_slots=*/size_t{2});
 
-        kernel_signature_t sig2(
-            function_type_t::vector,
-            {parameter_type::exact(logical_type::STRING_LITERAL), parameter_type::exact(logical_type::STRING_LITERAL)},
-            {output_type::fixed(logical_type::BOOLEAN)});
+        kernel_signature_t sig2(function_type_t::vector,
+                                {parameter_type::exact(logical_type::TEXT), parameter_type::exact(logical_type::TEXT)},
+                                {output_type::fixed(logical_type::BOOLEAN)});
         vector_kernel k2(std::move(sig2), vector_regexp_like, init_regexp_like);
         [[maybe_unused]] const auto added_k2 = fn->add_kernel(resource, std::move(k2));
         assert(!added_k2.contains_error() && "string kernel must fit the declared slots and arity");
 
         kernel_signature_t sig3(function_type_t::vector,
-                                {parameter_type::exact(logical_type::STRING_LITERAL),
-                                 parameter_type::exact(logical_type::STRING_LITERAL),
-                                 parameter_type::exact(logical_type::STRING_LITERAL)},
+                                {parameter_type::exact(logical_type::TEXT),
+                                 parameter_type::exact(logical_type::TEXT),
+                                 parameter_type::exact(logical_type::TEXT)},
                                 {output_type::fixed(logical_type::BOOLEAN)});
         vector_kernel k3(std::move(sig3), vector_regexp_like, init_regexp_like);
         [[maybe_unused]] const auto added_k3 = fn->add_kernel(resource, std::move(k3));

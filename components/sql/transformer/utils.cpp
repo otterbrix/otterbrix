@@ -581,7 +581,7 @@ namespace components::sql::transform {
             if (col == types::logical_type::UNKNOWN) {
                 return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"type '", resource} + builtin_name + "' is not supported");
-            } else if (col == types::logical_type::STRING_LITERAL && list_length(type->typmods) > 0) {
+            } else if (col == types::logical_type::TEXT && list_length(type->typmods) > 0) {
                 return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"string length modifier is not supported", resource});
             } else if (col != types::logical_type::DECIMAL) {
@@ -995,7 +995,7 @@ namespace components::sql::transform {
                     return "TIMESTAMPTZ";
                 case LT::INTERVAL:
                     return "INTERVAL";
-                case LT::STRING_LITERAL:
+                case LT::TEXT:
                     return "TEXT";
                 default:
                     return "type#" + std::to_string(static_cast<int>(t));
@@ -1175,7 +1175,7 @@ namespace components::sql::transform {
                     }
                     return invalid_cast_input(resource, t, text);
                 }
-                case LT::STRING_LITERAL:
+                case LT::TEXT:
                     return vector::make_scalar(resource, std::string_view{text});
                 default:
                     return core::error_t(
@@ -1250,9 +1250,18 @@ namespace components::sql::transform {
                 }
             }
             if (target_type.type() == types::logical_type::UNKNOWN) {
-                return vector::make_scalar(resource, str);
+                return vector::make_string_literal(resource, str);
             }
             return cast_literal_text(resource, target_type, std::string(str), /*is_string_literal=*/true);
+        }
+
+        // Inside an array or a struct a value is stored data, so an untyped literal there is text
+        // (PostgreSQL: ARRAY['a'] is text[]).
+        vector::vector_t literal_as_text(std::pmr::memory_resource* resource, vector::vector_t value) {
+            if (value.type().type() != types::logical_type::STRING_LITERAL) {
+                return value;
+            }
+            return vector::make_scalar(resource, value.get_value<std::string_view>(0));
         }
 
     } // namespace
@@ -1300,7 +1309,7 @@ namespace components::sql::transform {
                 auto* value = &(pg_ptr_cast<A_Const>(node)->val);
                 switch (nodeTag(value)) {
                     case T_String:
-                        return vector::make_scalar(resource, std::string_view{strVal(value)});
+                        return vector::make_string_literal(resource, strVal(value));
                     case T_Integer: // fall-through
                     case T_Float:
                         return numeric_literal_value(resource, value);
@@ -1324,7 +1333,8 @@ namespace components::sql::transform {
                 fields.reserve(row->args->lst.size());
                 field_types.reserve(row->args->lst.size());
                 for (auto& field : row->args->lst) {
-                    VALUE_OR_RETURN(auto value, get_value(resource, pg_ptr_cast<Node>(field.data)));
+                    VALUE_OR_RETURN(auto written, get_value(resource, pg_ptr_cast<Node>(field.data)));
+                    auto value = literal_as_text(resource, std::move(written));
                     field_types.push_back(value.type());
                     fields.push_back(std::move(value));
                 }
@@ -1343,7 +1353,7 @@ namespace components::sql::transform {
         values.reserve(list->lst.size());
         for (auto& elem : list->lst) {
             VALUE_OR_RETURN(auto value, get_value(resource, pg_ptr_cast<Node>(elem.data)));
-            values.push_back(std::move(value));
+            values.push_back(literal_as_text(resource, std::move(value)));
         }
         if (values.empty()) {
             return vector::make_array(resource, types::complex_logical_type{types::logical_type::NA}, values);
@@ -1363,7 +1373,7 @@ namespace components::sql::transform {
             }
         }
         if (!element_type_found) {
-            element_type = types::complex_logical_type{types::logical_type::STRING_LITERAL};
+            element_type = types::complex_logical_type{types::logical_type::TEXT};
         }
         // A NULL element is typed as the element type: an NA child would not fit the array's child vector.
         for (auto& value : values) {

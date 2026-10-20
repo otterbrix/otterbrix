@@ -30,7 +30,7 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and
             return d->execute_sql(session, sql);
         };
         REQUIRE(exec("CREATE DATABASE b;")->is_success());
-        REQUIRE(exec("CREATE TABLE b.t (id BIGINT, v BIGINT, s STRING) ;")->is_success());
+        REQUIRE(exec("CREATE TABLE b.t (id BIGINT, v BIGINT, s TEXT) ;")->is_success());
         REQUIRE(exec("INSERT INTO b.t (id, v, s) VALUES (1, 10, 'a'), (2, NULL, NULL), (3, 30, 'c');")->is_success());
 
         // Before the restart the engine has this right, so any phase-2 failure is the
@@ -86,7 +86,7 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and
         }
         {
             auto cur = exec("SELECT id FROM b.t WHERE s IS NULL;");
-            INFO("a NULL STRING must survive too — the string path has its own segment layout");
+            INFO("a NULL TEXT must survive too — the string path has its own segment layout");
             REQUIRE(cur->is_success());
             CHECK(cur->size() == 1);
         }
@@ -283,7 +283,7 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_past_first_row
             return d->execute_sql(session, sql);
         };
         REQUIRE(exec("CREATE DATABASE b;")->is_success());
-        REQUIRE(exec("CREATE TABLE b.big (id BIGINT, v BIGINT, s STRING) ;")->is_success());
+        REQUIRE(exec("CREATE TABLE b.big (id BIGINT, v BIGINT, s TEXT) ;")->is_success());
 
         for (int64_t base = 1; base <= ROWS; base += NULL_STEP) {
             std::string sql = "INSERT INTO b.big (id, v, s) VALUES ";
@@ -338,7 +338,7 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_past_first_row
         }
         {
             auto cur = exec("SELECT COUNT(*) FROM b.big WHERE s IS NULL;");
-            INFO("every 100th STRING must still be NULL, across all three row groups");
+            INFO("every 100th TEXT must still be NULL, across all three row groups");
             REQUIRE(cur->is_success());
             auto cell10 = cur->get<int64_t>(0, 0);
             REQUIRE_FALSE(cell10.has_error());

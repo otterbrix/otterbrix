@@ -65,14 +65,14 @@ TEST_CASE("components::table::data_table") {
     std::pmr::vector<complex_logical_type> fields(&resource);
     fields.emplace_back(logical_type::BOOLEAN, "flag");
     fields.emplace_back(logical_type::INTEGER, "number");
-    fields.emplace_back(logical_type::STRING_LITERAL, "name");
+    fields.emplace_back(logical_type::TEXT, "name");
     fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
     complex_logical_type struct_type = complex_logical_type::create_struct("struct", fields, "test_struct");
 
     std::pmr::vector<complex_logical_type> union_fields(&resource);
     union_fields.emplace_back(logical_type::BOOLEAN, "bool");
     union_fields.emplace_back(logical_type::INTEGER, "int");
-    union_fields.emplace_back(logical_type::STRING_LITERAL, "string");
+    union_fields.emplace_back(logical_type::TEXT, "string");
     complex_logical_type union_type = complex_logical_type::create_union(union_fields, "test_union");
 
     // Real .otbx: test_size is more than one row group, so closing a group writes through to disk.
@@ -87,12 +87,11 @@ TEST_CASE("components::table::data_table") {
     std::vector<column_definition_t> columns;
     columns.reserve(8);
     columns.emplace_back("temp_column_name0", logical_type::UBIGINT);
-    columns.emplace_back("temp_column_name1", logical_type::STRING_LITERAL);
+    columns.emplace_back("temp_column_name1", logical_type::TEXT);
     columns.emplace_back("temp_column_name2", complex_logical_type::create_array(logical_type::UBIGINT, array_size));
-    columns.emplace_back("temp_column_name3",
-                         complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size));
+    columns.emplace_back("temp_column_name3", complex_logical_type::create_array(logical_type::TEXT, array_size));
     columns.emplace_back("temp_column_name4", complex_logical_type::create_list(logical_type::UBIGINT));
-    columns.emplace_back("temp_column_name5", complex_logical_type::create_list(logical_type::STRING_LITERAL));
+    columns.emplace_back("temp_column_name5", complex_logical_type::create_list(logical_type::TEXT));
     columns.emplace_back("temp_column_name6", struct_type);
     columns.emplace_back("temp_column_name7", union_type);
 
@@ -114,7 +113,7 @@ TEST_CASE("components::table::data_table") {
             case 0: // UBIGINT
                 chunk.set_value(col, row, uint64_t(i));
                 break;
-            case 1: // STRING
+            case 1: // TEXT
                 chunk.set_value(col, row, std::string_view{generate_string(i)});
                 break;
             case 2: { // ARRAY<UBIGINT>
@@ -126,7 +125,7 @@ TEST_CASE("components::table::data_table") {
                 chunk.set_value(col, row, arr);
                 break;
             }
-            case 3: { // ARRAY<STRING>
+            case 3: { // ARRAY<TEXT>
                 std::vector<std::string> storage;
                 storage.reserve(array_size);
                 for (size_t j = 0; j < array_size; j++) {
@@ -149,7 +148,7 @@ TEST_CASE("components::table::data_table") {
                 chunk.set_value(col, row, list);
                 break;
             }
-            case 5: { // LIST<STRING>
+            case 5: { // LIST<TEXT>
                 std::vector<std::string> storage;
                 storage.reserve(list_length(i));
                 for (size_t j = 0; j < list_length(i); j++) {
@@ -214,7 +213,7 @@ TEST_CASE("components::table::data_table") {
         }
         {
             const auto& column = result.data[L.str];
-            REQUIRE(column.type().type() == logical_type::STRING_LITERAL);
+            REQUIRE(column.type().type() == logical_type::TEXT);
             REQUIRE(column.get_value<std::string_view>(local) == generate_string(idx));
         }
         {
@@ -233,7 +232,7 @@ TEST_CASE("components::table::data_table") {
             const auto seq = sequence_of(column, local);
             REQUIRE(seq.length == array_size);
             for (size_t j = 0; j < array_size; j++) {
-                REQUIRE(seq.child->type().type() == logical_type::STRING_LITERAL);
+                REQUIRE(seq.child->type().type() == logical_type::TEXT);
                 REQUIRE(seq.child->get_value<std::string_view>(seq.offset + j) ==
                         generate_string(idx * array_size + j));
             }
@@ -254,7 +253,7 @@ TEST_CASE("components::table::data_table") {
             const auto seq = sequence_of(column, local);
             REQUIRE(seq.length == list_length(idx));
             for (size_t j = 0; j < list_length(idx); j++) {
-                REQUIRE(seq.child->type().type() == logical_type::STRING_LITERAL);
+                REQUIRE(seq.child->type().type() == logical_type::TEXT);
                 REQUIRE(seq.child->get_value<std::string_view>(seq.offset + j) ==
                         generate_string(idx * list_length(idx) + j));
             }
@@ -267,7 +266,7 @@ TEST_CASE("components::table::data_table") {
             REQUIRE(column.type().child_types()[0].alias() == "flag");
             REQUIRE(column.type().child_types()[1].type() == logical_type::INTEGER);
             REQUIRE(column.type().child_types()[1].alias() == "number");
-            REQUIRE(column.type().child_types()[2].type() == logical_type::STRING_LITERAL);
+            REQUIRE(column.type().child_types()[2].type() == logical_type::TEXT);
             REQUIRE(column.type().child_types()[2].alias() == "name");
             REQUIRE(column.type().child_types()[3].type() == logical_type::LIST);
             REQUIRE(column.type().child_types()[3].child_type().type() == logical_type::USMALLINT);
@@ -299,7 +298,7 @@ TEST_CASE("components::table::data_table") {
                     REQUIRE(members[2]->get_value<int32_t>(cell.index) == static_cast<int32_t>(idx));
                     break;
                 case 2:
-                    REQUIRE(column.type().child_types()[3].type() == logical_type::STRING_LITERAL);
+                    REQUIRE(column.type().child_types()[3].type() == logical_type::TEXT);
                     REQUIRE(column.type().child_types()[3].alias() == "string");
                     REQUIRE(members[3]->get_value<std::string_view>(cell.index) ==
                             std::string{"long_string_with_index_" + std::to_string(idx)});

@@ -55,20 +55,6 @@ namespace components::logical_plan {
 
     using insert_literal_digits_list_t = std::pmr::vector<insert_literal_digits_t>;
 
-    // A VALUES cell whose type differs from the one the chunk column took from its first value. PostgreSQL
-    // coerces every row to the TABLE column's type by assignment (transformInsertRow); only validate and enrich
-    // know that type, so the chunk keeps a NULL in the cell and the written value waits here. `row` and `column`
-    // are as in insert_literal_digits_t; `quoted` marks a bare 'text' literal, which PostgreSQL reads as unknown.
-    struct insert_deferred_cell_t {
-        uint64_t row{0};
-        uint64_t column{0};
-        bool quoted{false};
-        vector::vector_t value; // one row
-        casts::cast_t cast;     // stamped by validate: value's type to the column's, empty when they are equal
-    };
-
-    using insert_deferred_cells_t = std::pmr::vector<insert_deferred_cell_t>;
-
     class node_insert_t final : public node_t {
     public:
         explicit node_insert_t(std::pmr::memory_resource* resource);
@@ -137,11 +123,6 @@ namespace components::logical_plan {
         void set_literal_digits(insert_literal_digits_list_t v) { literal_digits_ = std::move(v); }
         const insert_literal_digits_list_t& literal_digits() const { return literal_digits_; }
 
-        // Cells deferred to the target column's type: casts stamped by validate, spent by enrich.
-        void set_deferred_cells(insert_deferred_cells_t v) { deferred_cells_ = std::move(v); }
-        const insert_deferred_cells_t& deferred_cells() const { return deferred_cells_; }
-        insert_deferred_cells_t& deferred_cells() { return deferred_cells_; }
-
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -160,7 +141,6 @@ namespace components::logical_plan {
         insert_fill_list_t fill_list_; // omitted columns + the value each is filled with
         std::pmr::vector<uint64_t> column_slots_;
         insert_literal_digits_list_t literal_digits_;
-        insert_deferred_cells_t deferred_cells_;
     };
 
     using node_insert_ptr = boost::intrusive_ptr<node_insert_t>;

@@ -22,7 +22,7 @@ TEST_CASE("components::vector::arrow_batch_longer_than_a_vector") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::vector<complex_logical_type> types(&resource);
     types.emplace_back(logical_type::BIGINT, "id");
-    types.emplace_back(logical_type::STRING_LITERAL, "text");
+    types.emplace_back(logical_type::TEXT, "text");
     types.emplace_back(logical_type::DOUBLE, "nullable");
     types.emplace_back(complex_logical_type::create_list(logical_type::UINTEGER, "list"));
 
@@ -85,19 +85,18 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         std::pmr::vector<complex_logical_type> types(&resource);
 
         types.emplace_back(logical_type::BIGINT, "fixed_size");
-        types.emplace_back(logical_type::STRING_LITERAL, "string");
+        types.emplace_back(logical_type::TEXT, "string");
         types.emplace_back(logical_type::DOUBLE, "double");
         types.emplace_back(logical_type::BOOLEAN, "bool");
         types.emplace_back(complex_logical_type::create_array(logical_type::UBIGINT, array_size, "array_fixed"));
-        types.emplace_back(
-            complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size, "array_string"));
+        types.emplace_back(complex_logical_type::create_array(logical_type::TEXT, array_size, "array_string"));
         types.emplace_back(complex_logical_type::create_list(logical_type::UINTEGER, "list_fixed"));
-        types.emplace_back(complex_logical_type::create_list(logical_type::STRING_LITERAL, "list_string"));
+        types.emplace_back(complex_logical_type::create_list(logical_type::TEXT, "list_string"));
         {
             std::pmr::vector<complex_logical_type> fields(&resource);
             fields.emplace_back(logical_type::BOOLEAN, "flag");
             fields.emplace_back(logical_type::INTEGER, "number");
-            fields.emplace_back(logical_type::STRING_LITERAL, "string");
+            fields.emplace_back(logical_type::TEXT, "string");
             fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
             types.emplace_back(complex_logical_type::create_struct("struct", fields));
         }
@@ -206,19 +205,18 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         std::pmr::vector<complex_logical_type> types(&resource);
 
         types.emplace_back(logical_type::BIGINT, "fixed_size");
-        types.emplace_back(logical_type::STRING_LITERAL, "string");
+        types.emplace_back(logical_type::TEXT, "string");
         types.emplace_back(logical_type::DOUBLE, "double");
         types.emplace_back(logical_type::BOOLEAN, "bool");
         types.emplace_back(complex_logical_type::create_array(logical_type::UBIGINT, array_size, "array_fixed"));
-        types.emplace_back(
-            complex_logical_type::create_array(logical_type::STRING_LITERAL, array_size, "array_string"));
+        types.emplace_back(complex_logical_type::create_array(logical_type::TEXT, array_size, "array_string"));
         types.emplace_back(complex_logical_type::create_list(logical_type::UINTEGER, "list_fixed"));
-        types.emplace_back(complex_logical_type::create_list(logical_type::STRING_LITERAL, "list_string"));
+        types.emplace_back(complex_logical_type::create_list(logical_type::TEXT, "list_string"));
         {
             std::pmr::vector<complex_logical_type> fields(&resource);
             fields.emplace_back(logical_type::BOOLEAN, "flag");
             fields.emplace_back(logical_type::INTEGER, "number");
-            fields.emplace_back(logical_type::STRING_LITERAL, "string");
+            fields.emplace_back(logical_type::TEXT, "string");
             fields.emplace_back(complex_logical_type::create_list(logical_type::USMALLINT, "array"));
             types.emplace_back(complex_logical_type::create_struct("struct", fields));
         }

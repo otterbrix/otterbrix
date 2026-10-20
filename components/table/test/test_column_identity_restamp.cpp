@@ -29,10 +29,9 @@ TEST_CASE("components::table::column_definition::a_disagreeing_attoid_restamp_is
 // vector_t copies are shallow, and a column_definition_t is sent between actors: the copy must own its default.
 TEST_CASE("components::table::column_definition::a_copy_owns_its_default") {
     core::pmr::otterbrix_resource resource;
-    column_definition_t original(
-        "name",
-        components::types::complex_logical_type{components::types::logical_type::STRING_LITERAL},
-        components::vector::make_scalar(&resource, std::string{"original"}));
+    column_definition_t original("name",
+                                 components::types::complex_logical_type{components::types::logical_type::TEXT},
+                                 components::vector::make_scalar(&resource, std::string{"original"}));
     REQUIRE(original.has_default_value());
 
     column_definition_t copy(original);

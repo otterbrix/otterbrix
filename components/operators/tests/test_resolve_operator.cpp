@@ -109,7 +109,7 @@ TEST_CASE("operators::resolve_operator: bitwise operators are integer-only") {
 TEST_CASE("operators::resolve_operator: comparisons return bool") {
     complex_logical_type integer{logical_type::INTEGER};
     complex_logical_type bigint{logical_type::BIGINT};
-    complex_logical_type text{logical_type::STRING_LITERAL};
+    complex_logical_type text{logical_type::TEXT};
 
     for (auto code : {operator_code::equal,
                       operator_code::not_equal,
@@ -158,7 +158,7 @@ TEST_CASE("operators::resolve_operator: logical operators take bool only") {
 // not an operator at all, it is logical_not(is_null(x)).
 TEST_CASE("operators::resolve_operator: is_null accepts any type") {
     for (auto type : {complex_logical_type{logical_type::INTEGER},
-                      complex_logical_type{logical_type::STRING_LITERAL},
+                      complex_logical_type{logical_type::TEXT},
                       complex_logical_type{logical_type::TIMESTAMP},
                       make_decimal(10, 2)}) {
         auto tested = resolve_operator(operator_code::is_null, type);

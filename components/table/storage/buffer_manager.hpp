@@ -83,6 +83,9 @@ namespace components::table::storage {
         static uint64_t allocation_size(uint64_t block_size) {
             return align_value<uint64_t>(block_size + DEFAULT_BLOCK_HEADER_SIZE, SECTOR_SIZE);
         }
+        static uint64_t memory_footprint(uint64_t block_size) {
+            return allocation_size(block_size) + file_buffer_t::lead_for(DEFAULT_BLOCK_HEADER_SIZE);
+        }
         uint64_t query_max_memory() const;
 
         virtual std::pmr::memory_resource* resource() const noexcept = 0;

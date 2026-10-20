@@ -44,6 +44,9 @@ namespace components::table {
 
         static constexpr uint16_t DICTIONARY_HEADER_SIZE = sizeof(dictionary_compression_header_t);
 
+        static_assert(alignof(types::int128_t) <= storage::PAYLOAD_ALIGNMENT &&
+                      alignof(types::uint128_t) <= storage::PAYLOAD_ALIGNMENT);
+
         // LIST stores a uint64 child-offset per row despite sizeof(list_entry_t)==16; using 16 here
         // overran the compressed scan's result vector.
         uint64_t stored_element_size(const types::complex_logical_type& type) {
@@ -411,25 +414,19 @@ namespace components::table {
                                uint64_t offset,
                                uint64_t count) {
                 auto sdata = uvf.get_data<T>();
-                auto tdata = reinterpret_cast<T*>(target);
+                auto* tdata = target + target_offset * sizeof(T);
                 if (!uvf.validity.all_valid()) {
                     for (uint64_t i = 0; i < count; i++) {
                         auto source_idx = uvf.referenced_indexing->get_index(offset + i);
-                        auto target_idx = target_offset + i;
-                        bool is_null = !uvf.validity.row_is_valid(source_idx);
-                        if (!is_null) {
-                            tdata[target_idx] = sdata[source_idx];
-                        } else {
-                            tdata[target_idx] = T(0);
-                        }
+                        const T value = uvf.validity.row_is_valid(source_idx) ? sdata[source_idx] : T(0);
+                        std::memcpy(tdata + i * sizeof(T), &value, sizeof(T));
                     }
                 } else if (uvf.referenced_indexing == nullptr || !uvf.referenced_indexing->is_set()) {
-                    std::memcpy(tdata + target_offset, sdata + offset, static_cast<std::size_t>(count) * sizeof(T));
+                    std::memcpy(tdata, sdata + offset, static_cast<std::size_t>(count) * sizeof(T));
                 } else {
                     for (uint64_t i = 0; i < count; i++) {
                         auto source_idx = uvf.referenced_indexing->get_index(offset + i);
-                        auto target_idx = target_offset + i;
-                        tdata[target_idx] = sdata[source_idx];
+                        std::memcpy(tdata + i * sizeof(T), sdata + source_idx, sizeof(T));
                     }
                 }
             }
@@ -443,11 +440,10 @@ namespace components::table {
                                uint64_t offset,
                                uint64_t count) {
                 auto sdata = uvf.get_data<uint64_t>();
-                auto tdata = reinterpret_cast<uint64_t*>(target);
+                auto* tdata = target + target_offset * sizeof(uint64_t);
                 for (uint64_t i = 0; i < count; i++) {
                     auto source_idx = uvf.referenced_indexing->get_index(offset + i);
-                    auto target_idx = target_offset + i;
-                    tdata[target_idx] = sdata[source_idx];
+                    std::memcpy(tdata + i * sizeof(uint64_t), sdata + source_idx, sizeof(uint64_t));
                 }
             }
         };
@@ -1074,6 +1070,7 @@ namespace components::table {
                 auto pinned = buffer_manager.pin(this->block);
                 assert(!pinned.has_error() && "pin of freshly-registered managed block must not OOM");
                 if (!pinned.has_error()) {
+                    std::memset(pinned.value().ptr() + block_offset(), 0, impl::DICTIONARY_HEADER_SIZE);
                     impl::string_dictionary_container_t dictionary;
                     dictionary.size = 0;
                     dictionary.end = static_cast<uint32_t>(this->segment_size());
@@ -1128,6 +1125,17 @@ namespace components::table {
     }
 
     uint64_t column_segment_t::segment_size() const { return segment_size_; }
+
+    uint64_t column_segment_t::persisted_size(uint64_t rows) const {
+        const auto phys = type.to_physical_type();
+        assert(phys != types::physical_type::STRING);
+        const uint64_t used =
+            phys == types::physical_type::BIT
+                ? (rows + vector::DEFAULT_VECTOR_CAPACITY - 1) / vector::DEFAULT_VECTOR_CAPACITY *
+                      vector::validity_mask_t::STANDARD_MASK_SIZE
+                : rows * type_size;
+        return std::min(used, segment_size_);
+    }
 
     bool column_segment_t::references_string_overflow(const std::byte* segment_data,
                                                       uint64_t segment_size,
@@ -1524,62 +1532,6 @@ namespace components::table {
         }
     }
 
-    core::result_wrapper_t<uint64_t> column_segment_t::finalize_append(column_append_state& state) {
-        state.handle.reset();
-        switch (type.to_physical_type()) {
-            case types::physical_type::BOOL:
-            case types::physical_type::INT8:
-            case types::physical_type::UINT8:
-                return count;
-            case types::physical_type::INT16:
-            case types::physical_type::UINT16:
-                return count * 2;
-            case types::physical_type::INT32:
-            case types::physical_type::UINT32:
-            case types::physical_type::FLOAT:
-                return count * 4;
-            case types::physical_type::INT64:
-            case types::physical_type::UINT64:
-            case types::physical_type::LIST:
-            case types::physical_type::DOUBLE:
-                return count * 8;
-            case types::physical_type::INT128:
-            case types::physical_type::UINT128:
-                // case types::physical_type::INTERVAL:
-                return count * 16;
-            case types::physical_type::BIT:
-                return ((count + vector::DEFAULT_VECTOR_CAPACITY - 1) / vector::DEFAULT_VECTOR_CAPACITY) *
-                       vector::validity_mask_t::STANDARD_MASK_SIZE;
-            case types::physical_type::STRING: {
-                auto& buffer_manager = block->buffer_manager;
-                auto pinned = buffer_manager.pin(block);
-                if (pinned.has_error()) {
-                    return pinned.convert_error<uint64_t>();
-                }
-                auto& handle = pinned.value();
-                auto dict = impl::dictionary(*this, handle);
-                assert(dict.end == segment_size_);
-                auto offset_size = impl::DICTIONARY_HEADER_SIZE + count * sizeof(int32_t);
-                auto total_size = offset_size + dict.size;
-
-                auto block_size = block->block_size();
-                if (total_size >= block_size / 5 * 4) {
-                    return segment_size_;
-                }
-
-                auto move_amount = segment_size_ - total_size;
-                auto dataptr = handle.ptr();
-                memmove(dataptr + offset_size, dataptr + dict.end - dict.size, dict.size);
-                dict.end -= static_cast<uint32_t>(move_amount);
-                assert(dict.end == total_size);
-                set_dictionary(*this, handle, dict);
-                return total_size;
-            }
-            default:
-                return impl::unsupported_segment_type_error(*this, "column_segment_t::finalize_append");
-        }
-    }
-
     void column_segment_t::revert_append(uint64_t start_row) {
         // Only the count moves. The bytes past it are never read: string_append derives the dictionary
         // size from the last kept row's offset, validity_append writes every bit it appends, and the
@@ -1633,11 +1585,12 @@ namespace components::table {
             case types::physical_type::UINT64:
                 impl::fixed_size_scan<uint64_t>(*this, state, scan_count, result);
                 break;
+            // Copied, never aliased: a segment of an older file sits at an offset 8 off a 16-byte boundary.
             case types::physical_type::INT128:
-                impl::fixed_size_scan<types::int128_t>(*this, state, scan_count, result);
+                impl::fixed_size_scan_partial<types::int128_t>(*this, state, scan_count, result, 0);
                 break;
             case types::physical_type::UINT128:
-                impl::fixed_size_scan<types::uint128_t>(*this, state, scan_count, result);
+                impl::fixed_size_scan_partial<types::uint128_t>(*this, state, scan_count, result, 0);
                 break;
             case types::physical_type::FLOAT:
                 impl::fixed_size_scan<float>(*this, state, scan_count, result);

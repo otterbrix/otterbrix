@@ -90,10 +90,6 @@ namespace components::table::storage {
     core::result_wrapper_t<std::shared_ptr<block_handle_t>>
     standard_buffer_manager_t::register_small_memory(memory_tag tag, uint64_t size) {
         assert(size < block_size());
-        // Charge and record the ALLOCATION, not the requested size, as register_memory does for
-        // the managed path: a tiny buffer really occupies allocation_size(size) bytes, and
-        // recording the smaller number breaks the invariant pin() asserts after a reload
-        // (memory_usage == buffer->allocation_size()).
         const auto alloc_size = allocation_size(size);
         auto reservation = evict_blocks_or_error(tag, alloc_size, nullptr);
         if (reservation.has_error()) {
@@ -115,7 +111,7 @@ namespace components::table::storage {
 
     core::result_wrapper_t<std::shared_ptr<block_handle_t>>
     standard_buffer_manager_t::register_memory(memory_tag tag, uint64_t block_size, bool can_destroy) {
-        auto alloc_size = allocation_size(block_size);
+        auto alloc_size = memory_footprint(block_size);
 
         std::unique_ptr<file_buffer_t> reusable_buffer;
         auto res = evict_blocks_or_error(tag, alloc_size, &reusable_buffer);
@@ -157,11 +153,12 @@ namespace components::table::storage {
 
         auto handle_memory_usage = handle->memory_usage();
         assert(handle->state() == block_state::LOADED);
-        assert(handle_memory_usage == handle->get_buffer(lock)->allocation_size());
+        assert(handle_memory_usage == handle->get_buffer(lock)->memory_footprint());
         assert(handle_memory_usage == handle->memory_usage(lock).size);
 
         auto req = handle->get_buffer(lock)->calculate_memory(block_size);
-        int64_t memory_delta = static_cast<int64_t>(req.alloc_size) - static_cast<int64_t>(handle_memory_usage);
+        const uint64_t footprint = req.alloc_size + file_buffer_t::lead_for(req.header_size);
+        int64_t memory_delta = static_cast<int64_t>(footprint) - static_cast<int64_t>(handle_memory_usage);
 
         if (memory_delta == 0) {
             return true;
@@ -176,7 +173,7 @@ namespace components::table::storage {
 
             handle->merge_memory_reservation(lock, std::move(reservation.value()));
         } else {
-            handle->resize_memory(lock, req.alloc_size);
+            handle->resize_memory(lock, footprint);
         }
 
         handle->resize_buffer(lock, block_size, memory_delta);
@@ -320,12 +317,12 @@ namespace components::table::storage {
                 buf = std::move(loaded.value());
                 auto& memory_charge = handle->memory_usage(lock);
                 memory_charge = std::move(reservation.value());
-                int64_t delta = static_cast<int64_t>(handle->get_buffer(lock)->allocation_size()) -
+                int64_t delta = static_cast<int64_t>(handle->get_buffer(lock)->memory_footprint()) -
                                 static_cast<int64_t>(handle->memory_usage());
                 if (delta) {
                     handle->change_memory_usage(lock, delta);
                 }
-                assert(handle->memory_usage() == handle->get_buffer(lock)->allocation_size());
+                assert(handle->memory_usage() == handle->get_buffer(lock)->memory_footprint());
             }
         }
 

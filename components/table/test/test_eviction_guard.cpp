@@ -14,8 +14,12 @@
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
 
+#include <cstdio>
 #include <cstring>
 #include <memory_resource>
+#include <string>
+#include <unistd.h>
+#include <vector>
 
 namespace {
     using namespace components::table::storage;
@@ -44,10 +48,10 @@ namespace {
 TEST_CASE("buffer manager: re-pinning an evicted managed block does not crash", "[step1]") {
     using namespace components::table::storage;
 
-    // Two-step limit: block_allocation_size() needs a live buffer_manager, so a provisional pool limit is set first.
+    // Two-step limit: block_size() needs a live buffer_manager, so a provisional pool limit is set first.
     test_env_t env(uint64_t(1) << 24);
-    const uint64_t block_alloc = env.buffer_manager.block_allocation_size();
-    env.buffer_pool.maximum_memory = 8 * block_alloc;
+    const uint64_t block_footprint = buffer_manager_t::memory_footprint(env.buffer_manager.block_size());
+    env.buffer_pool.maximum_memory = 8 * block_footprint;
 
     const uint64_t block_size = env.buffer_manager.block_size();
 
@@ -114,11 +118,11 @@ TEST_CASE("buffer manager: pool exhaustion of pinned managed blocks returns out_
     using namespace components::table::storage;
 
     test_env_t env(uint64_t(1) << 24);
-    const uint64_t block_alloc = env.buffer_manager.block_allocation_size();
+    const uint64_t block_footprint = buffer_manager_t::memory_footprint(env.buffer_manager.block_size());
     const uint64_t block_size = env.buffer_manager.block_size();
 
     constexpr uint64_t N = 4;
-    env.buffer_pool.maximum_memory = N * block_alloc;
+    env.buffer_pool.maximum_memory = N * block_footprint;
 
     std::vector<std::shared_ptr<block_handle_t>> handles;
     std::vector<buffer_handle_t> pins;
@@ -162,8 +166,8 @@ TEST_CASE("buffer manager: unpinning a tiny buffer releases its reader", "[step1
     using namespace components::table::storage;
 
     test_env_t env(uint64_t(1) << 24);
-    const uint64_t block_alloc = env.buffer_manager.block_allocation_size();
-    env.buffer_pool.maximum_memory = 8 * block_alloc;
+    const uint64_t block_footprint = buffer_manager_t::memory_footprint(env.buffer_manager.block_size());
+    env.buffer_pool.maximum_memory = 8 * block_footprint;
 
     const uint64_t block_size = env.buffer_manager.block_size();
     // Smaller than a block: register_transient_memory routes this to register_small_memory (TINY_BUFFER).
@@ -188,4 +192,49 @@ TEST_CASE("buffer manager: unpinning a tiny buffer releases its reader", "[step1
     INFO("readers after five balanced pin/unpin pairs: " << handle->readers() << ", at rest it was "
                                                          << readers_at_rest);
     CHECK(handle->readers() == readers_at_rest);
+}
+
+TEST_CASE("buffer manager: a block-sized buffer is charged its whole allocation, the alignment lead included") {
+    using namespace components::table::storage;
+    constexpr uint64_t N = 3;
+
+    test_env_t env(uint64_t(1) << 26);
+    const uint64_t block_size = env.buffer_manager.block_size();
+    const uint64_t charged = env.buffer_manager.block_allocation_size() + (PAYLOAD_ALIGNMENT - DEFAULT_BLOCK_HEADER_SIZE);
+
+    const uint64_t before_managed = env.buffer_pool.used_memory();
+    std::vector<buffer_handle_t> managed;
+    for (uint64_t i = 0; i < N; i++) {
+        auto allocated = env.buffer_manager.allocate(memory_tag::TRANSIENT_TABLE, block_size);
+        REQUIRE_FALSE(allocated.has_error());
+        managed.push_back(std::move(allocated.value()));
+    }
+    CHECK(env.buffer_pool.used_memory() - before_managed == N * charged);
+
+    const std::string path = "/tmp/test_otterbrix_eviction_guard_charge_" + std::to_string(::getpid()) + ".otbx";
+    std::remove(path.c_str());
+    {
+        single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+        REQUIRE_FALSE(bm.create_new_database().has_error());
+        std::vector<uint64_t> ids;
+        for (uint64_t i = 0; i < N; i++) {
+            const uint64_t id = bm.free_block_id();
+            block_t image(&env.resource, id, block_size);
+            std::memset(image.buffer(), 0, static_cast<size_t>(block_size));
+            REQUIRE_FALSE(bm.write(image, id).has_error());
+            ids.push_back(id);
+        }
+
+        const uint64_t before_blocks = env.buffer_pool.used_memory();
+        std::vector<buffer_handle_t> loaded;
+        for (const uint64_t id : ids) {
+            auto handle = bm.register_block(id);
+            auto pinned = env.buffer_manager.pin(handle);
+            REQUIRE_FALSE(pinned.has_error());
+            pinned.value().set_ownership(std::move(handle));
+            loaded.push_back(std::move(pinned.value()));
+        }
+        CHECK(env.buffer_pool.used_memory() - before_blocks == N * charged);
+    }
+    std::remove(path.c_str());
 }

@@ -662,19 +662,7 @@ namespace components::table {
             return true;
         }
 
-        // Tightly-used extent, not the full block, or packing would exceed 0.8*block_size.
-        uint64_t used_bytes;
-        if (phys == types::physical_type::BIT) {
-            const uint64_t vectors =
-                (seg_count + vector::DEFAULT_VECTOR_CAPACITY - 1) / vector::DEFAULT_VECTOR_CAPACITY;
-            used_bytes = vectors * vector::validity_mask_t::STANDARD_MASK_SIZE;
-        } else {
-            used_bytes = seg_count * type_.size();
-        }
-        if (used_bytes > alloc_segment_size) {
-            used_bytes = alloc_segment_size;
-        }
-        const uint64_t segment_size = used_bytes;
+        const uint64_t segment_size = segment->persisted_size(seg_count);
 
         // The pin comes first, so a pin that fails (out_of_memory) has issued no block id.
         auto pinned = block_manager_.buffer_manager.pin(segment->block);

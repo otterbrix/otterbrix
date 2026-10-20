@@ -41,8 +41,8 @@ namespace components::table::storage {
         // alongside other columns' segments. Single source of truth for the write-side "dedicated vs
         // shared" decision, used by the checkpoint flush path and the write-through transition alike.
         //
-        // Invariant: every offset handed out is 8-byte aligned (partial_block_t::next_offset) —
-        // offsets are dereferenced after restart with typed pointers up to uint64_t wide.
+        // Invariant: every offset handed out is PAYLOAD_ALIGNMENT aligned (partial_block_t::next_offset) —
+        // offsets are dereferenced after restart with typed pointers up to int128 wide.
         static constexpr double FULL_THRESHOLD = 0.8;
         // Tails kept open after a flush (for_appends only): one for the row-group-sized fixed
         // segments, one for the string segments, so neither evicts the other every row group.
@@ -119,7 +119,7 @@ namespace components::table::storage {
             std::pmr::vector<placed_t> placements;
             uint32_t plain_since_flush;
 
-            // Where the next segment goes: every offset is 8-byte aligned.
+            // Where the next segment goes: every offset is PAYLOAD_ALIGNMENT aligned.
             uint64_t next_offset() const;
             uint64_t free_space() const;
         };

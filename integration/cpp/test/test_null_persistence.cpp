@@ -381,3 +381,86 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_past_first_row
         }
     }
 }
+
+// An all-NULL list column leaves its element column with no rows: the checkpoint must persist
+// nothing for it, and the lists inserted after the restart must read back with their own values.
+TEST_CASE("integration::cpp::test_null_persistence::all_null_lists_survive_two_checkpoints") {
+    auto config = test_create_config(integration_fixture_path("test_null_persistence/all_null_lists"));
+    test_clear_directory(config);
+    config.log.level = log_t::level::off;
+
+    INFO("phase 1: only NULL lists, then CHECKPOINT");
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        auto exec = [&](const std::string& sql) {
+            auto session = otterbrix::session_id_t();
+            return d->execute_sql(session, sql);
+        };
+        REQUIRE(exec("CREATE DATABASE b;")->is_success());
+        REQUIRE(exec("CREATE TABLE b.e (id BIGINT, a BIGINT[], s STRING[]);")->is_success());
+        REQUIRE(exec("INSERT INTO b.e (id, a, s) VALUES (1, NULL, NULL), (2, NULL, NULL);")->is_success());
+        REQUIRE(exec("CHECKPOINT;")->is_success());
+    }
+
+    INFO("phase 2: restart, the NULL lists are still NULL; non-empty lists join, CHECKPOINT again");
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        auto exec = [&](const std::string& sql) {
+            auto session = otterbrix::session_id_t();
+            return d->execute_sql(session, sql);
+        };
+        {
+            auto cur = exec("SELECT id FROM b.e WHERE a IS NULL AND s IS NULL;");
+            REQUIRE(cur->is_success());
+            CHECK(cur->size() == 2);
+        }
+        REQUIRE(exec("INSERT INTO b.e (id, a, s) VALUES (3, ARRAY[10, 20], NULL), (4, ARRAY[30], NULL);")
+                    ->is_success());
+        REQUIRE(exec("CHECKPOINT;")->is_success());
+    }
+
+    INFO("phase 3: restart, every row reads back");
+    {
+        test_spaces space(config);
+        auto* d = space.dispatcher();
+        auto exec = [&](const std::string& sql) {
+            auto session = otterbrix::session_id_t();
+            return d->execute_sql(session, sql);
+        };
+        {
+            auto cur = exec("SELECT id FROM b.e WHERE a IS NULL ORDER BY id;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+            auto first = cur->get<int64_t>(0, 0);
+            REQUIRE_FALSE(first.has_error());
+            CHECK(first.value() == 1);
+        }
+        {
+            auto cur = exec("SELECT id FROM b.e WHERE s IS NULL;");
+            REQUIRE(cur->is_success());
+            CHECK(cur->size() == 4);
+        }
+        {
+            auto cur = exec("SELECT a FROM b.e WHERE id >= 3 ORDER BY id;");
+            REQUIRE(cur->is_success());
+            REQUIRE(cur->size() == 2);
+            auto size3 = cur->list_size(0, 0);
+            REQUIRE_FALSE(size3.has_error());
+            REQUIRE(size3.value() == 2);
+            auto a30 = cur->get<int64_t>(0, 0, {0});
+            REQUIRE_FALSE(a30.has_error());
+            CHECK(a30.value() == 10);
+            auto a31 = cur->get<int64_t>(0, 0, {1});
+            REQUIRE_FALSE(a31.has_error());
+            CHECK(a31.value() == 20);
+            auto size4 = cur->list_size(0, 1);
+            REQUIRE_FALSE(size4.has_error());
+            REQUIRE(size4.value() == 1);
+            auto a40 = cur->get<int64_t>(0, 1, {0});
+            REQUIRE_FALSE(a40.has_error());
+            CHECK(a40.value() == 30);
+        }
+    }
+}

@@ -247,7 +247,7 @@ namespace components::table::storage {
                 handle->set_temp_copy(slot.value(), file_buffer->allocation_size(), file_buffer->size());
             }
 
-            const uint64_t reclaimed = handle->get_buffer(lock)->allocation_size();
+            const uint64_t reclaimed = handle->get_buffer(lock)->memory_footprint();
 
             if (buffer && reclaimed == extra_memory) {
                 *buffer = handle->unload_and_take_block(lock);

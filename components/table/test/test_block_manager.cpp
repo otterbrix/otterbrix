@@ -682,7 +682,7 @@ TEST_CASE("block_manager: a handle's death writes nothing on its manager") {
     cleanup_test_file();
 }
 
-TEST_CASE("partial_block_manager: every packed segment offset is 8-byte aligned") {
+TEST_CASE("partial_block_manager: every packed segment offset is 16-byte aligned") {
     using namespace components::table::storage;
     cleanup_test_file();
 
@@ -696,18 +696,18 @@ TEST_CASE("partial_block_manager: every packed segment offset is 8-byte aligned"
     // Offsets are later dereferenced as the segment's own element type, so misalignment is UB.
     auto first = pbm.place(bytes.data(), 4); // CONSTANT INT32 main segment
     REQUIRE_FALSE(first.has_error());
-    REQUIRE(first.value().offset_in_block % 8 == 0);
+    REQUIRE(first.value().offset_in_block % PAYLOAD_ALIGNMENT == 0);
     auto validity = pbm.place(bytes.data(), 128); // 1024-row validity bitmap
     REQUIRE_FALSE(validity.has_error());
     REQUIRE(validity.value().block_id == first.value().block_id);
-    REQUIRE(validity.value().offset_in_block % 8 == 0);
+    REQUIRE(validity.value().offset_in_block % PAYLOAD_ALIGNMENT == 0);
 
     // Byte-granular sizes (RLE, dictionary, big-string) must still keep every placement aligned.
     const uint64_t odd_sizes[] = {1, 3, 20, 7, 8, 9, 4096, 5, 133};
     for (auto size : odd_sizes) {
         auto alloc = pbm.place(bytes.data(), size);
         REQUIRE_FALSE(alloc.has_error());
-        REQUIRE(alloc.value().offset_in_block % 8 == 0);
+        REQUIRE(alloc.value().offset_in_block % PAYLOAD_ALIGNMENT == 0);
     }
 
     cleanup_test_file();

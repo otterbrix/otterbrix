@@ -99,6 +99,7 @@ namespace {
         exhaustion_t e;
         e.blocks = exhaust_pool(env);
         e.small = top_up_pool(env, uint64_t(1) << 12);
+        REQUIRE_FALSE(env.buffer_pool.set_limit(env.buffer_pool.used_memory()).has_error());
         return e;
     }
 

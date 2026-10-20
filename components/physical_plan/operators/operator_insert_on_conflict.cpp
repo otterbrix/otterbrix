@@ -100,16 +100,13 @@ namespace components::operators {
                                                   const operator_data_ptr& conflicts,
                                                   chunks_vector_t* targets) {
         const auto& holders = check_->conflict_holders();
-        vector::vector_t row_ids(resource_, types::logical_type::BIGINT, holders.size());
-        for (size_t i = 0; i < holders.size(); ++i) {
-            row_ids.data<int64_t>()[i] = holders[i].row_id;
-        }
+        size_t position = 0;
+        auto row_ids = table::make_row_id_batch(resource_, holders.size(), [&] { return holders[position++].row_id; });
         auto [_fetch, future] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                             &services::disk::manager_disk_t::storage_fetch,
                                                             ctx->session,
                                                             table_oid_,
                                                             std::move(row_ids),
-                                                            holders.size(),
                                                             std::vector<size_t>{},
                                                             ctx->txn,
                                                             components::table::fetch_visibility_t::SNAPSHOT,

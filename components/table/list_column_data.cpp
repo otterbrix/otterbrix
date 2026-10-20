@@ -108,12 +108,12 @@ namespace components::table {
         auto data = offsets.get_data<uint64_t>();
 
         auto result_data = result.data<types::list_entry_t>();
-        auto last_entry = result_data[state.result_offset == 0 ? 0 : state.result_offset - 1];
         auto base_offset = state.last_offset;
+        auto prev_size = result.size();
         uint64_t current_offset = 0;
         for (uint64_t i = 0; i < scan_count; i++) {
             auto offset_index = offsets.referenced_indexing->get_index(i);
-            result_data[i + state.result_offset].offset = current_offset + last_entry.offset + last_entry.length;
+            result_data[i + state.result_offset].offset = current_offset + prev_size;
             result_data[i + state.result_offset].length = data[offset_index] - current_offset;
             current_offset += result_data[i + state.result_offset].length;
         }
@@ -121,7 +121,6 @@ namespace components::table {
         uint64_t child_scan_count = current_offset;
         result.reserve(child_scan_count + base_offset);
 
-        auto prev_size = result.size();
         if (child_scan_count > 0) {
             auto& child_entry = result.entry();
             if (child_entry.type().to_physical_type() != types::physical_type::STRUCT &&
@@ -198,24 +197,30 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool>
-    list_column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
+    list_column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t offset, uint64_t count) {
         assert(count > 0);
-        vector::unified_vector_format list_data(vector.resource(), count);
-        vector.to_unified_format(count, list_data);
+        vector::unified_vector_format list_data(vector.resource(), offset + count);
+        vector.to_unified_format(offset + count, list_data);
         auto& list_validity = list_data.validity;
 
         auto input_offsets = list_data.get_data<types::list_entry_t>();
         auto start_offset = child_column->max_entry();
         uint64_t child_count = 0;
+        uint64_t child_start = 0;
+        bool child_start_found = false;
 
         vector::validity_mask_t append_mask(resource_, count);
         auto append_offsets = std::unique_ptr<uint64_t[]>(new uint64_t[count]);
         bool child_contiguous = true;
         for (uint64_t i = 0; i < count; i++) {
-            auto input_idx = list_data.referenced_indexing->get_index(i);
+            auto input_idx = list_data.referenced_indexing->get_index(offset + i);
             if (list_validity.row_is_valid(input_idx)) {
                 auto& input_list = input_offsets[input_idx];
-                if (input_list.offset != child_count) {
+                if (!child_start_found) {
+                    child_start = input_list.offset;
+                    child_start_found = true;
+                }
+                if (input_list.offset != child_start + child_count) {
                     child_contiguous = false;
                 }
                 append_offsets[i] = start_offset + child_count + input_list.length;
@@ -231,7 +236,7 @@ namespace components::table {
             vector::indexing_vector_t child_indexing(resource_, child_count);
             uint64_t current_count = 0;
             for (uint64_t i = 0; i < count; i++) {
-                auto input_idx = list_data.referenced_indexing->get_index(i);
+                auto input_idx = list_data.referenced_indexing->get_index(offset + i);
                 if (list_validity.row_is_valid(input_idx)) {
                     auto& input_list = input_offsets[input_idx];
                     for (uint64_t list_idx = 0; list_idx < input_list.length; list_idx++) {
@@ -248,17 +253,20 @@ namespace components::table {
         uvf.data = reinterpret_cast<std::byte*>(append_offsets.get());
 
         if (child_count > 0) {
-            auto child = child_column->append(state.child_appends[1], child_vector, child_count);
+            auto child = child_column->append(state.child_appends[1],
+                                              child_vector,
+                                              child_contiguous ? child_start : 0,
+                                              child_count);
             if (child.has_error()) {
                 return child; // out_of_memory: no exceptions across actors
             }
         }
-        auto base = column_data_t::append_data(state, uvf, count);
+        auto base = column_data_t::append_data(state, uvf, 0, count);
         if (base.has_error()) {
             return base;
         }
         uvf.validity = append_mask;
-        return validity.append_data(state.child_appends[0], uvf, count);
+        return validity.append_data(state.child_appends[0], uvf, 0, count);
     }
 
     void list_column_data_t::snapshot_counts(append_cut_t& cut) const {

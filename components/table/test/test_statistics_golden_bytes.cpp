@@ -422,7 +422,7 @@ TEST_CASE("statistics golden bytes: bounds_learned_from_a_vector") {
     vec.data<int64_t>()[1] = -5;
     vec.data<int64_t>()[2] = 0;
     vec.validity().set_invalid(2);
-    stats.update(vec, 3);
+    stats.update(vec, 0, 3);
     // clang-format off
     const std::vector<uint8_t> expected{
         0x0E, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xFB,
@@ -440,7 +440,7 @@ TEST_CASE("statistics golden bytes: string_bounds_learned_from_a_vector") {
     vec.data<std::string_view>()[1] = "apple";
     vec.data<std::string_view>()[2] = "zzz";
     vec.validity().set_invalid(2);
-    stats.update(vec, 3);
+    stats.update(vec, 0, 3);
     // clang-format off
     const std::vector<uint8_t> expected{
         0x23, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x05,
@@ -460,7 +460,7 @@ TEST_CASE("statistics golden bytes: decimal_bounds_learned_from_a_vector") {
     vec.data<int32_t>()[1] = -12345;
     vec.data<int32_t>()[2] = 0;
     vec.validity().set_invalid(2);
-    stats.update(vec, 3);
+    stats.update(vec, 0, 3);
     // clang-format off
     const std::vector<uint8_t> expected{
         0x16, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x09,
@@ -480,7 +480,7 @@ TEST_CASE("statistics golden bytes: decimal_int128_bounds_learned_from_a_vector"
     vector_t vec(&resource, created.value(), 2);
     vec.data<int128_t>()[0] = wide;
     vec.data<int128_t>()[1] = -wide;
-    stats.update(vec, 2);
+    stats.update(vec, 0, 2);
     // clang-format off
     const std::vector<uint8_t> expected{
         0x16, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x26,
@@ -502,7 +502,7 @@ TEST_CASE("statistics merge: DECIMAL bounds widen across batches") {
         base_statistics_t batch(&resource, logical_type::DECIMAL);
         vector_t vec(&resource, created.value(), 1);
         vec.data<int32_t>()[0] = raw;
-        batch.update(vec, 1);
+        batch.update(vec, 0, 1);
         column.merge(batch);
     }
     REQUIRE(column.min_as<int128_t>() == -500);
@@ -517,7 +517,7 @@ TEST_CASE("statistics merge: HUGEINT bounds widen across batches") {
         base_statistics_t batch(&resource, logical_type::HUGEINT);
         vector_t vec(&resource, logical_type::HUGEINT, 1);
         vec.data<int128_t>()[0] = value;
-        batch.update(vec, 1);
+        batch.update(vec, 0, 1);
         column.merge(batch);
     }
     REQUIRE(column.min_as<int128_t>() == 1);
@@ -532,7 +532,7 @@ TEST_CASE("statistics merge: UHUGEINT bounds widen across batches") {
         base_statistics_t batch(&resource, logical_type::UHUGEINT);
         vector_t vec(&resource, logical_type::UHUGEINT, 1);
         vec.data<uint128_t>()[0] = value;
-        batch.update(vec, 1);
+        batch.update(vec, 0, 1);
         column.merge(batch);
     }
     REQUIRE(column.min_as<uint128_t>() == 2);
@@ -548,7 +548,7 @@ TEST_CASE("statistics merge: STRING bounds widen across batches and survive a co
         base_statistics_t batch(&resource, logical_type::STRING_LITERAL);
         vector_t vec(&resource, logical_type::STRING_LITERAL, 1);
         vec.data<std::string_view>()[0] = value;
-        batch.update(vec, 1);
+        batch.update(vec, 0, 1);
         column.merge(batch);
     }
     const base_statistics_t copy(column);

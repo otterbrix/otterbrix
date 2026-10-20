@@ -26,6 +26,7 @@
 #include <services/wal/base.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 #include <set>
+#include <span>
 #include <string>
 #include <unordered_map>
 
@@ -192,15 +193,13 @@ namespace services::disk {
 
         unique_future<core::result_wrapper_t<uint64_t>>
         storage_delete_rows_inner(components::catalog::oid_t table_oid,
-                                  components::vector::vector_t row_ids,
-                                  uint64_t count,
+                                  components::table::row_id_batch_t row_ids,
                                   components::table::transaction_data txn);
 
         // SNAPSHOT drops invisible rows; RAW keeps all. `expected_compact_epoch` is checked atomically with the read.
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_fetch_inner(components::catalog::oid_t table_oid,
-                            components::vector::vector_t row_ids,
-                            uint64_t count,
+                            components::table::row_id_batch_t row_ids,
                             std::vector<size_t> projected_cols,
                             components::table::transaction_data txn,
                             components::table::fetch_visibility_t visibility,
@@ -263,7 +262,7 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
         read_chunks_by_keys_inner(components::catalog::oid_t table_oid,
                                   std::pmr::vector<std::uint64_t> key_col_indices,
-                                  components::vector::data_chunk_t keys,
+                                  std::pmr::vector<components::vector::data_chunk_t> keys,
                                   std::pmr::vector<std::uint64_t> projected_cols,
                                   components::table::transaction_data txn);
 
@@ -414,6 +413,13 @@ namespace services::disk {
                    int64_t limit,
                    const std::vector<std::size_t>* projected_cols,
                    const components::table::transaction_data& txn);
+
+        [[nodiscard]] core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
+        read_by_keys_local(components::catalog::oid_t table_oid,
+                           const std::pmr::vector<std::uint64_t>& key_col_indices,
+                           std::span<const components::vector::data_chunk_t> keys,
+                           const std::pmr::vector<std::uint64_t>& projected_cols,
+                           const components::table::transaction_data& txn);
 
         void drop_storage_one_local(components::catalog::oid_t oid);
 

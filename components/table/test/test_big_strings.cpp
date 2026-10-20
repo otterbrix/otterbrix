@@ -467,7 +467,7 @@ TEST_CASE("big_strings: an unresolvable overflow block reports an error and does
     data_chunk_t input(&env.resource, types, 1);
     input.set_cardinality(1);
     input.set_value(0, 0, std::string_view{big});
-    REQUIRE_FALSE(column->append(append_state, input.data[0], 1).has_error());
+    REQUIRE_FALSE(column->append(append_state, input.data[0], 0, 1).has_error());
     REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
     REQUIRE(append_state.current != nullptr);
 
@@ -547,7 +547,7 @@ TEST_CASE("big_strings: a reloaded segment reports its overflow blocks for compa
         for (uint64_t i = 0; i < values.size(); i++) {
             input.set_value(0, i, std::string_view{values[i]});
         }
-        REQUIRE_FALSE(column->append(append_state, input.data[0], values.size()).has_error());
+        REQUIRE_FALSE(column->append(append_state, input.data[0], 0, values.size()).has_error());
         REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
     }
 
@@ -720,7 +720,7 @@ TEST_CASE("big_strings: a duplicated persisted overflow block is data_corruption
         for (uint64_t i = 0; i < values.size(); i++) {
             input.set_value(0, i, std::string_view{values[i]});
         }
-        REQUIRE_FALSE(column->append(append_state, input.data[0], values.size()).has_error());
+        REQUIRE_FALSE(column->append(append_state, input.data[0], 0, values.size()).has_error());
         REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
     }
 

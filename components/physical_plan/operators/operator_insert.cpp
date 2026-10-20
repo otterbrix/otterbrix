@@ -249,17 +249,12 @@ namespace components::operators {
                 written_ += count;
                 if (!returning_.empty() && count > 0) {
                     // A point read: the reply range IS the ids just written (generated columns need it).
-                    vector::vector_t row_ids(resource_, types::logical_type::BIGINT, count);
-                    auto* ids = row_ids.data<int64_t>();
-                    for (uint64_t i = 0; i < count; i++) {
-                        ids[i] = appended.start_row + static_cast<int64_t>(i);
-                    }
+                    auto row_ids = table::make_row_id_range(resource_, appended.start_row, count);
                     auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                                 &services::disk::manager_disk_t::storage_fetch,
                                                                 ctx->session,
                                                                 table_oid_,
                                                                 std::move(row_ids),
-                                                                count,
                                                                 std::vector<size_t>{},
                                                                 ctx->txn,
                                                                 components::table::fetch_visibility_t::SNAPSHOT,

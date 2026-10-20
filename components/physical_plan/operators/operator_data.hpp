@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <boost/intrusive_ptr.hpp>
 #include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -79,21 +80,25 @@ namespace components::operators {
         return chunk;
     }
 
-    // Builds the N-row columnar key carrier for manager_disk_t::read_chunks_by_keys: a single key
-    // column (type derived from T) with one row per value — the common probe-by-oid batch. Same
-    // positional/no-column-names contract as make_key_chunk; an empty values[] yields a 1-capacity,
-    // 0-row chunk (the read then returns an empty per-key result).
+    // Builds the N-row columnar key batch for manager_disk_t::read_chunks_by_keys: a single key
+    // column (type derived from T) with one row per value — the common probe-by-oid batch — split
+    // into chunks of at most DEFAULT_VECTOR_CAPACITY rows. Same positional/no-column-names contract
+    // as make_key_chunk; an empty values[] yields an empty batch (the read then returns no results).
     template<typename T>
-    vector::data_chunk_t make_keys_chunk(std::pmr::memory_resource* resource, const std::pmr::vector<T>& values) {
+    chunks_vector_t make_keys_batch(std::pmr::memory_resource* resource, const std::pmr::vector<T>& values) {
         std::pmr::vector<types::complex_logical_type> col_types(resource);
         col_types.emplace_back(types::to_logical_type<std::remove_cvref_t<T>>());
-        const std::size_t nrows = values.size();
-        vector::data_chunk_t chunk(resource, col_types, nrows == 0 ? 1 : nrows);
-        for (std::size_t i = 0; i < nrows; ++i) {
-            chunk.set_value(uint64_t{0}, static_cast<uint64_t>(i), values[i]);
+        chunks_vector_t batch(resource);
+        for (std::size_t first = 0; first < values.size(); first += vector::DEFAULT_VECTOR_CAPACITY) {
+            const std::size_t nrows = std::min<std::size_t>(vector::DEFAULT_VECTOR_CAPACITY, values.size() - first);
+            vector::data_chunk_t chunk(resource, col_types, nrows);
+            for (std::size_t i = 0; i < nrows; ++i) {
+                chunk.set_value(uint64_t{0}, static_cast<uint64_t>(i), values[first + i]);
+            }
+            chunk.set_cardinality(static_cast<uint64_t>(nrows));
+            batch.push_back(std::move(chunk));
         }
-        chunk.set_cardinality(static_cast<uint64_t>(nrows));
-        return chunk;
+        return batch;
     }
 
 } // namespace components::operators

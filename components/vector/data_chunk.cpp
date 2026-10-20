@@ -12,7 +12,7 @@ namespace {
     using namespace components::vector;
 
     void reset_validity_recursive(vector_t& vec) {
-        vec.validity().reset();
+        vec.validity().reset(std::max<uint64_t>(vec.validity().count(), DEFAULT_VECTOR_CAPACITY));
         auto aux = vec.auxiliary();
         if (!aux) {
             return;
@@ -94,7 +94,6 @@ namespace components::vector {
         if (data.empty()) {
             return;
         }
-        capacity_ = DEFAULT_VECTOR_CAPACITY;
         set_cardinality(0);
         // validity_scan_partial ANDs bits into the mask, so a stale mask surviving reset() would
         // carry the previous fill's NULLs into the next one — nested masks and the heap leak too.
@@ -307,6 +306,7 @@ namespace components::vector {
     std::pmr::memory_resource* data_chunk_t::resource() const { return resource_; }
 
     void data_chunk_t::slice(const indexing_vector_t& indexing_vector, uint64_t count) {
+        assert(count <= DEFAULT_VECTOR_CAPACITY);
         count_ = count;
         // Passes resource_ explicitly — a default-constructed pmr container would use the
         // process default resource, which this project forbids.
@@ -321,6 +321,7 @@ namespace components::vector {
                              uint64_t count,
                              uint64_t col_offset) {
         assert(other.column_count() <= col_offset + column_count());
+        assert(count <= DEFAULT_VECTOR_CAPACITY);
         count_ = count;
         indexing_cache_t merge_cache{resource_};
         for (uint64_t c = 0; c < other.column_count(); c++) {
@@ -344,7 +345,7 @@ namespace components::vector {
         assert(offset + count <= size());
         data_chunk_t result(resource, std::pmr::vector<types::complex_logical_type>{resource}, 0);
         result.capacity_ = count;
-        result.count_ = count;
+        result.set_cardinality(count);
         result.data.reserve(column_count());
         for (uint64_t c = 0; c < column_count(); c++) {
             result.data.emplace_back(data[c], offset, count);
@@ -395,12 +396,6 @@ namespace components::vector {
         capacity_ = new_size;
         if (count_ > new_size) {
             count_ = new_size;
-        }
-    }
-
-    void validate_chunk_capacity(vector::data_chunk_t& chunk, size_t filled_size) {
-        if (filled_size >= chunk.capacity()) {
-            chunk.resize(filled_size);
         }
     }
 

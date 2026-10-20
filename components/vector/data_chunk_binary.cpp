@@ -478,6 +478,12 @@ namespace components::vector {
         uint32_t null_mask_size = read_le32(pointer);
         pointer += 4;
 
+        // The bytes come from disk or the WAL: a row count no chunk may hold is a format violation.
+        if (num_rows > DEFAULT_VECTOR_CAPACITY) {
+            ok = false;
+            return make_empty_error_chunk(resource);
+        }
+
         const char* null_mask = nullptr;
         if (null_mask_size > 0) {
             if (pointer + null_mask_size > end) {

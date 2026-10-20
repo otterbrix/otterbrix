@@ -55,6 +55,9 @@ namespace components::table {
                 row_group = nullptr;
                 return false;
             }
+            if (result.size() > 0) {
+                return true;
+            }
             const bool rg_exhausted =
                 static_cast<int64_t>(vector_index * vector::DEFAULT_VECTOR_CAPACITY) >= max_row_group_row;
             if (!rg_exhausted) {

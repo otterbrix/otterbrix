@@ -425,7 +425,7 @@ namespace components::operators {
                                                 exec_ctx,
                                                 kPgAttribute,
                                                 std::move(attr_c_keys),
-                                                components::operators::make_keys_chunk(resource_, child_oids),
+                                                components::operators::make_keys_batch(resource_, child_oids),
                                                 pg_attribute_fk_child_cols(resource_));
 
                 std::pmr::vector<std::uint64_t> attr_p_keys(resource_);
@@ -436,7 +436,7 @@ namespace components::operators {
                                                 exec_ctx,
                                                 kPgAttribute,
                                                 std::move(attr_p_keys),
-                                                components::operators::make_keys_chunk(resource_, parent_oids),
+                                                components::operators::make_keys_batch(resource_, parent_oids),
                                                 pg_attribute_key_cols(resource_));
 
                 auto child_results_r = co_await std::move(fut_attr_c);

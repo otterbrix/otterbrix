@@ -12,6 +12,68 @@ using namespace components::vector::arrow;
 using namespace components::vector;
 using namespace components::types;
 
+data_chunk_t& only_single_chunk(std::pmr::vector<data_chunk_t>& chunks) {
+    REQUIRE(chunks.size() == 1);
+    return chunks.front();
+}
+
+// An Arrow record batch is as long as its producer made it; it comes back as chunks no larger than a vector.
+TEST_CASE("components::vector::arrow_batch_longer_than_a_vector") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.emplace_back(logical_type::BIGINT, "id");
+    types.emplace_back(logical_type::STRING_LITERAL, "text");
+    types.emplace_back(logical_type::DOUBLE, "nullable");
+    types.emplace_back(complex_logical_type::create_list(logical_type::UINTEGER, "list"));
+
+    const auto total_rows = static_cast<size_t>(DEFAULT_VECTOR_CAPACITY * 3.4);
+    std::pmr::vector<data_chunk_t> source(&resource);
+    for (size_t first = 0; first < total_rows; first += DEFAULT_VECTOR_CAPACITY) {
+        const size_t count = std::min<size_t>(DEFAULT_VECTOR_CAPACITY, total_rows - first);
+        data_chunk_t chunk(&resource, types, count);
+        chunk.set_cardinality(count);
+        for (size_t row = 0; row < count; row++) {
+            const size_t global_row = first + row;
+            chunk.set_value(0, row, static_cast<int64_t>(global_row));
+            const std::string text{"row_" + std::to_string(global_row)};
+            chunk.set_value(1, row, std::string_view{text});
+            if (global_row % 7 == 0) {
+                chunk.data[2].set_null(row, true);
+            } else {
+                chunk.set_value(2, row, static_cast<double>(global_row) / 2);
+            }
+            std::vector<uint32_t> list(global_row % 5, static_cast<uint32_t>(global_row));
+            chunk.set_value(3, row, list);
+        }
+        source.push_back(std::move(chunk));
+    }
+
+    arrow_appender_t appender(types, total_rows);
+    for (auto& chunk : source) {
+        appender.append(chunk, 0, chunk.size(), chunk.size());
+    }
+    ArrowArray arrow_array = appender.finalize();
+    ArrowSchema schema;
+    to_arrow_schema(&schema, types);
+    auto schema_res = schema_from_arrow(&resource, &schema);
+    REQUIRE(!schema_res.has_error());
+
+    auto res_w = data_chunks_from_arrow(&resource, &arrow_array, std::move(schema_res.value()));
+    REQUIRE(!res_w.has_error());
+    auto& converted = res_w.value();
+    REQUIRE(converted.size() == source.size());
+    for (size_t index = 0; index < converted.size(); index++) {
+        REQUIRE(converted[index].size() <= DEFAULT_VECTOR_CAPACITY);
+        REQUIRE(converted[index].size() == source[index].size());
+        for (size_t column = 0; column < types.size(); column++) {
+            for (size_t row = 0; row < source[index].size(); row++) {
+                REQUIRE(cells_equal(source[index].data[column], row, converted[index].data[column], row));
+            }
+        }
+    }
+    schema.release(&schema);
+}
+
 TEST_CASE("components::vector::data_chunk_to_arrow") {
     {
         constexpr size_t chunk_size = DEFAULT_VECTOR_CAPACITY;
@@ -122,9 +184,9 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         to_arrow_array(chunk, &arrow_array);
         auto schema_res = schema_from_arrow(&resource, &schema);
         REQUIRE(!schema_res.has_error());
-        auto res_w = data_chunk_from_arrow(&resource, &arrow_array, std::move(schema_res.value()));
+        auto res_w = data_chunks_from_arrow(&resource, &arrow_array, std::move(schema_res.value()));
         REQUIRE(!res_w.has_error());
-        auto& res = res_w.value();
+        auto& res = only_single_chunk(res_w.value());
         REQUIRE(chunk.column_count() == res.column_count());
         REQUIRE(chunk.size() == res.size());
         for (size_t i = 0; i < chunk.column_count(); i++) {
@@ -243,9 +305,9 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
         to_arrow_array(chunk, &arrow_array);
         auto schema_res = schema_from_arrow(&resource, &schema);
         REQUIRE(!schema_res.has_error());
-        auto res_w = data_chunk_from_arrow(&resource, &arrow_array, std::move(schema_res.value()));
+        auto res_w = data_chunks_from_arrow(&resource, &arrow_array, std::move(schema_res.value()));
         REQUIRE(!res_w.has_error());
-        auto& res = res_w.value();
+        auto& res = only_single_chunk(res_w.value());
         REQUIRE(chunk.column_count() == res.column_count());
         REQUIRE(chunk.size() == res.size());
         for (size_t i = 0; i < chunk.column_count(); i++) {
@@ -290,9 +352,9 @@ TEST_CASE("components::vector::data_chunk_to_arrow::datetime") {
     to_arrow_array(chunk, &arrow_array);
     auto schema_res = schema_from_arrow(&resource, &schema);
     REQUIRE(!schema_res.has_error());
-    auto res_w = data_chunk_from_arrow(&resource, &arrow_array, std::move(schema_res.value()));
+    auto res_w = data_chunks_from_arrow(&resource, &arrow_array, std::move(schema_res.value()));
     REQUIRE(!res_w.has_error());
-    auto& res = res_w.value();
+    auto& res = only_single_chunk(res_w.value());
 
     REQUIRE(chunk.column_count() == res.column_count());
     REQUIRE(chunk.size() == res.size());

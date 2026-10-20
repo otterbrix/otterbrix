@@ -724,7 +724,9 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
         REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
         fd2.manager->restore_oid_generator_sync();
 
-        const auto max_cid = fd2.manager->max_persisted_commit_id_sync();
+        const auto max_cid_read = fd2.manager->max_persisted_commit_id_sync();
+        REQUIRE_FALSE(max_cid_read.has_error());
+        const auto max_cid = max_cid_read.value();
         REQUIRE(max_cid == static_cast<std::uint64_t>(kPersistedCommitId));
 
         components::table::transaction_manager_t txn_mgr(&fd2.resource);

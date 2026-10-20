@@ -15,6 +15,25 @@
 
 namespace components::operators {
 
+    namespace {
+        table::row_id_batch_t child_row_ids(std::pmr::memory_resource* resource,
+                                            const std::pmr::vector<std::pmr::vector<std::int64_t>>& per_row_child_ids) {
+            uint64_t total = 0;
+            for (const auto& child_ids : per_row_child_ids) {
+                total += child_ids.size();
+            }
+            size_t parent = 0;
+            size_t child = 0;
+            return table::make_row_id_batch(resource, total, [&] {
+                while (child == per_row_child_ids[parent].size()) {
+                    ++parent;
+                    child = 0;
+                }
+                return per_row_child_ids[parent][child++];
+            });
+        }
+    } // namespace
+
     operator_fk_cascade_t::operator_fk_cascade_t(std::pmr::memory_resource* resource, log_t log, catalog::fk_info_t fk)
         : read_write_operator_t(resource, log, operator_type::fk_cascade)
         , fk_(std::move(fk)) {}
@@ -185,25 +204,15 @@ namespace components::operators {
 
             case 'c': { // CASCADE
                 // Stamped with the parent txn; CASCADE never reads a row back.
-                std::pmr::vector<int64_t> all_child_ids(resource_);
-                for (const auto& child_ids : per_row_child_ids) {
-                    for (auto id : child_ids) {
-                        all_child_ids.push_back(id);
-                    }
-                }
-                if (all_child_ids.empty())
+                auto row_ids = child_row_ids(resource_, per_row_child_ids);
+                if (row_ids.empty())
                     break;
 
-                components::vector::vector_t row_ids_vec(resource_, types::logical_type::BIGINT, all_child_ids.size());
-                for (std::size_t i = 0; i < all_child_ids.size(); ++i) {
-                    row_ids_vec.data<int64_t>()[i] = all_child_ids[i];
-                }
                 auto [_d, dfut] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                               &services::disk::manager_disk_t::storage_delete_rows,
                                                               exec_ctx,
                                                               fk_.child_table_oid,
-                                                              std::move(row_ids_vec),
-                                                              static_cast<uint64_t>(all_child_ids.size()));
+                                                              std::move(row_ids));
                 auto deleted_r = co_await std::move(dfut);
                 if (deleted_r.has_error()) {
                     set_error(deleted_r.error());
@@ -219,25 +228,15 @@ namespace components::operators {
             case 'n':   // SET NULL
             case 'd': { // SET DEFAULT
                 // Mirrors CASCADE, but paired back via chunk.row_ids since the reply isn't positional.
-                std::pmr::vector<int64_t> all_child_ids(resource_);
-                for (const auto& child_ids : per_row_child_ids) {
-                    for (auto id : child_ids) {
-                        all_child_ids.push_back(id);
-                    }
-                }
-                if (all_child_ids.empty())
+                auto fetch_ids = child_row_ids(resource_, per_row_child_ids);
+                if (fetch_ids.empty())
                     break;
 
-                components::vector::vector_t fetch_ids(resource_, types::logical_type::BIGINT, all_child_ids.size());
-                for (std::size_t i = 0; i < all_child_ids.size(); ++i) {
-                    fetch_ids.data<int64_t>()[i] = all_child_ids[i];
-                }
                 auto [_f, ffut] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                               &services::disk::manager_disk_t::storage_fetch,
                                                               ctx->session,
                                                               fk_.child_table_oid,
                                                               std::move(fetch_ids),
-                                                              static_cast<uint64_t>(all_child_ids.size()),
                                                               std::vector<size_t>{},
                                                               ctx->txn,
                                                               components::table::fetch_visibility_t::SNAPSHOT,

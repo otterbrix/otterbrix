@@ -867,28 +867,48 @@ namespace components::table {
         mark_modified();
     }
 
-    core::result_wrapper_t<uint64_t>
-    data_table_t::delete_rows(vector::vector_t& row_identifiers, uint64_t count, const transaction_data& txn) {
-        assert(row_identifiers.type().type() == types::logical_type::BIGINT);
-        if (count == 0) {
-            return core::result_wrapper_t<uint64_t>{uint64_t{0}};
-        }
-
-        row_identifiers.flatten(count);
-        const auto* requested = row_identifiers.data<int64_t>();
-
+    core::result_wrapper_t<uint64_t> data_table_t::delete_rows(std::span<row_ids_t> row_ids,
+                                                               const transaction_data& txn) {
         std::pmr::vector<int64_t> claimed(resource_);
-        claimed.reserve(count);
+        claimed.reserve(vector::DEFAULT_VECTOR_CAPACITY);
+        // Every window is checked before any is stamped: a conflict anywhere stamps nothing.
+        for (auto& window : row_ids) {
+            assert(window.ids.type().type() == types::logical_type::BIGINT);
+            assert(window.count <= vector::DEFAULT_VECTOR_CAPACITY &&
+                   "delete_rows: a window holds at most DEFAULT_VECTOR_CAPACITY ids");
+            window.ids.flatten(window.count);
+            if (auto error = collect_claims(window.ids.data<int64_t>(), window.count, txn, &claimed);
+                error.contains_error()) {
+                return error;
+            }
+        }
+        uint64_t delete_count = 0;
+        for (auto& window : row_ids) {
+            if (auto error = collect_claims(window.ids.data<int64_t>(), window.count, txn, &claimed);
+                error.contains_error()) {
+                return error;
+            }
+            VALUE_OR_RETURN(auto deleted, stamp_claimed(claimed, txn));
+            delete_count += deleted;
+        }
+        return core::result_wrapper_t<uint64_t>{delete_count};
+    }
+
+    core::error_t data_table_t::collect_claims(const int64_t* ids,
+                                               uint64_t count,
+                                               const transaction_data& txn,
+                                               std::pmr::vector<int64_t>* claimed) {
+        claimed->clear();
         for (uint64_t i = 0; i < count; i++) {
-            switch (decide_claim(txn, row_groups_->delete_stamp(requested[i]))) {
+            switch (decide_claim(txn, row_groups_->delete_stamp(ids[i]))) {
                 case write_decision_t::proceed:
-                    claimed.push_back(requested[i]);
+                    claimed->push_back(ids[i]);
                     break;
                 case write_decision_t::skip:
                     break;
                 case write_decision_t::conflict: {
                     std::pmr::string what{"could not delete row ", resource_};
-                    what += std::pmr::string{std::to_string(requested[i]), resource_};
+                    what += std::pmr::string{std::to_string(ids[i]), resource_};
                     what += std::pmr::string{" of table '", resource_};
                     what += std::pmr::string{name_, resource_};
                     what += std::pmr::string{"': it already carries a delete stamp that is not this transaction's",
@@ -897,32 +917,33 @@ namespace components::table {
                 }
             }
         }
+        return core::error_t::no_error();
+    }
+
+    core::result_wrapper_t<uint64_t> data_table_t::stamp_claimed(std::span<int64_t> claimed,
+                                                                 const transaction_data& txn) {
         if (claimed.empty()) {
             return core::result_wrapper_t<uint64_t>{uint64_t{0}};
         }
 
         mark_modified();
-        auto* ids = claimed.data();
-        count = claimed.size();
+        auto* claimed_ids = claimed.data();
+        uint64_t claimed_count = claimed.size();
 
         uint64_t pos = 0;
         uint64_t delete_count = 0;
-        while (pos < count) {
+        while (pos < claimed_count) {
             uint64_t start = pos;
-            bool is_transaction_delete = static_cast<uint64_t>(ids[pos]) >= MAX_ROW_ID;
-            for (pos++; pos < count; pos++) {
-                bool row_is_transaction_delete = static_cast<uint64_t>(ids[pos]) >= MAX_ROW_ID;
+            bool is_transaction_delete = static_cast<uint64_t>(claimed_ids[pos]) >= MAX_ROW_ID;
+            for (pos++; pos < claimed_count; pos++) {
+                bool row_is_transaction_delete = static_cast<uint64_t>(claimed_ids[pos]) >= MAX_ROW_ID;
                 if (row_is_transaction_delete != is_transaction_delete) {
                     break;
                 }
             }
-            uint64_t current_offset = start;
-            uint64_t current_count = pos - start;
-
-            vector::vector_t offset_ids(row_identifiers, current_offset, pos);
             VALUE_OR_RETURN(
                 auto deleted,
-                row_groups_->delete_rows(*this, ids + current_offset, current_count, txn.transaction_id, txn.sub_id));
+                row_groups_->delete_rows(*this, claimed_ids + start, pos - start, txn.transaction_id, txn.sub_id));
             delete_count += deleted;
         }
         return core::result_wrapper_t<uint64_t>{delete_count};

@@ -97,13 +97,8 @@ namespace {
     }
 
     void delete_row(data_table_t& table, fetch_env_t& env, int64_t row_id, const transaction_data& txn) {
-        std::pmr::vector<complex_logical_type> id_type(&env.resource);
-        id_type.emplace_back(logical_type::BIGINT);
-        auto ids = data_chunk_t(&env.resource, id_type, 1);
-        ids.data[0].set_value(0, row_id);
-        ids.set_cardinality(1);
-
-        REQUIRE(deleted_or_fail(table.delete_rows(ids.data[0], 1, txn)) == 1);
+        auto row_ids = make_row_id_range(&env.resource, row_id, 1);
+        REQUIRE(deleted_or_fail(table.delete_rows(row_ids, txn)) == 1);
     }
 
     struct fetched_t {

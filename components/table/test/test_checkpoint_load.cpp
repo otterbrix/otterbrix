@@ -1503,7 +1503,7 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
         for (uint64_t i = 0; i < NUM_ROWS; i++) {
             input.set_value(0, i, std::vector<uint64_t>{});
         }
-        REQUIRE_FALSE(column->append(append_state, input.data[0], NUM_ROWS).has_error());
+        REQUIRE_FALSE(column->append(append_state, input.data[0], 0, NUM_ROWS).has_error());
         REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
     }
 

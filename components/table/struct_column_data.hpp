@@ -30,7 +30,7 @@ namespace components::table {
 
         [[nodiscard]] core::result_wrapper_t<bool> initialize_append(column_append_state& state) override;
         [[nodiscard]] core::result_wrapper_t<bool>
-        append(column_append_state& state, vector::vector_t& vector, uint64_t count) override;
+        append(column_append_state& state, vector::vector_t& vector, uint64_t offset, uint64_t count) override;
         void snapshot_counts(append_cut_t& cut) const override;
         [[nodiscard]] core::result_wrapper_t<bool> revert_append(cut_cursor_t& cut) override;
         uint64_t fetch(column_scan_state& state, int64_t row_id, vector::vector_t& result) override;

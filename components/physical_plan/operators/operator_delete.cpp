@@ -382,16 +382,14 @@ namespace components::operators {
                 // Storage first, then WAL (same order operator_update uses): a mutation's WAL id must never
                 // be allocated before the mutation is applied, or a checkpoint can advance the durable floor
                 // past a delete never folded into the .otbx (test_delete_floor_resurrection).
-                vector_t row_ids(res, types::logical_type::BIGINT, modified_size);
-                for (size_t i = 0; i < modified_size; i++) {
-                    row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
-                }
+                size_t position = 0;
+                auto row_ids =
+                    table::make_row_id_batch(res, modified_size, [&] { return static_cast<int64_t>(ids[position++]); });
                 auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                             &services::disk::manager_disk_t::storage_delete_rows,
                                                             exec_ctx,
                                                             table_oid_,
-                                                            std::move(row_ids),
-                                                            static_cast<uint64_t>(modified_size));
+                                                            std::move(row_ids));
                 auto deleted_r = co_await std::move(df);
                 if (deleted_r.has_error()) {
                     co_return dml_detail::flush_outcome_t{deleted_r.error(), false, 0, 0};

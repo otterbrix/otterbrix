@@ -12,17 +12,29 @@
 #include <services/engine/engine.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
+#include <spdlog/sinks/sink.h>
 
+#include <algorithm>
+#include <array>
+#include <cctype>
 #include <chrono>
 #include <components/log/test/test_log.hpp>
 #include <core/tests/skip_under_root.hpp>
 #include <core/tests/wait_ready.hpp>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <utility>
+#include <vector>
 
 using namespace services::engine;
 
@@ -204,6 +216,141 @@ TEST_CASE("services::engine::log::a_log_directory_that_cannot_be_written_answers
     REQUIRE(refused.has_error());
     INFO("refusal: " << refused.error().what.c_str());
     CHECK(std::string(refused.error().what.c_str()).find((root / "log").string()) != std::string::npos);
+}
+
+TEST_CASE("services::engine::log::a_log_directory_under_a_regular_file_answers_an_error") {
+    const auto root = test_root("log_under_a_file");
+    {
+        std::ofstream blocker((root / "blocker").string());
+        blocker << 'x';
+    }
+    auto refused = make_log("refused", root / "blocker" / "log");
+    REQUIRE(refused.has_error());
+    INFO("refusal: " << refused.error().what.c_str());
+    CHECK(refused.error().type == core::error_code_t::io_error);
+    CHECK(std::string(refused.error().what.c_str()).find((root / "blocker" / "log").string()) != std::string::npos);
+}
+
+TEST_CASE("services::engine::log::an_empty_log_directory_answers_an_error") {
+    auto refused = make_log("refused", std::filesystem::path{});
+    REQUIRE(refused.has_error());
+    INFO("refusal: " << refused.error().what.c_str());
+    CHECK(refused.error().type == core::error_code_t::invalid_parameter);
+    CHECK(std::string(refused.error().what.c_str()) ==
+          "the log directory is empty: there is no directory to write the log file into");
+}
+
+TEST_CASE("services::engine::log::a_line_in_the_log_file_keeps_its_layout") {
+    const auto root = test_root("log_layout");
+    auto made = make_log("layout", root / "log");
+    REQUIRE_FALSE(made.has_error());
+    auto log = std::move(made.value());
+    log.set_level(log_t::level::debug);
+    info(log, "first {}", 1);
+    warn(log, "second");
+    error(log, "third");
+
+    std::vector<std::filesystem::path> files;
+    for (const auto& entry : std::filesystem::directory_iterator(root / "log")) {
+        files.push_back(entry.path());
+    }
+    REQUIRE(files.size() == 1);
+    const auto file_name = files.front().filename().string();
+    INFO("file: " << file_name);
+    REQUIRE(file_name.rfind("layout-", 0) == 0);
+    REQUIRE(file_name.size() > std::string("layout-.txt").size());
+    REQUIRE(file_name.substr(file_name.size() - 4) == ".txt");
+    const auto seconds = file_name.substr(7, file_name.size() - 11);
+    CHECK(seconds.find_first_not_of("0123456789") == std::string::npos);
+
+    const auto text = log_text(root / "log");
+    INFO("log: " << text);
+    std::vector<std::string> lines;
+    for (std::size_t from = 0; from < text.size();) {
+        const auto end = text.find('\n', from);
+        REQUIRE(end != std::string::npos);
+        lines.push_back(text.substr(from, end - from));
+        from = end + 1;
+    }
+    REQUIRE(lines.size() == 3);
+    const std::string pid = std::to_string(static_cast<long>(::getpid()));
+    const std::array<std::pair<std::string, std::string>, 3> expected{
+        {{"info", "first 1"}, {"warning", "second"}, {"error", "third"}}};
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const auto& line = lines[i];
+        INFO("line: " << line);
+        REQUIRE(line.size() > 25);
+        CHECK(line[0] == '[');
+        for (const std::size_t digit :
+             std::array<std::size_t, 17>{1, 2, 3, 4, 6, 7, 9, 10, 12, 13, 15, 16, 18, 19, 21, 22, 23}) {
+            CHECK(std::isdigit(static_cast<unsigned char>(line[digit])) != 0);
+        }
+        CHECK(line.substr(5, 1) == "-");
+        CHECK(line.substr(8, 1) == "-");
+        CHECK(line.substr(11, 1) == " ");
+        CHECK(line.substr(14, 1) == ":");
+        CHECK(line.substr(17, 1) == ":");
+        CHECK(line.substr(20, 1) == ".");
+        const std::string head = "] [layout] [" + expected[i].first + "] [pid " + pid + " tid ";
+        REQUIRE(line.substr(24, head.size()) == head);
+        const auto tid_end = line.find(']', 24 + head.size());
+        REQUIRE(tid_end != std::string::npos);
+        CHECK(line.substr(24 + head.size(), tid_end - 24 - head.size()).find_first_not_of("0123456789") ==
+              std::string::npos);
+        CHECK(line.substr(tid_end) == "] " + expected[i].second);
+    }
+}
+
+// The child stands for the engine: a sink that throws there takes the whole process down.
+TEST_CASE("services::engine::log::a_write_the_log_file_has_no_room_for_does_not_throw") {
+    const auto root = test_root("log_write_failure");
+    auto made = make_log("full", root / "log");
+    REQUIRE_FALSE(made.has_error());
+    auto& sinks = made.value()->sinks();
+    REQUIRE(sinks.size() == 2);
+    const auto file_sink = sinks.back();
+    const std::string line(1 << 20, 'x');
+
+    // A pipe, not a file: the file size limit below would refuse the report as well.
+    std::array<int, 2> report_pipe{};
+    REQUIRE(::pipe(report_pipe.data()) == 0);
+    const pid_t child = ::fork();
+    REQUIRE(child >= 0);
+    if (child == 0) {
+        if (::dup2(report_pipe[1], STDERR_FILENO) < 0) {
+            std::_Exit(2);
+        }
+        std::signal(SIGXFSZ, SIG_IGN);
+        rlimit limit{};
+        if (::getrlimit(RLIMIT_FSIZE, &limit) != 0) {
+            std::_Exit(3);
+        }
+        limit.rlim_cur = 0;
+        if (::setrlimit(RLIMIT_FSIZE, &limit) != 0) {
+            std::_Exit(4);
+        }
+        [&]() noexcept {
+            file_sink->log(spdlog::details::log_msg("full", spdlog::level::info, line));
+            file_sink->flush();
+        }();
+        std::_Exit(0);
+    }
+    ::close(report_pipe[1]);
+    std::string reported;
+    std::array<char, 4096> chunk{};
+    for (ssize_t got = 0; (got = ::read(report_pipe[0], chunk.data(), chunk.size())) > 0;) {
+        reported.append(chunk.data(), static_cast<std::size_t>(got));
+    }
+    ::close(report_pipe[0]);
+    int status = 0;
+    REQUIRE(::waitpid(child, &status, 0) == child);
+    INFO("child stderr: " << reported);
+    INFO("child status: " << status);
+    REQUIRE(WIFEXITED(status));
+    CHECK(WEXITSTATUS(status) == 0);
+    CHECK(reported.rfind("[*** LOG ERROR #0001 ***] [", 0) == 0);
+    CHECK(reported.find("] [full] Failed writing to file " + (root / "log").string()) != std::string::npos);
+    CHECK(std::count(reported.begin(), reported.end(), '\n') == 1);
 }
 
 TEST_CASE("services::engine::host::an_empty_log_or_a_null_resource_is_refused_before_anything_is_written") {

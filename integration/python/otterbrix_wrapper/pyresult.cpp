@@ -144,6 +144,13 @@ namespace otterbrix {
         return util::created_oid_of(*result);
     }
 
+    std::optional<components::session::transaction_status_t> py_result_t::transaction_status() const {
+        if (!result) {
+            return std::nullopt;
+        }
+        return result->transaction_status();
+    }
+
     void py_result_t::close() { result = nullptr; }
 
     bool py_result_t::is_closed() const { return result == nullptr; }
@@ -169,7 +176,10 @@ namespace otterbrix {
                                    "Rows an INSERT/UPDATE/DELETE wrote, else rows of the result")
             .def_property_readonly("created_oid",
                                    &py_result_t::created_oid,
-                                   "The pg_class oid of the table a CREATE TABLE created, else None");
+                                   "The pg_class oid of the table a CREATE TABLE created, else None")
+            .def_property_readonly("transaction_status",
+                                   &py_result_t::transaction_status,
+                                   "Where the statement's session stands once it ran; None once the result is closed");
     }
 
 } // namespace otterbrix

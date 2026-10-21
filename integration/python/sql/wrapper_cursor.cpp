@@ -155,6 +155,10 @@ bool wrapper_cursor::is_success() const noexcept { return ptr_->is_success(); }
 
 bool wrapper_cursor::is_error() const noexcept { return ptr_->is_error(); }
 
+components::session::transaction_status_t wrapper_cursor::transaction_status() const noexcept {
+    return ptr_->transaction_status();
+}
+
 py::tuple wrapper_cursor::get_error() const {
     using error_code_t = core::error_code_t;
 

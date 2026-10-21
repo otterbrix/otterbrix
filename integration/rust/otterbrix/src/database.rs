@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::cursor::Cursor;
+use crate::cursor::{transaction_status_of, Cursor};
 use crate::error::{Error, Result};
 use crate::utils::{make_sv, string_from_c};
 use std::fmt;
@@ -155,10 +155,12 @@ fn cursor_or_error<'db>(ptr: otterbrix_sys::cursor_ptr) -> Result<Cursor<'db>> {
         } else {
             message
         };
+        let transaction_status = transaction_status_of(ptr);
         unsafe { otterbrix_sys::release_cursor(ptr) };
         return Err(Error::Engine {
             code: err.code,
             message,
+            transaction_status,
         });
     }
     Ok(Cursor {
@@ -217,6 +219,7 @@ impl Database {
             return Err(Error::Engine {
                 code: refusal.code,
                 message,
+                transaction_status: None,
             });
         }
         Ok(Database { ptr })

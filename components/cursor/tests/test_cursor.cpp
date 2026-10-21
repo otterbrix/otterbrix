@@ -36,6 +36,34 @@ TEST_CASE("components::cursor::construction") {
     }
 }
 
+TEST_CASE("components::cursor::transaction_status defaults to idle and round-trips") {
+    using components::session::transaction_status_t;
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::vector<components::cursor::cursor_t_ptr> cursors{&resource};
+    cursors.push_back(components::cursor::make_cursor(&resource));
+    const core::error_t lvalue_error{core::error_code_t::other_error, std::pmr::string{"lvalue", &resource}};
+    cursors.push_back(components::cursor::make_cursor(&resource, lvalue_error));
+    cursors.push_back(components::cursor::make_cursor(
+        &resource,
+        core::error_t{core::error_code_t::other_error, std::pmr::string{"rvalue", &resource}}));
+    cursors.push_back(components::cursor::make_cursor(&resource, gen_data_chunk(1, &resource)));
+    cursors.push_back(
+        components::cursor::make_cursor(&resource, std::pmr::vector<components::vector::data_chunk_t>{&resource}));
+    cursors.push_back(
+        components::cursor::make_cursor(&resource,
+                                        std::pmr::vector<components::types::complex_logical_type>{&resource}));
+    for (const auto& cursor : cursors) {
+        CHECK(cursor->transaction_status() == transaction_status_t::idle);
+    }
+
+    auto cursor = components::cursor::make_cursor(&resource);
+    for (const auto status :
+         {transaction_status_t::in_transaction, transaction_status_t::failed, transaction_status_t::idle}) {
+        cursor->set_transaction_status(status);
+        CHECK(cursor->transaction_status() == status);
+    }
+}
+
 TEST_CASE("components::cursor::data_chunk") {
     auto resource = core::pmr::otterbrix_resource();
 

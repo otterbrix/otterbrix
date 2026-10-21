@@ -1,6 +1,6 @@
 mod common;
 
-use otterbrix::Error;
+use otterbrix::{Error, TransactionStatus};
 
 #[test]
 fn select_from_nonexistent_table() {
@@ -27,10 +27,32 @@ fn query_error_carries_code_and_message() {
         .execute("SELECT * FROM db.nonexistent;")
         .expect_err("query against missing table must error");
     match err {
-        Error::Engine { code, message } => {
+        Error::Engine {
+            code,
+            message,
+            transaction_status,
+        } => {
             assert_ne!(code, 0, "expected non-zero error code, got {code}");
             assert!(!message.is_empty(), "expected non-empty error message");
+            assert_eq!(transaction_status, Some(TransactionStatus::Idle));
         }
+        other => panic!("expected Error::Engine, got {other}"),
+    }
+}
+
+#[test]
+fn an_error_that_fails_its_block_carries_the_failed_status() {
+    let db = common::open_test_db();
+    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("SET autocommit = off;").unwrap();
+
+    let err = db
+        .execute("SELECT * FROM db.nonexistent;")
+        .expect_err("query against missing table must error");
+    match err {
+        Error::Engine {
+            transaction_status, ..
+        } => assert_eq!(transaction_status, Some(TransactionStatus::Failed)),
         other => panic!("expected Error::Engine, got {other}"),
     }
 }

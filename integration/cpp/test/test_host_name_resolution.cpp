@@ -1644,6 +1644,7 @@ TEST_CASE("integration::cpp::host_names::a_storage_write_after_a_savepoint_is_re
         const std::string what{refused->get_error().what};
         CHECK(what.find("m2.shop.orders") != std::string::npos);
         CHECK(what.find("savepoint") != std::string::npos);
+        CHECK(refused->transaction_status() == components::session::transaction_status_t::failed);
         REQUIRE(run(dispatcher, session, "ROLLBACK TO SAVEPOINT s;")->is_success());
     }
     REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
@@ -1663,6 +1664,7 @@ TEST_CASE("integration::cpp::host_names::a_storage_insert_select_after_a_savepoi
     auto refused = run(dispatcher, session, "INSERT INTO m2.shop.orders (id, amount) SELECT id, amount FROM loc.t;");
     REQUIRE(refused->is_error());
     CHECK(refused->get_error().type == core::error_code_t::unimplemented_yet);
+    CHECK(refused->transaction_status() == components::session::transaction_status_t::failed);
     REQUIRE(run(dispatcher, session, "ROLLBACK;")->is_success());
     CHECK(write_log().empty());
     CHECK(backend()["m2.shop.orders"].size() == 3);

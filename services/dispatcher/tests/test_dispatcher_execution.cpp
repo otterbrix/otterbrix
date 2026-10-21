@@ -184,7 +184,9 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
         return out;
     }
 
-    cursor_t_ptr execute_sql(const std::string& query) {
+    cursor_t_ptr execute_sql(const std::string& query) { return execute_sql(session_id_t{}, query); }
+
+    cursor_t_ptr execute_sql(const session_id_t& session, const std::string& query) {
         parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
         auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
         components::sql::transform::transformer local_transformer(resource_);
@@ -193,7 +195,7 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
         REQUIRE(!wrap.has_error());
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                        &manager_dispatcher_t::execute_plan,
-                                                       session_id_t{},
+                                                       session,
                                                        std::move(wrap.value()));
         return pump(std::move(future));
     }
@@ -210,6 +212,13 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
     auto dispatcher_invoke(Fn fn, Args&&... args) {
         auto [_, fut] = actor_zeta::otterbrix::send(manager_dispatcher_->address(), fn, std::forward<Args>(args)...);
         return pump(std::move(fut));
+    }
+
+    void begin_shutdown() {
+        auto [_, fut] =
+            actor_zeta::otterbrix::send(manager_dispatcher_->address(), &manager_dispatcher_t::begin_shutdown);
+        REQUIRE(test_helpers::wait_ready(fut, scheduler_));
+        scheduler_->run(10000);
     }
 
     template<typename Fn, typename... Args>
@@ -813,4 +822,22 @@ TEST_CASE("services::dispatcher::attdefspec_type_tag_spares_null_and_reaches_eve
         CHECK(components::catalog::decode_default_spec(resource, bad, spec, wrong).contains_error());
         CHECK_FALSE(wrong.has_value());
     }
+}
+
+TEST_CASE("services::dispatcher::a_statement_refused_at_shutdown_carries_the_open_block") {
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
+    dispatcher_fixture test(mr.get(), dispatcher_dir("status_at_shutdown"));
+    using components::session::transaction_status_t;
+
+    const session_id_t session{};
+    auto begin = test.execute_sql(session, "BEGIN;");
+    REQUIRE(begin->is_success());
+    CHECK(begin->transaction_status() == transaction_status_t::in_transaction);
+
+    test.begin_shutdown();
+
+    auto refused = test.execute_sql(session, "SELECT 1;");
+    REQUIRE(refused->is_error());
+    CHECK(refused->get_error().type == core::error_code_t::connection_closed);
+    CHECK(refused->transaction_status() == transaction_status_t::in_transaction);
 }

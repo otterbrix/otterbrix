@@ -2,6 +2,7 @@ project(session)
 
 set( ${PROJECT_NAME}_HEADERS
         session.hpp
+        transaction_status.hpp
 )
 
 set(${PROJECT_NAME}_SOURCES

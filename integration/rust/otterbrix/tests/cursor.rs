@@ -87,3 +87,18 @@ fn column_name_returns_none_for_out_of_bounds_index() {
     assert_eq!(cur.column_count(), 1);
     assert_eq!(cur.column_name(100), None);
 }
+
+#[test]
+fn transaction_status_reports_where_the_session_stands() {
+    let db = common::open_test_db();
+    let select = db.execute("SELECT 1;").unwrap();
+    assert_eq!(
+        select.transaction_status(),
+        Some(otterbrix::TransactionStatus::Idle)
+    );
+    let begin = db.execute("BEGIN;").unwrap();
+    assert_eq!(
+        begin.transaction_status(),
+        Some(otterbrix::TransactionStatus::InTransaction)
+    );
+}

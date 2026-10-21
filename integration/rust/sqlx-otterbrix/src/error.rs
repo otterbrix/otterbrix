@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::error::Error as StdError;
 use std::fmt::{self, Display, Formatter};
 
+use otterbrix::TransactionStatus;
 use sqlx_core::error::{DatabaseError, ErrorKind};
 
 /// SQLx [`DatabaseError`] implementation for Otterbrix engine errors.
@@ -10,7 +11,7 @@ use sqlx_core::error::{DatabaseError, ErrorKind};
 /// C++ engine (see [`otterbrix::Error::Engine`]). Returned through
 /// [`sqlx::Error::Database`](sqlx_core::error::Error::Database); use
 /// `Box<dyn DatabaseError>::try_downcast_ref::<OtterbrixDbError>()` if you
-/// need the raw `code`.
+/// need the raw `code` or the `transaction_status`.
 ///
 /// The `Display` text is `otterbrix core query error (code <N>): <msg>`,
 /// matching the prefix convention used elsewhere in this driver.
@@ -20,6 +21,17 @@ pub struct OtterbrixDbError {
     pub code: i32,
     /// Human-readable message produced by the engine.
     pub message: String,
+    /// Where the statement's session stands once the failed statement has
+    /// run (see [`otterbrix::Error::Engine`]); `None` when the engine
+    /// reported none.
+    pub transaction_status: Option<TransactionStatus>,
+}
+
+impl OtterbrixDbError {
+    /// Where the statement's session stands once the failed statement has run.
+    pub fn transaction_status(&self) -> Option<TransactionStatus> {
+        self.transaction_status
+    }
 }
 
 impl Display for OtterbrixDbError {

@@ -462,11 +462,13 @@ namespace services::dispatcher {
 
         assert(!executors_.empty());
         if (shutting_down_ && plan.sub_queries.back()->type() != components::logical_plan::node_type::checkpoint_t) {
-            co_return components::cursor::make_cursor(
-                resource(),
-                core::error_t{
-                    core::error_code_t::connection_closed,
-                    std::pmr::string{"the engine is shutting down: only CHECKPOINT is admitted", resource()}});
+            co_return stamp_transaction_status_(
+                session,
+                components::cursor::make_cursor(
+                    resource(),
+                    core::error_t{
+                        core::error_code_t::connection_closed,
+                        std::pmr::string{"the engine is shutting down: only CHECKPOINT is admitted", resource()}}));
         }
         const auto control = transaction_control_of(plan);
         co_await take_turn_(session, control);
@@ -477,7 +479,7 @@ namespace services::dispatcher {
         auto executed = commits_failed ? make_rollback_plan(resource()) : std::move(plan);
         auto resolved = create_session_context(session, &executed);
         if (resolved.has_error()) {
-            co_return components::cursor::make_cursor(resource(), resolved.error());
+            co_return stamp_transaction_status_(session, components::cursor::make_cursor(resource(), resolved.error()));
         }
         auto session_ctx = std::move(resolved.value());
         const uint64_t statement_txn_id = session_ctx.txn.transaction_id;
@@ -522,14 +524,8 @@ namespace services::dispatcher {
                               std::pmr::string{"the transaction failed while this statement ran", resource()}});
         } else if (control == components::table::transaction_control_t::rollback_to) {
             failed_sessions_.erase(session);
-        } else if (commits_failed) {
-            exec_result.cursor = components::cursor::make_cursor(
-                resource(),
-                core::error_t{
-                    core::error_code_t::transaction_finalized,
-                    std::pmr::string{"the transaction failed and was rolled back; nothing was committed", resource()}});
         }
-        co_return std::move(exec_result.cursor);
+        co_return stamp_transaction_status_(session, std::move(exec_result.cursor));
     }
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
@@ -541,7 +537,7 @@ namespace services::dispatcher {
         if (const auto* txn = txn_manager_.find_transaction(session); txn != nullptr) {
             co_await finish_failed_statement_(session, txn->transaction_id());
         }
-        co_return components::cursor::make_cursor(resource(), std::move(error));
+        co_return stamp_transaction_status_(session, components::cursor::make_cursor(resource(), std::move(error)));
     }
 
     manager_dispatcher_t::unique_future<core::error_t>
@@ -1010,8 +1006,8 @@ namespace services::dispatcher {
             if (control == components::table::transaction_control_t::none ||
                 control == components::table::transaction_control_t::savepoint) {
                 return core::error_t{core::error_code_t::transaction_finalized,
-                                     std::pmr::string{"the transaction failed; only ROLLBACK or ROLLBACK TO SAVEPOINT "
-                                                      "is accepted until it ends",
+                                     std::pmr::string{"the transaction failed; only ROLLBACK, ROLLBACK TO SAVEPOINT or "
+                                                      "COMMIT (which rolls back) is accepted until it ends",
                                                       resource()}};
             }
             // A ROLLBACK TO clears the failure only once it has undone the work (execute_plan).
@@ -1056,6 +1052,21 @@ namespace services::dispatcher {
                   session.data());
         }
         co_return;
+    }
+
+    components::cursor::cursor_t_ptr
+    manager_dispatcher_t::stamp_transaction_status_(components::session::session_id_t session,
+                                                    components::cursor::cursor_t_ptr cursor) {
+        assert(cursor);
+        if (failed_sessions_.contains(session)) {
+            cursor->set_transaction_status(components::session::transaction_status_t::failed);
+        } else if (const auto* txn = txn_manager_.find_transaction(session);
+                   txn != nullptr && txn->scope() == components::table::transaction_scope_t::until_commit) {
+            cursor->set_transaction_status(components::session::transaction_status_t::in_transaction);
+        } else {
+            cursor->set_transaction_status(components::session::transaction_status_t::idle);
+        }
+        return cursor;
     }
 
     components::table::transaction_t*

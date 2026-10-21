@@ -23,6 +23,12 @@ namespace otterbrix { namespace util {
     // The pg_class oid of the table a CREATE TABLE created, else None.
     py::object created_oid_of(const components::cursor::cursor_t& cursor);
 
+    // Raises RuntimeError(message) whose `transaction_status` is the error cursor's.
+    [[noreturn]] void raise_cursor_error(const std::string& message, const components::cursor::cursor_t& cursor);
+
+    // Raises RuntimeError(message) whose `transaction_status` is None: there is no cursor to read it from.
+    [[noreturn]] void raise_no_cursor_error(const std::string& message);
+
     template<class T>
     T parse_to_numeric(const std::string& numeric_string) {
         bool is_neg = false;

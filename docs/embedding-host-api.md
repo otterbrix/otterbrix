@@ -268,6 +268,33 @@ CREATE inside `BEGIN … ROLLBACK` answers its oid, and after the ROLLBACK no ta
 Bindings: C `bool cursor_created_oid(cursor_ptr, uint32_t*)` (false and `*oid` untouched without a table), C#
 `CreatedOid()` (`uint?`), Rust `Cursor::created_oid()` (`Option<u32>`), Python `created_oid` (`None` or `int`).
 
+## Transaction status
+
+```cpp
+namespace components::session {
+    enum class transaction_status_t : uint8_t { idle, in_transaction, failed };
+}
+```
+
+Every reply, an error cursor included, carries `cursor_t::transaction_status()`: where the statement's session stands
+once the statement ran, as PostgreSQL's ReadyForQuery reports it ('I', 'T', 'E').
+
+- `idle`: no transaction block is open; an autocommit statement that fails answers `idle` too.
+- `in_transaction`: a block is open and usable (after `BEGIN`, or any statement while `autocommit` is off).
+- `failed`: a statement failed inside the block; until `ROLLBACK`, `ROLLBACK TO SAVEPOINT` or `COMMIT` every other
+  statement is refused with `transaction_finalized` and answers `failed`.
+
+`COMMIT` of a failed block rolls it back and answers success with `idle`, as PostgreSQL 18 answers it with `ROLLBACK`
+(`test_transaction_status.cpp`).
+Bindings: C `int32_t cursor_transaction_status(cursor_ptr)` (a `transaction_status_t` value:
+`TRANSACTION_STATUS_IDLE`, `TRANSACTION_STATUS_IN_TRANSACTION`, `TRANSACTION_STATUS_FAILED`), C#
+`GetTransactionStatus()` (`TransactionStatus`), Rust `Cursor::transaction_status()` (`Option<TransactionStatus>`),
+Python `transaction_status` (`otterbrix.TransactionStatus`; `None` once a result is closed). Where a binding turns an
+error into an error value, the status travels with it: Rust `Error::Engine { transaction_status, .. }` (`None` when the
+engine refused to start) and sqlx `OtterbrixDbError::transaction_status`, Python `RuntimeError.transaction_status` on the exception a connection's `execute` and a
+relation's fetch (`fetchone`, `fetchmany`, `fetchall`, `df`) raise (`None` when the engine answered no cursor).
+C# and Python `Client.execute` keep the error on the cursor.
+
 ## Plans built by the host
 
 A plan the host builds from `(node, params)` and runs with `execute_plan` names no constraints: the engine registers

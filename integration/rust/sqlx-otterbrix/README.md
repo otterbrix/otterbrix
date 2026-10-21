@@ -53,7 +53,8 @@ cargo run -p sqlx-otterbrix --example <name>
   generated identifiers; only `rows_affected` is populated.
 - **Engine error categorisation is coarse-grained.** All engine errors
   come through with `ErrorKind::Other`; downcast `OtterbrixDbError` for
-  the raw integer code.
+  the raw integer code and the `transaction_status` the failed statement
+  left its session in.
 
 See the rustdoc on `lib.rs` for the full list of caveats.
 

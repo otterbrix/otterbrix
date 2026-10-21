@@ -30,9 +30,15 @@ use sqlx_core::HashMap;
 pub(crate) fn map_otterbrix_error(err: otterbrix::Error) -> Error {
     let msg = err.to_string();
     match err {
-        otterbrix::Error::Engine { code, message } => {
-            Error::Database(Box::new(OtterbrixDbError { code, message }))
-        }
+        otterbrix::Error::Engine {
+            code,
+            message,
+            transaction_status,
+        } => Error::Database(Box::new(OtterbrixDbError {
+            code,
+            message,
+            transaction_status,
+        })),
         otterbrix::Error::InvalidPath(_) => Error::Configuration(msg.into()),
         otterbrix::Error::TypeMismatch { .. } => Error::Protocol(msg),
     }
@@ -274,7 +280,8 @@ mod placeholder_tests {
 #[cfg(test)]
 mod error_mapping_tests {
     use super::map_otterbrix_error;
-    use otterbrix::Error as ObError;
+    use crate::OtterbrixDbError;
+    use otterbrix::{Error as ObError, TransactionStatus};
     use sqlx_core::error::Error;
 
     #[test]
@@ -282,11 +289,31 @@ mod error_mapping_tests {
         let err = map_otterbrix_error(ObError::Engine {
             code: 42,
             message: "boom".to_owned(),
+            transaction_status: None,
         });
         match err {
             Error::Database(db_err) => {
                 assert_eq!(db_err.message(), "boom");
                 assert_eq!(db_err.code().as_deref(), Some("42"));
+            }
+            other => panic!("expected Error::Database, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn query_error_keeps_the_transaction_status() {
+        let err = map_otterbrix_error(ObError::Engine {
+            code: 42,
+            message: "boom".to_owned(),
+            transaction_status: Some(TransactionStatus::Failed),
+        });
+        match err {
+            Error::Database(db_err) => {
+                let db_err = db_err
+                    .try_downcast_ref::<OtterbrixDbError>()
+                    .expect("an OtterbrixDbError");
+                assert_eq!(db_err.transaction_status, Some(TransactionStatus::Failed));
+                assert_eq!(db_err.transaction_status(), Some(TransactionStatus::Failed));
             }
             other => panic!("expected Error::Database, got {other:?}"),
         }

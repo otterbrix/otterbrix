@@ -13,6 +13,7 @@
 
 #include <optional>
 #include <string>
+#include <util/util.hpp>
 #include <vector>
 
 using namespace components;
@@ -252,10 +253,10 @@ namespace otterbrix {
         result.reset();
         auto query_result = execute_internal(stream_result);
         if (!query_result) {
-            throw std::runtime_error("ExecuteOrThrow - no query available to execute");
+            util::raise_no_cursor_error("ExecuteOrThrow - no query available to execute");
         }
         if (query_result->is_error()) {
-            throw std::runtime_error(query_result->get_error().what.c_str());
+            util::raise_cursor_error(query_result->get_error().what.c_str(), *query_result);
         }
         result = std::make_unique<py_result_t>(
             env.get(),

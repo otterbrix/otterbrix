@@ -654,3 +654,26 @@ TEST_CASE("c-api: SELECT NULL answers a null value", "[c-api][value]") {
         CHECK_FALSE(value_is_string(v));
     });
 }
+
+TEST_CASE("c-api: cursor_transaction_status reports where the session stands", "[c-api][cursor]") {
+    test_db_t t("transaction_status");
+    REQUIRE(t.ptr != nullptr);
+
+    const std::string select = "SELECT 1;";
+    cursor_ptr idle = execute_sql(t.ptr, sv(select));
+    REQUIRE(cursor_is_success(idle));
+    CHECK(cursor_transaction_status(idle) == TRANSACTION_STATUS_IDLE);
+    release_cursor(idle);
+
+    const std::string failing = "SELECT no_such_column FROM no_such_db.no_such_table;";
+    cursor_ptr autocommit_error = execute_sql(t.ptr, sv(failing));
+    REQUIRE(cursor_is_error(autocommit_error));
+    CHECK(cursor_transaction_status(autocommit_error) == TRANSACTION_STATUS_IDLE);
+    release_cursor(autocommit_error);
+
+    const std::string begin = "BEGIN;";
+    cursor_ptr block = execute_sql(t.ptr, sv(begin));
+    REQUIRE(cursor_is_success(block));
+    CHECK(cursor_transaction_status(block) == TRANSACTION_STATUS_IN_TRANSACTION);
+    release_cursor(block);
+}

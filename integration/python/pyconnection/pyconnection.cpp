@@ -12,6 +12,7 @@
 #include <scan/python_replacement_scan.hpp>
 #include <stdexcept>
 #include <string>
+#include <util/util.hpp>
 #include <vector>
 
 using namespace components;
@@ -38,11 +39,12 @@ namespace otterbrix {
         // Same translation, one step later: a cursor's core::error_t raised verbatim.
         void raise_if_error(const char* what, const components::cursor::cursor_t_ptr& cursor) {
             if (!cursor) {
-                throw std::runtime_error(std::string(what) + ": the engine returned no cursor");
+                util::raise_no_cursor_error(std::string(what) + ": the engine returned no cursor");
             }
             if (cursor->is_error()) {
                 const auto err = cursor->get_error();
-                throw std::runtime_error(std::string(what) + ": " + std::string(err.what.begin(), err.what.end()));
+                util::raise_cursor_error(std::string(what) + ": " + std::string(err.what.begin(), err.what.end()),
+                                         *cursor);
             }
         }
     } // namespace

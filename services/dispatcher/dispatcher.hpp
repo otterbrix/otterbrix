@@ -205,6 +205,9 @@ namespace services::dispatcher {
         unique_future<void> finish_failed_statement_(components::session::session_id_t session,
                                                      uint64_t transaction_id);
 
+        components::cursor::cursor_t_ptr stamp_transaction_status_(components::session::session_id_t session,
+                                                                   components::cursor::cursor_t_ptr cursor);
+
         components::table::txn_abort_drain_t drain_for_abort_(components::table::transaction_t& txn);
 
         components::table::transaction_t* statement_transaction_(components::session::session_id_t session,

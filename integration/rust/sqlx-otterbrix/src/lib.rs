@@ -115,7 +115,8 @@
 //!   populated.
 //! - **Engine error category surfacing is coarse-grained.** All engine
 //!   errors come through with [`ErrorKind::Other`](sqlx_core::error::ErrorKind::Other);
-//!   downcast [`OtterbrixDbError`] if you need the raw integer code.
+//!   downcast [`OtterbrixDbError`] if you need the raw integer code or the
+//!   [`TransactionStatus`] the failed statement left its session in.
 
 mod arguments;
 mod column;
@@ -138,6 +139,7 @@ pub use column::OtterbrixColumn;
 pub use connection::OtterbrixConnection;
 pub use database::Otterbrix;
 pub use error::OtterbrixDbError;
+pub use otterbrix::TransactionStatus;
 pub use options::OtterbrixConnectOptions;
 pub use query_result::OtterbrixQueryResult;
 pub use r#type::OtterbrixTypeInfo;

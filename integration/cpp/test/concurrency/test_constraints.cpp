@@ -187,7 +187,7 @@ TEST_CASE("integration::cpp::concurrency::on_conflict::interleaved", "[interleav
              "INSERT INTO db.t (id, v) VALUES (1, 5) ON CONFLICT (id) DO UPDATE SET v = t.v + excluded.v;",
              fails},
             {first, "COMMIT;"},
-            {second, "COMMIT;", fails},
+            {second, "COMMIT;", succeeds, ends_idle},
         });
         CHECK(values(first) == after);
     }

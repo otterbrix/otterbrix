@@ -216,6 +216,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_streaming_join.cpp
         test_autocommit.cpp
         test_savepoint.cpp
+        test_transaction_status.cpp
         test_streaming_ddl_leaf.cpp
         test_streaming_recursive_cte.cpp
         test_large_aggregate_dml.cpp

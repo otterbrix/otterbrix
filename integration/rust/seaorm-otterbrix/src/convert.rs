@@ -286,6 +286,7 @@ mod error_mapping_tests {
         let mapped = map_otterbrix_error(ObError::Engine {
             code: 7,
             message: "syntax".into(),
+            transaction_status: None,
         });
         match mapped {
             DbErr::Exec(inner) => {

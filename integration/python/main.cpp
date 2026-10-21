@@ -50,6 +50,11 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
                      module_arena_ptr released(static_cast<module_arena_t*>(raw), false);
                  }));
 
+    pybind11::enum_<components::session::transaction_status_t>(m, "TransactionStatus")
+        .value("idle", components::session::transaction_status_t::idle)
+        .value("in_transaction", components::session::transaction_status_t::in_transaction)
+        .value("failed", components::session::transaction_status_t::failed);
+
     otterbrix_py_typing_t::initialize(m, module_arena);
     type_creation::initialize(m, module_arena);
     py_expression_t::initialize(m);
@@ -112,7 +117,8 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
         .def("fetchall", &wrapper_cursor::fetchall)
         .def_property_readonly("description", &wrapper_cursor::description)
         .def_property_readonly("rowcount", &wrapper_cursor::rowcount)
-        .def_property_readonly("created_oid", &wrapper_cursor::created_oid);
+        .def_property_readonly("created_oid", &wrapper_cursor::created_oid)
+        .def_property_readonly("transaction_status", &wrapper_cursor::transaction_status);
 
     m.def("to_aggregate", &test_to_statement);
 }

@@ -285,6 +285,16 @@ extern "C" error_message cursor_get_error(cursor_ptr ptr) {
     return make_error_message(storage->cursor->get_error());
 }
 
+static_assert(static_cast<int32_t>(components::session::transaction_status_t::idle) == TRANSACTION_STATUS_IDLE);
+static_assert(static_cast<int32_t>(components::session::transaction_status_t::in_transaction) ==
+              TRANSACTION_STATUS_IN_TRANSACTION);
+static_assert(static_cast<int32_t>(components::session::transaction_status_t::failed) == TRANSACTION_STATUS_FAILED);
+
+extern "C" int32_t cursor_transaction_status(cursor_ptr ptr) {
+    auto storage = convert_cursor(ptr);
+    return static_cast<int32_t>(storage->cursor->transaction_status());
+}
+
 extern "C" char* cursor_column_name(cursor_ptr ptr, int32_t column_index) {
     auto storage = convert_cursor(ptr);
     if (storage->cursor->is_write()) {

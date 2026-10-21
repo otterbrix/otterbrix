@@ -293,7 +293,9 @@ TEST_CASE("integration::cpp::savepoint::after_a_failure") {
     }
 
     SECTION("commit ends it as a rollback") {
-        REQUIRE(run(dispatcher, session, "COMMIT;")->is_error());
+        auto commit = run(dispatcher, session, "COMMIT;");
+        REQUIRE(commit->is_success());
+        CHECK(commit->transaction_status() == components::session::transaction_status_t::idle);
         REQUIRE(marks_are_range(dispatcher, otterbrix::session_id_t(), 0, COMMITTED_ROWS - 1));
     }
 }

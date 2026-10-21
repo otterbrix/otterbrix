@@ -91,6 +91,16 @@ bool cursor_is_success(cursor_ptr ptr);
 bool cursor_is_error(cursor_ptr ptr);
 error_message cursor_get_error(cursor_ptr ptr);
 
+typedef enum transaction_status_t
+{
+    TRANSACTION_STATUS_IDLE = 0,
+    TRANSACTION_STATUS_IN_TRANSACTION = 1,
+    TRANSACTION_STATUS_FAILED = 2,
+} transaction_status_t;
+
+// A transaction_status_t value: where the statement's session stands once it ran.
+int32_t cursor_transaction_status(cursor_ptr ptr);
+
 char* cursor_column_name(cursor_ptr ptr, int32_t column_index);
 
 value_ptr cursor_get_value(cursor_ptr ptr, int32_t row_index, int32_t column_index);

@@ -52,7 +52,7 @@ TEST_CASE("integration::cpp::concurrency::row_conflicts::interleaved", "[interle
             {first, first_write},
             {second, second_write, fails},
             {first, "COMMIT;"},
-            {second, "COMMIT;", fails},
+            {second, "COMMIT;", succeeds, ends_idle},
         });
         CHECK(values(first) == after);
     }
@@ -87,7 +87,7 @@ TEST_CASE("integration::cpp::concurrency::row_conflicts::interleaved", "[interle
             {first, "SELECT v FROM db.t;"},
             {second, change},
             {first, "UPDATE db.t SET v = v + 100 WHERE id = 1;", fails},
-            {first, "COMMIT;", fails},
+            {first, "COMMIT;", succeeds, ends_idle},
         });
         CHECK(values(first) == after);
     }
@@ -123,7 +123,7 @@ TEST_CASE("integration::cpp::concurrency::row_conflicts::interleaved", "[interle
                 {first, set_payload(1, 11)},
                 {second, set_payload(1, 12), fails},
                 {first, "COMMIT;"},
-                {second, "COMMIT;", fails},
+                {second, "COMMIT;", succeeds, ends_idle},
             });
             CHECK(decoded(type, second.run("SELECT payload FROM db.typed ORDER BY id;")) == ints{11, 20, 30});
         }

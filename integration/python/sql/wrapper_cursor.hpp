@@ -31,6 +31,7 @@ public:
     bool is_success() const noexcept;
     bool is_error() const noexcept;
     py::tuple get_error() const;
+    components::session::transaction_status_t transaction_status() const noexcept;
     std::string print();
     wrapper_cursor& sort(py::object sorter, py::object order);
     void execute(std::string& query);

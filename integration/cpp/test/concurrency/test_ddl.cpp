@@ -137,7 +137,7 @@ TEST_CASE("integration::cpp::concurrency::ddl_conflicts::interleaved", "[interle
             {first, first_ddl},
             {second, second_ddl, fails},
             {first, "COMMIT;"},
-            {second, "COMMIT;", fails},
+            {second, "COMMIT;", succeeds, ends_idle},
         });
     }
 
@@ -175,7 +175,7 @@ TEST_CASE("integration::cpp::concurrency::ddl_conflicts::interleaved", "[interle
             {first, "BEGIN;"},
             {first, write},
             {second, "DROP TABLE db.t;"},
-            {first, "COMMIT;", fails},
+            {first, "COMMIT;", fails, ends_idle},
             {second, "SELECT v FROM db.t;", fails},
         });
     }

@@ -215,6 +215,12 @@ namespace components::cursor {
 
     void cursor_t::set_created_oid(catalog::oid_t oid) noexcept { created_oid_ = oid; }
 
+    session::transaction_status_t cursor_t::transaction_status() const noexcept { return transaction_status_; }
+
+    void cursor_t::set_transaction_status(session::transaction_status_t status) noexcept {
+        transaction_status_ = status;
+    }
+
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource) { return cursor_t_ptr{new cursor_t(resource)}; }
 
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, const core::error_t& error) {

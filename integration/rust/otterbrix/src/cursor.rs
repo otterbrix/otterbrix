@@ -37,6 +37,44 @@ pub const LOGICAL_TYPE_UBIGINT: LogicalType = 30;
 /// Logical type for string-literal columns.
 pub const LOGICAL_TYPE_STRING_LITERAL: LogicalType = 35;
 
+/// Where the statement's session stands once the statement has run, as
+/// returned by [`Cursor::transaction_status`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionStatus {
+    /// No transaction block is open.
+    Idle,
+    /// A transaction block is open and usable.
+    InTransaction,
+    /// A transaction block is open and failed: only `ROLLBACK`,
+    /// `ROLLBACK TO SAVEPOINT` or `COMMIT` (which rolls back) is accepted
+    /// until it ends.
+    Failed,
+}
+
+impl fmt::Display for TransactionStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            TransactionStatus::Idle => "idle",
+            TransactionStatus::InTransaction => "in_transaction",
+            TransactionStatus::Failed => "failed",
+        })
+    }
+}
+
+const STATUS_IDLE: i32 = otterbrix_sys::transaction_status_t_TRANSACTION_STATUS_IDLE as i32;
+const STATUS_IN_TRANSACTION: i32 =
+    otterbrix_sys::transaction_status_t_TRANSACTION_STATUS_IN_TRANSACTION as i32;
+const STATUS_FAILED: i32 = otterbrix_sys::transaction_status_t_TRANSACTION_STATUS_FAILED as i32;
+
+pub(crate) fn transaction_status_of(ptr: otterbrix_sys::cursor_ptr) -> Option<TransactionStatus> {
+    match unsafe { otterbrix_sys::cursor_transaction_status(ptr) } {
+        STATUS_IDLE => Some(TransactionStatus::Idle),
+        STATUS_IN_TRANSACTION => Some(TransactionStatus::InTransaction),
+        STATUS_FAILED => Some(TransactionStatus::Failed),
+        _ => None,
+    }
+}
+
 /// Result of executing a SQL statement.
 ///
 /// A `Cursor` holds the rows, columns and any associated metadata produced by
@@ -90,6 +128,12 @@ impl<'db> Cursor<'db> {
     /// the rows of the result set.
     pub fn row_count(&self) -> u64 {
         self.affected_rows().unwrap_or(self.size().max(0) as u64)
+    }
+
+    /// Where the statement's session stands once the statement has run, or
+    /// `None` if the engine answered a value this crate does not know.
+    pub fn transaction_status(&self) -> Option<TransactionStatus> {
+        transaction_status_of(self.ptr)
     }
 
     /// Number of columns in the result set.

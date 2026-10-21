@@ -34,6 +34,26 @@ public class Tests
     }
 
     [Test]
+    public void TransactionStatusReportsWhereTheSessionStands() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("TransactionStatusReportsWhereTheSessionStands");
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT 1;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.GetTransactionStatus(), Is.EqualTo(TransactionStatus.Idle));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM nodb.t;");
+            Assert.IsTrue(cursor.IsError());
+            Assert.That(cursor.GetTransactionStatus(), Is.EqualTo(TransactionStatus.Idle));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("BEGIN;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.GetTransactionStatus(), Is.EqualTo(TransactionStatus.InTransaction));
+        }
+    }
+
+    [Test]
     public void NonAsciiTextRoundTrips() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("NonAsciiTextRoundTrips");
         {

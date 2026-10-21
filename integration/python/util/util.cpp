@@ -25,6 +25,21 @@ namespace otterbrix { namespace util {
         return py::int_(oid);
     }
 
+    namespace {
+        [[noreturn]] void raise_runtime_error(const std::string& message, py::object transaction_status) {
+            py::object error = py::reinterpret_borrow<py::object>(PyExc_RuntimeError)(message);
+            error.attr("transaction_status") = std::move(transaction_status);
+            PyErr_SetObject(PyExc_RuntimeError, error.ptr());
+            throw py::error_already_set();
+        }
+    } // namespace
+
+    void raise_cursor_error(const std::string& message, const components::cursor::cursor_t& cursor) {
+        raise_runtime_error(message, py::cast(cursor.transaction_status()));
+    }
+
+    void raise_no_cursor_error(const std::string& message) { raise_runtime_error(message, py::none()); }
+
     core::result_wrapper_t<std::string> vector_to_string(const components::vector::vector_t& value) {
         switch (value.type().to_physical_type()) {
             case physical_type::NA:

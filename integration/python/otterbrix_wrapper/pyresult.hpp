@@ -12,6 +12,7 @@
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <cstddef>
+#include <optional>
 #include <vector>
 
 namespace otterbrix {
@@ -47,6 +48,9 @@ namespace otterbrix {
         // DB-API rowcount: the rows an INSERT / UPDATE / DELETE wrote, else the rows of the result.
         int64_t rowcount() const;
         py::object created_oid() const;
+
+        // None once the result is closed.
+        std::optional<components::session::transaction_status_t> transaction_status() const;
 
         void close();
 

@@ -46,6 +46,7 @@ namespace otterbrix {
 
         // DB-API rowcount: the rows an INSERT / UPDATE / DELETE wrote, else the rows of the result.
         int64_t rowcount() const;
+        py::object created_oid() const;
 
         void close();
 

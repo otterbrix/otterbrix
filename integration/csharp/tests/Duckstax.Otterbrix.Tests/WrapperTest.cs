@@ -87,6 +87,31 @@ public class Tests
     }
 
     [Test]
+    public void CreateTableReportsItsOid() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("CreateTableReportsItsOid");
+        {
+            using CursorWrapper cursor = otterbrix.Execute("CREATE DATABASE db;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.CreatedOid(), Is.Null);
+        }
+        uint? created;
+        {
+            using CursorWrapper cursor = otterbrix.Execute("CREATE TABLE db.users (name string, age bigint);");
+            Assert.IsTrue(cursor.IsSuccess());
+            created = cursor.CreatedOid();
+            Assert.That(created, Is.Not.Null);
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT oid FROM pg_catalog.pg_class WHERE relname = 'users';");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.CreatedOid(), Is.Null);
+            Assert.That(cursor.Size(), Is.EqualTo(1));
+            using ValueWrapper oid = cursor.GetValue(0, 0);
+            Assert.That(oid.GetUint(), Is.EqualTo((ulong)created!.Value));
+        }
+    }
+
+    [Test]
     public void Base() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("Base");
         {

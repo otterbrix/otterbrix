@@ -33,9 +33,7 @@ namespace components::sql::transform {
                 rnames.left_alias = construct_alias(node.relation->alias);
                 VALUE_OR_RETURN(del->returning(), transform_returning(node.returningList, rnames, plan));
             }
-            // Tag the target table for catalog resolution with the referencing
-            // constraint gather, so enrich reads the descendant FKs.
-            register_write_target(qn, constraint_resolve_kind::referencing);
+            register_write_target(qn);
             return del;
         }
         name_collection_t names;
@@ -77,9 +75,7 @@ namespace components::sql::transform {
         if (node.returningList) {
             VALUE_OR_RETURN(del->returning(), transform_returning(node.returningList, names, plan));
         }
-        // Resolve the primary (LEFT) table and gather its referencing
-        // constraints for FK cascade enrich.
-        register_write_target(names.left_name, constraint_resolve_kind::referencing);
+        register_write_target(names.left_name);
         return del;
     }
 } // namespace components::sql::transform

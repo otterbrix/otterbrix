@@ -137,6 +137,13 @@ namespace otterbrix {
         return util::rowcount_of(*result);
     }
 
+    py::object py_result_t::created_oid() const {
+        if (!result) {
+            return py::none();
+        }
+        return util::created_oid_of(*result);
+    }
+
     void py_result_t::close() { result = nullptr; }
 
     bool py_result_t::is_closed() const { return result == nullptr; }
@@ -159,7 +166,10 @@ namespace otterbrix {
             .def("__len__", &py_result_t::size, "Rows of the result (SELECT, or a write's RETURNING)")
             .def_property_readonly("rowcount",
                                    &py_result_t::rowcount,
-                                   "Rows an INSERT/UPDATE/DELETE wrote, else rows of the result");
+                                   "Rows an INSERT/UPDATE/DELETE wrote, else rows of the result")
+            .def_property_readonly("created_oid",
+                                   &py_result_t::created_oid,
+                                   "The pg_class oid of the table a CREATE TABLE created, else None");
     }
 
 } // namespace otterbrix

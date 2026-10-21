@@ -258,7 +258,22 @@ total with `written_ = sink->written()` after its last round. A host operator th
 fast path) adds what the backend reported to `written_` the same way. The executor knows from the statement before
 optimization that it is a write and takes `written()` of the plan root. The cursor answers `affected_rows()` and
 `is_write()`; a write without RETURNING has no result rows.
-Bindings: C `cursor_affected_rows`, Python `rowcount`, Rust `Cursor::affected_rows()`.
+Bindings: C `cursor_affected_rows`, C# `AffectedRows()`, Python `rowcount`, Rust `Cursor::affected_rows()`.
+
+## Created table oid
+
+`cursor_t::created_oid()` is the pg_class oid of the table a CREATE TABLE created, from SQL or from a plan; any other
+reply, a refused CREATE and `CREATE TABLE IF NOT EXISTS` over an existing table included, answers `INVALID_OID`. A
+CREATE inside `BEGIN … ROLLBACK` answers its oid, and after the ROLLBACK no table has it (`test_created_oid.cpp`).
+Bindings: C `bool cursor_created_oid(cursor_ptr, uint32_t*)` (false and `*oid` untouched without a table), C#
+`CreatedOid()` (`uint?`), Rust `Cursor::created_oid()` (`Option<u32>`), Python `created_oid` (`None` or `int`).
+
+## Plans built by the host
+
+A plan the host builds from `(node, params)` and runs with `execute_plan` names no constraints: the engine registers
+the ones its statement needs (`register_plan_targets`) — for INSERT and UPDATE the CHECK, UNIQUE, PRIMARY KEY and
+outgoing FOREIGN KEY entries of the write target, for DELETE the FOREIGN KEYs that reference it — so they hold as for
+the same SQL, and the host does not add them (`test_hand_built_constraints.cpp`).
 
 ## EXPLAIN
 

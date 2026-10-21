@@ -14,6 +14,10 @@ namespace Duckstax.Otterbrix
         [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool CursorAffectedRows(CursorHandle cursor, out ulong rows);
 
+        [DllImport(libotterbrix, EntryPoint="cursor_created_oid", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool CursorCreatedOid(CursorHandle cursor, out uint oid);
+
         [DllImport(libotterbrix, EntryPoint="cursor_column_count", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern int CursorColumnCount(CursorHandle cursor);
 
@@ -48,6 +52,9 @@ namespace Duckstax.Otterbrix
         public int Size() { return CursorSize(cursor); }
         public ulong? AffectedRows() {
             return CursorAffectedRows(cursor, out ulong rows) ? rows : null;
+        }
+        public uint? CreatedOid() {
+            return CursorCreatedOid(cursor, out uint oid) ? oid : null;
         }
         public int ColumnCount() { return CursorColumnCount(cursor); }
         public bool HasNext() { return CursorHasNext(cursor); }

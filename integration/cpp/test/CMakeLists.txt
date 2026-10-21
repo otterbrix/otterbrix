@@ -91,6 +91,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_inline_constraints.cpp
         test_constraint_entry_lost_target.cpp
         test_check_row_without_expression.cpp
+        test_hand_built_constraints.cpp
+        test_created_oid.cpp
         test_fk_cascade_unknown_action.cpp
         test_fk_cascade_parent_index_width.cpp
         test_constraint_unresolvable_target.cpp

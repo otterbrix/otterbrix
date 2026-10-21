@@ -111,7 +111,8 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
         .def("fetchmany", &wrapper_cursor::fetchmany, pybind11::arg("size") = 1)
         .def("fetchall", &wrapper_cursor::fetchall)
         .def_property_readonly("description", &wrapper_cursor::description)
-        .def_property_readonly("rowcount", &wrapper_cursor::rowcount);
+        .def_property_readonly("rowcount", &wrapper_cursor::rowcount)
+        .def_property_readonly("created_oid", &wrapper_cursor::created_oid);
 
     m.def("to_aggregate", &test_to_statement);
 }

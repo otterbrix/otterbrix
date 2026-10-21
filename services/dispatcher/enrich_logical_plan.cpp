@@ -478,6 +478,21 @@ namespace services::catalog_resolve {
             }
         }
 
+        std::optional<components::logical_plan::resolve_direction>
+        constraint_direction_of(components::logical_plan::node_type type) noexcept {
+            using components::logical_plan::node_type;
+            using components::logical_plan::resolve_direction;
+            switch (type) {
+                case node_type::insert_t:
+                case node_type::update_t:
+                    return resolve_direction::outgoing;
+                case node_type::delete_t:
+                    return resolve_direction::referencing;
+                default:
+                    return std::nullopt;
+            }
+        }
+
         // Breadth-first over the plan: every node once, a node before its children.
         template<typename Node, typename Visit>
         void for_each_node(Node* root, Visit&& visit) {
@@ -722,6 +737,13 @@ namespace services::catalog_resolve {
                 entry.schema = names.schema;
                 entry.relname = names.relname;
                 primary_index = resolves->ensure(resource, resolve_kind::table).add(std::move(entry));
+                const auto direction = constraint_direction_of(n->type());
+                if (direction.has_value()) {
+                    resolve_entry_t constraint_entry;
+                    constraint_entry.target = primary_index;
+                    constraint_entry.direction = *direction;
+                    resolves->ensure(resource, resolve_kind::constraint).add(std::move(constraint_entry));
+                }
             }
             if (!names.secondary_relname.empty()) {
                 resolve_entry_t entry;

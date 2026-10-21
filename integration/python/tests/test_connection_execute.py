@@ -58,6 +58,14 @@ def test_a_write_reports_how_many_rows_it_wrote(conn):
     assert conn.execute("SELECT id FROM ex.writes ORDER BY id;").fetchall() == [(7,), (8,)]
 
 
+def test_create_table_reports_the_oid_it_created(conn):
+    created = conn.execute("CREATE TABLE ex.created (id INTEGER);").created_oid
+    assert created is not None
+    catalog = conn.execute("SELECT oid FROM pg_catalog.pg_class WHERE relname = 'created';")
+    assert catalog.created_oid is None
+    assert catalog.fetchall() == [(created,)]
+
+
 def test_select_rows_are_reachable_as_a_dataframe(conn):
     pd = pytest.importorskip("pandas")
     frame = conn.execute("SELECT id, name FROM ex.rows ORDER BY id;").df()

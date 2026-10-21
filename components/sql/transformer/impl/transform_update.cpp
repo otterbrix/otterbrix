@@ -101,10 +101,7 @@ namespace components::sql::transform {
         if (node.returningList) {
             VALUE_OR_RETURN(upd->returning(), transform_returning(node.returningList, names, plan));
         }
-        // Catalog-resolve for the UPDATE target table, with the outgoing
-        // constraint gather so enrich reads FKs stamped by
-        // operator_resolve_constraint_t.
-        register_write_target(names.left_name, constraint_resolve_kind::outgoing);
+        register_write_target(names.left_name);
         return upd;
     }
 } // namespace components::sql::transform

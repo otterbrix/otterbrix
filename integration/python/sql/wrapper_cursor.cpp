@@ -290,3 +290,5 @@ py::object wrapper_cursor::description() const {
 }
 
 int64_t wrapper_cursor::rowcount() const { return otterbrix::util::rowcount_of(*ptr_); }
+
+py::object wrapper_cursor::created_oid() const { return otterbrix::util::created_oid_of(*ptr_); }

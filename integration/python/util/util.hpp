@@ -20,6 +20,9 @@ namespace otterbrix { namespace util {
     // DB-API rowcount: the rows an INSERT / UPDATE / DELETE wrote, else the rows of the result.
     int64_t rowcount_of(const components::cursor::cursor_t& cursor);
 
+    // The pg_class oid of the table a CREATE TABLE created, else None.
+    py::object created_oid_of(const components::cursor::cursor_t& cursor);
+
     template<class T>
     T parse_to_numeric(const std::string& numeric_string) {
         bool is_neg = false;

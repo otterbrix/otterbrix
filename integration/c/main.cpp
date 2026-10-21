@@ -234,6 +234,17 @@ extern "C" bool cursor_affected_rows(cursor_ptr ptr, uint64_t* rows) {
     return true;
 }
 
+extern "C" bool cursor_created_oid(cursor_ptr ptr, uint32_t* oid) {
+    assert(oid != nullptr);
+    auto storage = convert_cursor(ptr);
+    const auto created = storage->cursor->created_oid();
+    if (created == components::catalog::INVALID_OID) {
+        return false;
+    }
+    *oid = created;
+    return true;
+}
+
 extern "C" int32_t cursor_column_count(cursor_ptr ptr) {
     auto storage = convert_cursor(ptr);
     if (storage->cursor->is_write()) {

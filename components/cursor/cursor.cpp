@@ -211,6 +211,10 @@ namespace components::cursor {
         is_write_ = true;
     }
 
+    catalog::oid_t cursor_t::created_oid() const noexcept { return created_oid_; }
+
+    void cursor_t::set_created_oid(catalog::oid_t oid) noexcept { created_oid_ = oid; }
+
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource) { return cursor_t_ptr{new cursor_t(resource)}; }
 
     cursor_t_ptr make_cursor(std::pmr::memory_resource* resource, const core::error_t& error) {

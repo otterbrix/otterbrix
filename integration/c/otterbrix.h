@@ -82,6 +82,8 @@ int32_t cursor_size(cursor_ptr ptr);
 // The rows an INSERT / UPDATE / DELETE without RETURNING wrote go to *rows; false (and *rows untouched) for any other
 // statement. A RETURNING result is data
 bool cursor_affected_rows(cursor_ptr ptr, uint64_t* rows);
+// The pg_class oid of the table a CREATE TABLE created goes to *oid; false (and *oid untouched) for any other reply
+bool cursor_created_oid(cursor_ptr ptr, uint32_t* oid);
 int32_t cursor_column_count(cursor_ptr ptr);
 int32_t cursor_column_logical_type(cursor_ptr ptr, int32_t column_index);
 bool cursor_has_next(cursor_ptr ptr);

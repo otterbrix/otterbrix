@@ -227,6 +227,37 @@ TEST_CASE("c-api: cursor_affected_rows reports the rows a write changed", "[c-ap
     release_cursor(select);
 }
 
+TEST_CASE("c-api: cursor_created_oid reports the table a CREATE TABLE created", "[c-api][cursor]") {
+    test_db_t t("created_oid");
+    REQUIRE(t.ptr != nullptr);
+
+    cursor_ptr database = execute_sql(t.ptr, sv(std::string("CREATE DATABASE test_db;")));
+    REQUIRE(cursor_is_success(database));
+    uint32_t oid = 7;
+    CHECK_FALSE(cursor_created_oid(database, &oid));
+    CHECK(oid == 7);
+    release_cursor(database);
+
+    cursor_ptr table = execute_sql(t.ptr, sv(std::string("CREATE TABLE test_db.users (name string, age bigint);")));
+    REQUIRE(cursor_is_success(table));
+    REQUIRE(cursor_created_oid(table, &oid));
+    release_cursor(table);
+
+    cursor_ptr catalog =
+        execute_sql(t.ptr, sv(std::string("SELECT oid FROM pg_catalog.pg_class WHERE relname = 'users';")));
+    REQUIRE(cursor_is_success(catalog));
+    REQUIRE(cursor_size(catalog) == 1);
+    value_ptr stored = cursor_get_value(catalog, 0, 0);
+    REQUIRE(stored != nullptr);
+    REQUIRE(value_is_uint(stored));
+    CHECK(value_get_uint(stored) == oid);
+    release_value(stored);
+    uint32_t untouched = 7;
+    CHECK_FALSE(cursor_created_oid(catalog, &untouched));
+    CHECK(untouched == 7);
+    release_cursor(catalog);
+}
+
 namespace {
     void require_parameter_refusal(otterbrix_ptr db, const sql_param_t& param, const std::string& reason) {
         const std::string query = "SELECT $1;";

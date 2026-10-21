@@ -211,3 +211,15 @@ def test_insert_additional_rows(col):
     c = col.execute("SELECT * FROM {}.{};".format(database_name, collection_name))
     assert len(c) == 110
     c.close()
+
+
+def test_create_table_reports_the_oid_it_created():
+    created = client.execute("CREATE TABLE {}.created_oid (id bigint);".format(database_name))
+    oid = created.created_oid
+    created.close()
+    assert oid is not None
+    catalog = client.execute("SELECT oid FROM pg_catalog.pg_class WHERE relname = 'created_oid';")
+    assert catalog.created_oid is None
+    assert len(catalog) == 1
+    assert catalog.fetchone() == (oid,)
+    catalog.close()

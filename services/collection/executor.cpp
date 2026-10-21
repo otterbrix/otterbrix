@@ -1487,6 +1487,7 @@ namespace services::collection::executor {
 
         components::catalog::oid_t create_index_table_oid = components::catalog::INVALID_OID;
         components::catalog::oid_t create_index_oid = components::catalog::INVALID_OID;
+        components::catalog::oid_t created_table_oid = components::catalog::INVALID_OID;
 
         {
             components::execution_context_t enrich_ctx{session,
@@ -1739,7 +1740,9 @@ namespace services::collection::executor {
                 }
                 plan.sub_queries.back() = std::move(rewritten.value());
 
-                if (original_type == node_type::create_index_t) {
+                if (original_type == node_type::create_collection_t) {
+                    created_table_oid = eff->table_oid();
+                } else if (original_type == node_type::create_index_t) {
                     if (auto* eff2 = plan.sub_queries.back().get(); eff2 && !eff2->children().empty()) {
                         auto* back = eff2->children().back().get();
                         if (back && back->type() == node_type::create_index_t) {
@@ -1818,6 +1821,9 @@ namespace services::collection::executor {
         if (modified_rows && plan.explain == components::logical_plan::explain_type::none &&
             exec_result.cursor->is_success()) {
             exec_result.cursor->set_written(exec_result.written);
+        }
+        if (created_table_oid != components::catalog::INVALID_OID && exec_result.cursor->is_success()) {
+            exec_result.cursor->set_created_oid(created_table_oid);
         }
 
         auto revert_failed_txn = [this, session, resolve_txn, &session_ctx](

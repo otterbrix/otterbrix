@@ -392,10 +392,7 @@ namespace components::planner {
                                             insert,
                                             body.params ? body.params : logical_plan::make_parameter_node(resource)};
         plan.catalog_resolves = std::move(body.resolves);
-        sql::transform::register_catalog_resolve_write_target(resource,
-                                                              &plan.catalog_resolves,
-                                                              target,
-                                                              sql::transform::constraint_resolve_kind::outgoing);
+        sql::transform::register_catalog_resolve_write_target(resource, &plan.catalog_resolves, target);
         return refresh_matview_plan_t{std::move(plan), std::move(reference)};
     }
 
@@ -415,10 +412,7 @@ namespace components::planner {
                     expressions::make_compare_expression(resource, expressions::compare_type::all_true)),
                 logical_plan::make_node_limit(resource, logical_plan::limit_t::all())));
         logical_plan::execution_plan_t plan{resource, std::move(del), logical_plan::make_parameter_node(resource)};
-        sql::transform::register_catalog_resolve_write_target(resource,
-                                                              &plan.catalog_resolves,
-                                                              target,
-                                                              sql::transform::constraint_resolve_kind::referencing);
+        sql::transform::register_catalog_resolve_write_target(resource, &plan.catalog_resolves, target);
         return plan;
     }
 

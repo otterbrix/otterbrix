@@ -2052,9 +2052,7 @@ namespace components::sql::transform {
             }
             logical_plan::resolve_entry_t constraint_entry;
             constraint_entry.target = table_index;
-            constraint_entry.direction = (with_constraints == constraint_resolve_kind::referencing)
-                                             ? logical_plan::resolve_direction::referencing
-                                             : logical_plan::resolve_direction::outgoing;
+            constraint_entry.direction = logical_plan::resolve_direction::outgoing;
             constraint_entry.names_only = (with_constraints == constraint_resolve_kind::names_only);
             resolves->ensure(resource, logical_plan::resolve_kind::constraint).add(std::move(constraint_entry));
         }
@@ -2092,15 +2090,14 @@ namespace components::sql::transform {
 
     void register_catalog_resolve_write_target(std::pmr::memory_resource* resource,
                                                logical_plan::catalog_resolves_t* resolves,
-                                               const qualified_name_t& written,
-                                               constraint_resolve_kind with_constraints) {
+                                               const qualified_name_t& written) {
         register_table_entry(resource,
                              resolves,
                              written.unique_identifier.t,
                              written.database.t,
                              written.schema.t,
                              written.collection.t,
-                             with_constraints);
+                             constraint_resolve_kind::none);
     }
 
     void register_catalog_resolve_table_in_owner_database(std::pmr::memory_resource* resource,

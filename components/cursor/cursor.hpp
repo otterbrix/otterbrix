@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <components/base/collection_full_name.hpp>
+#include <components/catalog/catalog_oids.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 
@@ -88,6 +89,9 @@ namespace components::cursor {
         [[nodiscard]] bool is_write() const noexcept;
         void set_written(std::uint64_t rows) noexcept;
 
+        [[nodiscard]] catalog::oid_t created_oid() const noexcept;
+        void set_created_oid(catalog::oid_t oid) noexcept;
+
     private:
         struct cell_t {
             const vector::vector_t* vec;
@@ -115,6 +119,7 @@ namespace components::cursor {
         core::error_t error_;
         std::uint64_t affected_rows_ = 0;
         bool is_write_ = false;
+        catalog::oid_t created_oid_ = catalog::INVALID_OID;
     };
 
     namespace detail {

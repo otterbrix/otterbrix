@@ -432,7 +432,6 @@ namespace components::sql::transform {
     {
         none,
         outgoing,
-        referencing,
         // No enforcement decode: DROP CONSTRAINT must not refuse on the catalog state it exists to repair.
         names_only
     };
@@ -457,12 +456,10 @@ namespace components::sql::transform {
                                         constraint_resolve_kind with_constraints = constraint_resolve_kind::none);
 
     // The target of an INSERT / UPDATE / DELETE or a FROM table, schema slot included: a name the catalog does not
-    // know reaches the host whole. with_constraints gathers INSERT/UPDATE's outgoing or DELETE's referencing
-    // constraints.
+    // know reaches the host whole.
     void register_catalog_resolve_write_target(std::pmr::memory_resource* resource,
                                                logical_plan::catalog_resolves_t* resolves,
-                                               const qualified_name_t& written,
-                                               constraint_resolve_kind with_constraints);
+                                               const qualified_name_t& written);
 
     void register_catalog_resolve_types(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,

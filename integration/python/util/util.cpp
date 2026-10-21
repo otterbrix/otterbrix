@@ -17,6 +17,14 @@ namespace otterbrix { namespace util {
         return static_cast<int64_t>(cursor.size());
     }
 
+    py::object created_oid_of(const components::cursor::cursor_t& cursor) {
+        const auto oid = cursor.created_oid();
+        if (oid == components::catalog::INVALID_OID) {
+            return py::none();
+        }
+        return py::int_(oid);
+    }
+
     core::result_wrapper_t<std::string> vector_to_string(const components::vector::vector_t& value) {
         switch (value.type().to_physical_type()) {
             case physical_type::NA:

@@ -75,6 +75,17 @@ impl<'db> Cursor<'db> {
         }
     }
 
+    /// The pg_class oid of the table a `CREATE TABLE` created; `None` for
+    /// every other statement.
+    pub fn created_oid(&self) -> Option<u32> {
+        let mut oid: u32 = 0;
+        if unsafe { otterbrix_sys::cursor_created_oid(self.ptr, &mut oid) } {
+            Some(oid)
+        } else {
+            None
+        }
+    }
+
     /// DB-API rowcount: the rows an `INSERT` / `UPDATE` / `DELETE` wrote, else
     /// the rows of the result set.
     pub fn row_count(&self) -> u64 {

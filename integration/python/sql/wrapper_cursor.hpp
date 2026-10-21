@@ -40,6 +40,7 @@ public:
     py::list fetchall();
     py::object description() const;
     int64_t rowcount() const;
+    py::object created_oid() const;
 
 private:
     std::atomic_bool close_;

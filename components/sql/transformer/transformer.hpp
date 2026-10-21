@@ -402,11 +402,11 @@ namespace components::sql::transform {
                             constraint_resolve_kind with_constraints) {
             register_catalog_resolve_table(resource_, &catalog_resolves_, dbname, relname, with_constraints);
         }
-        void register_write_target(const qualified_name_t& written, constraint_resolve_kind with_constraints) {
-            register_catalog_resolve_write_target(resource_, &catalog_resolves_, written, with_constraints);
+        void register_write_target(const qualified_name_t& written) {
+            register_catalog_resolve_write_target(resource_, &catalog_resolves_, written);
         }
         void register_written_table(const logical_plan::node_aggregate_t& from) {
-            register_write_target(from.target(), constraint_resolve_kind::none);
+            register_write_target(from.target());
         }
         void register_table_in_owner_database(const std::string& owner_db,
                                               const std::string& owner_rel,

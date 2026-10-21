@@ -593,7 +593,7 @@ namespace components::sql::transform {
             ins_node->set_deferred_cells(std::move(deferred_cells));
             ins_node->returning() = returning;
             set_target(*ins_node, qn, target_slots::relation_with_schema);
-            register_write_target(qn, constraint_resolve_kind::outgoing);
+            register_write_target(qn);
             return with_on_conflict(logical_plan::node_insert_ptr{ins_node});
         } else {
             auto qn = rangevar_to_qualified_name(node.relation);
@@ -603,7 +603,7 @@ namespace components::sql::transform {
             res->key_translation() = key_translation;
             res->returning() = returning;
             set_target(*res, qn, target_slots::relation_with_schema);
-            register_write_target(qn, constraint_resolve_kind::outgoing);
+            register_write_target(qn);
             return with_on_conflict(std::move(res));
         }
     }

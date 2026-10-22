@@ -388,7 +388,7 @@ namespace components::compute {
     // WARNING: array size, names order, uid and signatures has to be the same as in register_default_functions()
     // TODO: could be constexpr after C++20
     // TODO: initialize DEFAULT_FUNCTIONS with register_default_functions() call
-    static const std::array<std::pair<std::string, function_uid>, 17> DEFAULT_FUNCTIONS{
+    static const std::array<std::pair<std::string, function_uid>, 18> DEFAULT_FUNCTIONS{
         std::pair<std::string, function_uid>{"sum", 0},
         std::pair<std::string, function_uid>{"min", 1},
         std::pair<std::string, function_uid>{"max", 2},
@@ -405,9 +405,14 @@ namespace components::compute {
         std::pair<std::string, function_uid>{"pow", 13},
         std::pair<std::string, function_uid>{"sqrt", 14},
         std::pair<std::string, function_uid>{"cbrt", 15},
-        std::pair<std::string, function_uid>{"factorial", 16}};
+        std::pair<std::string, function_uid>{"factorial", 16},
+        std::pair<std::string, function_uid>{"like_match", 17}};
 
     inline bool is_builtin(function_uid uid) noexcept { return uid < DEFAULT_FUNCTIONS.size(); }
+
+    inline constexpr function_uid like_match_uid = 17;
+    inline constexpr std::string_view like_match_name = "like_match";
+    inline bool is_internal(function_uid uid) noexcept { return uid == like_match_uid; }
 
     // Goes through add_builtin, which pins uids to DEFAULT_FUNCTIONS and poisons the registry on
     // mismatch; check builtin_registration_error() for the outcome.
@@ -418,5 +423,6 @@ namespace components::compute {
     void register_string_functions(function_registry_t& registry);
     void register_expand_functions(function_registry_t& registry);
     void register_math_functions(function_registry_t& registry);
+    void register_internal_functions(function_registry_t& registry);
 
 } // namespace components::compute

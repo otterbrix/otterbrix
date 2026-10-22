@@ -622,9 +622,10 @@ namespace components::execution_dag {
     void membership_node_t::set_parameters(const storage_parameters*) noexcept { prepared_.reset(); }
 
     core::error_t membership_node_t::process(const graph_execution_context&, uint64_t count) {
-        auto test = input_indices_.size() == 3 ? vector::operations::element_test_t{vector::operations::match_flags_of(
-                                                     input(2).get_value<std::string_view>(0))}
-                                               : vector::operations::element_test_t{op_};
+        auto test =
+            input_indices_.size() == 3
+                ? vector::operations::element_test_t{vector::operations::match_flags_of(input(2).get_value<uint8_t>(0))}
+                : vector::operations::element_test_t{op_};
         return vector::operations::apply_quantified(test,
                                                     kind_,
                                                     input(0),

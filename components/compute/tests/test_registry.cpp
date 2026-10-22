@@ -40,11 +40,21 @@ TEST_CASE("components::compute::registry::basic") {
                 REQUIRE(fn->fn_arity().num_args == 2);
                 REQUIRE(fn->fn_arity().varargs == true);
             } else if (name == "regexp_replace") {
+                // regexp_replace(string, pattern, replacement[, flags]),
+                // (string, pattern, replacement, start[, N[, flags]]) — 3 to 6 args
                 REQUIRE(fn->fn_arity().num_args == 3);
+                REQUIRE(fn->fn_arity().varargs == true);
+                REQUIRE(fn->num_kernels() == 5);
             } else if (name == "regexp_like") {
                 // regexp_like(subject, pattern[, flags]) — 2 or 3 args
                 REQUIRE(fn->fn_arity().num_args == 2);
                 REQUIRE(fn->fn_arity().varargs == true);
+                REQUIRE(fn->num_kernels() == 2);
+            } else if (name == "like_match") {
+                // like_match(subject, pattern, mode)
+                REQUIRE(fn->fn_arity().num_args == 3);
+                REQUIRE(fn->fn_arity().varargs == false);
+                REQUIRE(fn->num_kernels() == 1);
             } else if (name == "generate_series") {
                 // generate_series(start, stop[, step]) — 2 or 3 args
                 REQUIRE(fn->fn_arity().num_args == 2);
@@ -178,4 +188,12 @@ TEST_CASE("components::compute::registry::every builtin uid is its own DEFAULT_F
         CHECK(is_builtin(DEFAULT_FUNCTIONS[i].second));
     }
     CHECK_FALSE(is_builtin(DEFAULT_FUNCTIONS.size()));
+}
+
+TEST_CASE("components::compute::registry::like_match is the one internal builtin") {
+    REQUIRE(DEFAULT_FUNCTIONS[like_match_uid].first == "like_match");
+    for (const auto& [name, uid] : DEFAULT_FUNCTIONS) {
+        INFO(name);
+        CHECK(is_internal(uid) == (name == "like_match"));
+    }
 }

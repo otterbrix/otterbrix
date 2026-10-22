@@ -259,6 +259,35 @@ namespace services::dispatcher {
             return candidate;
         }
 
+        bool is_string_category(const complex_logical_type& type) noexcept {
+            return type.type() == logical_type::STRING_LITERAL;
+        }
+
+        // PostgreSQL 18 func_select_candidate (parse_func.c): at each untyped-NULL position the string category wins
+        // a conflict, and the candidates of another category there drop out. Answers the one left, if one is.
+        std::optional<size_t> prefer_string_at_null(const std::pmr::vector<complex_logical_type>& arguments,
+                                                    const std::pmr::vector<resolved_function_t>& tied) {
+            std::pmr::vector<bool> kept(tied.size(), true, tied.get_allocator().resource());
+            for (size_t position = 0; position < arguments.size(); ++position) {
+                if (!is_null_argument(arguments[position])) {
+                    continue;
+                }
+                const bool any_string = std::any_of(tied.begin(), tied.end(), [position](const auto& candidate) {
+                    return is_string_category(candidate.arguments[position].target);
+                });
+                if (!any_string) {
+                    continue;
+                }
+                for (size_t index = 0; index < tied.size(); ++index) {
+                    kept[index] = kept[index] && is_string_category(tied[index].arguments[position].target);
+                }
+            }
+            if (std::count(kept.begin(), kept.end(), true) != 1) {
+                return std::nullopt;
+            }
+            return static_cast<size_t>(std::find(kept.begin(), kept.end(), true) - kept.begin());
+        }
+
         std::string describe_arguments(const std::pmr::vector<complex_logical_type>& arguments) {
             std::string out;
             for (size_t i = 0; i < arguments.size(); ++i) {
@@ -285,12 +314,16 @@ namespace services::dispatcher {
 
         bool name_exists = false;
         bool rejected_by_context = false;
-        bool ambiguous = false;
-        std::optional<resolved_function_t> best;
+        std::pmr::vector<resolved_function_t> tied(resource);
         std::optional<total_cost_t> best_cost;
 
         for (const auto uid : function_registry.find_functions(name.function.t)) {
             if (!in_scope(scope, uid)) {
+                continue;
+            }
+            const bool pinned_by_call =
+                std::any_of(pins.begin(), pins.end(), [uid](const auto& pin) { return pin.uid == uid; });
+            if (components::compute::is_internal(uid) && !pinned_by_call) {
                 continue;
             }
             const auto pinned = [&pins, uid](size_t index) {
@@ -298,8 +331,7 @@ namespace services::dispatcher {
                            return pin.uid == uid && pin.signature == index;
                        });
             };
-            name_exists = name_exists || pins.empty() ||
-                          std::any_of(pins.begin(), pins.end(), [uid](const auto& pin) { return pin.uid == uid; });
+            name_exists = name_exists || pins.empty() || pinned_by_call;
             auto* function = function_registry.get_function(uid);
             if (!function) {
                 continue;
@@ -318,11 +350,7 @@ namespace services::dispatcher {
                 if (!candidate.has_value()) {
                     continue;
                 }
-                if (best_cost.has_value() && candidate->cost == *best_cost) {
-                    ambiguous = true;
-                    continue;
-                }
-                if (best_cost.has_value() && !(candidate->cost < *best_cost)) {
+                if (best_cost.has_value() && *best_cost < candidate->cost) {
                     continue;
                 }
                 resolved_function_t resolved{resource};
@@ -332,9 +360,11 @@ namespace services::dispatcher {
                 resolved.function_type = signature.function_type;
                 resolved.mergeable = function->is_mergeable();
                 resolved.volatility = function->volatility();
-                best = std::move(resolved);
-                best_cost = candidate->cost;
-                ambiguous = false;
+                if (!best_cost.has_value() || candidate->cost < *best_cost) {
+                    tied.clear();
+                    best_cost = candidate->cost;
+                }
+                tied.push_back(std::move(resolved));
             }
         }
 
@@ -342,24 +372,27 @@ namespace services::dispatcher {
             return core::error_t(core::error_code_t::unrecognized_function,
                                  std::pmr::string{"unrecognized function '" + written + "'", resource});
         }
-        if (!best.has_value() && rejected_by_context) {
+        if (tied.empty() && rejected_by_context) {
             return core::error_t(
                 core::error_code_t::incorrect_function_argument,
                 std::pmr::string{"function '" + written + "' is not allowed in this part of the statement", resource});
         }
-        if (!best.has_value()) {
+        if (tied.empty()) {
             return core::error_t(
                 core::error_code_t::incorrect_function_argument,
                 std::pmr::string{"function '" + written + "' does not accept (" + describe_arguments(arguments) + ")",
                                  resource});
         }
-        if (ambiguous) {
-            return core::error_t(core::error_code_t::incorrect_function_argument,
-                                 std::pmr::string{"call to function '" + written + "' with (" +
-                                                      describe_arguments(arguments) +
-                                                      ") is ambiguous between equally costly overloads",
-                                                  resource});
+        if (tied.size() == 1) {
+            return std::move(tied.front());
         }
-        return std::move(best.value());
+        if (auto chosen = prefer_string_at_null(arguments, tied); chosen.has_value()) {
+            return std::move(tied[*chosen]);
+        }
+        return core::error_t(core::error_code_t::incorrect_function_argument,
+                             std::pmr::string{"call to function '" + written + "' with (" +
+                                                  describe_arguments(arguments) +
+                                                  ") is ambiguous between equally costly overloads",
+                                              resource});
     }
 } // namespace services::dispatcher

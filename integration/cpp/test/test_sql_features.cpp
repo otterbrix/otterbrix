@@ -9,6 +9,7 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/vector/operations/apply_quantified.hpp>
 #include <components/vector/vector_builders.hpp>
 #include <core/date/date_parse.hpp>
 #include <core/date/timezones.hpp>
@@ -686,6 +687,7 @@ TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_error
             components::expressions::compare_type::regex,
             components::expressions::key_t{resource, "s", components::expressions::side_t::left},
             core::parameter_id_t{0});
+        expr->set_regex_flags(core::parameter_id_t{1});
         plan->append_child(
             components::logical_plan::make_node_match(resource,
                                                       qualified_name_t{core::dbname_t{"regexdb"}, core::relname_t{"t"}},
@@ -693,10 +695,156 @@ TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_error
         auto params = components::logical_plan::make_parameter_node(resource);
         REQUIRE(params->add_parameter(components::vector::make_scalar(resource, "(a)\\1"),
                                       components::vector::parameter_kind::literal) == core::parameter_id_t{0});
+        REQUIRE(params->add_parameter(
+                    components::vector::make_scalar(resource, components::vector::operations::match_mode_of({})),
+                    components::vector::parameter_kind::literal) == core::parameter_id_t{1});
         auto cur =
             dispatcher->execute_plan(session, components::logical_plan::execution_plan_t{resource, plan, params});
         REQUIRE(cur->is_error());
+        CHECK(cur->get_error().type == core::error_code_t::comparison_failure);
+        CHECK(std::string{cur->get_error().what} == "invalid regular expression: invalid escape sequence: \\1");
     }
+}
+
+// Expected values are PostgreSQL 18.6 answers to the same calls.
+TEST_CASE("integration::cpp::test_sql_features::regexp_replace_follows_postgresql") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_sql_features/regexp_replace"));
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    REQUIRE(test_helpers::ok(dispatcher, "CREATE DATABASE rdb;"));
+    REQUIRE(test_helpers::ok(dispatcher, "CREATE TABLE rdb.t (id bigint, s text);"));
+    REQUIRE(test_helpers::ok(dispatcher, "INSERT INTO rdb.t (id, s) VALUES (1, 'foobarbaz'), (2, 'hello world');"));
+
+    auto text_of = [&](const std::string& sql) {
+        INFO(sql);
+        auto cur = test_helpers::exec(dispatcher, sql);
+        INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        auto cell = cur->get<std::string_view>(0, 0);
+        REQUIRE_FALSE(cell.has_error());
+        return std::string{cell.value()};
+    };
+    auto refusal_of = [&](const std::string& sql) {
+        INFO(sql);
+        auto cur = test_helpers::exec(dispatcher, sql);
+        REQUIRE(cur->is_error());
+        return std::string{cur->get_error().what};
+    };
+
+    CHECK(text_of("SELECT regexp_replace(s, 'b..', 'X') FROM rdb.t WHERE id = 1;") == "fooXbaz");
+    CHECK(text_of("SELECT regexp_replace(s, 'b..', 'X', 'g') FROM rdb.t WHERE id = 1;") == "fooXX");
+    CHECK(text_of("SELECT regexp_replace(s, 'b(..)', 'X\\1Y', 'g') FROM rdb.t WHERE id = 1;") == "fooXarYXazY");
+    CHECK(text_of("SELECT regexp_replace(s, 'l', 'XX', 1, 2) FROM rdb.t WHERE id = 2;") == "helXXo world");
+    CHECK(text_of("SELECT regexp_replace(s, 'l', 'XX', 5) FROM rdb.t WHERE id = 2;") == "hello worXXd");
+    CHECK(text_of("SELECT regexp_replace(s, 'L', 'X', 1, 0, 'i') FROM rdb.t WHERE id = 2;") == "heXXo worXd");
+
+    CHECK(refusal_of("SELECT regexp_replace(s, 'b', 'x', '1') FROM rdb.t;") ==
+          "invalid regular expression option: \"1\"");
+    CHECK(refusal_of("SELECT regexp_replace(s, 'b', 'x', 0) FROM rdb.t;") ==
+          "invalid value for parameter \"start\": 0");
+    CHECK(refusal_of("SELECT regexp_replace(s, '(a)\\1', 'x') FROM rdb.t;") ==
+          "invalid regular expression: invalid escape sequence: \\1");
+
+    CHECK(text_of("SELECT regexp_replace(s, 'b..', 'X', 't') FROM rdb.t WHERE id = 1;") == "fooXbaz");
+    CHECK(text_of("SELECT regexp_replace('éab', 'a', 'X', 3) FROM rdb.t WHERE id = 1;") == "éab");
+    CHECK(text_of("SELECT regexp_replace('é', '', '-', 'g') FROM rdb.t WHERE id = 1;") == "-é-");
+    CHECK(text_of("SELECT regexp_replace('привет', '', ' ', 'g') FROM rdb.t WHERE id = 1;") == " п р и в е т ");
+    CHECK(text_of("SELECT regexp_replace('é!', '\\w', 'Y') FROM rdb.t WHERE id = 1;") == "Y!");
+    CHECK(text_of("SELECT regexp_replace('é!', '[^\\W]', 'Y') FROM rdb.t WHERE id = 1;") == "Y!");
+    CHECK(text_of("SELECT regexp_replace('a b', '\\b', 'X', 'g') FROM rdb.t WHERE id = 1;") == "a b");
+    CHECK(text_of("SELECT regexp_replace(E'a\\bb', '\\b', 'X') FROM rdb.t WHERE id = 1;") == "aXb");
+    CHECK(text_of("SELECT regexp_replace('a\\b', '\\B', 'X') FROM rdb.t WHERE id = 1;") == "aXb");
+    CHECK(text_of("SELECT regexp_replace(E'a\\bb', '[\\b]', 'X') FROM rdb.t WHERE id = 1;") == "aXb");
+    CHECK(refusal_of("SELECT regexp_replace(s, '[a-\\b]', 'x') FROM rdb.t;") ==
+          "invalid regular expression: invalid character class range: a-\\b");
+
+    auto null_of = [&](const std::string& sql) {
+        INFO(sql);
+        auto cur = test_helpers::exec(dispatcher, sql);
+        INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        auto cell = cur->is_null(0, 0);
+        REQUIRE_FALSE(cell.has_error());
+        return cell.value();
+    };
+    CHECK(null_of("SELECT regexp_replace(s, 'b', 'x', NULL) FROM rdb.t WHERE id = 1;"));
+    CHECK(null_of("SELECT regexp_replace(s, 'b', 'x', 1, NULL) FROM rdb.t WHERE id = 1;"));
+}
+
+// LIKE lowers to regexp_like with an internal mode, so the user's flag letters keep PostgreSQL's meaning:
+// 'n' is newline-sensitive matching, not NOT LIKE.
+TEST_CASE("integration::cpp::test_sql_features::regexp_like_n_flag_is_not_negation") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_sql_features/regexp_like_n_flag"));
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    REQUIRE(test_helpers::ok(dispatcher, "CREATE DATABASE rdb;"));
+    REQUIRE(test_helpers::ok(dispatcher, "CREATE TABLE rdb.t (id bigint, s text);"));
+    REQUIRE(test_helpers::ok(dispatcher, "INSERT INTO rdb.t (id, s) VALUES (1, 'abc'), (2, 'xyz');"));
+
+    auto count_of = [&](const std::string& sql) {
+        INFO(sql);
+        auto cur = test_helpers::exec(dispatcher, sql);
+        INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        return cur->size();
+    };
+    CHECK(count_of("SELECT id FROM rdb.t WHERE regexp_like(s, 'zzz', 'n');") == 0);
+    CHECK(count_of("SELECT id FROM rdb.t WHERE s LIKE 'a_c';") == 1);
+    CHECK(count_of("SELECT id FROM rdb.t WHERE s NOT LIKE 'a_c';") == 1);
+    CHECK(count_of("SELECT id FROM rdb.t WHERE s ILIKE 'A_C';") == 1);
+    CHECK(count_of("SELECT id FROM rdb.t WHERE s NOT ILIKE 'A_C';") == 1);
+    CHECK(count_of("SELECT id FROM rdb.t WHERE s LIKE ANY (ARRAY['a%', 'q%']);") == 1);
+    CHECK(count_of("SELECT id FROM rdb.t WHERE s NOT ILIKE ALL (ARRAY['A%', 'Q%']);") == 1);
+
+    auto refusal_of = [&](const std::string& sql) {
+        INFO(sql);
+        auto cur = test_helpers::exec(dispatcher, sql);
+        REQUIRE(cur->is_error());
+        return cur->get_error();
+    };
+    auto glob = refusal_of("SELECT id FROM rdb.t WHERE regexp_like(s, 'a_c', 'l');");
+    CHECK(glob.type == core::error_code_t::invalid_parameter);
+    CHECK(std::string{glob.what} == "invalid regular expression option: \"l\"");
+    CHECK(std::string{refusal_of("SELECT id FROM rdb.t WHERE regexp_like(s, 'a', 'g');").what} ==
+          "regexp_like() does not support the \"global\" option");
+
+    auto cur = test_helpers::exec(dispatcher, "SELECT regexp_like(s, 'a', NULL) FROM rdb.t WHERE id = 1;");
+    INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 1);
+    auto cell = cur->is_null(0, 0);
+    REQUIRE_FALSE(cell.has_error());
+    CHECK(cell.value());
+}
+
+// LIKE's match mode is an internal argument of an internal function: SQL reaches neither.
+TEST_CASE("integration::cpp::test_sql_features::like_match_mode_is_not_callable_from_sql") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_sql_features/like_match_internal"));
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    REQUIRE(test_helpers::ok(dispatcher, "CREATE DATABASE rdb;"));
+    REQUIRE(test_helpers::ok(dispatcher, "CREATE TABLE rdb.t (id bigint, s text);"));
+    REQUIRE(test_helpers::ok(dispatcher, "INSERT INTO rdb.t (id, s) VALUES (1, 'abc');"));
+
+    auto refusal_of = [&](const std::string& sql) {
+        INFO(sql);
+        auto cur = test_helpers::exec(dispatcher, sql);
+        REQUIRE(cur->is_error());
+        return cur->get_error();
+    };
+    CHECK(refusal_of("SELECT id FROM rdb.t WHERE regexp_like(s, 'a_c', 1::uint1);").type ==
+          core::error_code_t::incorrect_function_argument);
+    auto hidden = refusal_of("SELECT id FROM rdb.t WHERE like_match(s, 'a_c', 1::uint1);");
+    CHECK(hidden.type == core::error_code_t::unrecognized_function);
+    CHECK(std::string{hidden.what} == "unrecognized function 'like_match'");
+    CHECK(refusal_of("SELECT like_match(s, 'a_c', 1::uint1) FROM rdb.t;").type ==
+          core::error_code_t::unrecognized_function);
+
+    auto cur = test_helpers::exec(dispatcher, "SELECT id FROM rdb.t WHERE s LIKE 'a_c';");
+    REQUIRE(cur->is_success());
+    CHECK(cur->size() == 1);
 }
 
 TEST_CASE("integration::cpp::test_sql_features::like_matches_non_utf8_bytes") {

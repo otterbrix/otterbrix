@@ -24,8 +24,10 @@ namespace components::vector::operations {
         bool negate{false};
     };
 
-    // regexp_like's flags: 'l' a LIKE pattern, 'i' case-insensitive, 'n' negated
-    [[nodiscard]] match_flags_t match_flags_of(std::string_view flags) noexcept;
+    // The mode a LIKE / ILIKE / NOT LIKE hands like_match and a quantified match: an internal bit set,
+    // so no flag letter of PostgreSQL's regexp_like is taken
+    [[nodiscard]] uint8_t match_mode_of(match_flags_t flags) noexcept;
+    [[nodiscard]] match_flags_t match_flags_of(uint8_t mode) noexcept;
 
     class element_test_t {
     public:

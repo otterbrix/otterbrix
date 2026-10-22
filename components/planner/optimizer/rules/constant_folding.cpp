@@ -205,11 +205,11 @@ namespace components::planner::optimizer {
             vector::operations::element_test_t test{to_operator_code(expr.inner_op())};
             if (expr.inner_op() == compare_type::regex) {
                 auto flags = expr.regex_flags_param();
-                if (!flags.has_value()) {
+                if (!flags.has_value() || storage.type(*flags).type() != types::logical_type::UTINYINT) {
                     return {false, types::tri_bool_t::unknown};
                 }
                 test = vector::operations::element_test_t{
-                    vector::operations::match_flags_of(storage.at(*flags).get_value<std::string_view>(0))};
+                    vector::operations::match_flags_of(storage.at(*flags).get_value<uint8_t>(0))};
             } else if (!vector::operations::is_quantifiable(test.code())) {
                 return {false, types::tri_bool_t::unknown};
             }

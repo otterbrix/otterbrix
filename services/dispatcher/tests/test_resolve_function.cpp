@@ -4,6 +4,9 @@
 #include <core/pmr.hpp>
 #include <services/dispatcher/resolve_function.hpp>
 
+#include <algorithm>
+#include <span>
+
 using namespace services::dispatcher;
 using components::types::complex_logical_type;
 using components::types::logical_type;
@@ -309,4 +312,54 @@ TEST_CASE("dispatcher::resolve_function: abs resolves per argument type") {
     }
 
     REQUIRE(resolve("abs", {logical_type::STRING_LITERAL}).has_error());
+}
+
+// PostgreSQL 18 func_select_candidate: at an unknown-typed position the string category wins a tie, so
+// regexp_replace(s, p, r, NULL) is the flags form, not the start form.
+TEST_CASE("dispatcher::resolve_function: an untyped NULL breaks a tie toward the string overload") {
+    auto resolved = resolve(
+        "regexp_replace",
+        {logical_type::STRING_LITERAL, logical_type::STRING_LITERAL, logical_type::STRING_LITERAL, logical_type::NA});
+    INFO((resolved.has_error() ? std::string{resolved.error().what} : std::string{}));
+    REQUIRE_FALSE(resolved.has_error());
+    REQUIRE(resolved.value().arguments.size() == 4);
+    REQUIRE(resolved.value().arguments[3].target.type() == logical_type::STRING_LITERAL);
+    REQUIRE(resolved.value().result.type() == logical_type::STRING_LITERAL);
+
+    auto like = resolve("regexp_like", {logical_type::STRING_LITERAL, logical_type::STRING_LITERAL, logical_type::NA});
+    INFO((like.has_error() ? std::string{like.error().what} : std::string{}));
+    REQUIRE_FALSE(like.has_error());
+    REQUIRE(like.value().arguments[2].target.type() == logical_type::STRING_LITERAL);
+}
+
+TEST_CASE("dispatcher::resolve_function: an internal builtin resolves only for a call that pins it") {
+    const auto* row = std::find_if(components::compute::DEFAULT_FUNCTIONS.begin(),
+                                   components::compute::DEFAULT_FUNCTIONS.end(),
+                                   [](const auto& entry) { return entry.first == "like_match"; });
+    REQUIRE(row != components::compute::DEFAULT_FUNCTIONS.end());
+
+    const std::initializer_list<logical_type> mode_call{logical_type::STRING_LITERAL,
+                                                        logical_type::STRING_LITERAL,
+                                                        logical_type::UTINYINT};
+    auto unpinned = resolve("like_match", mode_call);
+    REQUIRE(unpinned.has_error());
+    REQUIRE(unpinned.error().type == core::error_code_t::unrecognized_function);
+
+    auto arguments = args(mode_call);
+    const components::compute::function_pin_t pin{row->second, 0};
+    auto pinned = resolve_function(resource(),
+                                   casts(),
+                                   components::graph_execution_context{},
+                                   functions(),
+                                   function_qualified_name_t{core::function_name_t{"like_match"}},
+                                   arguments,
+                                   any_kind(),
+                                   std::span<const components::compute::function_pin_t>{&pin, 1});
+    INFO((pinned.has_error() ? std::string{pinned.error().what} : std::string{}));
+    REQUIRE_FALSE(pinned.has_error());
+    REQUIRE(pinned.value().pin.uid == row->second);
+    REQUIRE(pinned.value().result.type() == logical_type::BOOLEAN);
+
+    auto mode_through_regexp_like = resolve("regexp_like", mode_call);
+    REQUIRE(mode_through_regexp_like.has_error());
 }

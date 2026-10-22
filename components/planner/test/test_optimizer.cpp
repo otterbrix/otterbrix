@@ -3293,3 +3293,49 @@ TEST_CASE("optimizer::eager_aggregation::cast_join_key_is_pushed") {
     CHECK(k.path()[0] == 1);
     CHECK(partial->output_types()[1].type() == components::types::logical_type::INTEGER);
 }
+
+// A match takes its mode as UTINYINT (match_mode_of); constant folding leaves any other mode to the graph builder,
+// which refuses it, instead of reading a string's bytes as mode bits.
+TEST_CASE("optimizer::quantified_match_with_a_non_utinyint_mode_is_not_folded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto probe = params->add_parameter(components::vector::make_scalar(&resource, std::string_view{"abc"}),
+                                       components::vector::parameter_kind::literal);
+    std::vector<components::vector::vector_t> elements;
+    elements.push_back(components::vector::make_scalar(&resource, std::string_view{"abc"}));
+    const components::types::complex_logical_type text{components::types::logical_type::STRING_LITERAL};
+    auto set = params->add_parameter(components::vector::make_list(&resource, text, elements),
+                                     components::vector::parameter_kind::literal);
+    auto mode = params->add_parameter(components::vector::make_scalar(&resource, std::string_view{"l"}),
+                                      components::vector::parameter_kind::literal);
+
+    auto comp = make_compare_expression(&resource, compare_type::any, probe, set);
+    comp->set_inner_op(compare_type::regex);
+    comp->set_regex_flags(mode);
+    auto node = make_match_with_expr(&resource, comp);
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+
+    REQUIRE(static_cast<compare_expression_t*>(comp.get())->type() == compare_type::any);
+}
+
+TEST_CASE("optimizer::quantified_match_with_a_utinyint_mode_is_folded") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto params = make_parameter_node(&resource);
+    auto probe = params->add_parameter(components::vector::make_scalar(&resource, std::string_view{"abc"}),
+                                       components::vector::parameter_kind::literal);
+    std::vector<components::vector::vector_t> elements;
+    elements.push_back(components::vector::make_scalar(&resource, std::string_view{"a_c"}));
+    const components::types::complex_logical_type text{components::types::logical_type::STRING_LITERAL};
+    auto set = params->add_parameter(components::vector::make_list(&resource, text, elements),
+                                     components::vector::parameter_kind::literal);
+    auto mode = params->add_parameter(components::vector::make_scalar(&resource, uint8_t{1}),
+                                      components::vector::parameter_kind::literal);
+
+    auto comp = make_compare_expression(&resource, compare_type::any, probe, set);
+    comp->set_inner_op(compare_type::regex);
+    comp->set_regex_flags(mode);
+    auto node = make_match_with_expr(&resource, comp);
+    components::planner::optimize(&resource, node, params.get(), test_execution_context());
+
+    REQUIRE(static_cast<compare_expression_t*>(comp.get())->type() == compare_type::all_true);
+}

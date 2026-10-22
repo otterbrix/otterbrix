@@ -1,6 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/compute/function.hpp>
+#include <components/vector/operations/apply_quantified.hpp>
 #include <core/pmr.hpp>
+
+#include <optional>
 
 using namespace components::compute;
 using namespace components::types;
@@ -701,11 +704,433 @@ TEST_CASE("components::compute::string::regexp_replace_basic") {
     REQUIRE(fn != nullptr);
 
     auto args =
-        one_row_chunk(&fx.resource, {arg_t::text("hello 123 world 456"), arg_t::text("[0-9]+"), arg_t::text("#")});
+        one_row_chunk(&fx.resource,
+                      {arg_t::text("hello 123 world 456"), arg_t::text("[0-9]+"), arg_t::text("#"), arg_t::text("g")});
 
     auto res = fn->execute(args, nullptr, fx.ctx);
     REQUIRE_FALSE(res.has_error());
     REQUIRE(res.value().data[0].data<std::string_view>()[0] == "hello # world #");
+}
+
+// Expected values below are PostgreSQL 18.6 answers to the same calls.
+namespace {
+    std::string replaced(string_registry_fixture& fx, const std::vector<arg_t>& args) {
+        auto* fn = fx.get("regexp_replace");
+        REQUIRE(fn != nullptr);
+        auto res = fn->execute(one_row_chunk(&fx.resource, args), nullptr, fx.ctx);
+        if (res.has_error()) {
+            FAIL(std::string{res.error().what});
+        }
+        REQUIRE_FALSE(res.value().data[0].is_null(0));
+        return std::string{res.value().data[0].data<std::string_view>()[0]};
+    }
+
+    core::error_t refused(string_registry_fixture& fx, const std::vector<arg_t>& args) {
+        auto* fn = fx.get("regexp_replace");
+        REQUIRE(fn != nullptr);
+        auto res = fn->execute(one_row_chunk(&fx.resource, args), nullptr, fx.ctx);
+        REQUIRE(res.has_error());
+        return res.error();
+    }
+
+    using a = arg_t;
+} // namespace
+
+TEST_CASE("components::compute::string::regexp_replace_replaces_the_first_match_by_default") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("hello 123 world 456"), a::text("[0-9]+"), a::text("#")}) == "hello # world 456");
+    REQUIRE(replaced(fx, {a::text("foobarbaz"), a::text("b.."), a::text("X")}) == "fooXbaz");
+    REQUIRE(replaced(fx, {a::text("aaa"), a::text("a"), a::text("b"), a::text("")}) == "baa");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_global_flag") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("foobarbaz"), a::text("b.."), a::text("X"), a::text("g")}) == "fooXX");
+    REQUIRE(replaced(fx, {a::text("banana"), a::text("ana"), a::text("X"), a::text("g")}) == "bXna");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_empty_matches_advance_one_character") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("abc"), a::text("x*"), a::text("-"), a::text("g")}) == "-a-b-c-");
+    REQUIRE(replaced(fx, {a::text("abc"), a::text(""), a::text("-"), a::text("g")}) == "-a-b-c-");
+    REQUIRE(replaced(fx, {a::text("baaac"), a::text("a*"), a::text("-"), a::text("g")}) == "-b--c-");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_replacement_escapes") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("foobarbaz"), a::text("b(..)"), a::text("X\\1Y"), a::text("g")}) == "fooXarYXazY");
+    REQUIRE(replaced(fx, {a::text("foo"), a::text("o"), a::text("\\&\\&")}) == "fooo");
+    REQUIRE(replaced(fx, {a::text("a.b"), a::text("\\."), a::text("\\\\")}) == "a\\b");
+    REQUIRE(replaced(fx, {a::text("abcdefghijk"), a::text("(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)"), a::text("\\10")}) ==
+            "a0k");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_other_escapes_are_literal") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("foobarbaz"), a::text("b(..)"), a::text("X$1Y")}) == "fooX$1Ybaz");
+    REQUIRE(replaced(fx, {a::text("a.b"), a::text("\\."), a::text("\\q")}) == "a\\qb");
+    REQUIRE(replaced(fx, {a::text("a.b"), a::text("\\."), a::text("x\\")}) == "ax\\b");
+    REQUIRE(replaced(fx, {a::text("abc"), a::text("b"), a::text("\\0")}) == "a\\0c");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_missing_groups_insert_nothing") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("abc"), a::text("(b)"), a::text("[\\1\\2]")}) == "a[b]c");
+    REQUIRE(replaced(fx, {a::text("abc"), a::text("(x)?b"), a::text("[\\1]")}) == "a[]c");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_case_flags") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("ABC"), a::text("b"), a::text("x")}) == "ABC");
+    REQUIRE(replaced(fx, {a::text("ABC"), a::text("b"), a::text("x"), a::text("i")}) == "AxC");
+    REQUIRE(replaced(fx, {a::text("ABC"), a::text("b"), a::text("x"), a::text("ic")}) == "ABC");
+    REQUIRE(replaced(fx, {a::text("ABC"), a::text("b"), a::text("x"), a::text("ci")}) == "AxC");
+    REQUIRE(replaced(fx, {a::text("aXbXc"), a::text("x"), a::text("-"), a::text("gi")}) == "a-b-c");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_newline_flags") {
+    string_registry_fixture fx;
+    const auto two_lines = std::string{"a\nb"};
+    auto replace = [&](std::string_view pattern, std::string_view flags) {
+        return replaced(fx, {a::text(two_lines), a::text(pattern), a::text("X"), a::text(flags)});
+    };
+    REQUIRE(replaced(fx, {a::text(two_lines), a::text("a.b"), a::text("X")}) == "X");
+    REQUIRE(replaced(fx, {a::text(two_lines), a::text("^b"), a::text("X")}) == two_lines);
+    REQUIRE(replaced(fx, {a::text(two_lines), a::text("a$"), a::text("X")}) == two_lines);
+    REQUIRE(replace("a.b", "n") == two_lines);
+    REQUIRE(replace("a.b", "m") == two_lines);
+    REQUIRE(replace("^b", "n") == "a\nX");
+    REQUIRE(replace("a$", "n") == "X\nb");
+    REQUIRE(replace("^b", "s") == two_lines);
+    REQUIRE(replace("^b", "ns") == two_lines);
+    REQUIRE(replace("a.b", "p") == two_lines);
+    REQUIRE(replace("^b", "p") == two_lines);
+    REQUIRE(replace("a.b", "w") == "X");
+    REQUIRE(replace("^b", "w") == "a\nX");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_quote_flag") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("a.c abc"), a::text("a.c"), a::text("X"), a::text("gq")}) == "X abc");
+    REQUIRE(replaced(fx, {a::text("A.C abc"), a::text("a.c"), a::text("X"), a::text("qi")}) == "X abc");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_start_and_occurrence") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("hello world"), a::text("l"), a::text("XX"), a::integer(1), a::integer(2)}) ==
+            "helXXo world");
+    REQUIRE(replaced(fx, {a::text("hello world"), a::text("l"), a::text("XX"), a::integer(5)}) == "hello worXXd");
+    REQUIRE(replaced(fx, {a::text("hello world"), a::text("l"), a::text("XX"), a::integer(1), a::integer(0)}) ==
+            "heXXXXo worXXd");
+    REQUIRE(replaced(fx, {a::text("hello world"), a::text("l"), a::text("XX"), a::integer(1), a::integer(9)}) ==
+            "hello world");
+    REQUIRE(replaced(fx, {a::text("hello world"), a::text("l"), a::text("XX"), a::integer(4), a::integer(1)}) ==
+            "helXXo world");
+    REQUIRE(replaced(fx, {a::text("hello world"), a::text("l"), a::text("XX"), a::integer(20)}) == "hello world");
+    REQUIRE(replaced(fx, {a::text("aaa"), a::text("a"), a::text("b"), a::integer(1), a::integer(2)}) == "aba");
+    REQUIRE(replaced(fx, {a::text("abc"), a::text("x*"), a::text("-"), a::integer(2), a::integer(0)}) == "a-b-c-");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_start_keeps_the_text_before_it_as_context") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("abc"), a::text("^b"), a::text("X"), a::integer(2)}) == "abc");
+    REQUIRE(replaced(fx, {a::text("abc"), a::text("^a"), a::text("X"), a::integer(1)}) == "Xbc");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_start_occurrence_and_flags") {
+    string_registry_fixture fx;
+    REQUIRE(
+        replaced(fx,
+                 {a::text("Hello World"), a::text("L"), a::text("X"), a::integer(1), a::integer(0), a::text("i")}) ==
+        "HeXXo WorXd");
+    REQUIRE(
+        replaced(fx,
+                 {a::text("hello world"), a::text("l"), a::text("XX"), a::integer(1), a::integer(2), a::text("g")}) ==
+        "helXXo world");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_refuses_a_bad_start_or_occurrence") {
+    string_registry_fixture fx;
+    auto start = refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::integer(0)});
+    REQUIRE(start.type == core::error_code_t::invalid_parameter);
+    REQUIRE(start.what == "invalid value for parameter \"start\": 0");
+    auto negative = refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::integer(-1), a::integer(1)});
+    REQUIRE(negative.what == "invalid value for parameter \"start\": -1");
+    auto occurrence = refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::integer(1), a::integer(-1)});
+    REQUIRE(occurrence.type == core::error_code_t::invalid_parameter);
+    REQUIRE(occurrence.what == "invalid value for parameter \"n\": -1");
+    auto both = refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::integer(0), a::integer(-1)});
+    REQUIRE(both.what == "invalid value for parameter \"start\": 0");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_refuses_an_unknown_flag") {
+    string_registry_fixture fx;
+    auto unknown = refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::text("z")});
+    REQUIRE(unknown.type == core::error_code_t::invalid_parameter);
+    REQUIRE(unknown.what == "invalid regular expression option: \"z\"");
+    REQUIRE(refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::text("gz")}).what ==
+            "invalid regular expression option: \"z\"");
+    REQUIRE(refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::text("G")}).what ==
+            "invalid regular expression option: \"G\"");
+    REQUIRE(refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::text("1")}).what ==
+            "invalid regular expression option: \"1\"");
+    REQUIRE(
+        refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::integer(1), a::integer(1), a::text("z")}).what ==
+        "invalid regular expression option: \"z\"");
+    REQUIRE(refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::text("\xC3\xA9")}).what ==
+            "invalid regular expression option: \"\xC3\xA9\"");
+}
+
+// PostgreSQL's pg_utf_mblen: a byte that cannot lead a UTF-8 sequence is one character.
+TEST_CASE("components::compute::string::regexp_replace_names_an_invalid_lead_byte_alone") {
+    string_registry_fixture fx;
+    REQUIRE(refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::text("\xFFgg")}).what ==
+            "invalid regular expression option: \"\xFF\"");
+    REQUIRE(refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::text("\xF8gg")}).what ==
+            "invalid regular expression option: \"\xF8\"");
+    REQUIRE(refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::text("\xA9gg")}).what ==
+            "invalid regular expression option: \"\xA9\"");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_tight_flag_changes_nothing") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("abc"), a::text("b"), a::text("x"), a::text("t")}) == "axc");
+    REQUIRE(replaced(fx, {a::text("abab"), a::text("b"), a::text("x"), a::text("gt")}) == "axax");
+    REQUIRE(replaced(fx, {a::text("a b"), a::text("a b"), a::text("x"), a::text("t")}) == "x");
+}
+
+// PostgreSQL accepts these: expanded syntax, BRE and ERE have no RE2 counterpart here.
+TEST_CASE("components::compute::string::regexp_replace_refuses_the_flavour_flags") {
+    string_registry_fixture fx;
+    for (const auto* flag : {"x", "b", "e"}) {
+        INFO(flag);
+        auto error = refused(fx, {a::text("abc"), a::text("b"), a::text("x"), a::text(flag)});
+        REQUIRE(error.type == core::error_code_t::invalid_parameter);
+        REQUIRE(std::string{error.what} == "invalid regular expression option: \"" + std::string{flag} + "\"");
+    }
+}
+
+TEST_CASE("components::compute::string::regexp_replace_refuses_a_pattern_re2_cannot_run") {
+    string_registry_fixture fx;
+    auto backreference = refused(fx, {a::text("abc"), a::text("(a)\\1"), a::text("x")});
+    REQUIRE(backreference.what == "invalid regular expression: invalid escape sequence: \\1");
+    auto lookahead = refused(fx, {a::text("abc"), a::text("(?=a)"), a::text("x")});
+    REQUIRE(lookahead.what == "invalid regular expression: invalid perl operator: (?=");
+    REQUIRE(refused(fx, {a::text("abc"), a::text("\\y"), a::text("x")}).what ==
+            "invalid regular expression: invalid escape sequence: \\y");
+}
+
+// PostgreSQL 18 regc_lex.c lexescape has no \Q
+TEST_CASE("components::compute::string::regexp_replace_refuses_a_quoted_sequence") {
+    string_registry_fixture fx;
+    REQUIRE(refused(fx, {a::text("a.c"), a::text("\\Q.\\E"), a::text("x")}).what ==
+            "invalid regular expression: invalid escape sequence: \\Q");
+}
+
+TEST_CASE("components::compute::string::regexp_replace_refuses_a_bad_pattern_like_regexp_like") {
+    string_registry_fixture fx;
+    auto unbalanced = refused(fx, {a::text("abc"), a::text("("), a::text("x")});
+    REQUIRE(unbalanced.what == "invalid regular expression: missing ): (");
+    REQUIRE(refused(fx, {a::text("abc"), a::text("("), a::text("x"), a::text("n")}).what ==
+            "invalid regular expression: missing ): (");
+
+    auto* like = fx.get("regexp_like");
+    REQUIRE(like != nullptr);
+    auto matched = like->execute(one_row_chunk(&fx.resource, {a::text("abc"), a::text("(")}), nullptr, fx.ctx);
+    REQUIRE(matched.has_error());
+    REQUIRE(unbalanced.type == matched.error().type);
+}
+
+TEST_CASE("components::compute::string::regexp_replace_null_arguments") {
+    string_registry_fixture fx;
+    auto* fn = fx.get("regexp_replace");
+    REQUIRE(fn != nullptr);
+    for (const auto& args : std::vector<std::vector<arg_t>>{
+             {a::text("a"), a::text("a"), a::null()},
+             {a::text("aaa"), a::text("a"), a::text("b"), a::null()},
+             {a::text("aaa"), a::text("a"), a::text("b"), a::integer(1), a::null()},
+             {a::text("aaa"), a::text("a"), a::text("b"), a::integer(1), a::integer(1), a::null()}}) {
+        auto res = fn->execute(one_row_chunk(&fx.resource, args), nullptr, fx.ctx);
+        REQUIRE_FALSE(res.has_error());
+        REQUIRE(res.value().data[0].is_null(0));
+    }
+}
+
+TEST_CASE("components::compute::string::regexp_replace_counts_characters_not_bytes") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("é"), a::text(""), a::text("-"), a::text("g")}) == "-é-");
+    REQUIRE(replaced(fx, {a::text("éab"), a::text("a"), a::text("X"), a::integer(3)}) == "éab");
+    REQUIRE(replaced(fx, {a::text("éab"), a::text("a"), a::text("X"), a::integer(2)}) == "éXb");
+    REQUIRE(replaced(fx, {a::text("é"), a::text("."), a::text("X"), a::text("g")}) == "X");
+    REQUIRE(replaced(fx, {a::text("привет"), a::text(""), a::text(" "), a::text("g")}) == " п р и в е т ");
+    REQUIRE(replaced(fx, {a::text("é"), a::text(""), a::text("-"), a::integer(1), a::integer(2)}) == "é-");
+    REQUIRE(replaced(fx, {a::text("xéx"), a::text("[^x]"), a::text("Y")}) == "xYx");
+    REQUIRE(replaced(fx, {a::text("É"), a::text("é"), a::text("x"), a::text("i")}) == "x");
+    REQUIRE(replaced(fx, {a::text("ééé"), a::text("é"), a::text("x"), a::integer(2), a::integer(2)}) == "ééx");
+    REQUIRE(replaced(fx, {a::text("é"), a::text(""), a::text("-"), a::integer(2)}) == "é-");
+    REQUIRE(replaced(fx, {a::text("é"), a::text(""), a::text("-"), a::integer(3)}) == "é");
+    REQUIRE(replaced(fx, {a::text("é!"), a::text("\\w"), a::text("Y")}) == "Y!");
+    REQUIRE(replaced(fx, {a::text("é!"), a::text("\\W"), a::text("Y")}) == "éY");
+    REQUIRE(replaced(fx, {a::text("é-!"), a::text("[\\w-]"), a::text("Y"), a::text("g")}) == "YY!");
+}
+
+// A PostgreSQL text value is valid UTF-8 by construction; RE2 matches no invalid byte with '.' and refuses a pattern
+// that is not UTF-8, and a lead byte steps as many bytes as it announces (pg_utf_mblen) within the string.
+TEST_CASE("components::compute::string::regexp_replace_over_invalid_utf8") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("caf\xE9"), a::text("."), a::text("X"), a::text("g")}) == "XXX\xE9");
+    REQUIRE(replaced(fx, {a::text("\xFF" "a"), a::text(""), a::text("-"), a::text("g")}) == "-\xFF-a-");
+    REQUIRE(replaced(fx, {a::text("\xE9" "a"), a::text(""), a::text("-"), a::text("g")}) == "-\xE9" "a-");
+    auto pattern = refused(fx, {a::text("a"), a::text("\xE9"), a::text("x")});
+    REQUIRE(pattern.type == core::error_code_t::comparison_failure);
+    REQUIRE(pattern.what == "invalid regular expression: invalid UTF-8");
+}
+
+namespace {
+    bool regexp_matched(string_registry_fixture& fx, const std::vector<arg_t>& args) {
+        auto* fn = fx.get("regexp_like");
+        REQUIRE(fn != nullptr);
+        auto res = fn->execute(one_row_chunk(&fx.resource, args), nullptr, fx.ctx);
+        if (res.has_error()) {
+            FAIL(std::string{res.error().what});
+        }
+        REQUIRE_FALSE(res.value().data[0].is_null(0));
+        return res.value().data[0].data<bool>()[0];
+    }
+
+    core::error_t regexp_refused(string_registry_fixture& fx, const std::vector<arg_t>& args) {
+        auto* fn = fx.get("regexp_like");
+        REQUIRE(fn != nullptr);
+        auto res = fn->execute(one_row_chunk(&fx.resource, args), nullptr, fx.ctx);
+        REQUIRE(res.has_error());
+        return res.error();
+    }
+} // namespace
+
+// Expected values are PostgreSQL 18 answers (regexp.c parse_re_flags, regexp_like).
+TEST_CASE("components::compute::string::regexp_like_flags_follow_postgresql") {
+    string_registry_fixture fx;
+    const auto two_lines = std::string{"a\nb"};
+    REQUIRE(regexp_matched(fx, {a::text(two_lines), a::text("a.b")}));
+    REQUIRE_FALSE(regexp_matched(fx, {a::text(two_lines), a::text("a.b"), a::text("n")}));
+    REQUIRE_FALSE(regexp_matched(fx, {a::text(two_lines), a::text("a.b"), a::text("m")}));
+    REQUIRE_FALSE(regexp_matched(fx, {a::text(two_lines), a::text("^b")}));
+    REQUIRE(regexp_matched(fx, {a::text(two_lines), a::text("^b"), a::text("n")}));
+    REQUIRE(regexp_matched(fx, {a::text(two_lines), a::text("^b"), a::text("w")}));
+    REQUIRE_FALSE(regexp_matched(fx, {a::text(two_lines), a::text("^b"), a::text("p")}));
+    REQUIRE(regexp_matched(fx, {a::text("ABC"), a::text("b"), a::text("i")}));
+    REQUIRE_FALSE(regexp_matched(fx, {a::text("ABC"), a::text("b"), a::text("ic")}));
+    REQUIRE(regexp_matched(fx, {a::text("a.c"), a::text("a.c"), a::text("q")}));
+    REQUIRE_FALSE(regexp_matched(fx, {a::text("abc"), a::text("a.c"), a::text("q")}));
+    REQUIRE(regexp_matched(fx, {a::text("abc"), a::text("b"), a::text("t")}));
+    REQUIRE(regexp_matched(fx, {a::text("é"), a::text("^.$")}));
+    REQUIRE(regexp_matched(fx, {a::text("É"), a::text("^é$"), a::text("i")}));
+    REQUIRE(regexp_matched(fx, {a::text("é"), a::text("^\\w$")}));
+    REQUIRE_FALSE(regexp_matched(fx, {a::text("é"), a::text("^\\W$")}));
+}
+
+// PostgreSQL 18 regc_lex.c lexescape: \b is a backspace and \B a backslash, not word boundaries
+TEST_CASE("components::compute::string::regexp_backspace_and_backslash_escapes_follow_postgresql") {
+    string_registry_fixture fx;
+    REQUIRE(replaced(fx, {a::text("a b"), a::text("\\b"), a::text("X"), a::text("g")}) == "a b");
+    REQUIRE(replaced(fx, {a::text("a\bb"), a::text("\\b"), a::text("X")}) == "aXb");
+    REQUIRE(replaced(fx, {a::text("a\\b"), a::text("\\B"), a::text("X")}) == "aXb");
+    REQUIRE(replaced(fx, {a::text("a\bb"), a::text("[\\b]"), a::text("X")}) == "aXb");
+    REQUIRE(replaced(fx, {a::text("a\\b"), a::text("[\\B]"), a::text("X")}) == "aXb");
+    REQUIRE(replaced(fx, {a::text("a\\b"), a::text("\\\\b"), a::text("X")}) == "aX");
+    REQUIRE_FALSE(regexp_matched(fx, {a::text("a b"), a::text("\\b")}));
+    REQUIRE(regexp_matched(fx, {a::text("a\bb"), a::text("^a\\bb$")}));
+    REQUIRE(regexp_matched(fx, {a::text("a\\b"), a::text("^a\\Bb$")}));
+    REQUIRE(refused(fx, {a::text("abc"), a::text("[a-\\b]"), a::text("x")}).what ==
+            "invalid regular expression: invalid character class range: a-\\b");
+}
+
+TEST_CASE("components::compute::string::regexp_like_refuses_what_postgresql_refuses") {
+    string_registry_fixture fx;
+    auto glob = regexp_refused(fx, {a::text("abc"), a::text("a_c"), a::text("l")});
+    REQUIRE(glob.type == core::error_code_t::invalid_parameter);
+    REQUIRE(glob.what == "invalid regular expression option: \"l\"");
+    auto global = regexp_refused(fx, {a::text("abc"), a::text("b"), a::text("g")});
+    REQUIRE(global.type == core::error_code_t::invalid_parameter);
+    REQUIRE(global.what == "regexp_like() does not support the \"global\" option");
+    REQUIRE(regexp_refused(fx, {a::text("abc"), a::text("b"), a::text("iz")}).what ==
+            "invalid regular expression option: \"z\"");
+    REQUIRE(regexp_refused(fx, {a::text("abc"), a::text("b"), a::text("x")}).what ==
+            "invalid regular expression option: \"x\"");
+}
+
+namespace {
+    // A NULL subject is the NA-typed column; otherwise one row of (subject, pattern, mode)
+    data_chunk_t like_mode_chunk(std::pmr::memory_resource* resource,
+                                 std::optional<std::string_view> subject,
+                                 std::string_view pattern,
+                                 components::vector::operations::match_flags_t flags) {
+        std::pmr::vector<complex_logical_type> types(resource);
+        types.emplace_back(subject.has_value() ? logical_type::STRING_LITERAL : logical_type::NA);
+        types.emplace_back(logical_type::STRING_LITERAL);
+        types.emplace_back(logical_type::UTINYINT);
+        data_chunk_t chunk(resource, types, uint64_t{1});
+        if (subject.has_value()) {
+            chunk.data[0].set_value(0, *subject);
+        }
+        chunk.data[1].set_value(0, pattern);
+        chunk.data[2].set_value(0, components::vector::operations::match_mode_of(flags));
+        chunk.set_cardinality(1);
+        return chunk;
+    }
+
+    bool like_matched(string_registry_fixture& fx, const data_chunk_t& args) {
+        auto* fn = fx.get("like_match");
+        REQUIRE(fn != nullptr);
+        auto res = fn->execute(args, nullptr, fx.ctx);
+        REQUIRE_FALSE(res.has_error());
+        REQUIRE_FALSE(res.value().data[0].is_null(0));
+        return res.value().data[0].data<bool>()[0];
+    }
+} // namespace
+
+// PostgreSQL's 'n' is newline-sensitive matching and 'l' no flag at all: neither negates nor reads a LIKE glob.
+TEST_CASE("components::compute::string::regexp_like_flag_letters_do_not_negate_or_glob") {
+    string_registry_fixture fx;
+    REQUIRE_FALSE(regexp_matched(fx, {a::text("abc"), a::text("x"), a::text("n")}));
+    REQUIRE(regexp_refused(fx, {a::text("abc"), a::text("a_c"), a::text("l")}).what ==
+            "invalid regular expression option: \"l\"");
+    REQUIRE(regexp_matched(fx, {a::text("ABC"), a::text("b"), a::text("i")}));
+}
+
+// LIKE's mode is an internal argument: regexp_like takes PostgreSQL's flags only.
+TEST_CASE("components::compute::string::regexp_like_takes_no_match_mode") {
+    using components::vector::operations::match_flags_t;
+    string_registry_fixture fx;
+    auto* fn = fx.get("regexp_like");
+    REQUIRE(fn != nullptr);
+    auto res = fn->execute(like_mode_chunk(&fx.resource, "abc", "a_c", match_flags_t{.glob = true}), nullptr, fx.ctx);
+    REQUIRE(res.has_error());
+}
+
+TEST_CASE("components::compute::string::regexp_like_match_mode_of_like") {
+    using components::vector::operations::match_flags_t;
+    string_registry_fixture fx;
+    REQUIRE(like_matched(fx, like_mode_chunk(&fx.resource, "abc", "a_c", match_flags_t{.glob = true})));
+    REQUIRE_FALSE(like_matched(fx, like_mode_chunk(&fx.resource, "ABC", "a_c", match_flags_t{.glob = true})));
+    REQUIRE(like_matched(
+        fx,
+        like_mode_chunk(&fx.resource, "ABC", "a_c", match_flags_t{.glob = true, .case_insensitive = true})));
+    REQUIRE_FALSE(
+        like_matched(fx, like_mode_chunk(&fx.resource, "abc", "a_c", match_flags_t{.glob = true, .negate = true})));
+    REQUIRE(like_matched(fx, like_mode_chunk(&fx.resource, "abd", "a_c", match_flags_t{.glob = true, .negate = true})));
+    REQUIRE(like_matched(fx, like_mode_chunk(&fx.resource, "abc", "^a.c$", match_flags_t{})));
+    REQUIRE(like_matched(fx, like_mode_chunk(&fx.resource, "caf\xE9", "caf_", match_flags_t{.glob = true})));
+    REQUIRE_FALSE(like_matched(fx, like_mode_chunk(&fx.resource, "\xC3\xA9", "_", match_flags_t{.glob = true})));
+
+    auto* fn = fx.get("like_match");
+    REQUIRE(fn != nullptr);
+    auto unknown =
+        fn->execute(like_mode_chunk(&fx.resource, std::nullopt, "a_c", match_flags_t{.glob = true, .negate = true}),
+                    nullptr,
+                    fx.ctx);
+    REQUIRE_FALSE(unknown.has_error());
+    REQUIRE(unknown.value().data[0].is_null(0));
 }
 
 TEST_CASE("components::compute::string::regexp_replace_no_match") {

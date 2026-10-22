@@ -245,7 +245,8 @@ namespace services::dispatcher::validation {
                 return context_.function_registry.get_function(pin.uid)->get_copy(context_.resource);
             }
 
-            // SQL LIKE / ILIKE / regexp all match through regexp_like(subject, pattern, flags).
+            // A match comparison runs like_match(subject, pattern, mode): the graph builder hands it the
+            // comparison's UTINYINT mode parameter.
             // TODO: should resolve like any other call -- there is nothing special about regex.
             void resolve_regex_uid(compare_expression_t* comparison,
                                    const complex_logical_type& subject,
@@ -253,15 +254,17 @@ namespace services::dispatcher::validation {
                 std::pmr::vector<complex_logical_type> arguments(context_.resource);
                 arguments.push_back(subject);
                 arguments.push_back(pattern);
-                arguments.emplace_back(logical_type::STRING_LITERAL);
-                auto resolved = resolve_function(context_.resource,
-                                                 context_.cast_registry,
-                                                 context_.execution_context,
-                                                 context_.function_registry,
-                                                 function_qualified_name_t{core::function_name_t{"regexp_like"}},
-                                                 arguments,
-                                                 context_.allowed_functions,
-                                                 {});
+                arguments.emplace_back(logical_type::UTINYINT);
+                const components::compute::function_pin_t pin{components::compute::like_match_uid, 0};
+                auto resolved = resolve_function(
+                    context_.resource,
+                    context_.cast_registry,
+                    context_.execution_context,
+                    context_.function_registry,
+                    function_qualified_name_t{core::function_name_t{std::string{components::compute::like_match_name}}},
+                    arguments,
+                    context_.allowed_functions,
+                    std::span<const components::compute::function_pin_t>{&pin, 1});
                 if (resolved.has_error()) {
                     error_ = core::error_on(context_.resource, resolved.error());
                     return;

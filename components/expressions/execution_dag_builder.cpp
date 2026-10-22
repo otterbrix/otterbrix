@@ -255,6 +255,11 @@ namespace components::expressions {
                     core::error_code_t::invalid_parameter,
                     std::pmr::string{"execution graph builder: match carries no flags parameter", resource()});
             }
+            if (parameters_.type(*flags_id).type() != logical_type::UTINYINT) {
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"execution graph builder: a match mode is a UTINYINT parameter", resource()});
+            }
             auto flags_node = graph_->add_parameter(*flags_id);
             const auto flags_slot = graph_->output_slot(flags_node);
             graph_->set_slot_type(flags_slot, parameters_.type(*flags_id));
@@ -293,6 +298,11 @@ namespace components::expressions {
                 return core::error_t(
                     core::error_code_t::invalid_parameter,
                     std::pmr::string{"execution graph builder: match carries no flags parameter", resource()});
+            }
+            if (parameters_.type(*flags_id).type() != logical_type::UTINYINT) {
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"execution graph builder: a match mode is a UTINYINT parameter", resource()});
             }
             auto flags_node = graph_->add_parameter(*flags_id);
             const auto flags_slot = graph_->output_slot(flags_node);

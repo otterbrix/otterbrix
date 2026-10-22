@@ -4,7 +4,6 @@
 #include <cstdlib>
 #include <limits>
 #include <optional>
-#include <stdexcept>
 
 namespace components::vector::vector_ops {
 
@@ -12,7 +11,8 @@ namespace components::vector::vector_ops {
         template<typename T>
         void templated_generate_sequence(vector_t& result, uint64_t count, int64_t start, int64_t increment) {
             if (start > std::numeric_limits<T>::max() || increment > std::numeric_limits<T>::max()) {
-                throw std::runtime_error("sequence start or increment out of type range");
+                assert(false && "sequence start or increment out of type range");
+                std::abort();
             }
             result.set_vector_type(vector_type::FLAT);
             auto result_data = result.data<T>();
@@ -32,7 +32,8 @@ namespace components::vector::vector_ops {
                                          int64_t start,
                                          int64_t increment) {
             if (start > std::numeric_limits<T>::max() || increment > std::numeric_limits<T>::max()) {
-                throw std::runtime_error("sequence start or increment out of type range");
+                assert(false && "sequence start or increment out of type range");
+                std::abort();
             }
             result.set_vector_type(vector_type::FLAT);
             auto result_data = result.data<T>();
@@ -469,65 +470,70 @@ namespace components::vector::vector_ops {
                 case types::physical_type::BOOL:
                 case types::physical_type::INT8:
                     templated_loop_hash<HAS_RINDEXING, int8_t>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::INT16:
                     templated_loop_hash<HAS_RINDEXING, int16_t>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::INT32:
                     templated_loop_hash<HAS_RINDEXING, int32_t>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::INT64:
                     templated_loop_hash<HAS_RINDEXING, int64_t>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::UINT8:
                     templated_loop_hash<HAS_RINDEXING, uint8_t>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::UINT16:
                     templated_loop_hash<HAS_RINDEXING, uint16_t>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::UINT32:
                     templated_loop_hash<HAS_RINDEXING, uint32_t>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::UINT64:
                     templated_loop_hash<HAS_RINDEXING, uint64_t>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::INT128:
                     templated_loop_hash_128<HAS_RINDEXING, types::int128_t>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::UINT128:
                     templated_loop_hash_128<HAS_RINDEXING, types::uint128_t>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::FLOAT:
                     templated_loop_hash<HAS_RINDEXING, float>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::DOUBLE:
                     templated_loop_hash<HAS_RINDEXING, double>(input, result, rindexing, count);
-                    break;
+                    return;
                 // case types::physical_type::INTERVAL:
                 // templated_loop_hash<HAS_RINDEXING, interval_t>(input, result, rindexing, count);
                 // break;
                 case types::physical_type::STRING:
                     templated_loop_hash<HAS_RINDEXING, std::string_view>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::STRUCT:
                     if (input.type().type() == types::logical_type::INTERVAL) {
                         interval_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
-                        break;
+                        return;
                     }
                     struct_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::LIST:
                     list_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::ARRAY:
                     array_loop_hash<HAS_RINDEXING, true>(input, result, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::NA:
                     na_loop_hash(result);
+                    return;
+                case types::physical_type::UNION:
+                case types::physical_type::BIT:
+                case types::physical_type::UNKNOWN:
+                case types::physical_type::INVALID:
                     break;
-                default:
-                    throw std::logic_error("Invalid type for hash");
             }
+            assert(false && "Invalid type for hash");
+            std::abort();
         }
 
         template<bool HAS_RINDEXING, class T>
@@ -625,65 +631,70 @@ namespace components::vector::vector_ops {
                 case types::physical_type::BOOL:
                 case types::physical_type::INT8:
                     templated_loop_combine_hash<HAS_RINDEXING, int8_t>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::INT16:
                     templated_loop_combine_hash<HAS_RINDEXING, int16_t>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::INT32:
                     templated_loop_combine_hash<HAS_RINDEXING, int32_t>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::INT64:
                     templated_loop_combine_hash<HAS_RINDEXING, int64_t>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::UINT8:
                     templated_loop_combine_hash<HAS_RINDEXING, uint8_t>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::UINT16:
                     templated_loop_combine_hash<HAS_RINDEXING, uint16_t>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::UINT32:
                     templated_loop_combine_hash<HAS_RINDEXING, uint32_t>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::UINT64:
                     templated_loop_combine_hash<HAS_RINDEXING, uint64_t>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::INT128:
                     templated_loop_combine_hash_128<HAS_RINDEXING, types::int128_t>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::UINT128:
                     templated_loop_combine_hash_128<HAS_RINDEXING, types::uint128_t>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::FLOAT:
                     templated_loop_combine_hash<HAS_RINDEXING, float>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::DOUBLE:
                     templated_loop_combine_hash<HAS_RINDEXING, double>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 // case types::physical_type::INTERVAL:
                 // templated_loop_combine_hash<HAS_RINDEXING, interval_t>(input, hashes, rindexing, count);
                 // break;
                 case types::physical_type::STRING:
                     templated_loop_combine_hash<HAS_RINDEXING, std::string_view>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::STRUCT:
                     if (input.type().type() == types::logical_type::INTERVAL) {
                         interval_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
-                        break;
+                        return;
                     }
                     struct_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::LIST:
                     list_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::ARRAY:
                     array_loop_hash<HAS_RINDEXING, false>(input, hashes, rindexing, count);
-                    break;
+                    return;
                 case types::physical_type::NA:
                     na_loop_combine_hash<HAS_RINDEXING>(hashes, rindexing, count);
+                    return;
+                case types::physical_type::UNION:
+                case types::physical_type::BIT:
+                case types::physical_type::UNKNOWN:
+                case types::physical_type::INVALID:
                     break;
-                default:
-                    throw std::logic_error("Invalid type for hash");
             }
+            assert(false && "Invalid type for hash");
+            std::abort();
         }
 
     } // namespace impl
@@ -692,19 +703,58 @@ namespace components::vector::vector_ops {
         switch (result.type().type()) {
             case types::logical_type::TINYINT:
                 impl::templated_generate_sequence<int8_t>(result, count, start, increment);
-                break;
+                return;
             case types::logical_type::SMALLINT:
                 impl::templated_generate_sequence<int16_t>(result, count, start, increment);
-                break;
+                return;
             case types::logical_type::INTEGER:
                 impl::templated_generate_sequence<int32_t>(result, count, start, increment);
-                break;
+                return;
             case types::logical_type::BIGINT:
                 impl::templated_generate_sequence<int64_t>(result, count, start, increment);
+                return;
+            case types::logical_type::NA:
+            case types::logical_type::ANY:
+            case types::logical_type::USER:
+            case types::logical_type::BOOLEAN:
+            case types::logical_type::HUGEINT:
+            case types::logical_type::DATE:
+            case types::logical_type::TIME:
+            case types::logical_type::TIME_TZ:
+            case types::logical_type::TIMESTAMP:
+            case types::logical_type::TIMESTAMP_TZ:
+            case types::logical_type::INTERVAL:
+            case types::logical_type::DECIMAL:
+            case types::logical_type::FLOAT:
+            case types::logical_type::DOUBLE:
+            case types::logical_type::BLOB:
+            case types::logical_type::UTINYINT:
+            case types::logical_type::USMALLINT:
+            case types::logical_type::UINTEGER:
+            case types::logical_type::UBIGINT:
+            case types::logical_type::UHUGEINT:
+            case types::logical_type::BIT:
+            case types::logical_type::STRING_LITERAL:
+            case types::logical_type::INTEGER_LITERAL:
+            case types::logical_type::POINTER:
+            case types::logical_type::VALIDITY:
+            case types::logical_type::UUID:
+            case types::logical_type::STRUCT:
+            case types::logical_type::LIST:
+            case types::logical_type::MAP:
+            case types::logical_type::TABLE:
+            case types::logical_type::ENUM:
+            case types::logical_type::FUNCTION:
+            case types::logical_type::LAMBDA:
+            case types::logical_type::UNION:
+            case types::logical_type::VARIANT:
+            case types::logical_type::ARRAY:
+            case types::logical_type::UNKNOWN:
+            case types::logical_type::INVALID:
                 break;
-            default:
-                throw std::runtime_error("Unimplemented type for generate sequence");
         }
+        assert(false && "Unimplemented type for generate sequence");
+        std::abort();
     }
 
     void generate_sequence(vector_t& result,
@@ -715,98 +765,70 @@ namespace components::vector::vector_ops {
         switch (result.type().type()) {
             case types::logical_type::TINYINT:
                 impl::templated_generate_sequence<int8_t>(result, count, indexing, start, increment);
-                break;
+                return;
             case types::logical_type::SMALLINT:
                 impl::templated_generate_sequence<int16_t>(result, count, indexing, start, increment);
-                break;
+                return;
             case types::logical_type::INTEGER:
                 impl::templated_generate_sequence<int32_t>(result, count, indexing, start, increment);
-                break;
+                return;
             case types::logical_type::BIGINT:
                 impl::templated_generate_sequence<int64_t>(result, count, indexing, start, increment);
+                return;
+            case types::logical_type::NA:
+            case types::logical_type::ANY:
+            case types::logical_type::USER:
+            case types::logical_type::BOOLEAN:
+            case types::logical_type::HUGEINT:
+            case types::logical_type::DATE:
+            case types::logical_type::TIME:
+            case types::logical_type::TIME_TZ:
+            case types::logical_type::TIMESTAMP:
+            case types::logical_type::TIMESTAMP_TZ:
+            case types::logical_type::INTERVAL:
+            case types::logical_type::DECIMAL:
+            case types::logical_type::FLOAT:
+            case types::logical_type::DOUBLE:
+            case types::logical_type::BLOB:
+            case types::logical_type::UTINYINT:
+            case types::logical_type::USMALLINT:
+            case types::logical_type::UINTEGER:
+            case types::logical_type::UBIGINT:
+            case types::logical_type::UHUGEINT:
+            case types::logical_type::BIT:
+            case types::logical_type::STRING_LITERAL:
+            case types::logical_type::INTEGER_LITERAL:
+            case types::logical_type::POINTER:
+            case types::logical_type::VALIDITY:
+            case types::logical_type::UUID:
+            case types::logical_type::STRUCT:
+            case types::logical_type::LIST:
+            case types::logical_type::MAP:
+            case types::logical_type::TABLE:
+            case types::logical_type::ENUM:
+            case types::logical_type::FUNCTION:
+            case types::logical_type::LAMBDA:
+            case types::logical_type::UNION:
+            case types::logical_type::VARIANT:
+            case types::logical_type::ARRAY:
+            case types::logical_type::UNKNOWN:
+            case types::logical_type::INVALID:
                 break;
-            default:
-                throw std::runtime_error("Unimplemented type for generate sequence");
         }
+        assert(false && "Unimplemented type for generate sequence");
+        std::abort();
     }
 
-    void copy(const vector_t& source,
-              vector_t& target,
-              const indexing_vector_t& indexing,
-              uint64_t source_count,
-              uint64_t source_offset,
-              uint64_t target_offset,
-              uint64_t copy_count) {
-        if (target.type().type() == types::logical_type::NA) {
-            return;
-        }
-        if (source.type().type() == types::logical_type::NA) {
-            for (uint64_t row = 0; row < copy_count; row++) {
-                target.set_null(target_offset + row, true);
-            }
-            return;
-        }
-
-        indexing_vector_t owned_indexing(source.resource());
-        const indexing_vector_t* indexing_ptr = &indexing;
-
-        const vector_t* source_ptr = &source;
-        bool finished = false;
-        while (!finished) {
-            switch (source_ptr->get_vector_type()) {
-                case vector_type::DICTIONARY: {
-                    auto& child = source_ptr->child();
-                    auto& dict_indexing = source_ptr->indexing();
-                    auto new_buffer = dict_indexing.slice(source_ptr->resource(), *indexing_ptr, source_count);
-                    owned_indexing = indexing_vector_t(new_buffer);
-                    indexing_ptr = &owned_indexing;
-                    source_ptr = &child;
-                    break;
-                }
-                case vector_type::SEQUENCE: {
-                    int64_t start, increment;
-                    vector_t seq(source_ptr->resource(), source_ptr->type());
-                    source_ptr->get_sequence(start, increment);
-                    generate_sequence(seq, source_count, *indexing_ptr, start, increment);
-                    copy(seq, target, *indexing_ptr, source_count, source_offset, target_offset);
-                    return;
-                }
-                case vector_type::CONSTANT:
-                    indexing_ptr = zero_indexing_vector(copy_count, owned_indexing);
-                    finished = true;
-                    break;
-                case vector_type::FLAT:
-                    finished = true;
-                    break;
-                default:
-                    throw std::runtime_error("FIXME unimplemented vector type for copy");
-            }
-        }
-
-        if (copy_count == 0) {
-            return;
-        }
-
-        const auto target_vector_type = target.get_vector_type();
-        if (copy_count == 1 && target_vector_type == vector_type::CONSTANT) {
-            target_offset = 0;
-            target.set_vector_type(vector_type::FLAT);
-        }
-        assert(target.get_vector_type() == vector_type::FLAT);
-
+    static void copy_resolved(const vector_t* source_ptr,
+                              const indexing_vector_t* indexing_ptr,
+                              const indexing_vector_t& indexing,
+                              uint64_t source_count,
+                              vector_t& target,
+                              vector_type target_vector_type,
+                              uint64_t source_offset,
+                              uint64_t target_offset,
+                              uint64_t copy_count) {
         auto& tmask = target.validity();
-        if (source_ptr->get_vector_type() == vector_type::CONSTANT) {
-            const bool valid = !source_ptr->is_null();
-            for (uint64_t i = 0; i < copy_count; i++) {
-                tmask.set(target_offset + i, valid);
-            }
-        } else {
-            auto& smask = source_ptr->validity();
-            tmask.copy_indexing(smask, *indexing_ptr, source_offset, target_offset, copy_count);
-        }
-
-        assert(indexing_ptr);
-
         switch (source_ptr->type().to_physical_type()) {
             case types::physical_type::BOOL:
             case types::physical_type::INT8:
@@ -816,7 +838,7 @@ namespace components::vector::vector_ops {
                                              source_offset,
                                              target_offset,
                                              copy_count);
-                break;
+                return;
             case types::physical_type::INT16:
                 impl::templated_copy<int16_t>(*source_ptr,
                                               *indexing_ptr,
@@ -824,7 +846,7 @@ namespace components::vector::vector_ops {
                                               source_offset,
                                               target_offset,
                                               copy_count);
-                break;
+                return;
             case types::physical_type::INT32:
                 impl::templated_copy<int32_t>(*source_ptr,
                                               *indexing_ptr,
@@ -832,7 +854,7 @@ namespace components::vector::vector_ops {
                                               source_offset,
                                               target_offset,
                                               copy_count);
-                break;
+                return;
             case types::physical_type::INT64:
                 impl::templated_copy<int64_t>(*source_ptr,
                                               *indexing_ptr,
@@ -840,7 +862,7 @@ namespace components::vector::vector_ops {
                                               source_offset,
                                               target_offset,
                                               copy_count);
-                break;
+                return;
             case types::physical_type::UINT8:
                 impl::templated_copy<uint8_t>(*source_ptr,
                                               *indexing_ptr,
@@ -848,7 +870,7 @@ namespace components::vector::vector_ops {
                                               source_offset,
                                               target_offset,
                                               copy_count);
-                break;
+                return;
             case types::physical_type::UINT16:
                 impl::templated_copy<uint16_t>(*source_ptr,
                                                *indexing_ptr,
@@ -856,7 +878,7 @@ namespace components::vector::vector_ops {
                                                source_offset,
                                                target_offset,
                                                copy_count);
-                break;
+                return;
             case types::physical_type::UINT32:
                 impl::templated_copy<uint32_t>(*source_ptr,
                                                *indexing_ptr,
@@ -864,7 +886,7 @@ namespace components::vector::vector_ops {
                                                source_offset,
                                                target_offset,
                                                copy_count);
-                break;
+                return;
             case types::physical_type::UINT64:
                 impl::templated_copy<uint64_t>(*source_ptr,
                                                *indexing_ptr,
@@ -872,7 +894,7 @@ namespace components::vector::vector_ops {
                                                source_offset,
                                                target_offset,
                                                copy_count);
-                break;
+                return;
             case types::physical_type::INT128:
                 impl::templated_copy<types::int128_t>(*source_ptr,
                                                       *indexing_ptr,
@@ -880,7 +902,7 @@ namespace components::vector::vector_ops {
                                                       source_offset,
                                                       target_offset,
                                                       copy_count);
-                break;
+                return;
             case types::physical_type::UINT128:
                 impl::templated_copy<types::uint128_t>(*source_ptr,
                                                        *indexing_ptr,
@@ -888,7 +910,7 @@ namespace components::vector::vector_ops {
                                                        source_offset,
                                                        target_offset,
                                                        copy_count);
-                break;
+                return;
             case types::physical_type::FLOAT:
                 impl::templated_copy<float>(*source_ptr,
                                             *indexing_ptr,
@@ -896,7 +918,7 @@ namespace components::vector::vector_ops {
                                             source_offset,
                                             target_offset,
                                             copy_count);
-                break;
+                return;
             case types::physical_type::DOUBLE:
                 impl::templated_copy<double>(*source_ptr,
                                              *indexing_ptr,
@@ -904,7 +926,7 @@ namespace components::vector::vector_ops {
                                              source_offset,
                                              target_offset,
                                              copy_count);
-                break;
+                return;
             case types::physical_type::STRING: {
                 auto ldata = source_ptr->data<std::string_view>();
                 auto tdata = target.data<std::string_view>();
@@ -921,7 +943,7 @@ namespace components::vector::vector_ops {
                             ldata[source_idx].size());
                     }
                 }
-                break;
+                return;
             }
             case types::physical_type::STRUCT: {
                 auto& source_children = source_ptr->entries();
@@ -937,7 +959,7 @@ namespace components::vector::vector_ops {
                          target_offset,
                          copy_count);
                 }
-                break;
+                return;
             }
             case types::physical_type::ARRAY: {
                 assert(target.type().to_physical_type() == types::physical_type::ARRAY);
@@ -966,7 +988,7 @@ namespace components::vector::vector_ops {
                      source_count * array_size,
                      source_offset * array_size,
                      target_offset * array_size);
-                break;
+                return;
             }
             case types::physical_type::LIST: {
                 assert(target.type().to_physical_type() == types::physical_type::LIST);
@@ -977,11 +999,11 @@ namespace components::vector::vector_ops {
 
                 if (target_vector_type == vector_type::CONSTANT) {
                     if (!tmask.row_is_valid(target_offset)) {
-                        break;
+                        return;
                     }
                     auto source_idx = indexing_ptr->get_index(source_offset);
                     if (source_idx == std::numeric_limits<uint64_t>::max()) {
-                        break;
+                        return;
                     }
                     auto& source_entry = sdata[source_idx];
                     uint64_t source_child_size = source_entry.length + source_entry.offset;
@@ -1031,11 +1053,105 @@ namespace components::vector::vector_ops {
                         }
                     }
                 }
-                break;
+                return;
             }
-            default:
-                throw std::runtime_error("Unimplemented type for copy!");
+            case types::physical_type::NA:
+            case types::physical_type::UNION:
+            case types::physical_type::BIT:
+            case types::physical_type::UNKNOWN:
+            case types::physical_type::INVALID:
+                break;
         }
+        assert(false && "Unimplemented type for copy!");
+        std::abort();
+    }
+
+    void copy(const vector_t& source,
+              vector_t& target,
+              const indexing_vector_t& indexing,
+              uint64_t source_count,
+              uint64_t source_offset,
+              uint64_t target_offset,
+              uint64_t copy_count) {
+        if (target.type().type() == types::logical_type::NA) {
+            return;
+        }
+        if (source.type().type() == types::logical_type::NA) {
+            for (uint64_t row = 0; row < copy_count; row++) {
+                target.set_null(target_offset + row, true);
+            }
+            return;
+        }
+
+        indexing_vector_t owned_indexing(source.resource());
+        const indexing_vector_t* indexing_ptr = &indexing;
+
+        const vector_t* source_ptr = &source;
+        bool finished = false;
+        while (!finished) {
+            switch (source_ptr->get_vector_type()) {
+                case vector_type::DICTIONARY: {
+                    auto& child = source_ptr->child();
+                    auto& dict_indexing = source_ptr->indexing();
+                    auto new_buffer = dict_indexing.slice(source_ptr->resource(), *indexing_ptr, source_count);
+                    owned_indexing = indexing_vector_t(new_buffer);
+                    indexing_ptr = &owned_indexing;
+                    source_ptr = &child;
+                    continue;
+                }
+                case vector_type::SEQUENCE: {
+                    int64_t start, increment;
+                    vector_t seq(source_ptr->resource(), source_ptr->type());
+                    source_ptr->get_sequence(start, increment);
+                    generate_sequence(seq, source_count, *indexing_ptr, start, increment);
+                    copy(seq, target, *indexing_ptr, source_count, source_offset, target_offset);
+                    return;
+                }
+                case vector_type::CONSTANT:
+                    indexing_ptr = zero_indexing_vector(copy_count, owned_indexing);
+                    finished = true;
+                    continue;
+                case vector_type::FLAT:
+                    finished = true;
+                    continue;
+            }
+            assert(false && "FIXME unimplemented vector type for copy");
+            std::abort();
+        }
+
+        if (copy_count == 0) {
+            return;
+        }
+
+        const auto target_vector_type = target.get_vector_type();
+        if (copy_count == 1 && target_vector_type == vector_type::CONSTANT) {
+            target_offset = 0;
+            target.set_vector_type(vector_type::FLAT);
+        }
+        assert(target.get_vector_type() == vector_type::FLAT);
+
+        auto& tmask = target.validity();
+        if (source_ptr->get_vector_type() == vector_type::CONSTANT) {
+            const bool valid = !source_ptr->is_null();
+            for (uint64_t i = 0; i < copy_count; i++) {
+                tmask.set(target_offset + i, valid);
+            }
+        } else {
+            auto& smask = source_ptr->validity();
+            tmask.copy_indexing(smask, *indexing_ptr, source_offset, target_offset, copy_count);
+        }
+
+        assert(indexing_ptr);
+
+        copy_resolved(source_ptr,
+                      indexing_ptr,
+                      indexing,
+                      source_count,
+                      target,
+                      target_vector_type,
+                      source_offset,
+                      target_offset,
+                      copy_count);
 
         if (target_vector_type != vector_type::FLAT) {
             target.set_vector_type(target_vector_type);
@@ -1603,51 +1719,58 @@ namespace components::vector::vector_ops {
             case types::physical_type::BOOL:
             case types::physical_type::INT8:
                 impl::templated_loop_hash32<int8_t>(input, result_data, count, seed, scalar);
-                break;
+                return;
             case types::physical_type::INT16:
                 impl::templated_loop_hash32<int16_t>(input, result_data, count, seed, scalar);
-                break;
+                return;
             case types::physical_type::INT32:
                 impl::templated_loop_hash32<int32_t>(input, result_data, count, seed, scalar);
-                break;
+                return;
             case types::physical_type::INT64:
                 impl::templated_loop_hash32<int64_t>(input, result_data, count, seed, scalar);
-                break;
+                return;
             case types::physical_type::UINT8:
                 impl::templated_loop_hash32<uint8_t>(input, result_data, count, seed, scalar);
-                break;
+                return;
             case types::physical_type::UINT16:
                 impl::templated_loop_hash32<uint16_t>(input, result_data, count, seed, scalar);
-                break;
+                return;
             case types::physical_type::UINT32:
                 impl::templated_loop_hash32<uint32_t>(input, result_data, count, seed, scalar);
-                break;
+                return;
             case types::physical_type::UINT64:
                 impl::templated_loop_hash32<uint64_t>(input, result_data, count, seed, scalar);
-                break;
+                return;
             case types::physical_type::INT128:
                 impl::templated_loop_hash32<types::int128_t>(input, result_data, count, seed, wide);
-                break;
+                return;
             case types::physical_type::UINT128:
                 impl::templated_loop_hash32<types::uint128_t>(input, result_data, count, seed, wide);
-                break;
+                return;
             case types::physical_type::FLOAT:
                 impl::templated_loop_hash32<float>(input, result_data, count, seed, scalar);
-                break;
+                return;
             case types::physical_type::DOUBLE:
                 impl::templated_loop_hash32<double>(input, result_data, count, seed, scalar);
-                break;
+                return;
             case types::physical_type::STRING:
                 impl::templated_loop_hash32<std::string_view>(input, result_data, count, seed, scalar);
-                break;
+                return;
             case types::physical_type::NA:
                 // Every row is NULL: the value a NULL row of any typed column hashes to.
                 std::fill_n(result_data, count, impl::fold_hash32(impl::hasher_t::NULL_HASH, seed));
+                return;
+            case types::physical_type::STRUCT:
+            case types::physical_type::LIST:
+            case types::physical_type::ARRAY:
+            case types::physical_type::UNION:
+            case types::physical_type::BIT:
+            case types::physical_type::UNKNOWN:
+            case types::physical_type::INVALID:
                 break;
-            default:
-                assert(false && "Nested columns are not supported in hash32 function");
-                throw std::logic_error("Invalid type for hash32");
         }
+        assert(false && "Invalid type for hash32: nested columns are not supported");
+        std::abort();
     }
 
     void combine_hash(vector_t& hashes, vector_t& input, uint64_t count) {

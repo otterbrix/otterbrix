@@ -2,7 +2,6 @@
 
 #include <cstdlib>
 #include <cstring>
-#include <stdexcept>
 #include <vector/vector_operations.hpp>
 
 namespace components::vector {
@@ -308,17 +307,19 @@ namespace components::vector {
                     case vector_type::CONSTANT:
                         index = 0;
                         finished = true;
-                        break;
+                        continue;
                     case vector_type::FLAT:
                         finished = true;
-                        break;
+                        continue;
                     case vector_type::DICTIONARY:
                         index = vector->indexing().get_index(index);
                         vector = &vector->child();
+                        continue;
+                    case vector_type::SEQUENCE:
                         break;
-                    default:
-                        throw std::runtime_error("unsupported vector type in nested null access");
                 }
+                assert(false && "unsupported vector type in nested null access");
+                std::abort();
             }
         };
 
@@ -351,11 +352,11 @@ namespace components::vector {
                     break;
                 }
                 default:
-                    if (vector->type_.to_physical_type() == types::physical_type::STRUCT) {
-                        vector = vector->entries()[sub].get();
-                    } else {
-                        throw std::runtime_error("nested null access path is too deep for this type");
+                    if (vector->type_.to_physical_type() != types::physical_type::STRUCT) {
+                        assert(false && "nested null access path is too deep for this type");
+                        std::abort();
                     }
+                    vector = vector->entries()[sub].get();
                     break;
             }
         }
@@ -385,17 +386,19 @@ namespace components::vector {
                     case vector_type::CONSTANT:
                         index = 0;
                         finished = true;
-                        break;
+                        continue;
                     case vector_type::FLAT:
                         finished = true;
-                        break;
+                        continue;
                     case vector_type::DICTIONARY:
                         index = vector->indexing().get_index(index);
                         vector = &vector->child();
+                        continue;
+                    case vector_type::SEQUENCE:
                         break;
-                    default:
-                        throw std::runtime_error("unsupported vector type in nested element access");
                 }
+                assert(false && "unsupported vector type in nested element access");
+                std::abort();
             }
         };
 
@@ -550,20 +553,20 @@ namespace components::vector {
                 case vector_type::CONSTANT:
                     *index = 0;
                     finished = true;
-                    break;
+                    continue;
                 case vector_type::FLAT:
                     finished = true;
-                    break;
+                    continue;
                 case vector_type::DICTIONARY: {
                     *index = vector->indexing().get_index(*index);
                     vector = &(vector->child());
-                    break;
+                    continue;
                 }
                 case vector_type::SEQUENCE:
                     return vector;
-                default:
-                    throw std::runtime_error("Unimplemented vector type for vector_t::get_value");
             }
+            assert(false && "Unimplemented vector type for vector_t::get_value");
+            std::abort();
         }
 
         if (!vector->validity_.row_is_valid(*index)) {
@@ -703,12 +706,12 @@ namespace components::vector {
         }
         switch (get_vector_type()) {
             case vector_type::FLAT:
-                break;
+                return;
             case vector_type::DICTIONARY: {
                 vector_t other(resource(), type_, count);
                 vector_ops::copy(*this, other, count, 0, 0);
                 this->reference(other);
-                break;
+                return;
             }
             case vector_type::CONSTANT: {
                 auto old_buffer = std::move(buffer_);
@@ -730,49 +733,49 @@ namespace components::vector {
                 switch (type_.to_physical_type()) {
                     case types::physical_type::BOOL:
                         templated_flatten_constant_vector<bool>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::INT8:
                         templated_flatten_constant_vector<int8_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::INT16:
                         templated_flatten_constant_vector<int16_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::INT32:
                         templated_flatten_constant_vector<int32_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::INT64:
                         templated_flatten_constant_vector<int64_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::UINT8:
                         templated_flatten_constant_vector<uint8_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::UINT16:
                         templated_flatten_constant_vector<uint16_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::UINT32:
                         templated_flatten_constant_vector<uint32_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::UINT64:
                         templated_flatten_constant_vector<uint64_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::INT128:
                         templated_flatten_constant_vector<types::int128_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::UINT128:
                         templated_flatten_constant_vector<types::uint128_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::FLOAT:
                         templated_flatten_constant_vector<float>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::DOUBLE:
                         templated_flatten_constant_vector<double>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::STRING:
                         templated_flatten_constant_vector<std::string_view>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::LIST: {
                         templated_flatten_constant_vector<types::list_entry_t>(data_, old_data, count);
-                        break;
+                        return;
                     }
                     case types::physical_type::ARRAY: {
                         auto& original_child = entry();
@@ -802,7 +805,7 @@ namespace components::vector {
 
                         vector_ops::copy(*child_vec, new_child, indexing, count * array_size, 0, 0);
                         auxiliary_ = std::unique_ptr<vector_buffer_t>(flattened_buffer.release());
-                        break;
+                        return;
                     }
                     case types::physical_type::STRUCT: {
                         auto normalized_buffer = std::make_unique<struct_vector_buffer_t>(resource());
@@ -816,12 +819,17 @@ namespace components::vector {
                             new_children.push_back(std::move(vector));
                         }
                         auxiliary_ = std::unique_ptr<vector_buffer_t>(normalized_buffer.release());
-                        break;
+                        return;
                     }
-                    default:
-                        throw std::runtime_error("Unimplemented type for flatten");
+                    case types::physical_type::NA:
+                    case types::physical_type::UNION:
+                    case types::physical_type::BIT:
+                    case types::physical_type::UNKNOWN:
+                    case types::physical_type::INVALID:
+                        break;
                 }
-                break;
+                assert(false && "Unimplemented type for flatten");
+                std::abort();
             }
             case vector_type::SEQUENCE: {
                 int64_t start, increment, sequence_count;
@@ -833,11 +841,11 @@ namespace components::vector {
                                                             std::max<uint64_t>(DEFAULT_VECTOR_CAPACITY, seq_count));
                 data_ = buffer_->data();
                 vector_ops::generate_sequence(*this, seq_count, start, increment);
-                break;
+                return;
             }
-            default:
-                throw std::runtime_error("Unimplemented type for normalize");
         }
+        assert(false && "Unimplemented type for normalize");
+        std::abort();
     }
 
     template<class T>
@@ -852,7 +860,7 @@ namespace components::vector {
     void vector_t::flatten(const indexing_vector_t& indexing, uint64_t count) {
         switch (get_vector_type()) {
             case vector_type::FLAT:
-                break;
+                return;
             case vector_type::SEQUENCE: {
                 int64_t start, increment;
                 get_sequence(start, increment);
@@ -860,7 +868,7 @@ namespace components::vector {
                 buffer_ = std::make_unique<vector_buffer_t>(resource(), type_, count);
                 data_ = buffer_->data();
                 vector_ops::generate_sequence(*this, count, indexing, start, increment);
-                break;
+                return;
             }
             case vector_type::CONSTANT: {
                 bool is_null = this->is_null(0);
@@ -884,52 +892,52 @@ namespace components::vector {
                 switch (type_.to_physical_type()) {
                     case types::physical_type::BOOL:
                         flatten_const_vector<bool>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::INT8:
                         flatten_const_vector<int8_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::INT16:
                         flatten_const_vector<int16_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::INT32:
                         flatten_const_vector<int32_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::INT64:
                         flatten_const_vector<int64_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::UINT8:
                         flatten_const_vector<uint8_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::UINT16:
                         flatten_const_vector<uint16_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::UINT32:
                         flatten_const_vector<uint32_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::UINT64:
                         flatten_const_vector<uint64_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::INT128:
                         flatten_const_vector<types::int128_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::UINT128:
                         flatten_const_vector<types::uint128_t>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::FLOAT:
                         flatten_const_vector<float>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::DOUBLE:
                         flatten_const_vector<double>(data_, old_data, count);
-                        break;
+                        return;
                         // case types::physical_type::INTERVAL:
                         //     flatten_const_vector<interval_t>(data_, old_data, count);
                         //     break;
                     case types::physical_type::STRING:
                         flatten_const_vector<std::string_view>(data_, old_data, count);
-                        break;
+                        return;
                     case types::physical_type::LIST: {
                         flatten_const_vector<types::list_entry_t>(data_, old_data, count);
-                        break;
+                        return;
                     }
                     case types::physical_type::ARRAY: {
                         auto& original_child = entry();
@@ -959,7 +967,7 @@ namespace components::vector {
 
                         vector_ops::copy(*child_vec, new_child, child_indexing, count * array_size, 0, 0);
                         auxiliary_ = std::shared_ptr<vector_buffer_t>(flattened_buffer.release());
-                        break;
+                        return;
                     }
                     case types::physical_type::STRUCT: {
                         auto normalized_buffer = std::make_unique<struct_vector_buffer_t>(resource());
@@ -971,16 +979,23 @@ namespace components::vector {
                             new_children.push_back(std::move(vector));
                         }
                         auxiliary_ = std::shared_ptr<vector_buffer_t>(normalized_buffer.release());
-                        break;
+                        return;
                     }
-                    default:
-                        throw std::runtime_error("Unimplemented type for normalize with indexing vector");
+                    case types::physical_type::NA:
+                    case types::physical_type::UNION:
+                    case types::physical_type::BIT:
+                    case types::physical_type::UNKNOWN:
+                    case types::physical_type::INVALID:
+                        break;
                 }
-                break;
+                assert(false && "Unimplemented type for normalize with indexing vector");
+                std::abort();
             }
-            default:
-                throw std::runtime_error("Unimplemented type for normalize with indexing vector");
+            case vector_type::DICTIONARY:
+                break;
         }
+        assert(false && "Unimplemented type for normalize with indexing vector");
+        std::abort();
     }
 
     void vector_t::to_unified_format(uint64_t count, unified_vector_format& format) {

@@ -5,6 +5,12 @@
 
 #include <optional>
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 using namespace components::compute;
 using namespace components::types;
 using namespace components::vector;
@@ -290,6 +296,27 @@ TEST_CASE("components::compute::aggregate::per_group") {
     REQUIRE(res.value()[0] == 15);
     REQUIRE(res.value()[1] == 15);
 }
+
+#if defined(__unix__) || defined(__APPLE__)
+TEST_CASE("components::compute::aggregate::a_kernel_without_its_functions_aborts") {
+    kernel_signature_t sig(function_type_t::aggregate,
+                           {parameter_type::exact(logical_type::INTEGER)},
+                           {output_type::fixed(logical_type::INTEGER)});
+
+    const pid_t child = ::fork();
+    REQUIRE(child >= 0);
+    if (child == 0) {
+        ::signal(SIGABRT, SIG_DFL);
+        aggregate_kernel k(std::move(sig), nullptr, nullptr, nullptr);
+        ::_exit(0);
+    }
+    int status = 0;
+    REQUIRE(::waitpid(child, &status, 0) == child);
+    INFO("wait status " << status);
+    REQUIRE(WIFSIGNALED(status));
+    CHECK(WTERMSIG(status) == SIGABRT);
+}
+#endif
 
 TEST_CASE("components::compute::vector::plain::chunk") {
     core::pmr::otterbrix_resource resource;

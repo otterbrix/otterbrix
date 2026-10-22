@@ -1,6 +1,8 @@
 #pragma once
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 
 #include "indexing_vector.hpp"
@@ -60,7 +62,8 @@ namespace components::vector {
         template<class TARGET>
         TARGET& cast() {
             if (type_ != TARGET::TYPE) {
-                throw std::logic_error("Failed to cast vector auxiliary data to type - type mismatch");
+                assert(false && "Failed to cast vector auxiliary data to type - type mismatch");
+                std::abort();
             }
             return reinterpret_cast<TARGET&>(*this);
         }
@@ -68,7 +71,8 @@ namespace components::vector {
         template<class TARGET>
         const TARGET& cast() const {
             if (type_ != TARGET::TYPE) {
-                throw std::logic_error("Failed to cast vector auxiliary data to type - type mismatch");
+                assert(false && "Failed to cast vector auxiliary data to type - type mismatch");
+                std::abort();
             }
             return reinterpret_cast<const TARGET&>(*this);
         }

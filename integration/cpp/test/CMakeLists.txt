@@ -20,6 +20,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_delete_column_pruning.cpp
         test_index_create_failure.cpp
         test_index_key_type_gate.cpp
+        test_kernel_type_reachability.cpp
         test_catalog_scan_cost.cpp
         test_log_laziness.cpp
         test_index_mirror_gate.cpp

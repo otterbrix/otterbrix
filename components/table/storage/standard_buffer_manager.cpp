@@ -1,6 +1,8 @@
 #include "standard_buffer_manager.hpp"
 
 #include <atomic>
+#include <cassert>
+#include <cstdlib>
 
 #include "block_manager.hpp"
 #include "buffer_handle.hpp"
@@ -30,12 +32,13 @@ namespace components::table::storage {
     }
 
     std::unique_ptr<file_buffer_t>
-    standard_buffer_manager_t::construct_manager_buffer(uint64_t size,
-                                                        std::unique_ptr<file_buffer_t>&& source,
-                                                        file_buffer_type type) {
+    standard_buffer_manager_t::construct_manager_buffer_impl(uint64_t size,
+                                                             std::unique_ptr<file_buffer_t>&& source,
+                                                             file_buffer_type type) {
         std::unique_ptr<file_buffer_t> result;
         if (type == file_buffer_type::BLOCK) {
-            throw std::logic_error("construct_manager_buffer cannot be used to construct blocks");
+            assert(false && "construct_manager_buffer cannot be used to construct blocks");
+            std::abort();
         }
         if (source) {
             auto tmp = std::move(source);
@@ -47,11 +50,11 @@ namespace components::table::storage {
         return result;
     }
 
-    buffer_pool_t& standard_buffer_manager_t::buffer_pool() const { return buffer_pool_; }
+    buffer_pool_t& standard_buffer_manager_t::buffer_pool_impl() const { return buffer_pool_; }
 
-    uint64_t standard_buffer_manager_t::block_allocation_size() const { return DEFAULT_BLOCK_ALLOC_SIZE; }
+    uint64_t standard_buffer_manager_t::block_allocation_size_impl() const { return DEFAULT_BLOCK_ALLOC_SIZE; }
 
-    uint64_t standard_buffer_manager_t::block_size() const {
+    uint64_t standard_buffer_manager_t::block_size_impl() const {
         return DEFAULT_BLOCK_ALLOC_SIZE - DEFAULT_BLOCK_HEADER_SIZE;
     }
 
@@ -68,7 +71,7 @@ namespace components::table::storage {
     }
 
     core::result_wrapper_t<std::shared_ptr<block_handle_t>>
-    standard_buffer_manager_t::register_transient_memory(uint64_t size, uint64_t block_size) {
+    standard_buffer_manager_t::register_transient_memory_impl(uint64_t size, uint64_t block_size) {
         assert(size <= block_size);
 
         if (size < block_size) {
@@ -83,12 +86,7 @@ namespace components::table::storage {
     }
 
     core::result_wrapper_t<std::shared_ptr<block_handle_t>>
-    standard_buffer_manager_t::register_small_memory(uint64_t size) {
-        return buffer_manager_t::register_small_memory(size);
-    }
-
-    core::result_wrapper_t<std::shared_ptr<block_handle_t>>
-    standard_buffer_manager_t::register_small_memory(memory_tag tag, uint64_t size) {
+    standard_buffer_manager_t::register_small_memory_impl(memory_tag tag, uint64_t size) {
         assert(size < block_size());
         const auto alloc_size = allocation_size(size);
         auto reservation = evict_blocks_or_error(tag, alloc_size, nullptr);
@@ -133,7 +131,7 @@ namespace components::table::storage {
     }
 
     core::result_wrapper_t<buffer_handle_t>
-    standard_buffer_manager_t::allocate(memory_tag tag, uint64_t block_size, bool can_destroy) {
+    standard_buffer_manager_t::allocate_impl(memory_tag tag, uint64_t block_size, bool can_destroy) {
         auto block = register_memory(tag, block_size, can_destroy);
         if (block.has_error()) {
             return block.convert_error<buffer_handle_t>();
@@ -146,8 +144,8 @@ namespace components::table::storage {
         return buf;
     }
 
-    core::result_wrapper_t<bool> standard_buffer_manager_t::reallocate(std::shared_ptr<block_handle_t>& handle,
-                                                                       uint64_t block_size) {
+    core::result_wrapper_t<bool> standard_buffer_manager_t::reallocate_impl(std::shared_ptr<block_handle_t>& handle,
+                                                                            uint64_t block_size) {
         assert(block_size >= this->block_size());
         auto lock = handle->get_lock();
 
@@ -236,7 +234,7 @@ namespace components::table::storage {
         return true;
     }
 
-    void standard_buffer_manager_t::prefetch(std::vector<std::shared_ptr<block_handle_t>>& handles) {
+    void standard_buffer_manager_t::prefetch_impl(std::vector<std::shared_ptr<block_handle_t>>& handles) {
         std::map<uint64_t, uint64_t> to_be_loaded;
         for (uint64_t block_idx = 0; block_idx < handles.size(); block_idx++) {
             auto& handle = handles[block_idx];
@@ -268,7 +266,8 @@ namespace components::table::storage {
         }
     }
 
-    core::result_wrapper_t<buffer_handle_t> standard_buffer_manager_t::pin(std::shared_ptr<block_handle_t>& handle) {
+    core::result_wrapper_t<buffer_handle_t>
+    standard_buffer_manager_t::pin_impl(std::shared_ptr<block_handle_t>& handle) {
 #ifdef DEV_MODE
         g_buffer_pins.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -330,7 +329,7 @@ namespace components::table::storage {
         return buf;
     }
 
-    void standard_buffer_manager_t::unpin(block_handle_t* handle) {
+    void standard_buffer_manager_t::unpin_impl(block_handle_t* handle) {
         eviction_queue_t* purge = nullptr;
         {
             auto lock = handle->get_lock();
@@ -364,11 +363,11 @@ namespace components::table::storage {
         }
     }
 
-    core::result_wrapper_t<bool> standard_buffer_manager_t::set_memory_limit(uint64_t limit) {
+    core::result_wrapper_t<bool> standard_buffer_manager_t::set_memory_limit_impl(uint64_t limit) {
         return buffer_pool_.set_limit(limit);
     }
 
-    std::vector<memory_info_t> standard_buffer_manager_t::get_memory_usage_info() const {
+    std::vector<memory_info_t> standard_buffer_manager_t::get_memory_usage_info_impl() const {
         std::vector<memory_info_t> result;
         for (uint64_t k = 0; k < static_cast<uint64_t>(memory_tag::MEMORY_TAG_COUNT); k++) {
             memory_info_t info;
@@ -398,7 +397,7 @@ namespace components::table::storage {
         return true;
     }
 
-    void standard_buffer_manager_t::free_reserved_memory(uint64_t size) {
+    void standard_buffer_manager_t::free_reserved_memory_impl(uint64_t size) {
         if (size == 0) {
             return;
         }

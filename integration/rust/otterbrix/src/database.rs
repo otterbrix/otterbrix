@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::cursor::{transaction_status_of, Cursor};
 use crate::error::{Error, Result};
-use crate::utils::{make_sv, string_from_c};
+use crate::utils::{make_sv, string_from_c, take_string_from_c};
 use std::fmt;
 use std::marker::PhantomData;
 use std::path::Path;
@@ -148,17 +148,17 @@ impl fmt::Debug for Database {
 
 fn cursor_or_error<'db>(ptr: otterbrix_sys::cursor_ptr) -> Result<Cursor<'db>> {
     if unsafe { otterbrix_sys::cursor_is_error(ptr) } {
-        let err = unsafe { otterbrix_sys::cursor_get_error(ptr) };
-        let message = unsafe { string_from_c(err.message) };
+        let code = unsafe { otterbrix_sys::cursor_error_code(ptr) };
+        let message = unsafe { string_from_c(otterbrix_sys::cursor_error_message(ptr)) };
         let message = if message.is_empty() {
-            format!("error code {}", err.code)
+            format!("error code {code}")
         } else {
             message
         };
         let transaction_status = transaction_status_of(ptr);
         unsafe { otterbrix_sys::release_cursor(ptr) };
         return Err(Error::Engine {
-            code: err.code,
+            code,
             message,
             transaction_status,
         });
@@ -215,7 +215,7 @@ impl Database {
         };
         let ptr = unsafe { otterbrix_sys::otterbrix_create(cfg, &mut refusal) };
         if ptr.is_null() {
-            let message = unsafe { string_from_c(refusal.message) };
+            let message = unsafe { take_string_from_c(refusal.message) };
             return Err(Error::Engine {
                 code: refusal.code,
                 message,

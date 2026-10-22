@@ -175,6 +175,20 @@ namespace Duckstax.Otterbrix
             return result;
         }
 
+        // The string `native` answers lives as long as `owner`: the marshaller holds `owner` only for the call
+        // itself, so this holds it across the copy too, against a finalizer or a Dispose on another thread.
+        internal static string BorrowString(SafeHandle owner, Func<IntPtr> native) {
+            bool added = false;
+            try {
+                owner.DangerousAddRef(ref added);
+                return Marshal.PtrToStringUTF8(native()) ?? "";
+            } finally {
+                if (added) {
+                    owner.DangerousRelease();
+                }
+            }
+        }
+
         [DllImport(libotterbrix,
                    EntryPoint = "execute_sql",
                    ExactSpelling = false,

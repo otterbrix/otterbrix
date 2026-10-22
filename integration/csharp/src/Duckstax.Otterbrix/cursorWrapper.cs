@@ -40,8 +40,11 @@ namespace Duckstax.Otterbrix
         [return: MarshalAs(UnmanagedType.I1)]
         private static extern bool CursorIsError(CursorHandle cursor);
 
-        [DllImport(libotterbrix, EntryPoint="cursor_get_error", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
-        private static extern TransferErrorMessage CursorGetError(CursorHandle cursor);
+        [DllImport(libotterbrix, EntryPoint="cursor_error_code", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        private static extern int CursorErrorCode(CursorHandle cursor);
+
+        [DllImport(libotterbrix, EntryPoint="cursor_error_message", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        private static extern IntPtr CursorErrorMessage(CursorHandle cursor);
 
         [DllImport(libotterbrix, EntryPoint="cursor_transaction_status", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern int CursorTransactionStatus(CursorHandle cursor);
@@ -71,11 +74,16 @@ namespace Duckstax.Otterbrix
         public bool IsSuccess() { return CursorIsSuccess(cursor); }
         public bool IsError() { return CursorIsError(cursor); }
 
-        public ErrorMessage GetError() { return CursorGetError(cursor).Take(); }
+        public ErrorMessage GetError() {
+            ErrorMessage error = new ErrorMessage();
+            error.type = (ErrorCode)CursorErrorCode(cursor);
+            error.what = OtterbrixWrapper.BorrowString(cursor, () => CursorErrorMessage(cursor));
+            return error;
+        }
         public TransactionStatus GetTransactionStatus() { return (TransactionStatus)CursorTransactionStatus(cursor); }
 
         public string ColumnName(int columnIndex) {
-            return OtterbrixWrapper.TakeString(CursorColumnName(cursor, columnIndex)) ?? "";
+            return OtterbrixWrapper.BorrowString(cursor, () => CursorColumnName(cursor, columnIndex));
         }
 
         public ValueWrapper GetValue(int rowIndex, int columnIndex) {

@@ -2,9 +2,14 @@
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include "../otterbrix.h"
+#include "mirrored_error_codes.hpp"
 
+#include <climits>
 #include <cstddef>
+#include <sstream>
 #include <string>
+#include <string_view>
+#include <sys/stat.h>
 #include <thread>
 #include <type_traits>
 #include <unistd.h>
@@ -17,9 +22,6 @@ namespace {
     constexpr int32_t LT_BIGINT = 14;
     constexpr int32_t LT_DOUBLE = 24;
     constexpr int32_t LT_STRING_LITERAL = 35;
-
-    // core::error_code_t::invalid_parameter, mirrored like the logical types above.
-    constexpr int32_t EC_INVALID_PARAMETER = 22;
 
     string_view_t sv(const std::string& s) { return string_view_t{s.data(), s.size()}; }
 
@@ -108,10 +110,9 @@ TEST_CASE("c-api: CREATE TABLE in a database that does not exist is refused", "[
     cursor_ptr cur = execute_sql(t.ptr, sv(std::string("CREATE TABLE nodb.t();")));
     REQUIRE(cur != nullptr);
     REQUIRE(cursor_is_error(cur));
-    error_message refusal = cursor_get_error(cur);
-    REQUIRE(refusal.message != nullptr);
-    CHECK(std::string(refusal.message) == "database \"nodb\" does not exist");
-    otterbrix_free_string(refusal.message);
+    const char* reason = cursor_error_message(cur);
+    REQUIRE(reason != nullptr);
+    CHECK(std::string(reason) == "database \"nodb\" does not exist");
     release_cursor(cur);
 
     run_ok(t.ptr, "CREATE DATABASE otherdb;");
@@ -259,19 +260,64 @@ TEST_CASE("c-api: cursor_created_oid reports the table a CREATE TABLE created", 
 }
 
 namespace {
-    void require_parameter_refusal(otterbrix_ptr db, const sql_param_t& param, const std::string& reason) {
-        const std::string query = "SELECT $1;";
-        cursor_ptr cur = execute_sql_params(db, sv(query), &param, 1);
+    void require_error_cursor(cursor_ptr cur, int32_t code, const std::string& reason) {
         REQUIRE(cur != nullptr);
         REQUIRE(cursor_is_error(cur));
-        error_message refusal = cursor_get_error(cur);
-        CHECK(refusal.code == EC_INVALID_PARAMETER);
-        REQUIRE(refusal.message != nullptr);
-        CHECK(std::string(refusal.message) == reason);
-        otterbrix_free_string(refusal.message);
+        CHECK(cursor_error_code(cur) == code);
+        const char* message = cursor_error_message(cur);
+        REQUIRE(message != nullptr);
+        CHECK(std::string(message) == reason);
         release_cursor(cur);
     }
+
+    void require_parameter_refusal(otterbrix_ptr db, const sql_param_t& param, const std::string& reason) {
+        const std::string query = "SELECT $1;";
+        require_error_cursor(execute_sql_params(db, sv(query), &param, 1), EC_INVALID_PARAMETER, reason);
+    }
 } // namespace
+
+TEST_CASE("c-api: a parse error answers an error cursor and the engine goes on", "[c-api][errors]") {
+    test_db_t t("parse_error");
+    REQUIRE(t.ptr != nullptr);
+
+    const std::string broken = "SELECT FROM";
+    require_error_cursor(execute_sql(t.ptr, sv(broken)), EC_SQL_PARSE_ERROR, "syntax error at end of input");
+
+    sql_param_t param{};
+    param.index = 1;
+    param.kind = SQL_PARAM_INT64;
+    param.int64_value = 1;
+    const std::string broken_with_param = "SELECT FROM $1";
+    require_error_cursor(execute_sql_params(t.ptr, sv(broken_with_param), &param, 1),
+                         EC_SQL_PARSE_ERROR,
+                         "syntax error at or near \"$1\"");
+
+    run_ok(t.ptr, "SELECT 1;");
+}
+
+TEST_CASE("c-api: cursor_error_code and cursor_error_message on an error and a success cursor", "[c-api][errors]") {
+    test_db_t t("error_accessors");
+    REQUIRE(t.ptr != nullptr);
+
+    cursor_ptr refused = execute_sql(t.ptr, sv(std::string("SELECT FROM")));
+    REQUIRE(refused != nullptr);
+    REQUIRE(cursor_is_error(refused));
+    CHECK(cursor_error_code(refused) == EC_SQL_PARSE_ERROR);
+    const char* reason = cursor_error_message(refused);
+    REQUIRE(reason != nullptr);
+    CHECK(cursor_error_message(refused) == reason);
+    CHECK(std::string(reason) == "syntax error at end of input");
+    release_cursor(refused);
+
+    cursor_ptr fine = execute_sql(t.ptr, sv(std::string("SELECT 1;")));
+    REQUIRE(fine != nullptr);
+    REQUIRE(cursor_is_success(fine));
+    CHECK(cursor_error_code(fine) == 0);
+    const char* none = cursor_error_message(fine);
+    REQUIRE(none != nullptr);
+    CHECK(std::string(none).empty());
+    release_cursor(fine);
+}
 
 TEST_CASE("c-api: execute_sql_params answers an error cursor for an index below 1", "[c-api][params]") {
     test_db_t t("params_index");
@@ -332,12 +378,48 @@ TEST_CASE("c-api: cursor_column_name returns nullptr for OOB index", "[c-api][cu
 
     REQUIRE(cursor_column_name(cur, 100) == nullptr);
 
-    // In-bounds name is heap-allocated and must be freed via otterbrix_free_string.
-    char* name = cursor_column_name(cur, 0);
+    const char* name = cursor_column_name(cur, 0);
     REQUIRE(name != nullptr);
     REQUIRE(std::string(name) == "n");
-    otterbrix_free_string(name);
 
+    release_cursor(cur);
+}
+
+TEST_CASE("c-api: cursor_column_name and value_get_string lend the handle's own string", "[c-api][cursor]") {
+    test_db_t t("borrowed_strings");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE TABLE db.t (name string);");
+    run_ok(t.ptr, "INSERT INTO db.t (name) VALUES ('lent');");
+
+    cursor_ptr cur = execute_sql(t.ptr, sv(std::string("SELECT name FROM db.t;")));
+    REQUIRE(cur != nullptr);
+    REQUIRE(cursor_is_success(cur));
+
+    const char* name = cursor_column_name(cur, 0);
+    REQUIRE(name != nullptr);
+    CHECK(cursor_has_next(cur));
+    value_ptr by_index = cursor_get_value(cur, 0, 0);
+    REQUIRE(by_index != nullptr);
+    release_value(by_index);
+    value_ptr by_name = cursor_get_value_by_name(cur, 0, sv(std::string("name")));
+    REQUIRE(by_name != nullptr);
+    release_value(by_name);
+    CHECK(cursor_column_name(cur, 0) == name);
+
+    value_ptr val = cursor_get_value(cur, 0, 0);
+    REQUIRE(val != nullptr);
+    const char* text = value_get_string(val);
+    REQUIRE(text != nullptr);
+    CHECK(value_is_string(val));
+    CHECK(value_get_string(val) == text);
+
+    CHECK(cursor_column_name(cur, 0) == name);
+    CHECK(std::string(name) == "name");
+    CHECK(std::string(text) == "lent");
+
+    release_value(val);
     release_cursor(cur);
 }
 
@@ -431,10 +513,9 @@ TEST_CASE("c-api: value dispatch for a string column", "[c-api][value]") {
     REQUIRE_FALSE(value_is_int(val));
     REQUIRE_FALSE(value_is_null(val));
 
-    char* str = value_get_string(val);
+    const char* str = value_get_string(val);
     REQUIRE(str != nullptr);
     REQUIRE(std::string(str) == "hello");
-    otterbrix_free_string(str);
 
     release_value(val);
     release_cursor(cur);
@@ -473,6 +554,92 @@ namespace {
     struct has_wal_on<T, std::void_t<decltype(std::declval<const T&>().wal_on)>> : std::true_type {};
 } // namespace
 
+namespace {
+    template<typename R, typename... A>
+    constexpr bool is_noexcept(R (*)(A...) noexcept) {
+        return true;
+    }
+    template<typename R, typename... A>
+    constexpr bool is_noexcept(R (*)(A...)) {
+        return false;
+    }
+} // namespace
+
+#define OTTERBRIX_ENTRY_POINTS(X)                                                                                      \
+    X(otterbrix_create)                                                                                                \
+    X(otterbrix_destroy)                                                                                               \
+    X(execute_sql)                                                                                                     \
+    X(execute_sql_params)                                                                                              \
+    X(release_cursor)                                                                                                  \
+    X(cursor_size)                                                                                                     \
+    X(cursor_affected_rows)                                                                                            \
+    X(cursor_created_oid)                                                                                              \
+    X(cursor_column_count)                                                                                             \
+    X(cursor_column_logical_type)                                                                                      \
+    X(cursor_has_next)                                                                                                 \
+    X(cursor_is_success)                                                                                               \
+    X(cursor_is_error)                                                                                                 \
+    X(cursor_error_code)                                                                                               \
+    X(cursor_error_message)                                                                                            \
+    X(cursor_transaction_status)                                                                                       \
+    X(cursor_column_name)                                                                                              \
+    X(cursor_get_value)                                                                                                \
+    X(cursor_get_value_by_name)                                                                                        \
+    X(release_value)                                                                                                   \
+    X(value_is_null)                                                                                                   \
+    X(value_is_bool)                                                                                                   \
+    X(value_is_int)                                                                                                    \
+    X(value_is_uint)                                                                                                   \
+    X(value_is_double)                                                                                                 \
+    X(value_is_string)                                                                                                 \
+    X(value_get_bool)                                                                                                  \
+    X(value_get_int)                                                                                                   \
+    X(value_get_uint)                                                                                                  \
+    X(value_get_double)                                                                                                \
+    X(value_get_string)                                                                                                \
+    X(otterbrix_free_string)
+
+#define OTTERBRIX_ASSERT_NOEXCEPT(f) static_assert(is_noexcept(&f));
+OTTERBRIX_ENTRY_POINTS(OTTERBRIX_ASSERT_NOEXCEPT)
+#undef OTTERBRIX_ASSERT_NOEXCEPT
+
+#define OTTERBRIX_COUNT_ONE(f) +1
+constexpr std::size_t entry_point_count = 0 OTTERBRIX_ENTRY_POINTS(OTTERBRIX_COUNT_ONE);
+#undef OTTERBRIX_COUNT_ONE
+#undef OTTERBRIX_ENTRY_POINTS
+
+TEST_CASE("c-api: every function declared in otterbrix.h is OTTERBRIX_NOEXCEPT", "[c-api][abi]") {
+    constexpr std::string_view otterbrix_h_text =
+#include "otterbrix_h_text.inc"
+        ;
+    std::istringstream header{std::string{otterbrix_h_text}};
+    std::string code;
+    std::string line;
+    while (std::getline(header, line)) {
+        const auto first = line.find_first_not_of(" \t");
+        if (first != std::string::npos && line[first] == '#') {
+            continue;
+        }
+        code += line.substr(0, line.find("//"));
+        code += ' ';
+    }
+    std::size_t declarations = 0;
+    std::istringstream statements(code);
+    std::string statement;
+    while (std::getline(statements, statement, ';')) {
+        const auto first = statement.find_first_not_of(" \t");
+        const auto last = statement.find_last_not_of(" \t");
+        if (first == std::string::npos || statement.find('(') == std::string::npos ||
+            statement.compare(first, 7, "typedef") == 0) {
+            continue;
+        }
+        ++declarations;
+        INFO(statement.substr(first, last - first + 1));
+        CHECK((last + 1 >= 18 && statement.compare(last + 1 - 18, 18, "OTTERBRIX_NOEXCEPT") == 0));
+    }
+    CHECK(declarations == entry_point_count);
+}
+
 // The C struct is the contract the hand-written C# mirror copies field for field, and nothing
 // there is checked by a compiler -- so the shape is pinned here instead.
 TEST_CASE("c-api: config_t carries no boolean switches", "[c-api][abi]") {
@@ -507,6 +674,58 @@ TEST_CASE("c-api: a second engine on the same main_path is refused", "[c-api][li
     CHECK(none.message == nullptr);
 }
 
+namespace {
+    class working_directory_guard_t {
+    public:
+        working_directory_guard_t() { REQUIRE(::getcwd(saved_, sizeof saved_) != nullptr); }
+        ~working_directory_guard_t() { CHECK(::chdir(saved_) == 0); }
+        working_directory_guard_t(const working_directory_guard_t&) = delete;
+        working_directory_guard_t& operator=(const working_directory_guard_t&) = delete;
+
+    private:
+        char saved_[PATH_MAX];
+    };
+
+    void enter_deleted_directory(const std::string& tag) {
+        const std::string gone = "/tmp/otterbrix_c_test_" + tag + "_" + std::to_string(::getpid());
+        REQUIRE(::mkdir(gone.c_str(), 0755) == 0);
+        REQUIRE(::chdir(gone.c_str()) == 0);
+        REQUIRE(::rmdir(gone.c_str()) == 0);
+    }
+} // namespace
+
+TEST_CASE("c-api: an engine on absolute paths starts in a deleted working directory", "[c-api][lifecycle]") {
+    const working_directory_guard_t guard;
+    enter_deleted_directory("deleted_cwd_dir");
+
+    test_db_t t("deleted_cwd");
+    REQUIRE(t.ptr != nullptr);
+    run_ok(t.ptr, "SELECT 1;");
+}
+
+TEST_CASE("c-api: an engine on relative paths in a deleted working directory is refused", "[c-api][lifecycle]") {
+    const working_directory_guard_t guard;
+    enter_deleted_directory("deleted_cwd_relative");
+
+    config_t cfg{};
+    const std::string log_path = "rel/log";
+    const std::string wal_path = "rel/wal";
+    const std::string disk_path = "rel/disk";
+    const std::string main_path = "rel/main";
+    cfg.log_path = sv(log_path);
+    cfg.wal_path = sv(wal_path);
+    cfg.disk_path = sv(disk_path);
+    cfg.main_path = sv(main_path);
+
+    error_message refusal{};
+    REQUIRE(otterbrix_create(cfg, &refusal) == nullptr);
+    REQUIRE(refusal.message != nullptr);
+    const std::string reason{refusal.message};
+    otterbrix_free_string(refusal.message);
+    INFO("refusal: " << reason);
+    CHECK(refusal.code == EC_IO_ERROR);
+}
+
 TEST_CASE("c-api: a cursor and a value outlive otterbrix_destroy", "[c-api][lifecycle]") {
     test_db_t t("outlive_destroy");
     REQUIRE(t.ptr != nullptr);
@@ -527,16 +746,14 @@ TEST_CASE("c-api: a cursor and a value outlive otterbrix_destroy", "[c-api][life
     const config_t cfg = t.config();
 
     CHECK(cursor_size(cur) == 1);
-    char* name = cursor_column_name(cur, 0);
+    const char* name = cursor_column_name(cur, 0);
     REQUIRE(name != nullptr);
     CHECK(std::string(name) == "name");
-    otterbrix_free_string(name);
     release_cursor(cur);
 
-    char* text = value_get_string(val);
+    const char* text = value_get_string(val);
     REQUIRE(text != nullptr);
     CHECK(std::string(text) == "kept");
-    otterbrix_free_string(text);
 
     // the value still holds the engine, and with it main_path
     error_message refusal{};
@@ -605,10 +822,9 @@ TEST_CASE("c-api: value kinds of every scalar column type", "[c-api][value]") {
     });
     with_value(t.ptr, q, 4, [](value_ptr v) {
         CHECK(value_is_string(v));
-        char* text = value_get_string(v);
+        const char* text = value_get_string(v);
         REQUIRE(text != nullptr);
         CHECK(std::string(text) == "txt");
-        otterbrix_free_string(text);
     });
     // DATE is the engine's day count (2024-01-01 is 8766 days after 2000-01-01), not the Unix one
     with_value(t.ptr, q, 5, [](value_ptr v) {

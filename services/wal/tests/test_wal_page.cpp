@@ -434,6 +434,22 @@ TEST_CASE("edge_empty_file") {
     }
 }
 
+TEST_CASE("a_segment_directory_that_cannot_be_created_is_an_open_error") {
+    tmp_dir_t dir("test_wal_page_blocked_directory");
+    const auto blocker = dir.file("blocker");
+    {
+        std::ofstream file(blocker);
+        file << "x";
+    }
+    const auto segment_directory = blocker / "db";
+
+    wal_page_writer_t writer(&test_resource, segment_directory / "wal_segment_0", "testdb", 0);
+    INFO("open_error: " << writer.open_error().what.c_str());
+    REQUIRE(writer.open_error().type == core::error_code_t::io_error);
+    CHECK(std::string(writer.open_error().what.c_str()).find(segment_directory.string()) != std::string::npos);
+    CHECK(writer.append("x", 1, 1).contains_error());
+}
+
 TEST_CASE("edge_single_record") {
     tmp_dir_t dir("test_wal_page_single_record");
     auto filepath = dir.file("wal_segment_0");

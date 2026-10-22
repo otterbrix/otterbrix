@@ -51,7 +51,7 @@ namespace {
             : log(make_test_log("python", integration_fixture_path("test_clean_break_startup/logs").string()))
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{path};
                 c.path = path;
                 return c;
             }())

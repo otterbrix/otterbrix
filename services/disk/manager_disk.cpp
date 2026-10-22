@@ -105,6 +105,10 @@ namespace services::disk {
                                      const std::filesystem::path& otbx_path)
         : buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_) {
+        if (buffer_pool_.construction_error().contains_error()) {
+            construction_error_ = core::error_on(resource, buffer_pool_.construction_error());
+            return;
+        }
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
@@ -123,6 +127,10 @@ namespace services::disk {
                                      bool allow_schemaless)
         : buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_) {
+        if (buffer_pool_.construction_error().contains_error()) {
+            construction_error_ = core::error_on(resource, buffer_pool_.construction_error());
+            return;
+        }
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());

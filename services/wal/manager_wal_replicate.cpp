@@ -90,14 +90,15 @@ namespace services::wal {
             std::filesystem::create_directories(config_.path, root_ec);
         }
         if (root_ec) {
-            // Unscanned, the next wal_id would reissue ids already on disk, so the refusal latches every write.
-            recovery_error_ =
+            construction_error_ =
                 core::error_t(core::error_code_t::io_error,
                               std::pmr::string{"manager_wal_replicate: the WAL root " + config_.path.string() +
                                                    " could not be created: " + root_ec.message(),
                                                resource_});
-            error(log_, "{}", recovery_error_.what);
-        } else if (!config_.path.empty()) {
+            error(log_, "{}", construction_error_.what);
+            return;
+        }
+        if (!config_.path.empty()) {
             wal::id_t max_recovered_id = 0;
             auto listed = core::filesystem::list_dir(resource_, config_.path);
             if (listed.has_error()) {

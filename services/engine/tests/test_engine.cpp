@@ -410,6 +410,96 @@ TEST_CASE("services::engine::factory::an_unreadable_oid_reservation_is_refused_a
 
 namespace {
 
+    class tmpdir_override_t final {
+    public:
+        explicit tmpdir_override_t(const std::filesystem::path& value) {
+            if (const char* previous = std::getenv("TMPDIR"); previous != nullptr) {
+                previous_.emplace(previous);
+            }
+            ::setenv("TMPDIR", value.c_str(), 1);
+        }
+        ~tmpdir_override_t() {
+            if (previous_.has_value()) {
+                ::setenv("TMPDIR", previous_->c_str(), 1);
+            } else {
+                ::unsetenv("TMPDIR");
+            }
+        }
+        tmpdir_override_t(const tmpdir_override_t&) = delete;
+        tmpdir_override_t& operator=(const tmpdir_override_t&) = delete;
+
+    private:
+        std::optional<std::string> previous_;
+    };
+
+    core::error_t open_with_tmpdir(host_t& host, const std::filesystem::path& tmpdir) {
+        tmpdir_override_t override_tmpdir(tmpdir);
+        return host.open();
+    }
+
+    bool names(const core::error_t& error, const std::filesystem::path& path) {
+        return std::string(error.what.c_str()).find(path.string()) != std::string::npos;
+    }
+
+} // namespace
+
+TEST_CASE("services::engine::host::an_unusable_temporary_directory_is_refused_at_startup") {
+    const auto root = test_root("tmpdir_refusal");
+    const auto not_a_directory = root / "not_a_directory";
+    {
+        std::ofstream blocker(not_a_directory.string());
+        blocker << "x";
+    }
+    SECTION("a fresh directory") {
+        host_t host(root / "fresh");
+        const auto refusal = open_with_tmpdir(host, not_a_directory);
+        INFO("refusal: " << refusal.what.c_str());
+        REQUIRE(refusal.contains_error());
+        CHECK(refusal.type == core::error_code_t::io_error);
+        CHECK(names(refusal, not_a_directory));
+        CHECK_FALSE(host.engine.has_value());
+    }
+    SECTION("a reopen") {
+        {
+            host_t host(root / "reopen");
+            REQUIRE_FALSE(host.open().contains_error());
+            REQUIRE(host.execute("CREATE DATABASE tmp;")->is_success());
+            REQUIRE(host.execute("CREATE TABLE tmp.t (id BIGINT);")->is_success());
+        }
+        host_t host(root / "reopen");
+        const auto refusal = open_with_tmpdir(host, not_a_directory);
+        INFO("refusal: " << refusal.what.c_str());
+        REQUIRE(refusal.contains_error());
+        CHECK(refusal.type == core::error_code_t::io_error);
+        CHECK(names(refusal, not_a_directory));
+        CHECK_FALSE(host.engine.has_value());
+    }
+}
+
+TEST_CASE("services::engine::host::a_wal_root_that_cannot_be_created_is_refused_at_startup") {
+    const auto root = test_root("wal_root_refusal");
+    const auto blocker = root / "blocker";
+    {
+        std::ofstream file(blocker.string());
+        file << "x";
+    }
+    std::filesystem::path wal_root;
+    SECTION("under a regular file") { wal_root = blocker / "wal"; }
+    SECTION("under /dev/null") { wal_root = "/dev/null/wal"; }
+    host_t host(root);
+    host.config.wal.path = wal_root;
+    const auto refusal = host.open();
+    INFO("wal.path: " << wal_root.string() << "; refusal: " << refusal.what.c_str());
+    REQUIRE(refusal.contains_error());
+    CHECK(refusal.type == core::error_code_t::io_error);
+    CHECK(names(refusal, wal_root));
+    CHECK(std::string(refusal.what.c_str()).find("WAL root") != std::string::npos);
+    CHECK(std::string(refusal.what.c_str()).find("could not be created") != std::string::npos);
+    CHECK_FALSE(host.engine.has_value());
+}
+
+namespace {
+
 #define OTTERBRIX_PUBLIC_MEMBER(name)                                                                                  \
     template<typename T>                                                                                               \
     concept public_##name = requires { &T::name; };

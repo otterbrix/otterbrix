@@ -10,7 +10,7 @@ using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
 
 inline configuration::config make_create_config(const std::filesystem::path& path) {
-    auto config = configuration::config::default_config();
+    auto config = configuration::config::create_config(path);
     config.log.path = path;
     config.log.level = log_t::level::warn;
     config.disk.path = path;

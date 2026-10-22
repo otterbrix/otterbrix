@@ -52,12 +52,12 @@ namespace {
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , wal_config([&]() {
-                configuration::config_wal c;
+                configuration::config_wal c{dir};
                 c.path = dir;
                 return c;
             }())
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{dir};
                 c.path = dir;
                 return c;
             }())

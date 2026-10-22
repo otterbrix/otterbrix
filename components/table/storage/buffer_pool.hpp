@@ -95,6 +95,11 @@ namespace components::table::storage {
                       bool track_eviction_timestamps,
                       uint64_t allocator_bulk_deallocation_flush_threshold);
 
+        // io_error when the spill file has no usable temporary directory; an owner must refuse to start on it.
+        [[nodiscard]] const core::error_t& construction_error() const noexcept {
+            return spill_file_.construction_error();
+        }
+
         // Returns out_of_memory when eviction cannot free enough for the new limit. maximum_memory is
         // restored on the second-pass failure before returning the error.
         [[nodiscard]] core::result_wrapper_t<bool> set_limit(uint64_t limit);

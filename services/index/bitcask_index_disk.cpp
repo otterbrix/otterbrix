@@ -608,10 +608,15 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::initialize_storage() {
-        if (std::filesystem::exists(path_)) {
+        std::error_code ec;
+        const bool present = std::filesystem::exists(path_, ec);
+        if (ec) {
+            return io_failure("bitcask: the index directory " + path_.string() +
+                              " could not be examined: " + ec.message());
+        }
+        if (present) {
             return core::error_t::no_error();
         }
-        std::error_code ec;
         std::filesystem::create_directories(path_, ec);
         if (ec) {
             return io_failure("bitcask: the index directory " + path_.string() +
@@ -1341,7 +1346,13 @@ namespace services::index {
     core::error_t bitcask_index_disk_t::recover_txn_log() {
         const auto log_path = txn_log_file_path();
         txn_log_clean_end_ = no_tail_to_trim;
-        if (!std::filesystem::exists(log_path)) {
+        std::error_code exists_ec;
+        const bool present = std::filesystem::exists(log_path, exists_ec);
+        if (exists_ec) {
+            return io_failure("bitcask: the txn log " + log_path.string() +
+                              " could not be examined for recovery: " + exists_ec.message());
+        }
+        if (!present) {
             return core::error_t::no_error();
         }
 

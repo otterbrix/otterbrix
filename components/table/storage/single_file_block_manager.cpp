@@ -192,7 +192,15 @@ namespace components::table::storage {
     core::result_wrapper_t<bool> single_file_block_manager_t::load_existing_database() {
         using namespace core::filesystem;
 
-        if (!std::filesystem::exists(path_)) {
+        std::error_code exists_ec;
+        const bool present = std::filesystem::exists(path_, exists_ec);
+        if (exists_ec) {
+            return core::error_t(
+                core::error_code_t::io_error,
+                std::pmr::string{"Database file " + path_ + " could not be examined: " + exists_ec.message(),
+                                 buffer_manager.resource()});
+        }
+        if (!present) {
             return core::error_t(
                 core::error_code_t::io_error,
                 std::pmr::string{"Database file does not exist: " + path_ +

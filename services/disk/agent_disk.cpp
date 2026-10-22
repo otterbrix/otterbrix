@@ -147,10 +147,11 @@ namespace services::disk {
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
-    bool agent_disk_t::bootstrap_create_disk_inner_sync(components::catalog::oid_t oid,
-                                                        std::vector<components::table::column_definition_t> columns,
-                                                        const std::filesystem::path& otbx_path,
-                                                        bool is_computed) noexcept {
+    core::result_wrapper_t<bool>
+    agent_disk_t::bootstrap_create_disk_inner_sync(components::catalog::oid_t oid,
+                                                   std::vector<components::table::column_definition_t> columns,
+                                                   const std::filesystem::path& otbx_path,
+                                                   bool is_computed) noexcept {
         if (storages_.find(oid) != storages_.end()) {
             trace(log_,
                   "agent_disk_t::bootstrap_create_disk_inner_sync: agent[{}] oid {} already in slice — drop "
@@ -174,12 +175,12 @@ namespace services::disk {
                  static_cast<unsigned>(oid),
                  otbx_path.string(),
                  entry->table_storage.construction_error().what.c_str());
-            return false;
+            return core::error_on(resource(), entry->table_storage.construction_error());
         }
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
-    agent_disk_t::unique_future<bool>
+    agent_disk_t::unique_future<core::result_wrapper_t<bool>>
     agent_disk_t::create_storage_disk_inner(components::catalog::oid_t oid,
                                             std::vector<components::table::column_definition_t> columns,
                                             std::filesystem::path otbx_path,
@@ -193,15 +194,15 @@ namespace services::disk {
                  otbx_path.parent_path().string(),
                  ec.message());
         }
-        const bool ok = bootstrap_create_disk_inner_sync(oid, std::move(columns), otbx_path, is_computed);
-        if (!ok) {
+        auto created = bootstrap_create_disk_inner_sync(oid, std::move(columns), otbx_path, is_computed);
+        if (!created.has_error() && !created.value()) {
             trace(log_,
                   "agent_disk[{}]::create_storage_disk_inner: oid {} already owned (path={}) — duplicate",
                   pool_idx_,
                   static_cast<unsigned>(oid),
                   otbx_path.string());
         }
-        co_return ok;
+        co_return created;
     }
 
     core::error_t agent_disk_t::no_replay_storage_error(const char* who, components::catalog::oid_t table_oid) {

@@ -358,7 +358,7 @@ TEST_CASE("pushdown_reduce: a manager with no agents refuses instead of folding 
     core::pmr::otterbrix_resource resource;
     auto log = make_test_log();
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
-    configuration::config_disk cfg;
+    configuration::config_disk cfg{reduce_dir() + "/no_agents"};
     cfg.path = reduce_dir() + "/no_agents";
     cfg.agent = 0;
     std::filesystem::create_directories(cfg.path);

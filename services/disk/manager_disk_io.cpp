@@ -225,11 +225,11 @@ namespace services::disk {
         const bool existed_before = std::filesystem::exists(otbx_path, pre_ec) && !pre_ec;
 
         auto& agent = agents_[pool_idx_c];
-        const bool ok = agent->bootstrap_create_disk_inner_sync(table_oid, std::move(columns), otbx_path, is_computed);
-        if (ok) {
+        const auto created =
+            agent->bootstrap_create_disk_inner_sync(table_oid, std::move(columns), otbx_path, is_computed);
+        if (!created.has_error() && created.value()) {
             return core::error_t::no_error();
         }
-        // One `false`, two unrelated causes; the real question is whether the agent holds this oid now.
         if (agent->has_storage_sync(table_oid)) {
             trace(log_,
                   "manager_disk_t::create_storage_disk_sync: agent[{}] already owns oid {} (path={})",
@@ -252,11 +252,14 @@ namespace services::disk {
               pool_idx_c,
               static_cast<unsigned>(table_oid),
               otbx_path.string());
-        return core::error_t(core::error_code_t::io_error,
-                             std::pmr::string{"create_storage_disk_sync: could not create the .otbx for oid " +
-                                                  std::to_string(static_cast<unsigned>(table_oid)) + " at " +
-                                                  otbx_path.string(),
-                                              resource()});
+        std::pmr::string message{"create_storage_disk_sync: could not create the .otbx for oid " +
+                                     std::to_string(static_cast<unsigned>(table_oid)) + " at " + otbx_path.string(),
+                                 resource()};
+        if (created.has_error()) {
+            message += ": ";
+            message += created.error().what;
+        }
+        return core::error_t(core::error_code_t::io_error, std::move(message));
     }
 
     core::error_t

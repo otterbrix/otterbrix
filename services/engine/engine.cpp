@@ -235,7 +235,6 @@ namespace services::engine {
 
             VALUE_OR_RETURN(auto lock, detail::directory_lock_t::acquire(resource, config.main_path));
 
-            // The managers only assert their directory: a directory that cannot be created stops the start here.
             if (!config.disk.path.empty()) {
                 std::error_code ec;
                 std::filesystem::create_directories(config.disk.path, ec);

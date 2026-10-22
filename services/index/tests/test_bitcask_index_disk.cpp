@@ -5,6 +5,7 @@
 #include <components/vector/vector_operations.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
+#include <core/tests/skip_under_root.hpp>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
@@ -1074,6 +1075,33 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
         REQUIRE(rows_of(find(index, make_scalar(&resource, int64_t{250}))).size() == 1);
         REQUIRE(rows_of(find(index, make_scalar(&resource, int64_t{250}))).front() == 250);
     }
+}
+
+TEST_CASE("services::index::bitcask_index_disk::a_directory_under_an_unsearchable_parent_refuses_the_open") {
+    test_helpers::skip_under_root();
+    auto resource = core::pmr::otterbrix_resource();
+
+    const std::filesystem::path parent{index_fixture_path("bitcask_unsearchable_parent")};
+    std::error_code stale;
+    std::filesystem::permissions(parent, std::filesystem::perms::owner_all, stale);
+    std::filesystem::remove_all(parent, stale);
+    std::filesystem::create_directories(parent);
+    const auto path = parent / "index";
+
+    bitcask_index_disk_t index(path,
+                               &resource,
+                               test_flush_threshold,
+                               test_segment_record_limit,
+                               std::pmr::set<std::uint64_t>{},
+                               bitcask_index_disk_t::deferred_open_t{});
+    std::filesystem::permissions(parent, std::filesystem::perms::none);
+    const auto open_error = index.open();
+    std::filesystem::permissions(parent, std::filesystem::perms::owner_all);
+
+    INFO("open_error: " << open_error.what.c_str());
+    REQUIRE(open_error.contains_error());
+    CHECK(open_error.type == core::error_code_t::index_create_fail);
+    CHECK(message_mentions(open_error, path.string()));
 }
 
 TEST_CASE("services::index::bitcask_index_disk::an_unreadable_current_refuses_and_a_missing_one_does_not") {

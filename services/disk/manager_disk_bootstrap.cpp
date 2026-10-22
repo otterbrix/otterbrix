@@ -202,10 +202,15 @@ namespace services::disk {
                             create_storage_disk_sync(tbl_oid, sys_db_oid, def.columns, otbx, /*is_computed=*/false);
                         create_err.contains_error()) {
                         error(log_,
-                              "bootstrap , system table {} oid={} could not be created: {}",
+                              "bootstrap REFUSED , system table {} oid={} could not be created: {}",
                               std::string(def.name),
                               static_cast<unsigned>(tbl_oid),
                               create_err.what.c_str());
+                        return core::error_t(core::error_code_t::io_error,
+                                             std::pmr::string{"a pg_catalog system table could not be created, "
+                                                              "refusing to start: " +
+                                                                  std::string(create_err.what.c_str()),
+                                                              resource()});
                     }
                     took_create_leg = true;
                     needs_seeding = true;

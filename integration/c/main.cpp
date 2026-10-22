@@ -52,8 +52,6 @@ namespace {
         std::pmr::string text;
     };
 
-    configuration::config create_config() { return configuration::config::default_config(); }
-
     otterbrix_t* live_otterbrix(otterbrix_ptr ptr) {
         assert(ptr != nullptr);
         return reinterpret_cast<otterbrix_t*>(ptr);
@@ -119,7 +117,7 @@ extern "C" otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error
     assert(out_error != nullptr && "otterbrix_create: out_error is required");
     *out_error = error_message{static_cast<int32_t>(core::error_code_t::none), nullptr};
     try {
-        auto config = create_config();
+        auto config = configuration::config::create_config(std::filesystem::path{to_view(cfg.main_path)});
         config.log.level = static_cast<log_t::level>(cfg.level);
         config.log.path = std::pmr::string(to_view(cfg.log_path));
         config.wal.path = std::pmr::string(to_view(cfg.wal_path));

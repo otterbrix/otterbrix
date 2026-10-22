@@ -135,15 +135,18 @@ namespace services::disk {
                                   bool is_computed) noexcept;
 
         // is_computed (relkind='g') is resolved by the caller, never inferred from an empty column set.
-        [[nodiscard]] bool bootstrap_create_disk_inner_sync(components::catalog::oid_t oid,
-                                                            std::vector<components::table::column_definition_t> columns,
-                                                            const std::filesystem::path& otbx_path,
-                                                            bool is_computed) noexcept;
+        // false: the oid is already in this slice; an error: the storage could not be constructed.
+        [[nodiscard]] core::result_wrapper_t<bool>
+        bootstrap_create_disk_inner_sync(components::catalog::oid_t oid,
+                                         std::vector<components::table::column_definition_t> columns,
+                                         const std::filesystem::path& otbx_path,
+                                         bool is_computed) noexcept;
 
-        unique_future<bool> create_storage_disk_inner(components::catalog::oid_t oid,
-                                                      std::vector<components::table::column_definition_t> columns,
-                                                      std::filesystem::path otbx_path,
-                                                      bool is_computed);
+        unique_future<core::result_wrapper_t<bool>>
+        create_storage_disk_inner(components::catalog::oid_t oid,
+                                  std::vector<components::table::column_definition_t> columns,
+                                  std::filesystem::path otbx_path,
+                                  bool is_computed);
 
         // WAL-replay only, before scheduler.start; the storage_* handlers replace these after.
         [[nodiscard]] core::error_t no_replay_storage_error(const char* who, components::catalog::oid_t table_oid);

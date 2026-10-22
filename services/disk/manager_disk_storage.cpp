@@ -197,8 +197,14 @@ namespace services::disk {
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
-            const bool ok = co_await std::move(fut);
-            if (!ok) {
+            const auto created = co_await std::move(fut);
+            if (created.has_error()) {
+                warn(log_,
+                     "manager_disk_t::create_storage_disk: agent[{}] could not create oid {}: {}",
+                     pool_idx,
+                     static_cast<unsigned>(table_oid),
+                     created.error().what.c_str());
+            } else if (!created.value()) {
                 trace(log_,
                       "manager_disk_t::create_storage_disk: agent[{}] already owns oid {}",
                       pool_idx,

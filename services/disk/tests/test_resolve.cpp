@@ -64,7 +64,7 @@ namespace {
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{resolve_dir()};
                 c.path = resolve_dir();
                 return c;
             }())
@@ -460,7 +460,7 @@ namespace {
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{path};
                 c.path = path;
                 return c;
             }())

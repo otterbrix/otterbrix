@@ -5,6 +5,7 @@
 #include <core/file/local_file_system.hpp>
 #include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
+#include <core/tests/skip_under_root.hpp>
 
 #include <components/table/storage/metadata_manager.hpp>
 #include <components/table/storage/metadata_reader.hpp>
@@ -362,6 +363,34 @@ TEST_CASE("single_file_block_manager: load missing file -> io_error, nothing cre
     // "Missing" is loudly distinct from "empty": named as such, and no 0-byte file appears.
     REQUIRE(std::string(result.error().what.c_str()).find("does not exist") != std::string::npos);
     REQUIRE_FALSE(std::filesystem::exists(path));
+}
+
+TEST_CASE("single_file_block_manager: load under an unsearchable directory -> io_error naming the file") {
+    using namespace components::table::storage;
+    test_helpers::skip_under_root();
+    const std::filesystem::path directory = corrupt_db_path("unsearchable");
+    std::error_code stale;
+    std::filesystem::permissions(directory, std::filesystem::perms::owner_all, stale);
+    std::filesystem::remove_all(directory, stale);
+    std::filesystem::create_directories(directory);
+    const auto path = (directory / "table.otbx").string();
+    {
+        std::ofstream f(path, std::ios::out | std::ios::binary | std::ios::trunc);
+        REQUIRE(f.is_open());
+    }
+
+    test_env_t env;
+    single_file_block_manager_t bm(env.buffer_manager, env.fs, path);
+
+    std::filesystem::permissions(directory, std::filesystem::perms::none);
+    auto result = bm.load_existing_database();
+    std::filesystem::permissions(directory, std::filesystem::perms::owner_all);
+    std::filesystem::remove_all(directory);
+
+    REQUIRE(result.has_error());
+    INFO("refusal: " << result.error().what.c_str());
+    CHECK(result.error().type == core::error_code_t::io_error);
+    CHECK(std::string(result.error().what.c_str()).find(path) != std::string::npos);
 }
 
 TEST_CASE("single_file_block_manager: load empty file -> io_error (error value)") {

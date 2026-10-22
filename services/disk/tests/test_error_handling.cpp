@@ -52,7 +52,7 @@ namespace {
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{err_dir()};
                 c.path = err_dir();
                 return c;
             }())
@@ -612,7 +612,7 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
     core::pmr::otterbrix_resource resource;
     auto log = make_test_log();
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
-    configuration::config_disk cfg;
+    configuration::config_disk cfg{err_dir() + "/no_agents"};
     cfg.path = err_dir() + "/no_agents";
     cfg.agent = 0;
     std::filesystem::create_directories(cfg.path);

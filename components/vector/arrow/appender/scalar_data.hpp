@@ -24,7 +24,7 @@ namespace components::vector::arrow::appender {
 
     template<class TGT, class SRC = TGT, class OP = arrow_scalar_converter_t>
     struct arrow_scalar_base_data_t {
-        static void
+        static core::error_t
         append(arrow_append_data_t& append_data, vector_t& input, uint64_t from, uint64_t to, uint64_t input_size) {
             assert(to >= from);
             uint64_t size = to - from;
@@ -50,18 +50,23 @@ namespace components::vector::arrow::appender {
                 result_data[result_idx] = OP::template operation<TGT, SRC>(data[source_idx]);
             }
             append_data.row_count += size;
+            return core::error_t::no_error();
         }
     };
 
     template<class TGT, class SRC = TGT, class OP = arrow_scalar_converter_t>
     struct arrow_scala_data : public arrow_scalar_base_data_t<TGT, SRC, OP> {
-        static void initialize(arrow_append_data_t& result, const types::complex_logical_type&, uint64_t capacity) {
+        static core::error_t
+        initialize(arrow_append_data_t& result, const types::complex_logical_type&, uint64_t capacity) {
             result.main_buffer().reserve(capacity * sizeof(TGT));
+            return core::error_t::no_error();
         }
 
-        static void finalize(arrow_append_data_t& append_data, const types::complex_logical_type&, ArrowArray* result) {
+        static core::error_t
+        finalize(arrow_append_data_t& append_data, const types::complex_logical_type&, ArrowArray* result) {
             result->n_buffers = 2;
             result->buffers[1] = append_data.main_buffer().data();
+            return core::error_t::no_error();
         }
     };
 

@@ -1,9 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
-#include <stdexcept>
-#include <string>
+#include <cstdlib>
 
 struct ArrowSchema;
 
@@ -53,7 +53,8 @@ namespace components::vector::arrow {
                 new_capacity |= new_capacity >> 32;
                 new_capacity++;
                 if (new_capacity == 0) {
-                    throw std::out_of_range("Can't find next power of 2 for " + std::to_string(bytes));
+                    assert(false && "arrow_buffer_t::reserve: no power of 2 holds more than 2^63 bytes");
+                    std::abort();
                 }
             }
             if (new_capacity <= capacity_) {

@@ -10,9 +10,11 @@ namespace components::vector::arrow::appender {
 
     template<class SRC = std::string_view, class BUFTYPE = int64_t>
     struct arrow_string_data_t {
-        static void initialize(arrow_append_data_t& result, const types::complex_logical_type&, uint64_t capacity) {
+        static core::error_t
+        initialize(arrow_append_data_t& result, const types::complex_logical_type&, uint64_t capacity) {
             result.main_buffer().reserve((capacity + 1) * sizeof(BUFTYPE));
             result.auxiliary_buffer().reserve(capacity);
+            return core::error_t::no_error();
         }
 
         template<bool LARGE_STRING>
@@ -61,15 +63,18 @@ namespace components::vector::arrow::appender {
             append_data.row_count += size;
         }
 
-        static void
+        static core::error_t
         append(arrow_append_data_t& append_data, vector_t& input, uint64_t from, uint64_t to, uint64_t input_size) {
             append_templated<false>(append_data, input, from, to, input_size);
+            return core::error_t::no_error();
         }
 
-        static void finalize(arrow_append_data_t& append_data, const types::complex_logical_type&, ArrowArray* result) {
+        static core::error_t
+        finalize(arrow_append_data_t& append_data, const types::complex_logical_type&, ArrowArray* result) {
             result->n_buffers = 3;
             result->buffers[1] = append_data.main_buffer().data();
             result->buffers[2] = append_data.auxiliary_buffer().data();
+            return core::error_t::no_error();
         }
     };
 

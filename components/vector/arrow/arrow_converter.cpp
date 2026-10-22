@@ -8,9 +8,9 @@
 #include <components/vector/data_chunk.hpp>
 
 #include <cassert>
+#include <cstdlib>
 #include <list>
 #include <memory>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -19,10 +19,21 @@ namespace components::vector::arrow {
     using types::complex_logical_type;
     using types::logical_type;
 
-    void to_arrow_array(data_chunk_t& input, ArrowArray* out_array) {
-        arrow_appender_t appender(input.types(), input.size());
-        appender.append(input, 0, input.size(), input.size());
-        *out_array = appender.finalize();
+    core::error_t to_arrow_array(data_chunk_t& input, ArrowArray* out_array) {
+        out_array->release = nullptr;
+        auto appender = arrow_appender_t::create(input.resource(), input.types(), input.size());
+        if (appender.has_error()) {
+            return core::error_on(input.resource(), appender.error());
+        }
+        if (auto err = appender.value().append(input, 0, input.size(), input.size()); err.contains_error()) {
+            return err;
+        }
+        auto array = appender.value().finalize();
+        if (array.has_error()) {
+            return core::error_on(input.resource(), array.error());
+        }
+        *out_array = array.value();
+        return core::error_t::no_error();
     }
 
     std::unique_ptr<char[]> add_name(const std::string& name) {
@@ -68,13 +79,15 @@ namespace components::vector::arrow {
         child.dictionary = nullptr;
     }
 
-    void set_arrow_format(otterbrix_arrow_schema_holder& root_holder,
-                          ArrowSchema& child,
-                          const types::complex_logical_type& type);
+    [[nodiscard]] core::error_t set_arrow_format(std::pmr::memory_resource* resource,
+                                                 otterbrix_arrow_schema_holder& root_holder,
+                                                 ArrowSchema& child,
+                                                 const types::complex_logical_type& type);
 
-    void set_arrow_map_format(otterbrix_arrow_schema_holder& root_holder,
-                              ArrowSchema& child,
-                              const types::complex_logical_type& type) {
+    [[nodiscard]] core::error_t set_arrow_map_format(std::pmr::memory_resource* resource,
+                                                     otterbrix_arrow_schema_holder& root_holder,
+                                                     ArrowSchema& child,
+                                                     const types::complex_logical_type& type) {
         child.format = "+m";
         child.n_children = 1;
         root_holder.nested_children.emplace_back();
@@ -84,49 +97,50 @@ namespace components::vector::arrow {
         initialize_child(root_holder.nested_children.back()[0], root_holder);
         child.children = &root_holder.nested_children_ptr.back()[0];
         child.children[0]->name = "entries";
-        set_arrow_format(root_holder, **child.children, type.child_type());
+        return set_arrow_format(resource, root_holder, **child.children, type.child_type());
     }
 
-    void set_arrow_format(otterbrix_arrow_schema_holder& root_holder,
-                          ArrowSchema& child,
-                          const types::complex_logical_type& type) {
+    core::error_t set_arrow_format(std::pmr::memory_resource* resource,
+                                   otterbrix_arrow_schema_holder& root_holder,
+                                   ArrowSchema& child,
+                                   const types::complex_logical_type& type) {
         switch (type.type()) {
             case logical_type::BOOLEAN:
                 child.format = "b";
-                break;
+                return core::error_t::no_error();
             case logical_type::TINYINT:
                 child.format = "c";
-                break;
+                return core::error_t::no_error();
             case logical_type::SMALLINT:
                 child.format = "s";
-                break;
+                return core::error_t::no_error();
             case logical_type::INTEGER:
                 child.format = "i";
-                break;
+                return core::error_t::no_error();
             case logical_type::BIGINT:
                 child.format = "l";
-                break;
+                return core::error_t::no_error();
             case logical_type::UTINYINT:
                 child.format = "C";
-                break;
+                return core::error_t::no_error();
             case logical_type::USMALLINT:
                 child.format = "S";
-                break;
+                return core::error_t::no_error();
             case logical_type::UINTEGER:
                 child.format = "I";
-                break;
+                return core::error_t::no_error();
             case logical_type::UBIGINT:
                 child.format = "L";
-                break;
+                return core::error_t::no_error();
             case logical_type::FLOAT:
                 child.format = "f";
-                break;
+                return core::error_t::no_error();
             case logical_type::DOUBLE:
                 child.format = "g";
-                break;
+                return core::error_t::no_error();
             case logical_type::STRING_LITERAL:
                 child.format = "U";
-                break;
+                return core::error_t::no_error();
             case logical_type::DECIMAL: {
                 auto* decimal_extension = static_cast<types::decimal_logical_type_extension*>(type.extension());
                 uint8_t width = decimal_extension->width(), scale = decimal_extension->scale();
@@ -134,30 +148,30 @@ namespace components::vector::arrow {
                                      std::to_string(static_cast<uint32_t>(scale));
                 root_holder.owned_type_names.push_back(add_name(format));
                 child.format = root_holder.owned_type_names.back().get();
-                break;
+                return core::error_t::no_error();
             }
             case logical_type::DATE:
                 child.format = "tdD";
-                break;
+                return core::error_t::no_error();
             case logical_type::TIME:
                 child.format = "ttu";
-                break;
+                return core::error_t::no_error();
             case logical_type::TIMESTAMP: {
                 root_holder.owned_type_names.push_back(add_name("tsu:"));
                 child.format = root_holder.owned_type_names.back().get();
-                break;
+                return core::error_t::no_error();
             }
             case logical_type::TIMESTAMP_TZ: {
                 root_holder.owned_type_names.push_back(add_name("tsu:UTC"));
                 child.format = root_holder.owned_type_names.back().get();
-                break;
+                return core::error_t::no_error();
             }
             case logical_type::INTERVAL:
                 child.format = "tin";
-                break;
+                return core::error_t::no_error();
             case logical_type::NA: {
                 child.format = "n";
-                break;
+                return core::error_t::no_error();
             }
             case logical_type::LIST: {
                 child.format = "+l";
@@ -169,8 +183,7 @@ namespace components::vector::arrow {
                 initialize_child(root_holder.nested_children.back()[0], root_holder);
                 child.children = &root_holder.nested_children_ptr.back()[0];
                 child.children[0]->name = "l";
-                set_arrow_format(root_holder, **child.children, type.child_type());
-                break;
+                return set_arrow_format(resource, root_holder, **child.children, type.child_type());
             }
             case logical_type::STRUCT: {
                 child.format = "+s";
@@ -190,9 +203,13 @@ namespace components::vector::arrow {
                     root_holder.owned_type_names.push_back(add_name(child_types[type_idx].alias()));
 
                     child.children[type_idx]->name = root_holder.owned_type_names.back().get();
-                    set_arrow_format(root_holder, *child.children[type_idx], child_types[type_idx]);
+                    if (auto err =
+                            set_arrow_format(resource, root_holder, *child.children[type_idx], child_types[type_idx]);
+                        err.contains_error()) {
+                        return err;
+                    }
                 }
-                break;
+                return core::error_t::no_error();
             }
             case logical_type::ARRAY: {
                 auto array_extension = static_cast<types::array_logical_type_extension*>(type.extension());
@@ -209,20 +226,42 @@ namespace components::vector::arrow {
                 root_holder.nested_children_ptr.back().push_back(&root_holder.nested_children.back()[0]);
                 initialize_child(root_holder.nested_children.back()[0], root_holder);
                 child.children = &root_holder.nested_children_ptr.back()[0];
-                set_arrow_format(root_holder, **child.children, child_type);
-                break;
+                return set_arrow_format(resource, root_holder, **child.children, child_type);
             }
-            case logical_type::MAP: {
-                set_arrow_map_format(root_holder, child, type);
-                break;
-            }
-            default:
-                throw std::runtime_error("Unsupported Arrow type " + std::to_string(int(type.type())));
+            case logical_type::MAP:
+                return set_arrow_map_format(resource, root_holder, child, type);
+            case logical_type::ANY:
+            case logical_type::USER:
+            case logical_type::HUGEINT:
+            case logical_type::TIME_TZ:
+            case logical_type::BLOB:
+            case logical_type::UHUGEINT:
+            case logical_type::BIT:
+            case logical_type::INTEGER_LITERAL:
+            case logical_type::POINTER:
+            case logical_type::VALIDITY:
+            case logical_type::UUID:
+            case logical_type::TABLE:
+            case logical_type::ENUM:
+            case logical_type::FUNCTION:
+            case logical_type::LAMBDA:
+            case logical_type::UNION:
+            case logical_type::VARIANT:
+            case logical_type::UNKNOWN:
+            case logical_type::INVALID:
+                return core::error_t(
+                    core::error_code_t::unimplemented_yet,
+                    std::pmr::string("Unsupported Arrow type " + std::to_string(int(type.type())), resource));
         }
+        assert(false && "set_arrow_format: logical_type out of its enumerators");
+        std::abort();
     }
 
-    void to_arrow_schema(ArrowSchema* out_schema, const std::pmr::vector<complex_logical_type>& types) {
+    core::error_t to_arrow_schema(std::pmr::memory_resource* resource,
+                                  ArrowSchema* out_schema,
+                                  const std::pmr::vector<complex_logical_type>& types) {
         assert(out_schema);
+        out_schema->release = nullptr;
         uint64_t column_count = types.size();
         auto root_holder = std::make_unique<otterbrix_arrow_schema_holder>();
 
@@ -244,11 +283,14 @@ namespace components::vector::arrow {
             root_holder->owned_column_names.push_back(add_name(types[col_idx].alias()));
             auto& child = root_holder->children[col_idx];
             initialize_child(child, *root_holder, types[col_idx].alias());
-            set_arrow_format(*root_holder, child, types[col_idx]);
+            if (auto err = set_arrow_format(resource, *root_holder, child, types[col_idx]); err.contains_error()) {
+                return err;
+            }
         }
 
         out_schema->private_data = root_holder.release();
         out_schema->release = release_otterbrix_arrow_schema;
+        return core::error_t::no_error();
     }
     static void deduplicate(std::vector<std::string>& names) {
         std::unordered_map<std::string, uint64_t> name_map;

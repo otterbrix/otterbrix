@@ -16,7 +16,6 @@ target_link_libraries(
         ${PROJECT_NAME} PRIVATE
         Catch2::Catch2WithMain
         Boost::boost
-        otterbrix::assert
         otterbrix::pmr
         otterbrix::string_buffer
         otterbrix::log

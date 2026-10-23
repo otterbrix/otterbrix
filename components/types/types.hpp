@@ -446,9 +446,6 @@ namespace components::types {
         bool is_unnamed() const;
         bool is_nested() const;
 
-        const complex_logical_type& child_type(const std::pmr::vector<size_t>& path) const;
-        static const complex_logical_type& type_from_path(const std::pmr::vector<complex_logical_type>& types,
-                                                          const std::pmr::vector<size_t>& path);
         const complex_logical_type& child_type() const;
         std::pmr::vector<complex_logical_type>& child_types();
         const std::pmr::vector<complex_logical_type>& child_types() const;
@@ -494,9 +491,6 @@ namespace components::types {
     private:
         logical_type type_ = logical_type::NA;
         std::unique_ptr<logical_type_extension> extension_ = nullptr; // for complex types
-
-        // Avoids copying the child-type vector at each nesting level.
-        const complex_logical_type& child_type(const size_t* path_data, size_t remaining) const;
     };
 
     struct list_entry_t {

@@ -1532,7 +1532,7 @@ namespace services::collection::executor {
                     for (const auto& entry : plan.catalog_resolves.tables->entries()) {
                         // A storage table has no oid to key it by; its scan comes from the storage.
                         if (entry.table_md.has_value() && !entry.storage) {
-                            context_storage.table_metadata[entry.table_md->table_oid] = &entry.table_md.value();
+                            context_storage.table_metadata[entry.table_md->table_oid] = &*entry.table_md;
                         }
                     }
                 }

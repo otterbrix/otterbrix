@@ -1,18 +1,19 @@
 #include "compare_expression.hpp"
+#include <cassert>
+#include <cstdlib>
 #include <sstream>
 
 namespace std {
     template<>
     struct hash<components::expressions::param_storage> {
         std::size_t operator()(const components::expressions::param_storage& arg) const noexcept {
-            if (std::holds_alternative<components::expressions::key_t>(arg)) {
-                return std::get<components::expressions::key_t>(arg).hash();
-            } else if (std::holds_alternative<core::parameter_id_t>(arg)) {
-                return std::hash<uint64_t>()(std::get<core::parameter_id_t>(arg));
-            } else {
-                assert(std::holds_alternative<components::expressions::expression_ptr>(arg));
-                return std::get<components::expressions::expression_ptr>(arg)->hash();
+            if (components::expressions::is_key(arg)) {
+                return components::expressions::as_key(arg).hash();
             }
+            if (components::expressions::is_parameter(arg)) {
+                return std::hash<uint64_t>()(components::expressions::as_parameter(arg));
+            }
+            return components::expressions::as_expr(arg)->hash();
         }
     };
 } // namespace std
@@ -99,7 +100,7 @@ namespace components::expressions {
                 if (i > 0) {
                     stream << ", ";
                 }
-                stream << children().at(i)->to_string();
+                stream << children()[i]->to_string();
             }
             stream << "]";
         } else {
@@ -133,27 +134,43 @@ namespace components::expressions {
         return new compare_expression_t(resource, type, nullptr, nullptr);
     }
 
+    namespace {
+        template<class T, class Storage>
+        T& alternative(Storage& param) noexcept {
+            auto* held = std::get_if<std::remove_const_t<T>>(&param);
+            if (held == nullptr) {
+                assert(false && "param_storage: the operand holds another alternative");
+                std::abort();
+            }
+            return *held;
+        }
+    } // namespace
+
     bool is_key(const param_storage& param) noexcept { return std::holds_alternative<key_t>(param); }
 
-    const key_t& as_key(const param_storage& param) { return std::get<key_t>(param); }
+    const key_t& as_key(const param_storage& param) noexcept { return alternative<const key_t>(param); }
 
-    key_t& as_key(param_storage& param) { return std::get<key_t>(param); }
+    key_t& as_key(param_storage& param) noexcept { return alternative<key_t>(param); }
 
     bool is_expr(const param_storage& param) noexcept { return std::holds_alternative<expression_ptr>(param); }
 
-    const expression_ptr& as_expr(const param_storage& param) { return std::get<expression_ptr>(param); }
+    const expression_ptr& as_expr(const param_storage& param) noexcept {
+        return alternative<const expression_ptr>(param);
+    }
 
-    expression_ptr& as_expr(param_storage& param) { return std::get<expression_ptr>(param); }
+    expression_ptr& as_expr(param_storage& param) noexcept { return alternative<expression_ptr>(param); }
 
     bool is_parameter(const param_storage& param) noexcept {
         return std::holds_alternative<core::parameter_id_t>(param);
     }
 
-    const core::parameter_id_t& as_parameter(const param_storage& param) {
-        return std::get<core::parameter_id_t>(param);
+    const core::parameter_id_t& as_parameter(const param_storage& param) noexcept {
+        return alternative<const core::parameter_id_t>(param);
     }
 
-    core::parameter_id_t& as_parameter(param_storage& param) { return std::get<core::parameter_id_t>(param); }
+    core::parameter_id_t& as_parameter(param_storage& param) noexcept {
+        return alternative<core::parameter_id_t>(param);
+    }
 
     compare_type get_compare_type(const std::string& key) {
         if (key.empty()) {

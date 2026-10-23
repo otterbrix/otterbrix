@@ -133,21 +133,21 @@ namespace components::expressions {
             std::pmr::vector<size_t> steps(path.begin() + 1, path.end(), resource());
             auto node = graph_->add_field(slot, steps);
             auto field_slot = graph_->output_slot(node);
-            graph_->set_slot_type(field_slot, field_type.value());
+            graph_->set_slot_type(field_slot, *field_type);
             return field_slot;
         }
 
         core::result_wrapper_t<slot_id_t> builder_t::slot_of(const param_storage& param) {
             if (std::holds_alternative<key_t>(param)) {
-                return column_slot(std::get<key_t>(param));
+                return column_slot(as_key(param));
             }
             if (std::holds_alternative<core::parameter_id_t>(param)) {
-                auto id = std::get<core::parameter_id_t>(param);
+                auto id = as_parameter(param);
                 auto node = graph_->add_parameter(id);
                 graph_->set_slot_type(graph_->output_slot(node), parameters_.type(id));
                 return graph_->output_slot(node);
             }
-            const auto& nested = std::get<expression_ptr>(param);
+            const auto& nested = as_expr(param);
             if (!nested) {
                 return core::error_t(core::error_code_t::invalid_parameter,
                                      std::pmr::string{"execution graph builder: sub-expression is empty", resource()});
@@ -489,8 +489,8 @@ namespace components::expressions {
         core::result_wrapper_t<slot_id_t> builder_t::slot_of(const scalar_expression_t* expression) {
             switch (expression->type()) {
                 case scalar_type::get_field: {
-                    const auto& field = expression->params().empty() ? expression->key()
-                                                                     : std::get<key_t>(expression->params().front());
+                    const auto& field =
+                        expression->params().empty() ? expression->key() : as_key(expression->params().front());
                     auto slot = column_slot(field);
                     if (slot.has_error()) {
                         return slot;
@@ -647,7 +647,7 @@ namespace components::expressions {
                 }
                 std::pmr::vector<size_t> steps(path.begin() + 1, path.end(), resource);
                 current = graph->output_slot(graph->add_field(current, steps));
-                graph->set_slot_type(current, field_type.value());
+                graph->set_slot_type(current, *field_type);
             }
 
             auto same =

@@ -169,7 +169,7 @@ namespace components::logical_plan {
             return nullptr;
         }
         const auto& entry = tables->entries()[index];
-        return entry.table_md.has_value() ? &entry.table_md.value() : nullptr;
+        return entry.table_md.has_value() ? &*entry.table_md : nullptr;
     }
 
     const resolved_table_metadata_t* catalog_resolves_t::table_md(components::catalog::oid_t table_oid) const noexcept {
@@ -178,7 +178,7 @@ namespace components::logical_plan {
         }
         for (const auto& entry : tables->entries()) {
             if (entry.table_md.has_value() && entry.table_md->table_oid == table_oid) {
-                return &entry.table_md.value();
+                return &*entry.table_md;
             }
         }
         return nullptr;
@@ -187,7 +187,7 @@ namespace components::logical_plan {
     const resolved_type_metadata_t* catalog_resolves_t::type_md(std::string_view dbname,
                                                                 std::string_view type_name) const noexcept {
         const auto* entry = type_entry(dbname, type_name);
-        return (entry && entry->type_md.has_value()) ? &entry->type_md.value() : nullptr;
+        return (entry && entry->type_md.has_value()) ? &*entry->type_md : nullptr;
     }
 
     const resolve_entry_t* catalog_resolves_t::constraints_for(components::catalog::oid_t table_oid,

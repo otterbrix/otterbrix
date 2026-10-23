@@ -578,15 +578,14 @@ namespace services::catalog_resolve {
                                  names.secondary_relname))};
                 const entry_view_t ry{resolves.type_entry(names.dbname, names.type_name)};
                 // Pasted whole, except relkind='v': a view's oid would make create_plan_match_ scan the empty heap.
-                const bool targets_a_view =
-                    rt && rt.resolved_metadata().has_value() &&
-                    rt.resolved_metadata().value().relkind == components::catalog::relkind::view;
+                const bool targets_a_view = rt && rt.resolved_metadata().has_value() &&
+                                            rt.resolved_metadata()->relkind == components::catalog::relkind::view;
                 if (rt && !targets_a_view) {
                     if (rt.table_oid() != components::catalog::INVALID_OID) {
                         n->set_table_oid(rt.table_oid());
                     }
                     if (rt.resolved_metadata().has_value()) {
-                        n->set_table_metadata(&rt.resolved_metadata().value());
+                        n->set_table_metadata(&*rt.resolved_metadata());
                     }
                 }
                 {

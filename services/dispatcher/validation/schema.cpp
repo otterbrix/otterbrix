@@ -57,6 +57,10 @@ namespace services::dispatcher::validation {
                                                   components::expressions::key_t& key,
                                                   const named_schema& schema,
                                                   column_uses_t* uses) {
+        if (key.storage().empty()) {
+            return core::error_t(core::error_code_t::schema_error,
+                                 std::pmr::string{"key has empty storage: " + key.as_string(), resource});
+        }
         auto found = find_types_in(resource, key, schema);
         if (uses != nullptr && !found.has_error()) {
             for (const auto& type_path : found.value()) {
@@ -77,14 +81,14 @@ namespace services::dispatcher::validation {
                                                             const named_schema& schema) {
         assert(!key.storage().empty());
         type_paths result{resource};
-        if (key.storage().at(0) == "*") {
+        if (key.storage()[0] == "*") {
             for (size_t i = 0; i < schema.size(); i++) {
                 result.emplace_back(type_path_t{column_path{{i}, resource}, schema[i].type});
             }
             return result;
         }
         if (key.storage().size() >= 2 && key.storage().back() == "*") {
-            const auto& table_part = key.storage().at(key.storage().size() - 2);
+            const auto& table_part = key.storage()[key.storage().size() - 2];
             for (size_t i = 0; i < schema.size(); i++) {
                 if (core::pmr::operator==(schema[i].result_alias, table_part)) {
                     result.emplace_back(type_path_t{column_path{{i}, resource}, schema[i].type});
@@ -106,7 +110,7 @@ namespace services::dispatcher::validation {
         if (truncated_key.has_qualifier()) {
             for (size_t i = 0; i < schema.size(); i++) {
                 if (core::pmr::operator==(schema[i].result_alias, truncated_key.qualifier()) &&
-                    core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(0))) {
+                    core::pmr::operator==(schema[i].type.alias(), truncated_key.storage()[0])) {
                     matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 1});
                 }
             }
@@ -126,14 +130,14 @@ namespace services::dispatcher::validation {
         const bool match_by_name = matches.empty() && !schema_knows_qualifier;
         for (size_t i = 0; match_by_name && i < schema.size(); i++) {
             if (truncated_key.storage().size() > 2 &&
-                core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(1)) &&
-                core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(2))) {
+                core::pmr::operator==(schema[i].result_alias, truncated_key.storage()[1]) &&
+                core::pmr::operator==(schema[i].type.alias(), truncated_key.storage()[2])) {
                 matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 3});
             } else if (truncated_key.storage().size() > 1 &&
-                       core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(0)) &&
-                       core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(1))) {
+                       core::pmr::operator==(schema[i].result_alias, truncated_key.storage()[0]) &&
+                       core::pmr::operator==(schema[i].type.alias(), truncated_key.storage()[1])) {
                 matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 2});
-            } else if (core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(0))) {
+            } else if (core::pmr::operator==(schema[i].type.alias(), truncated_key.storage()[0])) {
                 matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 1});
             }
         }

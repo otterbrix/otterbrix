@@ -243,7 +243,7 @@ namespace services::dispatcher {
                     if (!cast.has_value()) {
                         return std::nullopt;
                     }
-                    argument.cast = std::move(cast.value());
+                    argument.cast = std::move(*cast);
                     candidate.cost.add(info->cost);
                 }
                 targets.emplace_back(target);

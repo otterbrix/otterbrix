@@ -47,7 +47,7 @@ namespace services::planner::impl {
                 continue;
             }
             components::operators::sort_key_spec_t computed(plan_resource);
-            computed.expression = std::get<components::expressions::expression_ptr>(sort_expr->operand());
+            computed.expression = components::expressions::as_expr(sort_expr->operand());
             computed.order_ = ord;
             computed.null_order_ = nulls;
             sort->add_computed(std::move(computed));

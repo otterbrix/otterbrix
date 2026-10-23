@@ -123,7 +123,7 @@ namespace components::operators {
                 has_computed = true;
                 // The graph's columns reference its slots, which the next chunk overwrites, and
                 // every chunk stays live until the merge below — so each key is copied out.
-                const vector::vector_t& source_vec = computed.value().data[computed_column++];
+                const vector::vector_t& source_vec = computed->data[computed_column++];
                 vector::vector_t vec(resource_, source_vec.type(), chunk.size());
                 vector::vector_ops::copy(source_vec, vec, chunk.size(), 0, 0);
                 if (!keys_registered) {

@@ -89,7 +89,7 @@ namespace components::operators {
             if (expression_ && !expression_->is_union() && expression_->type() != expressions::compare_type::is_null &&
                 expression_->type() != expressions::compare_type::is_not_null &&
                 std::holds_alternative<core::parameter_id_t>(expression_->right())) {
-                auto pid = std::get<core::parameter_id_t>(expression_->right());
+                auto pid = components::expressions::as_parameter(expression_->right());
                 if (ctx->parameters.is_null(pid)) {
                     drained_ = true;
                     emitted_any_ = true;

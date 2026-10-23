@@ -25,7 +25,7 @@ namespace components::expressions {
                 }
                 stream << "]";
             } else {
-                stream << expr->params().at(0);
+                stream << expr->params().front();
             }
             stream << "}";
         }

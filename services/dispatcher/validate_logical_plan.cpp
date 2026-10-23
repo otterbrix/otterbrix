@@ -175,7 +175,7 @@ namespace services::dispatcher {
             if ((!is_nn && !is_n) || !std::holds_alternative<components::expressions::key_t>(cmp->left())) {
                 return expr;
             }
-            const auto& key = std::get<components::expressions::key_t>(cmp->left());
+            const auto& key = components::expressions::as_key(cmp->left());
             if (key.storage().empty()) {
                 return expr;
             }
@@ -269,14 +269,9 @@ namespace services::dispatcher {
                                                                           const named_schema& schema,
                                                                           column_uses_t* uses) {
             if (std::holds_alternative<components::expressions::key_t>(param)) {
-                auto& key = std::get<components::expressions::key_t>(param);
-                if (key.storage().empty()) {
-                    return core::error_t(core::error_code_t::schema_error,
-                                         std::pmr::string{"key has empty storage: " + key.as_string(), resource});
-                }
-                return find_types(resource, key, schema, uses);
+                return find_types(resource, components::expressions::as_key(param), schema, uses);
             } else if (std::holds_alternative<expression_ptr>(param)) {
-                auto& sub = std::get<expression_ptr>(param);
+                auto& sub = components::expressions::as_expr(param);
                 if (!sub) {
                     // A null operand slot (e.g. IS NULL's unused right()) would crash sub->group() below.
                     return type_paths{resource};
@@ -1925,7 +1920,7 @@ namespace services::dispatcher {
                             if (se->key().is_null()) {
                                 for (const auto& p : se->params()) {
                                     if (std::holds_alternative<components::expressions::key_t>(p)) {
-                                        op_side = std::get<components::expressions::key_t>(p).side();
+                                        op_side = components::expressions::as_key(p).side();
                                         break;
                                     }
                                 }
@@ -1941,7 +1936,7 @@ namespace services::dispatcher {
                                 }
                                 for (const auto& p : se->params()) {
                                     if (std::holds_alternative<components::expressions::key_t>(p)) {
-                                        del_prefixes.push_back(std::get<components::expressions::key_t>(p).as_string());
+                                        del_prefixes.push_back(components::expressions::as_key(p).as_string());
                                     }
                                 }
                             }
@@ -2657,7 +2652,7 @@ namespace services::dispatcher {
                                              "(not yet supported)",
                                              resource});
                     }
-                    function_input.emplace_back(parameters.type(std::get<core::parameter_id_t>(arg)));
+                    function_input.emplace_back(parameters.type(components::expressions::as_parameter(arg)));
                 }
 
                 auto fn_resolved =
@@ -2998,7 +2993,7 @@ namespace services::dispatcher {
                                                          "; no cast between them may be applied on assignment",
                                                      resource});
                             }
-                            binding.cast = std::move(cast.value());
+                            binding.cast = std::move(*cast);
                         }
                         bindings.emplace_back(std::move(binding));
                     }
@@ -3035,7 +3030,7 @@ namespace services::dispatcher {
                                                      components::catalog::format_type_be(cell.value.type(), false),
                                                  resource});
                         }
-                        cell.cast = std::move(cast.value());
+                        cell.cast = std::move(*cast);
                     }
 
                     if (source_is_raw_values && tbl_ins) {
@@ -3121,8 +3116,7 @@ namespace services::dispatcher {
                                 continue;
                             }
                             const auto& storage = expr->key().storage();
-                            // storage.at(0) is safe: is_null() above already skipped empty-key SETs.
-                            const std::string column_name(storage.at(0).data(), storage.at(0).size());
+                            const std::string column_name(storage.front().data(), storage.front().size());
                             if (live_columns.find(column_name) == live_columns.end()) {
                                 return core::error_t{
                                     core::error_code_t::schema_error,
@@ -3227,7 +3221,7 @@ namespace services::dispatcher {
                                 components::expressions::make_cast_expression(resource,
                                                                               param_storage{expr},
                                                                               target_type,
-                                                                              cast.value(),
+                                                                              *cast,
                                                                               components::casts::cast_kind::cast);
                             conversion->key() = expr->key();
                             expr = components::expressions::expression_ptr{conversion.get()};

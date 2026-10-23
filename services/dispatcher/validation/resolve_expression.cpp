@@ -86,9 +86,9 @@ namespace services::dispatcher::validation {
                     return context_.parameters.type(as_parameter(operand));
                 }
                 if (std::holds_alternative<components::expressions::key_t>(operand)) {
-                    return column(std::get<components::expressions::key_t>(operand), inside_aggregate);
+                    return column(components::expressions::as_key(operand), inside_aggregate);
                 }
-                auto& nested = std::get<expression_ptr>(operand);
+                auto& nested = components::expressions::as_expr(operand);
                 if (!nested) {
                     last_cardinality_ = cardinality_t::constant;
                     return invalid_type;
@@ -450,7 +450,7 @@ namespace services::dispatcher::validation {
                             return;
                         }
                         combined = combine(combined, last_cardinality_);
-                        child = std::get<expression_ptr>(nested);
+                        child = components::expressions::as_expr(nested);
                     }
                     comparison->set_result_type(boolean_type);
                     last_cardinality_ = combined;
@@ -661,6 +661,11 @@ namespace services::dispatcher::validation {
                         if (scalar->params().empty()) {
                             auto& key = scalar->key();
                             scalar->set_result_type(column(key, inside_aggregate));
+                            return;
+                        }
+                        if (scalar->type() == scalar_type::get_field && !is_key(scalar->params()[0])) {
+                            fail(core::error_code_t::invalid_parameter,
+                                 "a column read holds an operand that is not a column");
                             return;
                         }
                         scalar->set_result_type(slot(scalar->params()[0], inside_aggregate));
@@ -892,7 +897,7 @@ namespace services::dispatcher::validation {
         if (!resolver.require_type(required, result_type, context.required_type, "argument of the clause")) {
             return resolver.take_error();
         }
-        expression = std::get<expression_ptr>(required);
+        expression = components::expressions::as_expr(required);
         return core::error_t::no_error();
     }
 } // namespace services::dispatcher::validation

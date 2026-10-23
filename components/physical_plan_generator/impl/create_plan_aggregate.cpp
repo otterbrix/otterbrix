@@ -79,7 +79,7 @@ namespace services::planner::impl {
                         if (!s->params().empty() && !std::holds_alternative<ce::key_t>(s->params().front())) {
                             return false;
                         }
-                        field = s->params().empty() ? &s->key() : &std::get<ce::key_t>(s->params().front());
+                        field = s->params().empty() ? &s->key() : &components::expressions::as_key(s->params().front());
                         break;
                     default:
                         return false;
@@ -135,7 +135,7 @@ namespace services::planner::impl {
                     // A multi-arg/expression argument (SUM(a+b)) is not representable.
                     if (a->params().empty()) {
                     } else if (a->params().size() == 1 && std::holds_alternative<ce::key_t>(a->params().front())) {
-                        const auto& kp = std::get<ce::key_t>(a->params().front()).path();
+                        const auto& kp = components::expressions::as_key(a->params().front()).path();
                         pa.arg_col_path.assign(kp.begin(), kp.end());
                     } else {
                         return false;

@@ -1,6 +1,7 @@
 #include "operator_function.hpp"
 
 #include <components/context/context.hpp>
+#include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/vector/vector_operations.hpp>
 
@@ -27,8 +28,8 @@ namespace components::operators {
         std::pmr::vector<core::parameter_id_t> arg_ids(resource_);
         arg_ids.reserve(args_.size());
         for (const auto& arg : args_) {
-            if (std::holds_alternative<core::parameter_id_t>(arg)) {
-                arg_ids.push_back(std::get<core::parameter_id_t>(arg));
+            if (expressions::is_parameter(arg)) {
+                arg_ids.push_back(expressions::as_parameter(arg));
             } else {
                 // A column-ref argument is a correlated (LATERAL) reference; resolving
                 // it needs an outer row, which only the LATERAL-join path provides.

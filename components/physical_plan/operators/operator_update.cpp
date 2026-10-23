@@ -312,7 +312,7 @@ namespace components::operators {
         if (from_chunk != nullptr) {
             merged.emplace(merged_view(resource_, out_chunk, *from_chunk, match_count));
         }
-        const vector::data_chunk_t& input = merged.has_value() ? merged.value() : out_chunk;
+        const vector::data_chunk_t& input = merged.has_value() ? *merged : out_chunk;
 
         if (!updates_graph_) {
             std::pmr::vector<const expressions::expression_i*> values(resource_);

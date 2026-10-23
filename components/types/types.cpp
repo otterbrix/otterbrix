@@ -383,36 +383,6 @@ namespace components::types {
         }
     }
 
-    const complex_logical_type& complex_logical_type::child_type(const std::pmr::vector<size_t>& path) const {
-        assert(!path.empty() && "complex_logical_type::child_type should not be called with empty path");
-        return child_type(path.data(), path.size());
-    }
-
-    const complex_logical_type&
-    complex_logical_type::type_from_path(const std::pmr::vector<complex_logical_type>& types,
-                                         const std::pmr::vector<size_t>& path) {
-        assert(!types.empty() && "complex_logical_type::type_from_path should not be called with empty types");
-        assert(!path.empty() && "complex_logical_type::type_from_path should not be called with empty path");
-        return types.at(path.front()).child_type(path.data() + 1, path.size() - 1);
-    }
-
-    const complex_logical_type& complex_logical_type::child_type(const size_t* path_data, size_t remaining) const {
-        if (remaining == 0) {
-            return *this;
-        }
-        if (type_ == logical_type::ARRAY) {
-            return static_cast<array_logical_type_extension*>(extension_.get())
-                ->internal_type()
-                .child_type(path_data + 1, remaining - 1);
-        }
-        if (type_ == logical_type::LIST) {
-            return static_cast<list_logical_type_extension*>(extension_.get())
-                ->node()
-                .child_type(path_data + 1, remaining - 1);
-        }
-        return child_types().at(*path_data).child_type(path_data + 1, remaining - 1);
-    }
-
     const complex_logical_type& complex_logical_type::child_type() const {
         assert(type_ == logical_type::ARRAY || type_ == logical_type::LIST || type_ == logical_type::MAP);
         if (type_ == logical_type::ARRAY) {

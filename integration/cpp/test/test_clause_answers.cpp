@@ -979,6 +979,47 @@ TEST_CASE("integration::cpp::clause_answers::a_hand_built_plan_names_a_parameter
         plan->append_child(grouped_by_a(std::move(key)));
         CHECK(mentions(invalid_parameter(run(plan, false)), "GROUP BY key holds an operand that is not an expression"));
     }
+    auto plus_a = [&](expressions::scalar_expression_ptr read) {
+        auto sum = expressions::make_scalar_expression(resource,
+                                                       expressions::scalar_type::add,
+                                                       expressions::key_t(resource, "s"));
+        sum->append_param(expressions::key_t(resource, "a"));
+        sum->append_param(expressions::expression_ptr{std::move(read)});
+        return sum;
+    };
+    SECTION("O10 a nested projected column read whose operand is not a column is refused") {
+        auto plan = logical_plan::make_node_aggregate(resource, table);
+        auto select = logical_plan::make_node_select(resource);
+        select->append_expression(plus_a(column_read_of_a_parameter()));
+        plan->append_child(std::move(select));
+        CHECK(mentions(invalid_parameter(run(plan, false)), "a column read holds an operand that is not a column"));
+        CHECK(column_of(exec(dispatcher, "SELECT a FROM ob.t ORDER BY a;")) == values{1, 2, 3});
+    }
+    SECTION("O11 a nested column read in WHERE whose operand is not a column is refused") {
+        auto plan = logical_plan::make_node_aggregate(resource, table);
+        plan->append_child(logical_plan::make_node_match(
+            resource,
+            table,
+            expressions::make_compare_expression(resource,
+                                                 expressions::compare_type::gt,
+                                                 expressions::key_t{resource, "b", expressions::side_t::left},
+                                                 expressions::expression_ptr{plus_a(column_read_of_a_parameter())})));
+        CHECK(mentions(invalid_parameter(run(plan, false)), "a column read holds an operand that is not a column"));
+        CHECK(column_of(exec(dispatcher, "SELECT a FROM ob.t ORDER BY a;")) == values{1, 2, 3});
+    }
+    SECTION("O12 a column read of an empty name is refused") {
+        auto plan = logical_plan::make_node_aggregate(resource, table);
+        auto select = logical_plan::make_node_select(resource);
+        select->append_expression(expressions::make_scalar_expression(resource,
+                                                                      expressions::scalar_type::get_field,
+                                                                      expressions::key_t(resource)));
+        plan->append_child(std::move(select));
+        auto cur = run(plan, false);
+        REQUIRE(cur->is_error());
+        CHECK(cur->get_error().type == core::error_code_t::schema_error);
+        CHECK(mentions(std::string(cur->get_error().what), "key has empty storage"));
+        CHECK(column_of(exec(dispatcher, "SELECT a FROM ob.t ORDER BY a;")) == values{1, 2, 3});
+    }
 }
 
 TEST_CASE("integration::cpp::clause_answers::a_constant_sort_key_is_dropped") {

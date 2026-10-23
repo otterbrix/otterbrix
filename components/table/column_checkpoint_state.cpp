@@ -1,5 +1,7 @@
 #include "column_checkpoint_state.hpp"
 
+#include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <memory_resource>
@@ -143,7 +145,12 @@ namespace components::table {
             bool use_uint8 = (analysis.num_unique <= 256);
             for (uint64_t i = 0; i < count; i++) {
                 std::vector<std::byte> key(data + i * type_size, data + (i + 1) * type_size);
-                uint16_t idx = analysis.value_map.at(key);
+                const auto entry = analysis.value_map.find(key);
+                if (entry == analysis.value_map.end()) {
+                    assert(false && "build_dict_buffer: a value the dictionary analysis did not see");
+                    std::abort();
+                }
+                uint16_t idx = entry->second;
                 if (use_uint8) {
                     auto u8 = static_cast<uint8_t>(idx);
                     std::memcpy(ptr, &u8, 1);

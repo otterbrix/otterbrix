@@ -53,7 +53,7 @@ namespace services::planner::impl {
 
             if (std::holds_alternative<expr::key_t>(comp.left()) &&
                 std::holds_alternative<core::parameter_id_t>(comp.right())) {
-                const auto& key = std::get<expr::key_t>(comp.left());
+                const auto& key = components::expressions::as_key(comp.left());
                 const bool range = is_range_compare(comp.type());
                 if (context.has_index_on(table_oid, key) &&
                     (!range || context.has_index_on_with_other_type(table_oid,
@@ -65,7 +65,7 @@ namespace services::planner::impl {
             }
             if (std::holds_alternative<core::parameter_id_t>(comp.left()) &&
                 std::holds_alternative<expr::key_t>(comp.right())) {
-                const auto& key = std::get<expr::key_t>(comp.right());
+                const auto& key = components::expressions::as_key(comp.right());
                 const bool range = is_range_compare(comp.type());
                 if (context.has_index_on(table_oid, key) &&
                     (!range || context.has_index_on_with_other_type(table_oid,
@@ -156,10 +156,10 @@ namespace services::planner::impl {
                     if (!comp_expr->is_union()) {
                         bool key_on_left = true;
                         if (can_use_index(context, table_oid, *comp_expr, key_on_left)) {
-                            auto& key = key_on_left ? std::get<expr::key_t>(comp_expr->left())
-                                                    : std::get<expr::key_t>(comp_expr->right());
-                            auto param_id = key_on_left ? std::get<core::parameter_id_t>(comp_expr->right())
-                                                        : std::get<core::parameter_id_t>(comp_expr->left());
+                            auto& key = key_on_left ? components::expressions::as_key(comp_expr->left())
+                                                    : components::expressions::as_key(comp_expr->right());
+                            auto param_id = key_on_left ? components::expressions::as_parameter(comp_expr->right())
+                                                        : components::expressions::as_parameter(comp_expr->left());
                             auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
                             auto preferred_index_type = context.preferred_index_type_for_compare(table_oid, key, ctype);
                             return boost::intrusive_ptr(new components::operators::index_scan(

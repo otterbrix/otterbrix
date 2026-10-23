@@ -161,7 +161,7 @@ namespace components::compute {
             if (auto st = check_init(); st.contains_error()) {
                 return st;
             }
-            if (auto st = check_args(kernel_ctx_.value().exec_context().resource(), args); st.contains_error()) {
+            if (auto st = check_args(kernel_ctx_->exec_context().resource(), args); st.contains_error()) {
                 return st;
             }
             return executor_->update(args, groups, states);
@@ -211,7 +211,7 @@ namespace components::compute {
 
         core::error_t init_kernel(const function_options* options) {
             if (func_.doc().options_required && !options && !func_.default_options()) {
-                std::pmr::string what{"Function ", kernel_ctx_.value().exec_context().resource()};
+                std::pmr::string what{"Function ", kernel_ctx_->exec_context().resource()};
                 what += func_.name();
                 what += " cannot be executed without options";
                 return core::error_t(core::error_code_t::kernel_error, std::move(what));
@@ -221,14 +221,14 @@ namespace components::compute {
                 options = func_.default_options();
             }
 
-            if (auto state = kernel_.init(kernel_ctx_.value(), {kernel_, in_types_, options}); !state.has_error()) {
+            if (auto state = kernel_.init(*kernel_ctx_, {kernel_, in_types_, options}); !state.has_error()) {
                 state_ = std::move(state.value());
-                kernel_ctx_.value().set_state(state_.get());
+                kernel_ctx_->set_state(state_.get());
             } else {
                 return state.error();
             }
 
-            return executor_->init(kernel_ctx_.value(), {kernel_, in_types_, options});
+            return executor_->init(*kernel_ctx_, {kernel_, in_types_, options});
         }
 
         std::pmr::vector<complex_logical_type> in_types_;

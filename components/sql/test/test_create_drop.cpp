@@ -7,6 +7,7 @@
 #include <components/logical_plan/node_drop.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -24,7 +25,7 @@ inline std::size_t entry_count(const node_catalog_resolve_ptr& node) { return no
 // the old "$sequence[N]" child-count assertions were really pinning down.
 #define TEST_TRANSFORMER_OK(QUERY, ROOT_TYPE, NS_COUNT, TBL_COUNT)                                                     \
     SECTION(QUERY) {                                                                                                   \
-        auto stmt = raw_parser(&arena_resource, QUERY)->lst.front().data;                                              \
+        auto stmt = parse_ok(&arena_resource, QUERY)->lst.front().data;                                                \
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
         REQUIRE(!result.has_error());                                                                                  \
         const auto& plan = result.value();                                                                             \
@@ -35,13 +36,13 @@ inline std::size_t entry_count(const node_catalog_resolve_ptr& node) { return no
 
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
     SECTION(QUERY) {                                                                                                   \
-        auto create = linitial(raw_parser(&arena_resource, QUERY));                                                    \
+        auto create = linitial(parse_ok(&arena_resource, QUERY));                                                      \
         REQUIRE(transformer.transform(pg_cell_to_node_cast(create)).has_error());                                      \
     }
 
 #define TEST_TRANSFORMER_EXPECT_SCHEMA(QUERY, CHECK_FN)                                                                \
     SECTION(QUERY) {                                                                                                   \
-        auto stmt = linitial(raw_parser(&arena_resource, QUERY));                                                      \
+        auto stmt = linitial(parse_ok(&arena_resource, QUERY));                                                        \
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
         REQUIRE(!result.has_error());                                                                                  \
         auto node = result.value().sub_queries.back();                                                                 \
@@ -222,7 +223,7 @@ TEST_CASE("components::sql::index") {
     // index's own name (probing pg_class for a relation already using it).
     SECTION("create with uuid") {
         auto create =
-            raw_parser(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
+            parse_ok(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -233,8 +234,7 @@ TEST_CASE("components::sql::index") {
     }
 
     SECTION("create with schema") {
-        auto create =
-            raw_parser(&arena_resource, "CREATE INDEX some_idx ON db.schema.table (field);")->lst.front().data;
+        auto create = parse_ok(&arena_resource, "CREATE INDEX some_idx ON db.schema.table (field);")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -249,7 +249,7 @@ TEST_CASE("components::sql::index") {
     // DROP INDEX names TWO pg_class rows — the parent table and the index — so it
     // registers two table lookups, and the drop node carries both names.
     SECTION("drop with uuid") {
-        auto drop = raw_parser(&arena_resource, "DROP INDEX uuid.db.schema.table.some_idx")->lst.front().data;
+        auto drop = parse_ok(&arena_resource, "DROP INDEX uuid.db.schema.table.some_idx")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -260,7 +260,7 @@ TEST_CASE("components::sql::index") {
     }
 
     SECTION("drop with schema") {
-        auto drop = raw_parser(&arena_resource, "DROP INDEX db.schema.table.some_idx")->lst.front().data;
+        auto drop = parse_ok(&arena_resource, "DROP INDEX db.schema.table.some_idx")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -301,7 +301,7 @@ TEST_CASE("components::sql::drop_names_every_object_or_refuses") {
     transform::transformer transformer(&resource);
 
     auto refusal_of = [&](const char* query) {
-        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, query)->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(result.has_error());
         return std::string{result.error().what};
@@ -334,7 +334,7 @@ TEST_CASE("components::sql::drop_names_every_object_or_refuses") {
     }
 
     SECTION("a single object is still planned") {
-        auto stmt = raw_parser(&arena_resource, "DROP TABLE db_name.only_one")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "DROP TABLE db_name.only_one")->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE_FALSE(result.has_error());
         REQUIRE(result.value().sub_queries.back()->type() == node_type::drop_t);
@@ -348,7 +348,7 @@ TEST_CASE("components::sql::create_index_access_method") {
     transform::transformer transformer(&resource);
 
     auto plan_of = [&](const char* query) {
-        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, query)->lst.front().data;
         return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
     };
 
@@ -399,7 +399,7 @@ TEST_CASE("components::sql::create_index_declared_clauses_are_not_dropped") {
     transform::transformer transformer(&resource);
 
     auto plan_of = [&](const char* query) {
-        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, query)->lst.front().data;
         return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
     };
 
@@ -436,7 +436,7 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
     transform::transformer transformer(&resource);
 
     auto plan_of = [&](const char* query) {
-        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, query)->lst.front().data;
         return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
     };
 
@@ -528,7 +528,7 @@ TEST_CASE("components::sql::drop_carries_missing_ok") {
     transform::transformer transformer(&resource);
 
     auto if_exists_of = [&](const char* query) {
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
         auto node = result.value().sub_queries.back();
@@ -563,7 +563,7 @@ TEST_CASE("components::sql::drop_carries_written_behavior") {
     using components::catalog::drop_behavior_t;
 
     auto behavior_of = [&](const char* query) {
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
         auto node = result.value().sub_queries.back();
@@ -600,7 +600,7 @@ TEST_CASE("components::sql::alter_drop_column_carries_written_behavior") {
     using components::catalog::drop_behavior_t;
 
     auto subcommands_of = [&](const char* query) {
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
         auto node = result.value().sub_queries.back();
@@ -654,7 +654,7 @@ TEST_CASE("components::sql::alter_table_carries_missing_ok") {
     auto node_of = [&](const char* query) {
         // With the statement text: a CHECK's expression is sliced from it.
         transform::transformer transformer(&resource, query);
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
         return result.value().sub_queries.back();
@@ -699,7 +699,7 @@ TEST_CASE("components::sql::unreachable_write_targets") {
     transform::transformer transformer(&resource);
 
     auto recorded = [&](const char* sql) {
-        auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, sql)->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE_FALSE(result.has_error());
         std::vector<std::string> written;

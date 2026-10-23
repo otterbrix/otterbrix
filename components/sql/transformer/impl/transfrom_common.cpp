@@ -1733,35 +1733,37 @@ namespace components::sql::transform {
         }
 
         // SELECT wrapper, to reuse regular parsing mechanism
-        const std::string statement = "SELECT 1 WHERE " + expr_text + ";";
+        constexpr std::string_view wrapper = "SELECT 1 WHERE ";
+        const std::string statement = std::string{wrapper} + expr_text + ";";
         core::pmr::arena_resource_t arena(resource_);
-        Node* predicate = nullptr;
-        try {
-            auto* parsed = raw_parser(&arena, statement.c_str());
-            if (!parsed) {
-                return core::error_t(
-                    core::error_code_t::sql_parse_error,
-                    std::pmr::string{"CHECK constraint expression does not parse: " + expr_text, resource_});
-            }
-            auto* cell = linitial(parsed);
-            if (!cell) {
-                return core::error_t(
-                    core::error_code_t::sql_parse_error,
-                    std::pmr::string{"CHECK constraint expression does not parse: " + expr_text, resource_});
-            }
-            auto& parsed_node = pg_cell_to_node_cast(cell);
-            if (nodeTag(&parsed_node) != T_SelectStmt) {
-                return core::error_t(
-                    core::error_code_t::sql_parse_error,
-                    std::pmr::string{"CHECK constraint expression is not an expression: " + expr_text, resource_});
-            }
-            predicate = pg_ptr_cast<SelectStmt>(&parsed_node)->whereClause;
-        } catch (const std::exception& ex) {
+        auto parsed = raw_parser(&arena, statement.c_str());
+        if (parsed.has_error()) {
+            const int32_t wrapper_characters = static_cast<int32_t>(wrapper.size());
+            const int32_t at = parsed.error().position;
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"CHECK constraint expression does not parse: " + expr_text + " (" +
+                                                      parsed.error().what.c_str() + ")",
+                                                  resource_},
+                                 at > wrapper_characters ? at - wrapper_characters : -1);
+        }
+        if (!parsed.value()) {
             return core::error_t(
                 core::error_code_t::sql_parse_error,
-                std::pmr::string{"CHECK constraint expression does not parse: " + expr_text + " (" + ex.what() + ")",
-                                 resource_});
+                std::pmr::string{"CHECK constraint expression does not parse: " + expr_text, resource_});
         }
+        auto* cell = linitial(parsed.value());
+        if (!cell) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"CHECK constraint expression does not parse: " + expr_text, resource_});
+        }
+        auto& parsed_node = pg_cell_to_node_cast(cell);
+        if (nodeTag(&parsed_node) != T_SelectStmt) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"CHECK constraint expression is not an expression: " + expr_text, resource_});
+        }
+        Node* predicate = pg_ptr_cast<SelectStmt>(&parsed_node)->whereClause;
         if (!predicate) {
             return core::error_t(
                 core::error_code_t::sql_parse_error,

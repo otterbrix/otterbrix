@@ -121,14 +121,12 @@ namespace otterbrix {
 
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
         core::pmr::arena_resource_t parser_arena(resource());
-        List* parse_tree;
-        try {
-            parse_tree = raw_parser(&parser_arena, query.c_str(), parser_extensions_);
-        } catch (const std::exception& exception) {
-            return send_failed_plan(
-                session,
-                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{exception.what(), resource()}));
+        auto parsed = raw_parser(&parser_arena, query.c_str(), parser_extensions_);
+        if (parsed.has_error()) {
+            // error_on: the message lives on parser_arena, which ends with this call
+            return send_failed_plan(session, core::error_on(resource(), parsed.error()));
         }
+        List* parse_tree = parsed.value();
 
         // parser.h: the list may be EMPTY (no statement, not an error) or hold MORE than one --
         // linitial() alone reads past the end on empty and silently drops all but the first.
@@ -175,14 +173,12 @@ namespace otterbrix {
 
         trace(log_, "wrapper_dispatcher_t::execute sql (params) session: {}", session.data());
         core::pmr::arena_resource_t parser_arena(resource());
-        List* parse_tree;
-        try {
-            parse_tree = raw_parser(&parser_arena, query.c_str(), parser_extensions_);
-        } catch (const std::exception& exception) {
-            return send_failed_plan(
-                session,
-                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{exception.what(), resource()}));
+        auto parsed = raw_parser(&parser_arena, query.c_str(), parser_extensions_);
+        if (parsed.has_error()) {
+            // error_on: the message lives on parser_arena, which ends with this call
+            return send_failed_plan(session, core::error_on(resource(), parsed.error()));
         }
+        List* parse_tree = parsed.value();
 
         // Same seam as execute_sql above.
         if (list_length(parse_tree) == 0) {

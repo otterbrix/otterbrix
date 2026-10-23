@@ -6,6 +6,7 @@
 #include <components/cursor/cursor.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/vector/vector_builders.hpp>
@@ -283,7 +284,7 @@ TEST_CASE("integration::cpp::param_fold::rebind_after_execute_recomputes_the_fol
     auto* resource = d->resource();
     std::pmr::monotonic_buffer_resource arena(resource);
     const std::string query = "SELECT x FROM m.t WHERE x = $1 + 1;";
-    auto* raw = raw_parser(&arena, query.c_str());
+    auto* raw = parse_ok(&arena, query.c_str());
     REQUIRE(raw != nullptr);
 
     const auto run_with = [&](int64_t value) {

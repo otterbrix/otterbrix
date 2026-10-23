@@ -11,7 +11,7 @@ use sqlx_core::error::{DatabaseError, ErrorKind};
 /// C++ engine (see [`otterbrix::Error::Engine`]). Returned through
 /// [`sqlx::Error::Database`](sqlx_core::error::Error::Database); use
 /// `Box<dyn DatabaseError>::try_downcast_ref::<OtterbrixDbError>()` if you
-/// need the raw `code` or the `transaction_status`.
+/// need the raw `code`, the `transaction_status` or the `position`.
 ///
 /// The `Display` text is `otterbrix core query error (code <N>): <msg>`,
 /// matching the prefix convention used elsewhere in this driver.
@@ -25,12 +25,20 @@ pub struct OtterbrixDbError {
     /// run (see [`otterbrix::Error::Engine`]); `None` when the engine
     /// reported none.
     pub transaction_status: Option<TransactionStatus>,
+    /// The 1-based character of the statement text the error points at (see
+    /// [`otterbrix::Error::Engine`]); `None` when it points at none.
+    pub position: Option<u32>,
 }
 
 impl OtterbrixDbError {
     /// Where the statement's session stands once the failed statement has run.
     pub fn transaction_status(&self) -> Option<TransactionStatus> {
         self.transaction_status
+    }
+
+    /// The 1-based character of the statement text the error points at.
+    pub fn position(&self) -> Option<u32> {
+        self.position
     }
 }
 

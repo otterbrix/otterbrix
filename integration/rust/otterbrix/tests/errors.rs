@@ -31,11 +31,39 @@ fn query_error_carries_code_and_message() {
             code,
             message,
             transaction_status,
+            position,
         } => {
             assert_ne!(code, 0, "expected non-zero error code, got {code}");
             assert!(!message.is_empty(), "expected non-empty error message");
             assert_eq!(transaction_status, Some(TransactionStatus::Idle));
+            assert_eq!(position, None, "a missing table points at no character");
         }
+        other => panic!("expected Error::Engine, got {other}"),
+    }
+}
+
+#[test]
+fn a_syntax_error_carries_its_position() {
+    let db = common::open_test_db();
+
+    let err = db
+        .execute("SELECT * FROM t WHERE a = = 1;")
+        .expect_err("a syntax error must error");
+    match err {
+        Error::Engine {
+            message, position, ..
+        } => {
+            assert_eq!(message, r#"syntax error at or near "=""#);
+            assert_eq!(position, Some(27));
+        }
+        other => panic!("expected Error::Engine, got {other}"),
+    }
+
+    let err = db
+        .execute("SELECT 'жж")
+        .expect_err("an unterminated literal must error");
+    match err {
+        Error::Engine { position, .. } => assert_eq!(position, Some(8), "characters, not bytes"),
         other => panic!("expected Error::Engine, got {other}"),
     }
 }

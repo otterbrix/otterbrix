@@ -156,11 +156,15 @@ fn cursor_or_error<'db>(ptr: otterbrix_sys::cursor_ptr) -> Result<Cursor<'db>> {
             message
         };
         let transaction_status = transaction_status_of(ptr);
+        let position = u32::try_from(unsafe { otterbrix_sys::cursor_error_position(ptr) })
+            .ok()
+            .filter(|p| *p > 0);
         unsafe { otterbrix_sys::release_cursor(ptr) };
         return Err(Error::Engine {
             code,
             message,
             transaction_status,
+            position,
         });
     }
     Ok(Cursor {
@@ -220,6 +224,7 @@ impl Database {
                 code: refusal.code,
                 message,
                 transaction_status: None,
+                position: None,
             });
         }
         Ok(Database { ptr })

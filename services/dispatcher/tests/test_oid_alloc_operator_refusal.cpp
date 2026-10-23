@@ -19,6 +19,7 @@
 #include <components/log/test/test_log.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/types/types.hpp>
@@ -229,7 +230,7 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
 
     void execute_sql(const std::string& query) {
         parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
-        auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
+        auto parse_result = linitial(parse_ok(parser_arena_.get(), query.c_str()));
         components::sql::transform::transformer local_transformer(resource_, query.c_str());
         auto _wrap =
             local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize();

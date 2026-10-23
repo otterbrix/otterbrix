@@ -295,6 +295,20 @@ engine refused to start) and sqlx `OtterbrixDbError::transaction_status`, Python
 relation's fetch (`fetchone`, `fetchmany`, `fetchall`, `df`) raise (`None` when the engine answered no cursor).
 C# and Python `Client.execute` keep the error on the cursor.
 
+## Error position
+
+`core::error_t::position` is the 1-based character of the statement text the error points at, PostgreSQL's error
+position (characters, not bytes), or -1 when it points at none. The parser fills it for a `sql_parse_error`: the
+token bison could not shift (`SELEC 1` → 1, `SELECT 1 +` → 11 for "at end of input"), the start of an unterminated
+literal or comment, or the clause a grammar check refused (`(SELECT 1 ORDER BY 1) ORDER BY 2` → 32). A CHECK
+expression the transformer parses on its own answers the character of the CHECK text (`age > > 1` → 7). Errors past
+the parser and parse errors of a stored view body carry -1 (`test_errors.cpp`, `test_check_expression.cpp`,
+`test_parse_error_position.cpp`).
+Bindings: C `int32_t cursor_error_position(cursor_ptr)` (-1 also for a cursor without an error), C#
+`ErrorMessage.position` (`int?`), Rust `Error::Engine { position, .. }` (`Option<u32>`) and sqlx
+`OtterbrixDbError::position`, Python `RuntimeError.position` beside `transaction_status` and `Cursor.error_position`
+(`None` or `int`).
+
 ## Plans built by the host
 
 A plan the host builds from `(node, params)` and runs with `execute_plan` names no constraints: the engine registers

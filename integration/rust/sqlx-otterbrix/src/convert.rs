@@ -34,10 +34,12 @@ pub(crate) fn map_otterbrix_error(err: otterbrix::Error) -> Error {
             code,
             message,
             transaction_status,
+            position,
         } => Error::Database(Box::new(OtterbrixDbError {
             code,
             message,
             transaction_status,
+            position,
         })),
         otterbrix::Error::InvalidPath(_) => Error::Configuration(msg.into()),
         otterbrix::Error::TypeMismatch { .. } => Error::Protocol(msg),
@@ -290,6 +292,7 @@ mod error_mapping_tests {
             code: 42,
             message: "boom".to_owned(),
             transaction_status: None,
+            position: None,
         });
         match err {
             Error::Database(db_err) => {
@@ -306,12 +309,15 @@ mod error_mapping_tests {
             code: 42,
             message: "boom".to_owned(),
             transaction_status: Some(TransactionStatus::Failed),
+            position: Some(9),
         });
         match err {
             Error::Database(db_err) => {
                 let db_err = db_err
                     .try_downcast_ref::<OtterbrixDbError>()
                     .expect("an OtterbrixDbError");
+                assert_eq!(db_err.position, Some(9));
+                assert_eq!(db_err.position(), Some(9));
                 assert_eq!(db_err.transaction_status, Some(TransactionStatus::Failed));
                 assert_eq!(db_err.transaction_status(), Some(TransactionStatus::Failed));
             }

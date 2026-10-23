@@ -6,6 +6,7 @@
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
@@ -34,7 +35,7 @@ namespace {
 
     logical_plan::node_ptr validated(std::pmr::memory_resource* resource, const char* sql) {
         std::pmr::monotonic_buffer_resource arena(resource);
-        auto* raw = raw_parser(&arena, sql);
+        auto* raw = parse_ok(&arena, sql);
         REQUIRE(raw != nullptr);
         sql::transform::transformer transformer(resource);
         auto binder =

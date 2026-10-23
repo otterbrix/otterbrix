@@ -73,6 +73,9 @@ namespace Duckstax.Otterbrix
     public struct ErrorMessage {
         public ErrorCode type;
         public string what;
+        // The 1-based character of the statement text the error points at (PostgreSQL's error position);
+        // null when it points at none, and for a refused start.
+        public int? position;
     }
 
     // The C error_message: the caller owns `what` and frees it through Take.

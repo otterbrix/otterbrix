@@ -46,6 +46,9 @@ namespace Duckstax.Otterbrix
         [DllImport(libotterbrix, EntryPoint="cursor_error_message", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern IntPtr CursorErrorMessage(CursorHandle cursor);
 
+        [DllImport(libotterbrix, EntryPoint="cursor_error_position", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
+        private static extern int CursorErrorPosition(CursorHandle cursor);
+
         [DllImport(libotterbrix, EntryPoint="cursor_transaction_status", ExactSpelling=false, CallingConvention=CallingConvention.Cdecl)]
         private static extern int CursorTransactionStatus(CursorHandle cursor);
 
@@ -78,6 +81,8 @@ namespace Duckstax.Otterbrix
             ErrorMessage error = new ErrorMessage();
             error.type = (ErrorCode)CursorErrorCode(cursor);
             error.what = OtterbrixWrapper.BorrowString(cursor, () => CursorErrorMessage(cursor));
+            int position = CursorErrorPosition(cursor);
+            error.position = position > 0 ? position : null;
             return error;
         }
         public TransactionStatus GetTransactionStatus() { return (TransactionStatus)CursorTransactionStatus(cursor); }

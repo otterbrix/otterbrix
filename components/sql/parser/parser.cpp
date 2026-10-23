@@ -24,35 +24,31 @@
 #include "gramparse.h"
 #include "pg_functions.h"
 
-#include <optional>
-
 // The core bison/flex parsing path, reached when no registered parser extension claims the query.
-static List* base_raw_parser(std::pmr::memory_resource* resource, const char* str) {
-    core_yyscan_t yyscanner;
+static core::result_wrapper_t<List*> base_raw_parser(std::pmr::memory_resource* resource, const char* str) {
     base_yy_extra_type yyextra;
     yyextra.core_yy_extra.resource = resource;
-    int yyresult;
 
-    yyscanner = scanner_init(resource, str, &yyextra.core_yy_extra, ScanKeywords, NumScanKeywords);
+    core_yyscan_t yyscanner = scanner_init(resource, str, &yyextra.core_yy_extra, ScanKeywords, NumScanKeywords);
 
     // base_yylex() only needs this much initialization
     yyextra.have_lookahead = false;
 
     parser_init(&yyextra);
 
-    try {
-        yyresult = base_yyparse(resource, yyscanner);
-    } catch (const parser_exception_t& e) {
-        scanner_finish(yyscanner);
-        throw e;
-    }
+    const int yyresult = base_yyparse(resource, yyscanner);
 
     scanner_finish(yyscanner);
 
+    // Checked before yyresult: a lexer error hands bison end of input, which the grammar may accept.
+    if (yyextra.core_yy_extra.error.contains_error()) {
+        return std::move(yyextra.core_yy_extra.error);
+    }
     if (yyresult) {
-        // Must throw, not return NIL: an empty list already means "nothing to parse" below,
-        // and a bison abort must not be mistaken for that.
-        throw parser_exception_t("the parser aborted before a statement was built", "");
+        // Not NIL: an empty list already means "nothing to parse" below, and a bison abort must
+        // not be mistaken for that.
+        return core::error_t(core::error_code_t::sql_parse_error,
+                             std::pmr::string{"the parser aborted before a statement was built", resource});
     }
 
     // May be an empty list: the grammar discards "empty" statements (stmtmulti in gram.y), so
@@ -60,41 +56,33 @@ static List* base_raw_parser(std::pmr::memory_resource* resource, const char* st
     return yyextra.parsetree;
 }
 
-List* raw_parser(std::pmr::memory_resource* resource, const char* str) {
+core::result_wrapper_t<List*> raw_parser(std::pmr::memory_resource* resource, const char* str) {
     const components::sql::parser::parser_extension_registry_t no_extensions;
     return raw_parser(resource, str, no_extensions);
 }
 
 // The core bison/flex parser runs first; only syntax the core rejects is offered to `extensions`.
-// An empty returned list is success (nothing to parse); a thrown parser_exception_t is the only failure signal.
-List* raw_parser(std::pmr::memory_resource* resource,
-                 const char* str,
-                 const components::sql::parser::parser_extension_registry_t& extensions) {
+core::result_wrapper_t<List*> raw_parser(std::pmr::memory_resource* resource,
+                                         const char* str,
+                                         const components::sql::parser::parser_extension_registry_t& extensions) {
     using namespace components::sql::parser;
 
-    std::optional<parser_exception_t> base_error_opt;
-    try {
+    auto base = base_raw_parser(resource, str);
+    if (!base.has_error()) {
         // An empty tree here is "nothing to parse", not "did not parse", so no extension is consulted.
-        return base_raw_parser(resource, str);
-    } catch (const parser_exception_t& error) {
-        base_error_opt = error;
+        return base;
     }
 
     parse_extension_result_t ext_result = extensions.dispatch(resource, str);
     if (ext_result.has_error()) {
-        throw parser_exception_t(ext_result.error().what.c_str(), "");
+        return ext_result;
     }
     // Must be list_length(), not `!= NIL`: an extension declining with its own empty list
     // passes a pointer test, silently swallowing the core parser's syntax error.
     if (list_length(ext_result.value()) > 0) {
-        return ext_result.value();
+        return ext_result;
     }
-
-    if (base_error_opt) {
-        throw *base_error_opt;
-    }
-    // Unreachable in practice; throws so "did not parse" can never collapse into "nothing to parse".
-    throw parser_exception_t("the parser produced neither a statement nor a diagnostic", "");
+    return base;
 }
 
 // Combines tokens to reduce multiword lookahead (NULLS FIRST/LAST, WITH TIME/ORDINALITY) to one

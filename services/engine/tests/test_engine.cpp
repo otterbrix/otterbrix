@@ -3,6 +3,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <core/pmr.hpp>
@@ -71,7 +72,7 @@ namespace {
 
         components::cursor::cursor_t_ptr execute(const std::string& sql) {
             std::pmr::monotonic_buffer_resource arena(&resource);
-            auto* tree = raw_parser(&arena, sql.c_str());
+            auto* tree = parse_ok(&arena, sql.c_str());
             components::sql::transform::transformer transformer(&resource, sql.c_str());
             auto plan =
                 transformer.transform(components::sql::transform::pg_cell_to_node_cast(linitial(tree))).finalize();

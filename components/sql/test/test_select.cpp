@@ -5,6 +5,7 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/vector/operations/apply_quantified.hpp>
@@ -23,7 +24,7 @@ using vec = std::vector<components::vector::vector_t>;
 #define TEST_SIMPLE_SELECT(QUERY, RESULT, PARAMS)                                                                      \
     {                                                                                                                  \
         SECTION(QUERY) {                                                                                               \
-            auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
+            auto select = linitial(parse_ok(&arena_resource, QUERY));                                                  \
             auto _wrap = transformer.transform(pg_cell_to_node_cast(select)).finalize();                               \
             REQUIRE(!_wrap.has_error());                                                                               \
             auto result = _wrap.value();                                                                               \
@@ -391,7 +392,7 @@ TEST_CASE("components::sql::aggregate_distinct_survives_having_and_nesting") {
 
     // The group node absorbs the select-list expressions, so walking its children alone sees both projection and HAVING aggregates.
     auto calls_of = [&](const char* query) {
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto wrap = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!wrap.has_error());
         auto node = wrap.value().sub_queries.back();

@@ -6,6 +6,7 @@
 #include <components/logical_plan/node_drop.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -32,8 +33,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
     transform::transformer transformer(&resource);
 
     SECTION("CREATE TABLE with NOT NULL") {
-        auto stmt =
-            raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER NOT NULL, name TEXT)")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "CREATE TABLE db.tbl (id INTEGER NOT NULL, name TEXT)")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -50,7 +50,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
     }
 
     SECTION("CREATE TABLE with DEFAULT") {
-        auto stmt = raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER, name TEXT DEFAULT 'unknown')")
+        auto stmt = parse_ok(&arena_resource, "CREATE TABLE db.tbl (id INTEGER, name TEXT DEFAULT 'unknown')")
                         ->lst.front()
                         .data;
         auto result = ([](auto _w) {
@@ -70,7 +70,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
     }
 
     SECTION("CREATE TABLE with NOT NULL and DEFAULT combined") {
-        auto stmt = raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER NOT NULL, score DOUBLE DEFAULT 0)")
+        auto stmt = parse_ok(&arena_resource, "CREATE TABLE db.tbl (id INTEGER NOT NULL, score DOUBLE DEFAULT 0)")
                         ->lst.front()
                         .data;
         auto result = ([](auto _w) {
@@ -91,7 +91,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
 
     SECTION("CREATE TABLE with PRIMARY KEY column-level") {
         auto stmt =
-            raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER PRIMARY KEY, name TEXT)")->lst.front().data;
+            parse_ok(&arena_resource, "CREATE TABLE db.tbl (id INTEGER PRIMARY KEY, name TEXT)")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -107,7 +107,7 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
     }
 
     SECTION("CREATE TABLE with table-level PRIMARY KEY") {
-        auto stmt = raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER, name TEXT, PRIMARY KEY (id))")
+        auto stmt = parse_ok(&arena_resource, "CREATE TABLE db.tbl (id INTEGER, name TEXT, PRIMARY KEY (id))")
                         ->lst.front()
                         .data;
         auto result = ([](auto _w) {
@@ -125,9 +125,8 @@ TEST_CASE("components::sql::constraints::not_null_and_default") {
     }
 
     SECTION("CREATE TABLE with table-level UNIQUE") {
-        auto stmt = raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER, email TEXT, UNIQUE (email))")
-                        ->lst.front()
-                        .data;
+        auto stmt =
+            parse_ok(&arena_resource, "CREATE TABLE db.tbl (id INTEGER, email TEXT, UNIQUE (email))")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -149,7 +148,7 @@ TEST_CASE("components::sql::sequence") {
     transform::transformer transformer(&resource);
 
     SECTION("CREATE SEQUENCE basic") {
-        auto stmt = raw_parser(&arena_resource, "CREATE SEQUENCE db.my_seq")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "CREATE SEQUENCE db.my_seq")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -161,7 +160,7 @@ TEST_CASE("components::sql::sequence") {
     }
 
     SECTION("CREATE SEQUENCE with options") {
-        auto stmt = raw_parser(&arena_resource, "CREATE SEQUENCE db.my_seq START 10 INCREMENT 2")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "CREATE SEQUENCE db.my_seq START 10 INCREMENT 2")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -174,7 +173,7 @@ TEST_CASE("components::sql::sequence") {
     }
 
     SECTION("DROP SEQUENCE") {
-        auto stmt = raw_parser(&arena_resource, "DROP SEQUENCE db.my_seq")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "DROP SEQUENCE db.my_seq")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -195,7 +194,7 @@ TEST_CASE("components::sql::view") {
     SECTION("CREATE VIEW") {
         const char* sql = "CREATE VIEW db.my_view AS SELECT * FROM db.tbl";
         transform::transformer transformer(&resource, sql);
-        auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, sql)->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -207,7 +206,7 @@ TEST_CASE("components::sql::view") {
 
     SECTION("CREATE VIEW without the statement text is refused, not guessed") {
         transform::transformer transformer(&resource);
-        auto stmt = raw_parser(&arena_resource, "CREATE VIEW db.my_view AS SELECT * FROM db.tbl")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "CREATE VIEW db.my_view AS SELECT * FROM db.tbl")->lst.front().data;
         auto wrapped = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(wrapped.has_error());
     }
@@ -218,7 +217,7 @@ TEST_CASE("components::sql::view") {
         for (const char* sql : {"CREATE VIEW db.my_view AS\nSELECT id FROM db.tbl WHERE id > 10",
                                 "CREATE VIEW db.my_view AS(SELECT id FROM db.tbl WHERE id > 10)"}) {
             transform::transformer transformer(&resource, sql);
-            auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+            auto stmt = parse_ok(&arena_resource, sql)->lst.front().data;
             auto result = ([](auto _w) {
                 REQUIRE_FALSE(_w.has_error());
                 return _w.value();
@@ -232,7 +231,7 @@ TEST_CASE("components::sql::view") {
     SECTION("CREATE VIEW keeps WITH CHECK OPTION out of the stored body") {
         const char* sql = "CREATE VIEW db.my_view AS SELECT id FROM db.tbl WITH CHECK OPTION";
         transform::transformer transformer(&resource, sql);
-        auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, sql)->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -245,14 +244,14 @@ TEST_CASE("components::sql::view") {
         // Aliases rename the body's output columns and are carried nowhere.
         const char* sql = "CREATE VIEW db.my_view (x) AS SELECT id FROM db.tbl";
         transform::transformer transformer(&resource, sql);
-        auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, sql)->lst.front().data;
         REQUIRE(transformer.transform(pg_cell_to_node_cast(stmt)).finalize().has_error());
     }
 
     SECTION("CREATE VIEW with raw_sql extracts query") {
         const char* sql = "CREATE VIEW db.my_view AS SELECT id, name FROM db.tbl WHERE id > 10";
         transform::transformer transformer(&resource, sql);
-        auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, sql)->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -264,7 +263,7 @@ TEST_CASE("components::sql::view") {
 
     SECTION("DROP VIEW") {
         transform::transformer transformer(&resource);
-        auto stmt = raw_parser(&arena_resource, "DROP VIEW db.my_view")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "DROP VIEW db.my_view")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -284,7 +283,7 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
     // What the catalog stores for a CHECK is the expression as written, taken out of the
     // statement text — so each case has to transform its own statement, with that text.
     auto stored_check = [&](const char* sql) -> core::result_wrapper_t<std::string> {
-        auto stmt = linitial(raw_parser(&arena_resource, sql));
+        auto stmt = linitial(parse_ok(&arena_resource, sql));
         transform::transformer local(&resource, sql);
         auto transformed = local.transform(pg_cell_to_node_cast(stmt)).finalize();
         if (transformed.has_error()) {
@@ -337,7 +336,7 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
     // Without the statement text there is nothing to read the expression out of.
     SECTION("a transformer with no statement text refuses") {
         const char* sql = "CREATE TABLE t (x INTEGER, CHECK(x > 0))";
-        auto stmt = linitial(raw_parser(&arena_resource, sql));
+        auto stmt = linitial(parse_ok(&arena_resource, sql));
         transform::transformer local(&resource);
         REQUIRE(local.transform(pg_cell_to_node_cast(stmt)).finalize().has_error());
     }
@@ -349,7 +348,7 @@ TEST_CASE("components::sql::macro") {
     transform::transformer transformer(&resource);
 
     SECTION("DROP FUNCTION (macro)") {
-        auto stmt = raw_parser(&arena_resource, "DROP FUNCTION db.my_macro()")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "DROP FUNCTION db.my_macro()")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -362,7 +361,7 @@ TEST_CASE("components::sql::macro") {
     }
 
     SECTION("DROP FUNCTION simple name") {
-        auto stmt = raw_parser(&arena_resource, "DROP FUNCTION my_macro()")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "DROP FUNCTION my_macro()")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -389,7 +388,7 @@ TEST_CASE("components::sql::if_not_exists") {
     SECTION("CREATE DATABASE without IF NOT EXISTS") {
         // Transformer wraps create_database in sequence_t(resolve_namespace, create_database).
         // dbname lives in the resolve_namespace sibling; flag is on the create_database node.
-        auto stmt = raw_parser(&arena_resource, "CREATE DATABASE mydb")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "CREATE DATABASE mydb")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -400,7 +399,7 @@ TEST_CASE("components::sql::if_not_exists") {
     }
 
     SECTION("CREATE DATABASE IF NOT EXISTS sets flag") {
-        auto stmt = raw_parser(&arena_resource, "CREATE DATABASE IF NOT EXISTS mydb")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "CREATE DATABASE IF NOT EXISTS mydb")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -411,7 +410,7 @@ TEST_CASE("components::sql::if_not_exists") {
     }
 
     SECTION("CREATE TABLE IF NOT EXISTS sets flag on collection node") {
-        auto stmt = raw_parser(&arena_resource, "CREATE TABLE IF NOT EXISTS db.tbl (id INTEGER)")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "CREATE TABLE IF NOT EXISTS db.tbl (id INTEGER)")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -423,7 +422,7 @@ TEST_CASE("components::sql::if_not_exists") {
     }
 
     SECTION("CREATE TABLE without IF NOT EXISTS leaves flag false") {
-        auto stmt = raw_parser(&arena_resource, "CREATE TABLE db.tbl (id INTEGER)")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "CREATE TABLE db.tbl (id INTEGER)")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -442,7 +441,7 @@ TEST_CASE("components::sql::sequence_bounds_are_read_by_node_tag") {
     transform::transformer transformer(&resource);
 
     auto plan_of = [&](const char* query) {
-        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, query)->lst.front().data;
         return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
     };
     auto sequence_of = [&](const char* query) {

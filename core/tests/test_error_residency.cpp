@@ -189,3 +189,35 @@ TEST_CASE("core::a_long_message_copied_onto_a_null_resource_is_refused") {
 }
 
 #endif
+
+TEST_CASE("core::the_error_position_travels_with_every_copy_and_move") {
+    resource_tracer_t producer;
+    resource_tracer_t owner;
+
+    CHECK(core::error_t::no_error().position == -1);
+    CHECK(produced_on(&producer).position == -1);
+
+    core::error_t positioned{core::error_code_t::sql_parse_error,
+                             std::pmr::string{refusal.begin(), refusal.end(), &producer},
+                             7};
+    CHECK(positioned.position == 7);
+
+    core::error_t copied{positioned};
+    CHECK(copied.position == 7);
+    CHECK(core::error_on(&owner, positioned).position == 7);
+
+    core::error_t copy_assigned = core::error_t::no_error();
+    copy_assigned = positioned;
+    CHECK(copy_assigned.position == 7);
+
+    core::error_t move_assigned = core::error_t::no_error();
+    move_assigned = std::move(copied);
+    CHECK(move_assigned.position == 7);
+
+    core::error_t moved{std::move(move_assigned)};
+    CHECK(moved.position == 7);
+
+    core::result_wrapper_t<int> wrapped{std::move(moved)};
+    REQUIRE(wrapped.has_error());
+    CHECK(wrapped.error().position == 7);
+}

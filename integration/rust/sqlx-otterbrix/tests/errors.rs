@@ -17,6 +17,26 @@ async fn syntactically_invalid_sql_yields_database_error() {
 }
 
 #[tokio::test]
+async fn a_syntax_error_carries_its_position() {
+    let mut t = open_test_conn().await;
+
+    let err = sqlx::query::<Otterbrix>("SELEC 1;")
+        .execute(&mut t.conn)
+        .await
+        .unwrap_err();
+    match err {
+        sqlx::Error::Database(db_err) => {
+            let db_err = db_err
+                .try_downcast_ref::<OtterbrixDbError>()
+                .expect("an OtterbrixDbError");
+            assert_eq!(db_err.message, r#"syntax error at or near "SELEC""#);
+            assert_eq!(db_err.position(), Some(1));
+        }
+        other => panic!("expected sqlx::Error::Database, got {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn select_from_missing_table_yields_database_error() {
     let mut t = open_test_conn().await;
     create_app_db(&mut t.conn).await;

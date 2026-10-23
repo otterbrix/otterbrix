@@ -287,6 +287,7 @@ mod error_mapping_tests {
             code: 7,
             message: "syntax".into(),
             transaction_status: None,
+            position: None,
         });
         match mapped {
             DbErr::Exec(inner) => {

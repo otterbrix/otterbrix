@@ -56,9 +56,11 @@ fn a_second_open_of_the_same_directory_is_refused() {
             code,
             message,
             transaction_status,
+            position,
         }) => {
             assert_ne!(code, 0);
             assert_eq!(transaction_status, None, "a refused start has no session");
+            assert_eq!(position, None, "a refused start has no statement");
             assert!(message.contains("unique directory"), "refusal: {message}");
         }
         other => panic!("a second open must be refused with the engine's reason, got {other:?}"),

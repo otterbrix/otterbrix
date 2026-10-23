@@ -202,7 +202,7 @@ namespace otterbrix {
     result_t py_connection_t::execute_internal(const std::string& query) {
         refuse_if_closed();
         // Delegates rather than re-implementing wrapper_dispatcher_t::execute_sql, which
-        // already catches raw_parser's throw, guards `linitial` against an empty parse list,
+        // already turns raw_parser's error into an error cursor, guards `linitial` against an empty parse list,
         // and passes the registered parser extensions and query text to the transformer.
         auto session = session_id_t();
         return space->dispatcher()->execute_sql(session, query);

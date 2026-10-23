@@ -5,6 +5,7 @@
 
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <core/pmr.hpp>
@@ -52,7 +53,7 @@ TEST_CASE("integration::cpp::explain_host_plan::explain_delete_never_deletes") {
     auto* resource = d->resource();
     std::pmr::monotonic_buffer_resource arena(resource);
     const std::string query = "EXPLAIN DELETE FROM m.t WHERE id > 0;";
-    auto* raw = raw_parser(&arena, query.c_str());
+    auto* raw = parse_ok(&arena, query.c_str());
     REQUIRE(raw != nullptr);
     sql::transform::transformer transformer(resource, query.c_str());
     auto result = transformer.transform(sql::transform::pg_cell_to_node_cast(linitial(raw)));

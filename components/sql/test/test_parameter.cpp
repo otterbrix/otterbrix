@@ -7,6 +7,7 @@
 #include <components/logical_plan/node_update.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transform_result.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <tuple>
@@ -23,7 +24,7 @@ using vec = std::vector<components::vector::vector_t>;
 #define TEST_PARAMS_SELECT(QUERY, RESULT, BIND)                                                                        \
     {                                                                                                                  \
         SECTION(QUERY) {                                                                                               \
-            auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
+            auto select = linitial(parse_ok(&arena_resource, QUERY));                                                  \
             auto binder = transformer.transform(pg_cell_to_node_cast(select));                                         \
             TEST_PARAMS(RESULT, BIND)                                                                                  \
         }                                                                                                              \
@@ -54,7 +55,7 @@ using vec = std::vector<components::vector::vector_t>;
 
 #define TEST_SIMPLE_UPDATE(QUERY, RESULT, BIND, FIELDS)                                                                \
     SECTION(QUERY) {                                                                                                   \
-        auto stmt = linitial(raw_parser(&arena_resource, QUERY));                                                      \
+        auto stmt = linitial(parse_ok(&arena_resource, QUERY));                                                        \
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));                                               \
         for (auto i = 0ul; i < BIND.size(); ++i) {                                                                     \
             binder.bind(i + 1, BIND.at(i));                                                                            \
@@ -151,7 +152,7 @@ TEST_CASE("components::sql::insert_bind") {
 
     SECTION("insert simple bind") {
         auto query = R"_(INSERT INTO TestDatabase.TestCollection (id, name) VALUES ($1, $2);)_";
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, make_scalar(&resource, 42l));
         binder.bind(2, make_scalar(&resource, std::string("inserted")));
@@ -173,7 +174,7 @@ TEST_CASE("components::sql::insert_bind") {
 
     SECTION("insert with repeated param") {
         auto query = R"_(INSERT INTO TestDatabase.TestCollection (id, parent_id) VALUES ($1, $1);)_";
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
 
         REQUIRE(binder.all_bound() == false);
@@ -197,9 +198,9 @@ TEST_CASE("components::sql::insert_bind") {
     }
 
     SECTION("insert multi-bind") {
-        auto select = linitial(raw_parser(&arena_resource,
-                                          "INSERT INTO TestDatabase.TestCollection (id, name, count) VALUES "
-                                          "($1, $2, $3), ($4, $5, $6);"));
+        auto select = linitial(parse_ok(&arena_resource,
+                                        "INSERT INTO TestDatabase.TestCollection (id, name, count) VALUES "
+                                        "($1, $2, $3), ($4, $5, $6);"));
         auto binder = transformer.transform(pg_cell_to_node_cast(select));
         auto _wrap = binder.bind(1, make_scalar(&resource, 1ul))
                          .bind(2, make_scalar(&resource, "Name1"))
@@ -239,7 +240,7 @@ TEST_CASE("components::sql::bind_row_of_column") {
 
     SECTION("select takes the requested row") {
         auto query = R"_(SELECT * FROM TestDatabase.TestCollection WHERE id = $1;)_";
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, column, 2);
         auto finalized = binder.finalize();
@@ -251,7 +252,7 @@ TEST_CASE("components::sql::bind_row_of_column") {
 
     SECTION("insert takes the requested row") {
         auto query = R"_(INSERT INTO TestDatabase.TestCollection (id, name) VALUES ($1, $2);)_";
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, column, 2).bind(2, make_scalar(&resource, std::string("inserted")));
         auto finalized = binder.finalize();
@@ -269,7 +270,7 @@ TEST_CASE("components::sql::bind_row_of_column") {
 
     SECTION("a typed NULL of another type stays NULL in an insert column") {
         auto query = R"_(INSERT INTO TestDatabase.TestCollection (id) VALUES ($1), ($2);)_";
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, make_scalar(&resource, int64_t{42}))
             .bind(2, make_null(&resource, types::complex_logical_type{types::logical_type::STRING_LITERAL}));
@@ -305,7 +306,7 @@ TEST_CASE("components::sql::limit_offset_bind") {
 
     SECTION("LIMIT $1 binds an integer") {
         auto stmt =
-            linitial(raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1;"));
+            linitial(parse_ok(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, make_scalar(&resource, 5l));
         consumer_string(binder.finalize(), R"_($aggregate: {$sort: {id: 1}, $limit: 5})_");
@@ -313,7 +314,7 @@ TEST_CASE("components::sql::limit_offset_bind") {
 
     SECTION("LIMIT $1 OFFSET $2 binds both") {
         auto stmt = linitial(
-            raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1 OFFSET $2;"));
+            parse_ok(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1 OFFSET $2;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, make_scalar(&resource, 7l)).bind(2, make_scalar(&resource, 3l));
         consumer_string(binder.finalize(), R"_($aggregate: {$sort: {id: 1}, $limit: 7, $offset: 3})_");
@@ -321,8 +322,8 @@ TEST_CASE("components::sql::limit_offset_bind") {
 
     SECTION("LIMIT and WHERE share parameters") {
         auto stmt = linitial(
-            raw_parser(&arena_resource,
-                       "SELECT * FROM TestDatabase.TestCollection WHERE flag = $1 ORDER BY id LIMIT $2 OFFSET $3;"));
+            parse_ok(&arena_resource,
+                     "SELECT * FROM TestDatabase.TestCollection WHERE flag = $1 ORDER BY id LIMIT $2 OFFSET $3;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, make_scalar(&resource, true))
             .bind(2, make_scalar(&resource, 4l))
@@ -333,7 +334,7 @@ TEST_CASE("components::sql::limit_offset_bind") {
 
     SECTION("a new LIMIT bind picks up the new value") {
         auto stmt =
-            linitial(raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1;"));
+            linitial(parse_ok(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, make_scalar(&resource, 2l));
         consumer_string(binder.finalize(), R"_($aggregate: {$sort: {id: 1}, $limit: 2})_");
@@ -345,7 +346,7 @@ TEST_CASE("components::sql::limit_offset_bind") {
 
     SECTION("non-integer LIMIT parameter is rejected at finalize") {
         auto stmt =
-            linitial(raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1;"));
+            linitial(parse_ok(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT $1;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, make_scalar(&resource, std::string("oops")));
         auto result = binder.finalize();
@@ -354,7 +355,7 @@ TEST_CASE("components::sql::limit_offset_bind") {
 
     SECTION("literal LIMIT with parameterized OFFSET") {
         auto stmt = linitial(
-            raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT 5 OFFSET $1;"));
+            parse_ok(&arena_resource, "SELECT * FROM TestDatabase.TestCollection ORDER BY id LIMIT 5 OFFSET $1;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, make_scalar(&resource, 2l));
         consumer_string(binder.finalize(), R"_($aggregate: {$sort: {id: 1}, $limit: 5, $offset: 2})_");
@@ -368,7 +369,7 @@ TEST_CASE("components::sql::transform_result") {
 
     SECTION("not all bound") {
         auto stmt = linitial(
-            raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection WHERE id = $1 AND name = $2;"));
+            parse_ok(&arena_resource, "SELECT * FROM TestDatabase.TestCollection WHERE id = $1 AND name = $2;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, make_scalar(&resource, 42l));
         auto result = binder.finalize();
@@ -377,7 +378,7 @@ TEST_CASE("components::sql::transform_result") {
     }
 
     SECTION("a parameter the statement does not have is refused at bind") {
-        auto stmt = linitial(raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection WHERE id = $1;"));
+        auto stmt = linitial(parse_ok(&arena_resource, "SELECT * FROM TestDatabase.TestCollection WHERE id = $1;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(stmt));
         binder.bind(1, make_scalar(&resource, 42l)).bind(7, make_scalar(&resource, 1l));
         REQUIRE(binder.has_error());
@@ -387,7 +388,7 @@ TEST_CASE("components::sql::transform_result") {
 
     SECTION("new binds of one statement give new results") {
         auto query = R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = $1 AND name = $2 AND "count" = $1;)_";
-        auto select = linitial(raw_parser(&arena_resource, query));
+        auto select = linitial(parse_ok(&arena_resource, query));
         {
             auto binder = transformer.transform(pg_cell_to_node_cast(select));
             TEST_PARAMS(
@@ -414,7 +415,7 @@ TEST_CASE("components::sql::transform_result") {
         transform::transformer transformer(&resource);
 
         auto query = R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = $1;)_";
-        auto select = linitial(raw_parser(&arena_resource, query));
+        auto select = linitial(parse_ok(&arena_resource, query));
 
         auto first_binder = transformer.transform(pg_cell_to_node_cast(select));
         first_binder.bind(1, make_scalar(&resource, "doc"));
@@ -437,7 +438,7 @@ TEST_CASE("components::sql::transform_result") {
     }
 
     SECTION("the parameter count is the same after finalize") {
-        auto select = linitial(raw_parser(&arena_resource, "SELECT * FROM TestDatabase.TestCollection WHERE id = $1;"));
+        auto select = linitial(parse_ok(&arena_resource, "SELECT * FROM TestDatabase.TestCollection WHERE id = $1;"));
         auto binder = transformer.transform(pg_cell_to_node_cast(select));
         REQUIRE(binder.parameter_count() == 1);
         binder.bind(1, make_scalar(&resource, 1l));
@@ -445,8 +446,7 @@ TEST_CASE("components::sql::transform_result") {
         REQUIRE(binder.parameter_count() == 1);
         REQUIRE(binder.all_bound());
 
-        auto insert =
-            linitial(raw_parser(&arena_resource, "INSERT INTO TestDatabase.TestCollection (id) VALUES ($1);"));
+        auto insert = linitial(parse_ok(&arena_resource, "INSERT INTO TestDatabase.TestCollection (id) VALUES ($1);"));
         auto insert_binder = transformer.transform(pg_cell_to_node_cast(insert));
         REQUIRE(insert_binder.parameter_count() == 1);
         insert_binder.bind(1, make_scalar(&resource, 1l));
@@ -464,7 +464,7 @@ TEST_CASE("components::sql::transform_result") {
 
     SECTION("a finalized result takes no more binds and cannot be finalized again") {
         auto query = R"_(SELECT * FROM TestDatabase.TestCollection WHERE number = $1;)_";
-        auto select = linitial(raw_parser(&arena_resource, query));
+        auto select = linitial(parse_ok(&arena_resource, query));
         auto binder = transformer.transform(pg_cell_to_node_cast(select));
         binder.bind(1, make_scalar(&resource, 1l));
         REQUIRE_FALSE(binder.finalize().has_error());
@@ -475,7 +475,7 @@ TEST_CASE("components::sql::transform_result") {
 
     SECTION("a new insert binding keeps the key translation") {
         auto query = R"_(INSERT INTO TestDatabase.TestCollection (id, parent_id) VALUES ($1, $2);)_";
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
 
         auto first_binder = transformer.transform(pg_cell_to_node_cast(stmt));
         first_binder.bind(1, make_scalar(&resource, 123l)).bind(2, make_scalar(&resource, false));

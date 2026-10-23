@@ -102,6 +102,9 @@ bool cursor_is_error(cursor_ptr ptr) OTTERBRIX_NOEXCEPT;
 // A success cursor answers code 0 and "".
 int32_t cursor_error_code(cursor_ptr ptr) OTTERBRIX_NOEXCEPT;
 const char* cursor_error_message(cursor_ptr ptr) OTTERBRIX_NOEXCEPT;
+// The 1-based character of the statement text the error points at (PostgreSQL's error position), or -1 when the
+// error points at none or the cursor holds no error.
+int32_t cursor_error_position(cursor_ptr ptr) OTTERBRIX_NOEXCEPT;
 
 typedef enum transaction_status_t
 {

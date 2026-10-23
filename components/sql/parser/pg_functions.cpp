@@ -2,49 +2,19 @@
 #include "nodes/makefuncs.h"
 #include <algorithm>
 #include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
-#include <iostream>
 #include <utility>
 
-parser_exception_t::parser_exception_t(int main_code,
-                                       int support_code,
-                                       std::string message,
-                                       std::string detail,
-                                       int pos)
-    : main_error_code(main_code)
-    , support_error_code(support_code)
-    , message(std::move(message))
-    , detail(std::move(detail))
-    , query_pos(pos) {}
-
-parser_exception_t::parser_exception_t(std::string message, std::string detail)
-    : message(std::move(message))
-    , detail(std::move(detail)) {}
-
-const char* parser_exception_t::what() const noexcept { return message.c_str(); }
-
-int ereport(int code, std::string message) { return ereport(code, -1, std::move(message), "", -1); }
-int ereport(int code, std::string message, int pos) { return ereport(code, -1, std::move(message), "", pos); }
-int ereport(int main_code, int support_code, std::string message) {
-    return ereport(main_code, support_code, std::move(message), "", -1);
-}
-int ereport(int main_code, int support_code, std::string message, int pos) {
-    return ereport(main_code, support_code, std::move(message), "", pos);
-}
-int ereport(int main_code, int support_code, std::string message, std::string detail) {
-    return ereport(main_code, support_code, std::move(message), std::move(detail), -1);
-}
-int ereport(int main_code, int support_code, std::string message, std::string detail, int pos) {
-    if (main_code >= ERROR) {
-        throw parser_exception_t(main_code, support_code, std::move(message), std::move(detail), pos);
-    }
-
-    return 0;
-}
-
-void elog(int code, const char* message, ...) { ereport(code, message); }
-
 int errcode(int sqlerrcode) { return sqlerrcode; }
+
+void parser_abort(const char* msg) {
+    std::fputs("otterbrix SQL parser: ", stderr);
+    std::fputs(msg, stderr);
+    std::fputs("\n", stderr);
+    std::abort();
+}
 
 const char* errhint(const char* msg) { return msg; }
 
@@ -72,8 +42,7 @@ char* psprintf(std::pmr::memory_resource* resource, const char* fmt, ...) {
         va_end(args);
 
         if (newlen < 0) {
-            pfree(result);
-            throw std::runtime_error("Formatting error in psprintf");
+            parser_abort("psprintf format failed");
         }
 
         if (static_cast<size_t>(newlen) < len)
@@ -121,8 +90,10 @@ std::string NameListToString(PGList* names) {
             string += strVal(name);
         else if (IsA(name, A_Star))
             string += "*";
-        else
-            elog(ERROR, "unexpected node type in name list: %d", static_cast<int>(nodeTag(name)));
+        else {
+            // any_name builds String nodes only
+            parser_abort("unexpected node type in a name list");
+        }
     }
 
     return string;

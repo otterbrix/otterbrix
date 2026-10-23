@@ -18,6 +18,7 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <core/pmr.hpp>
@@ -347,7 +348,7 @@ TEST_CASE("integration::cpp::hand_built_constraints::sql_registers_one_constrain
     for (const auto& c : cases) {
         INFO("statement: " << c.sql);
         std::pmr::monotonic_buffer_resource arena(&resource);
-        auto* raw = raw_parser(&arena, c.sql.c_str());
+        auto* raw = parse_ok(&arena, c.sql.c_str());
         REQUIRE(raw != nullptr);
         sql::transform::transformer transformer(&resource, c.sql.c_str());
         auto result = transformer.transform(sql::transform::pg_cell_to_node_cast(linitial(raw)));
@@ -384,7 +385,7 @@ TEST_CASE("integration::cpp::hand_built_constraints::ddl_keeps_its_own_constrain
     for (const auto& sql : statements) {
         INFO("statement: " << sql);
         std::pmr::monotonic_buffer_resource arena(&resource);
-        auto* raw = raw_parser(&arena, sql.c_str());
+        auto* raw = parse_ok(&arena, sql.c_str());
         REQUIRE(raw != nullptr);
         sql::transform::transformer transformer(&resource, sql.c_str());
         auto result = transformer.transform(sql::transform::pg_cell_to_node_cast(linitial(raw)));

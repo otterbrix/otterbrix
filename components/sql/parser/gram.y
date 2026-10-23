@@ -56,31 +56,26 @@
 #include <limits.h>
 
 /*
- * Location tracking support --- simpler than bison's default, since we only
- * want to track the start position not the end position of each nonterminal.
+ * Location tracking support.  Unlike bison's default, we only want
+ * to track the start position not the end position of each nonterminal.
+ * Nonterminals that reduce to empty receive position "-1".  Since a
+ * production's leading RHS nonterminal(s) may have reduced to empty,
+ * we have to scan to find the first one that's not -1.
+ *
+ * Taken verbatim from PostgreSQL REL_18_STABLE src/backend/parser/gram.y:65-83.
  */
 #define YYLLOC_DEFAULT(Current, Rhs, N) \
 	do { \
-		if ((N) > 0) \
-			(Current) = (Rhs)[1]; \
-		else \
-			(Current) = (-1); \
+		(Current) = (-1); \
+		for (int _i = 1; _i <= (N); _i++) \
+		{ \
+			if ((Rhs)[_i] >= 0) \
+			{ \
+				(Current) = (Rhs)[_i]; \
+				break; \
+			} \
+		} \
 	} while (0)
-
-/*
- * The above macro assigns -1 (unknown) as the parse location of any
- * nonterminal that was reduced from an empty rule.  This is problematic
- * for nonterminals defined like
- *		OptFooList: / * EMPTY * / { ... } | OptFooList Foo { ... } ;
- * because we'll set -1 as the location during the first reduction and then
- * copy it during each subsequent reduction, leaving us with -1 for the
- * location even when the list is not empty.  To fix that, do this in the
- * action for the nonempty rule(s):
- *		if (@$ < 0) @$ = @2;
- * (Although we have many nonterminals that follow this pattern, we only
- * bother with fixing @$ like this when the nonterminal's parse location
- * is actually referenced in some rule.)
- */
 
 /*
  * Bison doesn't allocate anything that needs to live across parser calls,
@@ -110,7 +105,13 @@ typedef struct PrivTarget
 #define CAS_NO_INHERIT				0x20
 
 
-#define parser_yyerror(msg)  scanner_yyerror(msg, yyscanner)
+/*
+ * Grammar actions only: the error is recorded and the parse aborted. The helper functions after
+ * the rules get record-only versions, and every action calling one of them checks parser_failed().
+ */
+#define parser_yyerror(msg)  do { scanner_yyerror(msg, yyscanner); YYABORT; } while (0)
+#define ereport(level, ...)  do { if (parser_report(yyscanner, level, __VA_ARGS__)) YYABORT; } while (0)
+#define parser_failed()  scanner_failed(yyscanner)
 #define parser_errposition(pos)  scanner_errposition(pos, yyscanner)
 
 static void base_yyerror(YYLTYPE *yylloc, std::pmr::memory_resource* resource, core_yyscan_t yyscanner,
@@ -144,7 +145,7 @@ static void doNegateFloat(std::pmr::memory_resource* resource, Value *v);
 static Node *makeAArrayExpr(std::pmr::memory_resource* resource, List *elements, int location);
 static Node *makeXmlExpr(std::pmr::memory_resource* resource, XmlExprOp op, char *name, List *named_args,
 						 List *args, int location);
-static List *mergeTableFuncParameters(List *func_args, List *columns);
+static List *mergeTableFuncParameters(List *func_args, List *columns, core_yyscan_t yyscanner);
 static TypeName *TableFuncTypeName(std::pmr::memory_resource* resource, List *columns);
 static RangeVar *makeRangeVarFromAnyName(std::pmr::memory_resource* resource, List *names, int position, core_yyscan_t yyscanner);
 static void SplitColQualList(List *qualList,
@@ -155,7 +156,7 @@ static void processCASbits(int cas_bits, int location, const char *constrType,
 			   bool *no_inherit, core_yyscan_t yyscanner);
 static Node *makeRecursiveViewSelect(std::pmr::memory_resource* resource, char *relname, List *aliases, Node *query);
 
-static void checkWindowExclude(void);
+static void checkWindowExclude(core_yyscan_t yyscanner);
 static Node *makeIsNotDistinctFromNode(std::pmr::memory_resource* resource, Node *expr, int position);
 List *SystemFuncName(std::pmr::memory_resource* resource, char *name);
 TypeName *SystemTypeName(std::pmr::memory_resource* resource, char *name);
@@ -2033,8 +2034,6 @@ OptSchemaName:
 OptSchemaEltList:
 			OptSchemaEltList schema_stmt
 				{
-					if (@$ < 0)			/* see comments for YYLLOC_DEFAULT */
-						@$ = @2;
 					$$ = lappend(resource, $1, $2);
 				}
 			| /* EMPTY */
@@ -2827,6 +2826,8 @@ alter_table_cmd:
 									&c->deferrable,
 									&c->initdeferred,
 									NULL, NULL, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = (Node *)n;
 				}
 			/* ALTER TABLE <name> VALIDATE CONSTRAINT ... */
@@ -3765,6 +3766,8 @@ AlterCompositeTypeStmt:
 
 					/* can't use qualified_name, sigh */
 					n->relation = makeRangeVarFromAnyName(resource, $3, @3, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					n->cmds = $4;
 					n->relkind = OBJECT_TYPE;
 					$$ = (Node *)n;
@@ -4345,6 +4348,8 @@ columnDef:	ColId Typename create_generic_options ColQualList opt_storage_encodin
 					n->fdwoptions = $3;
 					SplitColQualList($4, &n->constraints, &n->collClause,
 									 yyscanner);
+					if (parser_failed())
+						YYABORT;
 					n->location = @1;
 					$$ = (Node *)n;
 				}
@@ -4365,6 +4370,8 @@ columnOptions:	ColId WITH OPTIONS ColQualList
 					n->collOid = InvalidOid;
 					SplitColQualList($4, &n->constraints, &n->collClause,
 									 yyscanner);
+					if (parser_failed())
+						YYABORT;
 					n->location = @1;
 					$$ = (Node *)n;
 				}
@@ -4593,6 +4600,8 @@ ConstraintElem:
 					processCASbits($5, @5, "CHECK",
 								   NULL, NULL, &n->skip_validation,
 								   &n->is_no_inherit, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					n->initially_valid = !n->skip_validation;
 					$$ = (Node *)n;
 				}
@@ -4609,6 +4618,8 @@ ConstraintElem:
 					processCASbits($7, @7, "UNIQUE",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   NULL, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = (Node *)n;
 				}
 			| UNIQUE ExistingIndex ConstraintAttributeSpec
@@ -4623,6 +4634,8 @@ ConstraintElem:
 					processCASbits($3, @3, "UNIQUE",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   NULL, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = (Node *)n;
 				}
 			| PRIMARY KEY '(' columnList ')' opt_definition OptConsTableSpace
@@ -4638,6 +4651,8 @@ ConstraintElem:
 					processCASbits($8, @8, "PRIMARY KEY",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   NULL, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = (Node *)n;
 				}
 			| PRIMARY KEY ExistingIndex ConstraintAttributeSpec
@@ -4652,6 +4667,8 @@ ConstraintElem:
 					processCASbits($4, @4, "PRIMARY KEY",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   NULL, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = (Node *)n;
 				}
 			| EXCLUDE access_method_clause '(' ExclusionConstraintList ')'
@@ -4670,6 +4687,8 @@ ConstraintElem:
 					processCASbits($9, @9, "EXCLUDE",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   NULL, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = (Node *)n;
 				}
 			| FOREIGN KEY '(' columnList ')' REFERENCES qualified_name
@@ -4688,6 +4707,8 @@ ConstraintElem:
 								   &n->deferrable, &n->initdeferred,
 								   &n->skip_validation, NULL,
 								   yyscanner);
+					if (parser_failed())
+						YYABORT;
 					n->initially_valid = !n->skip_validation;
 					$$ = (Node *)n;
 				}
@@ -6928,6 +6949,8 @@ CreateTrigStmt:
 					processCASbits($10, @10, "TRIGGER",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   NULL, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					n->constrrel = $9;
 					$$ = (Node *)n;
 				}
@@ -7181,6 +7204,8 @@ CreateAssertStmt:
 					processCASbits($8, @8, "ASSERTION",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   NULL, yyscanner);
+					if (parser_failed())
+						YYABORT;
 
 					ereport(ERROR,
 							errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -7272,6 +7297,8 @@ DefineStmt:
 
 					/* can't use qualified_name, sigh */
 					n->typevar = makeRangeVarFromAnyName(resource, $3, @3, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					n->coldeflist = $6;
 					$$ = (Node *)n;
 				}
@@ -8896,7 +8923,9 @@ CreateFunctionStmt:
 					CreateFunctionStmt *n = makeNode(resource, CreateFunctionStmt);
 					n->replace = $2;
 					n->funcname = $4;
-					n->parameters = mergeTableFuncParameters($5, $9);
+					n->parameters = mergeTableFuncParameters($5, $9, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					n->returnType = TableFuncTypeName(resource, $9);
 					n->returnType->location = @7;
 					n->options = $11;
@@ -9125,6 +9154,8 @@ aggr_args:	'(' '*' ')'
 				{
 					/* this is the only case requiring consistency checking */
 					$$ = makeOrderedSetArgs(resource, $2, $5, yyscanner);
+					if (parser_failed())
+						YYABORT;
 				}
 		;
 
@@ -10059,6 +10090,8 @@ RenameStmt: ALTER AGGREGATE func_name aggr_args RENAME TO name
 					n->renameType = OBJECT_ATTRIBUTE;
 					n->relationType = OBJECT_TYPE;
 					n->relation = makeRangeVarFromAnyName(resource, $3, @3, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					n->subname = $6;
 					n->newname = $8;
 					n->behavior = $9;
@@ -11105,6 +11138,8 @@ CreateDomainStmt:
 					n->typeName = $5;
 					SplitColQualList($6, &n->constraints, &n->collClause,
 									 yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = (Node *)n;
 				}
 		;
@@ -11804,6 +11839,8 @@ insert_column_item:
 					$$ = makeNode(resource, ResTarget);
 					$$->name = $1;
 					$$->indirection = check_indirection($2, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$->val = NULL;
 					$$->location = @1;
 				}
@@ -12017,6 +12054,8 @@ set_target:
 					$$ = makeNode(resource, ResTarget);
 					$$->name = $1;
 					$$->indirection = check_indirection($2, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$->val = NULL;	/* upper production sets this */
 					$$->location = @1;
 				}
@@ -12151,6 +12190,8 @@ select_no_parens:
 					insertSelectOptions((SelectStmt *) $1, $2, NIL,
 										NULL, NULL, NULL,
 										yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = $1;
 				}
 			| select_clause opt_sort_clause for_locking_clause opt_select_limit
@@ -12159,6 +12200,8 @@ select_no_parens:
 										list_nth($4, 0), list_nth($4, 1),
 										NULL,
 										yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = $1;
 				}
 			| select_clause opt_sort_clause select_limit opt_for_locking_clause
@@ -12167,6 +12210,8 @@ select_no_parens:
 										list_nth($3, 0), list_nth($3, 1),
 										NULL,
 										yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = $1;
 				}
 			| with_clause select_clause
@@ -12175,6 +12220,8 @@ select_no_parens:
 										NULL, NULL,
 										$1,
 										yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = $2;
 				}
 			| with_clause select_clause sort_clause
@@ -12183,6 +12230,8 @@ select_no_parens:
 										NULL, NULL,
 										$1,
 										yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = $2;
 				}
 			| with_clause select_clause opt_sort_clause for_locking_clause opt_select_limit
@@ -12191,6 +12240,8 @@ select_no_parens:
 										list_nth($5, 0), list_nth($5, 1),
 										$1,
 										yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = $2;
 				}
 			| with_clause select_clause opt_sort_clause select_limit opt_for_locking_clause
@@ -12199,6 +12250,8 @@ select_no_parens:
 										list_nth($4, 0), list_nth($4, 1),
 										$1,
 										yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = $2;
 				}
 		;
@@ -14125,6 +14178,8 @@ c_expr:		columnref								{ $$ = $1; }
 						A_Indirection *n = makeNode(resource, A_Indirection);
 						n->arg = (Node *) p;
 						n->indirection = check_indirection($2, yyscanner);
+						if (parser_failed())
+							YYABORT;
 						$$ = (Node *) n;
 					}
 					else
@@ -14137,6 +14192,8 @@ c_expr:		columnref								{ $$ = $1; }
 						A_Indirection *n = makeNode(resource, A_Indirection);
 						n->arg = $2;
 						n->indirection = check_indirection($4, yyscanner);
+						if (parser_failed())
+							YYABORT;
 						$$ = (Node *)n;
 					}
 					else
@@ -14179,6 +14236,8 @@ c_expr:		columnref								{ $$ = $1; }
 					n->location = @1;
 					a->arg = (Node *)n;
 					a->indirection = check_indirection($2, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = (Node *)a;
 				}
 			| EXISTS select_with_parens
@@ -15061,10 +15120,10 @@ frame_bound:
 				}
 		;
 
-window_frame_exclusion: EXCLUDE CURRENT_P ROW { checkWindowExclude(); $$ = 0; }
-			| EXCLUDE GROUP_P { checkWindowExclude(); $$ = 0; }
-			| EXCLUDE TIES { checkWindowExclude(); $$ = 0; }
-			| EXCLUDE NO OTHERS { checkWindowExclude(); $$ = 0; }
+window_frame_exclusion: EXCLUDE CURRENT_P ROW { checkWindowExclude(yyscanner); if (parser_failed()) YYABORT; $$ = 0; }
+			| EXCLUDE GROUP_P { checkWindowExclude(yyscanner); if (parser_failed()) YYABORT; $$ = 0; }
+			| EXCLUDE TIES { checkWindowExclude(yyscanner); if (parser_failed()) YYABORT; $$ = 0; }
+			| EXCLUDE NO OTHERS { checkWindowExclude(yyscanner); if (parser_failed()) YYABORT; $$ = 0; }
 			| /*EMPTY*/ { $$ = 0; }
 		;
 
@@ -15418,10 +15477,14 @@ decode_default:
 columnref:	ColId
 				{
 					$$ = makeColumnRef(resource, $1, NIL, @1, yyscanner);
+					if (parser_failed())
+						YYABORT;
 				}
 			| ColId indirection
 				{
 					$$ = makeColumnRef(resource, $1, $2, @1, yyscanner);
+					if (parser_failed())
+						YYABORT;
 				}
 		;
 
@@ -15597,6 +15660,8 @@ qualified_name:
 			| ColId indirection
 				{
 					check_qualified_name($2, yyscanner);
+					if (parser_failed())
+						YYABORT;
 					$$ = makeRangeVar(resource, NULL, NULL, @1);
 					switch (list_length($2))
 					{
@@ -15664,6 +15729,8 @@ func_name:	type_function_name
 					{
 						$$ = check_func_name(lcons(resource, makeString(resource, $1), $2),
 											 yyscanner);
+						if (parser_failed())
+							YYABORT;
 					}
 		;
 
@@ -16673,6 +16740,11 @@ reserved_keyword:
 
 %%
 
+#undef parser_yyerror
+#undef ereport
+#define parser_yyerror(msg)  scanner_yyerror(msg, yyscanner)
+#define ereport(level, ...)  parser_report(yyscanner, level, __VA_ARGS__)
+
 /*
  * The signature of this function is required by bison.  However, we
  * ignore the passed yylloc and instead use the last token position
@@ -16710,6 +16782,8 @@ makeColumnRef(std::pmr::memory_resource* resource, char *colname, List *indirect
 				/* easy case - all indirection goes to A_Indirection */
 				c->fields = list_make1(resource, makeString(resource, colname));
 				i->indirection = check_indirection(indirection, yyscanner);
+				if (scanner_failed(yyscanner))
+					return NULL;
 			}
 			else
 			{
@@ -16717,6 +16791,8 @@ makeColumnRef(std::pmr::memory_resource* resource, char *colname, List *indirect
 				i->indirection = check_indirection(list_copy_tail(resource, indirection,
 																  nfields),
 												   yyscanner);
+				if (scanner_failed(yyscanner))
+					return NULL;
 				indirection = list_truncate(indirection, nfields);
 				c->fields = lcons(resource, makeString(resource, colname), indirection);
 			}
@@ -16727,7 +16803,10 @@ makeColumnRef(std::pmr::memory_resource* resource, char *colname, List *indirect
 		{
 			/* We only allow '*' at the end of a ColumnRef */
 			if (std::next(_it_) != indirection->lst.end())
+			{
 				parser_yyerror("improper use of \"*\"");
+				return NULL;
+			}
 		}
 		nfields++;
 	}
@@ -16867,7 +16946,10 @@ check_qualified_name(List *names, core_yyscan_t yyscanner)
 	foreach(i, names)
 	{
 		if (!IsA(lfirst(i), String))
+		{
 			parser_yyerror("syntax error");
+			return;
+		}
 	}
 }
 
@@ -16884,7 +16966,10 @@ check_func_name(List *names, core_yyscan_t yyscanner)
 	foreach(i, names)
 	{
 		if (!IsA(lfirst(i), String))
+		{
 			parser_yyerror("syntax error");
+			return NIL;
+		}
 	}
 	return names;
 }
@@ -16904,7 +16989,10 @@ check_indirection(List *indirection, core_yyscan_t yyscanner)
 		if (IsA(lfirst(l), A_Star))
 		{
 			if (std::next(_it_) != indirection->lst.end())
+			{
 				parser_yyerror("improper use of \"*\"");
+				return NIL;
+			}
 		}
 	}
 	return indirection;
@@ -16966,10 +17054,13 @@ makeOrderedSetArgs(std::pmr::memory_resource* resource, List *directargs, List *
 		if (list_length(orderedargs) != 1 ||
 			firsto->mode != FUNC_PARAM_VARIADIC ||
 			!equal(lastd->argType, firsto->argType))
+		{
 			ereport(ERROR,
 					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("an ordered-set aggregate with a VARIADIC direct argument must have one VARIADIC aggregated argument of the same data type"),
 					 parser_errposition(exprLocation(reinterpret_cast<Node *>(firsto))));
+			return NIL;
+		}
 
 		/* OK, drop the duplicate VARIADIC argument from the internal form */
 		orderedargs = NIL;
@@ -17003,10 +17094,13 @@ insertSelectOptions(SelectStmt *stmt,
 	if (sortClause)
 	{
 		if (stmt->sortClause)
+		{
 			ereport(ERROR,
 					errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("multiple ORDER BY clauses not allowed"),
 					 parser_errposition(exprLocation(reinterpret_cast<Node *>(sortClause))));
+			return;
+		}
 		stmt->sortClause = sortClause;
 	}
 	/* We can handle multiple locking clauses, though */
@@ -17014,28 +17108,37 @@ insertSelectOptions(SelectStmt *stmt,
 	if (limitOffset)
 	{
 		if (stmt->limitOffset)
+		{
 			ereport(ERROR,
 					errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("multiple OFFSET clauses not allowed"),
 					 parser_errposition(exprLocation(limitOffset)));
+			return;
+		}
 		stmt->limitOffset = limitOffset;
 	}
 	if (limitCount)
 	{
 		if (stmt->limitCount)
+		{
 			ereport(ERROR,
 					errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("multiple LIMIT clauses not allowed"),
 					 parser_errposition(exprLocation(limitCount)));
+			return;
+		}
 		stmt->limitCount = limitCount;
 	}
 	if (withClause)
 	{
 		if (stmt->withClause)
+		{
 			ereport(ERROR,
 					errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("multiple WITH clauses not allowed"),
 					 parser_errposition(exprLocation(reinterpret_cast<Node *>(withClause))));
+			return;
+		}
 		stmt->withClause = withClause;
 	}
 }
@@ -17162,7 +17265,7 @@ makeXmlExpr(std::pmr::memory_resource* resource, XmlExprOp op, char *name, List 
  * Merge the input and output parameters of a table function.
  */
 static List *
-mergeTableFuncParameters(List *func_args, List *columns)
+mergeTableFuncParameters(List *func_args, List *columns, core_yyscan_t yyscanner)
 {
 	ListCell   *lc;
 
@@ -17186,12 +17289,12 @@ mergeTableFuncParameters(List *func_args, List *columns)
 				ereport(ERROR,
 						errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("OUT arguments aren't allowed in TABLE functions"));
-				break;
+				return NIL;
 			case FUNC_PARAM_INOUT:
 				ereport(ERROR,
 						errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("INOUT arguments aren't allowed in TABLE functions"));
-				break;
+				return NIL;
 		}
 	}
 
@@ -17222,7 +17325,7 @@ TableFuncTypeName(std::pmr::memory_resource* resource, List *columns)
 }
 
 static void
-checkWindowExclude(void)
+checkWindowExclude(core_yyscan_t yyscanner)
 {
 	/*
 	 * because the syntax has historically existed without doing anything
@@ -17285,7 +17388,7 @@ makeRangeVarFromAnyName(std::pmr::memory_resource* resource, List *names, int po
 					 errmsg("improper qualified name (too many dotted names): %s",
 							NameListToString(names).c_str()),
 					 parser_errposition(position));
-			break;
+			return NULL;
 	}
 
 	r->relpersistence = RELPERSISTENCE_PERMANENT;
@@ -17315,14 +17418,20 @@ SplitColQualList(List *qualList,
 			CollateClause *c = reinterpret_cast<CollateClause *>(n);
 
 			if (*collClause)
+			{
 				ereport(ERROR,
 						errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("multiple COLLATE clauses not allowed"),
 						 parser_errposition(c->location));
+				return;
+			}
 			*collClause = c;
 		}
 		else
-			elog(ERROR, "unexpected node type %d", (int) n->type);
+		{
+			/* ColConstraint builds only Constraint and CollateClause nodes */
+			parser_abort("unexpected node type in a column qualifier list");
+		}
 		/* remove non-Constraint nodes from qualList */
 		cell = qualList->lst.erase(cell);
 	}
@@ -17352,12 +17461,15 @@ processCASbits(int cas_bits, int location, const char *constrType,
 		if (deferrable)
 			*deferrable = true;
 		else
+		{
 			ereport(ERROR,
 					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 /* translator: %s is CHECK, UNIQUE, or similar */
 					 errmsg("%s constraints cannot be marked DEFERRABLE",
 							constrType),
 					 parser_errposition(location));
+			return;
+		}
 	}
 
 	if (cas_bits & CAS_INITIALLY_DEFERRED)
@@ -17365,12 +17477,15 @@ processCASbits(int cas_bits, int location, const char *constrType,
 		if (initdeferred)
 			*initdeferred = true;
 		else
+		{
 			ereport(ERROR,
 					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 /* translator: %s is CHECK, UNIQUE, or similar */
 					 errmsg("%s constraints cannot be marked DEFERRABLE",
 							constrType),
 					 parser_errposition(location));
+			return;
+		}
 	}
 
 	if (cas_bits & CAS_NOT_VALID)
@@ -17378,12 +17493,15 @@ processCASbits(int cas_bits, int location, const char *constrType,
 		if (not_valid)
 			*not_valid = true;
 		else
+		{
 			ereport(ERROR,
 					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 /* translator: %s is CHECK, UNIQUE, or similar */
 					 errmsg("%s constraints cannot be marked NOT VALID",
 							constrType),
 					 parser_errposition(location));
+			return;
+		}
 	}
 
 	if (cas_bits & CAS_NO_INHERIT)
@@ -17391,12 +17509,15 @@ processCASbits(int cas_bits, int location, const char *constrType,
 		if (no_inherit)
 			*no_inherit = true;
 		else
+		{
 			ereport(ERROR,
 					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 /* translator: %s is CHECK, UNIQUE, or similar */
 					 errmsg("%s constraints cannot be marked NO INHERIT",
 							constrType),
 					 parser_errposition(location));
+			return;
+		}
 	}
 }
 

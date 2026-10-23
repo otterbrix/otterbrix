@@ -108,26 +108,24 @@ namespace components::planner {
     core::result_wrapper_t<view_body_t> expand_view_body(std::pmr::memory_resource* resource,
                                                          const core::body_sql_t& view_sql) {
         core::pmr::arena_resource_t parser_arena(resource);
-        void* parse_cell = nullptr;
-        // raw_parser really does throw; wrapper_dispatcher_t::execute_sql wraps it the same way. This is the
-        // exception -> error_t boundary — removing it would let an exception escape into an actor coroutine.
-        try {
-            auto* parsed = raw_parser(&parser_arena, view_sql.t.c_str());
-            // parser.h's list is never null (a `!parsed` test proves nothing) but may be EMPTY or hold several
-            // statements; linitial() alone would read past the end of an empty list, or silently drop every
-            // statement after the first — so both counts are checked before it's called.
-            if (list_length(parsed) == 0) {
-                return schema_error(resource, "the view body parsed into no statement");
-            }
-            if (list_length(parsed) > 1) {
-                return schema_error(resource,
-                                    "the view body parsed into " + std::to_string(list_length(parsed)) +
-                                        " statements; exactly one is expected");
-            }
-            parse_cell = linitial(parsed);
-        } catch (const std::exception& ex) {
-            return schema_error(resource, ex.what());
+        auto parse_tree = raw_parser(&parser_arena, view_sql.t.c_str());
+        if (parse_tree.has_error()) {
+            // No position: it would count characters of the stored view body, not of the statement being run.
+            return schema_error(resource, parse_tree.error().what.c_str());
         }
+        List* statements = parse_tree.value();
+        // parser.h's list is never null (a `!statements` test proves nothing) but may be EMPTY or hold several
+        // statements; linitial() alone would read past the end of an empty list, or silently drop every
+        // statement after the first — so both counts are checked before it's called.
+        if (list_length(statements) == 0) {
+            return schema_error(resource, "the view body parsed into no statement");
+        }
+        if (list_length(statements) > 1) {
+            return schema_error(resource,
+                                "the view body parsed into " + std::to_string(list_length(statements)) +
+                                    " statements; exactly one is expected");
+        }
+        void* parse_cell = linitial(statements);
         if (!parse_cell) {
             return schema_error(resource, "the view body parsed into an empty statement");
         }

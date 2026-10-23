@@ -73,6 +73,8 @@ namespace core {
 
     struct [[nodiscard]] error_t {
         error_code_t type;
+        // 1-based character offset into the statement text (PostgreSQL's cursor position), -1 when none
+        int32_t position{-1};
         std::pmr::string what;
 #if not defined(NDEBUG)
         std::source_location error_origin{};
@@ -102,12 +104,27 @@ namespace core {
             assert(type != error_code_t::none &&
                    "no error state of error_t can only be created using no_error() constructor");
         }
+        explicit error_t(error_code_t type,
+                         std::pmr::string&& what,
+                         int32_t position,
+                         [[maybe_unused]] std::source_location location = std::source_location::current())
+            : type(type)
+            , position(position)
+            , what(std::move(what))
+#if not defined(NDEBUG)
+            , error_origin(location)
+#endif
+        {
+            assert(type != error_code_t::none &&
+                   "no error state of error_t can only be created using no_error() constructor");
+        }
 
         // Reconstructs rather than assigns: the destination's allocator may be null_memory_resource
         // (no_error()), so copy must land on the default resource and move must keep the source's —
         // an owner with its own resource rebuilds through error_on() below instead.
         error_t& operator=(const error_t& other) {
             type = other.type;
+            position = other.position;
             reconstruct_string(other.what);
 #if not defined(NDEBUG)
             error_origin = other.error_origin;
@@ -116,6 +133,7 @@ namespace core {
         }
         error_t& operator=(error_t&& other) noexcept {
             type = other.type;
+            position = other.position;
             reconstruct_string(std::move(other.what));
 #if not defined(NDEBUG)
             error_origin = std::move(other.error_origin);
@@ -127,8 +145,9 @@ namespace core {
         // allocator — a moved error_t outlives its arena only if the arena outlives it. Safe today:
         // the short-lived arenas are base_otterbrix_t::host_t::resource (integration/cpp/base_spaces.cpp) and
         // four core::pmr::arena_resource_t arenas (components/planner/view_expansion.cpp,
-        // components/sql/transformer/impl/transfrom_common.cpp, integration/cpp/wrapper_dispatcher.cpp x2) and
-        // one monotonic_buffer_resource (integration/python/arrow/arrow_scan_function.cpp); none let an error_t
+        // components/sql/transformer/impl/transfrom_common.cpp, integration/cpp/wrapper_dispatcher.cpp x2), which
+        // hold raw_parser's error until the caller rebuilds it on its own resource, and one
+        // monotonic_buffer_resource (integration/python/arrow/arrow_scan_function.cpp); none let an error_t
         // escape scope — recheck this list before adding a shorter-lived one.
         error_t(const error_t&) = default;
         error_t(error_t&&) noexcept = default;
@@ -142,6 +161,7 @@ namespace core {
         // would miss exactly the input it exists for.
         error_t(const error_t& other, std::pmr::memory_resource* resource)
             : type(other.type)
+            , position(other.position)
             , what(other.what, message_resource(resource))
 #if not defined(NDEBUG)
             , error_origin(other.error_origin)

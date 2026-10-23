@@ -118,7 +118,8 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
         .def_property_readonly("description", &wrapper_cursor::description)
         .def_property_readonly("rowcount", &wrapper_cursor::rowcount)
         .def_property_readonly("created_oid", &wrapper_cursor::created_oid)
-        .def_property_readonly("transaction_status", &wrapper_cursor::transaction_status);
+        .def_property_readonly("transaction_status", &wrapper_cursor::transaction_status)
+        .def_property_readonly("error_position", &wrapper_cursor::error_position);
 
     m.def("to_aggregate", &test_to_statement);
 }

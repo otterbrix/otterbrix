@@ -115,8 +115,9 @@
 //!   populated.
 //! - **Engine error category surfacing is coarse-grained.** All engine
 //!   errors come through with [`ErrorKind::Other`](sqlx_core::error::ErrorKind::Other);
-//!   downcast [`OtterbrixDbError`] if you need the raw integer code or the
-//!   [`TransactionStatus`] the failed statement left its session in.
+//!   downcast [`OtterbrixDbError`] if you need the raw integer code, the
+//!   [`TransactionStatus`] the failed statement left its session in, or the
+//!   `position` (1-based character) a syntax error points at.
 
 mod arguments;
 mod column;

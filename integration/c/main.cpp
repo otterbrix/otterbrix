@@ -246,6 +246,11 @@ extern "C" const char* cursor_error_message(cursor_ptr ptr) noexcept {
     return storage->cursor->get_error().what.c_str();
 }
 
+extern "C" int32_t cursor_error_position(cursor_ptr ptr) noexcept {
+    auto storage = convert_cursor(ptr);
+    return storage->cursor->get_error().position;
+}
+
 static_assert(static_cast<int32_t>(components::session::transaction_status_t::idle) == TRANSACTION_STATUS_IDLE);
 static_assert(static_cast<int32_t>(components::session::transaction_status_t::in_transaction) ==
               TRANSACTION_STATUS_IN_TRANSACTION);

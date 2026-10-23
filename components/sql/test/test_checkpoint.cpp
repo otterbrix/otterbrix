@@ -3,6 +3,7 @@
 #include <components/logical_plan/node_vacuum.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -16,7 +17,7 @@ TEST_CASE("components::sql::checkpoint") {
     transform::transformer transformer(&resource);
 
     SECTION("CHECKPOINT") {
-        auto stmt = raw_parser(&arena_resource, "CHECKPOINT")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "CHECKPOINT")->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
         auto node = result.value().sub_queries.back();
@@ -25,7 +26,7 @@ TEST_CASE("components::sql::checkpoint") {
     }
 
     SECTION("CHECKPOINT;") {
-        auto stmt = raw_parser(&arena_resource, "CHECKPOINT;")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "CHECKPOINT;")->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
         auto node = result.value().sub_queries.back();
@@ -40,7 +41,7 @@ TEST_CASE("components::sql::vacuum") {
     transform::transformer transformer(&resource);
 
     SECTION("VACUUM") {
-        auto stmt = raw_parser(&arena_resource, "VACUUM")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "VACUUM")->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
         auto node = result.value().sub_queries.back();
@@ -49,7 +50,7 @@ TEST_CASE("components::sql::vacuum") {
     }
 
     SECTION("VACUUM;") {
-        auto stmt = raw_parser(&arena_resource, "VACUUM;")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "VACUUM;")->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
         auto node = result.value().sub_queries.back();

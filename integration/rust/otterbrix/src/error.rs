@@ -20,8 +20,8 @@ pub enum Error {
     /// `code` is the engine's internal error code (non-zero), `message` is the
     /// human-readable reason produced by the engine, e.g. another engine already
     /// owning the same `main_path`. The message in [`Display`](fmt::Display) is
-    /// `otterbrix core error (code <N>, transaction <status>): <msg>`, or
-    /// `otterbrix core error (code <N>): <msg>` without a status.
+    /// `otterbrix core error (code <N>, transaction <status>, position <P>): <msg>`,
+    /// each of `transaction` and `position` left out when it is `None`.
     Engine {
         /// Engine-specific error code. Always non-zero.
         code: i32,
@@ -31,6 +31,10 @@ pub enum Error {
         /// run, as [`Cursor::transaction_status`](crate::Cursor::transaction_status)
         /// reports it; `None` when the engine refused to start.
         transaction_status: Option<TransactionStatus>,
+        /// The 1-based character of the statement text the error points at,
+        /// PostgreSQL's error position (a syntax error has one); `None` when the
+        /// error points at no character.
+        position: Option<u32>,
     },
 
     /// A filesystem path passed to the wrapper is not valid UTF-8.
@@ -61,16 +65,18 @@ impl fmt::Display for Error {
             Error::Engine {
                 code,
                 message,
-                transaction_status: Some(status),
-            } => write!(
-                f,
-                "otterbrix core error (code {code}, transaction {status}): {message}"
-            ),
-            Error::Engine {
-                code,
-                message,
-                transaction_status: None,
-            } => write!(f, "otterbrix core error (code {code}): {message}"),
+                transaction_status,
+                position,
+            } => {
+                write!(f, "otterbrix core error (code {code}")?;
+                if let Some(status) = transaction_status {
+                    write!(f, ", transaction {status}")?;
+                }
+                if let Some(position) = position {
+                    write!(f, ", position {position}")?;
+                }
+                write!(f, "): {message}")
+            }
             Error::InvalidPath(path) => write!(f, "otterbrix invalid path: {path}"),
             Error::TypeMismatch { expected, got } => {
                 write!(f, "otterbrix type mismatch: expected {expected}, got {got}")

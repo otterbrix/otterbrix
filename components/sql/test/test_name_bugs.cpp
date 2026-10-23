@@ -5,6 +5,7 @@
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -28,7 +29,7 @@ namespace {
         static core::pmr::otterbrix_resource resource;
         std::pmr::monotonic_buffer_resource arena(&resource);
         transform::transformer transformer(&resource);
-        auto* raw = raw_parser(&arena, sql.c_str());
+        auto* raw = parse_ok(&arena, sql.c_str());
         REQUIRE(raw != nullptr);
         auto result = transformer.transform(transform::pg_cell_to_node_cast(linitial(raw))).finalize();
         transformed_t out;

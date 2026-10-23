@@ -14,6 +14,7 @@
 #include <components/logical_plan/node_join.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <core/pmr.hpp>
@@ -202,15 +203,14 @@ namespace {
         auto resource = core::pmr::otterbrix_resource();
         std::pmr::monotonic_buffer_resource arena(&resource);
 
-        List* raw = nullptr;
-        try {
-            raw = raw_parser(&arena, sql.c_str());
-        } catch (const parser_exception_t& error) {
+        auto parsed = raw_parser(&arena, sql.c_str());
+        if (parsed.has_error()) {
             out.rejected = true;
             out.stage = "parser";
-            out.message = error.what();
+            out.message = parsed.error().what.c_str();
             return out;
         }
+        List* raw = parsed.value();
         if (raw == nullptr || raw->lst.empty()) {
             out.rejected = true;
             out.stage = "parser";
@@ -1022,7 +1022,7 @@ namespace {
     auto with_parsed(const std::string& sql, Fn&& read) {
         auto resource = core::pmr::otterbrix_resource();
         std::pmr::monotonic_buffer_resource arena(&resource);
-        List* raw = raw_parser(&arena, sql.c_str());
+        List* raw = parse_ok(&arena, sql.c_str());
         REQUIRE(raw != nullptr);
         REQUIRE_FALSE(raw->lst.empty());
         auto& node = sql::transform::pg_cell_to_node_cast(linitial(raw));

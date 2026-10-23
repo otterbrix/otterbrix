@@ -159,6 +159,8 @@ components::session::transaction_status_t wrapper_cursor::transaction_status() c
     return ptr_->transaction_status();
 }
 
+py::object wrapper_cursor::error_position() const { return otterbrix::util::error_position_of(*ptr_); }
+
 py::tuple wrapper_cursor::get_error() const {
     using error_code_t = core::error_code_t;
 

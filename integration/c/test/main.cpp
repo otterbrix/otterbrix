@@ -581,6 +581,7 @@ namespace {
     X(cursor_is_error)                                                                                                 \
     X(cursor_error_code)                                                                                               \
     X(cursor_error_message)                                                                                            \
+    X(cursor_error_position)                                                                                           \
     X(cursor_transaction_status)                                                                                       \
     X(cursor_column_name)                                                                                              \
     X(cursor_get_value)                                                                                                \
@@ -892,4 +893,35 @@ TEST_CASE("c-api: cursor_transaction_status reports where the session stands", "
     REQUIRE(cursor_is_success(block));
     CHECK(cursor_transaction_status(block) == TRANSACTION_STATUS_IN_TRANSACTION);
     release_cursor(block);
+}
+
+TEST_CASE("c-api: cursor_error_position points at the character a parse error is at", "[c-api][cursor]") {
+    test_db_t t("error_position");
+    REQUIRE(t.ptr != nullptr);
+
+    const std::string misspelled = "SELEC 1;";
+    cursor_ptr at_start = execute_sql(t.ptr, sv(misspelled));
+    REQUIRE(cursor_is_error(at_start));
+    CHECK(cursor_error_code(at_start) == EC_SQL_PARSE_ERROR);
+    CHECK(std::string(cursor_error_message(at_start)) == "syntax error at or near \"SELEC\"");
+    CHECK(cursor_error_position(at_start) == 1);
+    release_cursor(at_start);
+
+    const std::string unterminated = "SELECT 'жж";
+    cursor_ptr in_literal = execute_sql(t.ptr, sv(unterminated));
+    REQUIRE(cursor_is_error(in_literal));
+    CHECK(cursor_error_position(in_literal) == 8);
+    release_cursor(in_literal);
+
+    const std::string missing = "SELECT * FROM no_such_db.no_such_table;";
+    cursor_ptr unpositioned = execute_sql(t.ptr, sv(missing));
+    REQUIRE(cursor_is_error(unpositioned));
+    CHECK(cursor_error_position(unpositioned) == -1);
+    release_cursor(unpositioned);
+
+    const std::string fine = "SELECT 1;";
+    cursor_ptr success = execute_sql(t.ptr, sv(fine));
+    REQUIRE(cursor_is_success(success));
+    CHECK(cursor_error_position(success) == -1);
+    release_cursor(success);
 }

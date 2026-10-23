@@ -54,6 +54,34 @@ public class Tests
     }
 
     [Test]
+    public void ParseErrorCarriesItsPosition() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("ParseErrorCarriesItsPosition");
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM t WHERE a = = 1;");
+            Assert.IsTrue(cursor.IsError());
+            ErrorMessage error = cursor.GetError();
+            Assert.That(error.type, Is.EqualTo(ErrorCode.SqlParseError));
+            Assert.That(error.what, Is.EqualTo("syntax error at or near \"=\""));
+            Assert.That(error.position, Is.EqualTo(27));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT 'жж");
+            Assert.IsTrue(cursor.IsError());
+            Assert.That(cursor.GetError().position, Is.EqualTo(8));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM nodb.t;");
+            Assert.IsTrue(cursor.IsError());
+            Assert.That(cursor.GetError().position, Is.Null);
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT 1;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.GetError().position, Is.Null);
+        }
+    }
+
+    [Test]
     public void NonAsciiTextRoundTrips() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("NonAsciiTextRoundTrips");
         {

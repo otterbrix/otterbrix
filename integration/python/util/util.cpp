@@ -25,20 +25,30 @@ namespace otterbrix { namespace util {
         return py::int_(oid);
     }
 
+    py::object error_position_of(const components::cursor::cursor_t& cursor) {
+        const int32_t position = cursor.get_error().position;
+        if (position <= 0) {
+            return py::none();
+        }
+        return py::int_(position);
+    }
+
     namespace {
-        [[noreturn]] void raise_runtime_error(const std::string& message, py::object transaction_status) {
+        [[noreturn]] void
+        raise_runtime_error(const std::string& message, py::object transaction_status, py::object position) {
             py::object error = py::reinterpret_borrow<py::object>(PyExc_RuntimeError)(message);
             error.attr("transaction_status") = std::move(transaction_status);
+            error.attr("position") = std::move(position);
             PyErr_SetObject(PyExc_RuntimeError, error.ptr());
             throw py::error_already_set();
         }
     } // namespace
 
     void raise_cursor_error(const std::string& message, const components::cursor::cursor_t& cursor) {
-        raise_runtime_error(message, py::cast(cursor.transaction_status()));
+        raise_runtime_error(message, py::cast(cursor.transaction_status()), error_position_of(cursor));
     }
 
-    void raise_no_cursor_error(const std::string& message) { raise_runtime_error(message, py::none()); }
+    void raise_no_cursor_error(const std::string& message) { raise_runtime_error(message, py::none(), py::none()); }
 
     core::result_wrapper_t<std::string> vector_to_string(const components::vector::vector_t& value) {
         switch (value.type().to_physical_type()) {

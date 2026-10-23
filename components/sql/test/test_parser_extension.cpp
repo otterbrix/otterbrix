@@ -8,6 +8,7 @@
 #include <components/sql/parser/extension.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 
 #include <demo_ast.hpp>
@@ -109,7 +110,7 @@ TEST_CASE("components::sql::correct_pg_query") {
     auto registry = demo_registry();
 
     std::pmr::monotonic_buffer_resource arena;
-    auto* tree = raw_parser(&arena, "SELECT * FROM t;", registry);
+    auto* tree = parse_ok(&arena, "SELECT * FROM t;", registry);
     REQUIRE(nodeTag(linitial(tree)) == T_SelectStmt);
 }
 
@@ -119,12 +120,12 @@ TEST_CASE("components::sql::extension_ast") {
     std::pmr::monotonic_buffer_resource arena;
 
     SECTION("single literal") {
-        auto* root = demo_payload(raw_parser(&arena, "DEMO 7", registry));
+        auto* root = demo_payload(parse_ok(&arena, "DEMO 7", registry));
         CHECK(int_value(root) == 7);
     }
 
     SECTION("'+' binds looser than '*'") {
-        auto* root = demo_payload(raw_parser(&arena, "DEMO 2 + 3 * 4", registry));
+        auto* root = demo_payload(parse_ok(&arena, "DEMO 2 + 3 * 4", registry));
         REQUIRE(is_op(root, demo_kind::add));
         CHECK(int_value(root->lhs) == 2);
         REQUIRE(is_op(root->rhs, demo_kind::multiply));
@@ -133,7 +134,7 @@ TEST_CASE("components::sql::extension_ast") {
     }
 
     SECTION("parentheses override precedence") {
-        auto* root = demo_payload(raw_parser(&arena, "DEMO (2 + 3) * 4", registry));
+        auto* root = demo_payload(parse_ok(&arena, "DEMO (2 + 3) * 4", registry));
         REQUIRE(is_op(root, demo_kind::multiply));
         REQUIRE(is_op(root->lhs, demo_kind::add));
         CHECK(int_value(root->rhs) == 4);
@@ -141,7 +142,7 @@ TEST_CASE("components::sql::extension_ast") {
 
     SECTION("left-associativity of subtraction") {
         // 10 - 3 - 2  ==  (10 - 3) - 2, i.e. the left operand is itself a '-'.
-        auto* root = demo_payload(raw_parser(&arena, "DEMO 10 - 3 - 2", registry));
+        auto* root = demo_payload(parse_ok(&arena, "DEMO 10 - 3 - 2", registry));
         REQUIRE(is_op(root, demo_kind::subtract));
         REQUIRE(is_op(root->lhs, demo_kind::subtract));
         CHECK(int_value(root->rhs) == 2);
@@ -149,14 +150,14 @@ TEST_CASE("components::sql::extension_ast") {
 
     SECTION("division is left-associative too") {
         // 20 / 5 / 2  ==  (20 / 5) / 2
-        auto* root = demo_payload(raw_parser(&arena, "DEMO 20 / 5 / 2", registry));
+        auto* root = demo_payload(parse_ok(&arena, "DEMO 20 / 5 / 2", registry));
         REQUIRE(is_op(root, demo_kind::divide));
         REQUIRE(is_op(root->lhs, demo_kind::divide));
         CHECK(int_value(root->rhs) == 2);
     }
 
     SECTION("the DEMO keyword is case-insensitive") {
-        auto* root = demo_payload(raw_parser(&arena, "dEmO 7", registry));
+        auto* root = demo_payload(parse_ok(&arena, "dEmO 7", registry));
         CHECK(int_value(root) == 7);
     }
 }
@@ -165,7 +166,7 @@ TEST_CASE("components::sql::extension_transform") {
     auto registry = demo_registry();
 
     std::pmr::monotonic_buffer_resource arena;
-    auto* demo_node = reinterpret_cast<Node*>(linitial(raw_parser(&arena, "DEMO 2 + 3 * 4", registry)));
+    auto* demo_node = reinterpret_cast<Node*>(linitial(parse_ok(&arena, "DEMO 2 + 3 * 4", registry)));
     REQUIRE(nodeTag(demo_node) == T_ExtensionNode);
 
     components::sql::transform::transformer tr(&arena, nullptr, &registry);
@@ -181,9 +182,9 @@ TEST_CASE("components::sql::extension_error") {
     auto registry = demo_registry();
 
     std::pmr::monotonic_buffer_resource arena;
-    CHECK_THROWS_AS(raw_parser(&arena, "DEMO 2 +", registry), parser_exception_t);
-    CHECK_THROWS_AS(raw_parser(&arena, "DEMO (1 + 2", registry), parser_exception_t);
-    CHECK_THROWS_AS(raw_parser(&arena, "DEMO", registry), parser_exception_t); // keyword, no expression
+    CHECK(raw_parser(&arena, "DEMO 2 +", registry).has_error());
+    CHECK(raw_parser(&arena, "DEMO (1 + 2", registry).has_error());
+    CHECK(raw_parser(&arena, "DEMO", registry).has_error()); // keyword, no expression
 }
 
 TEST_CASE("components::sql::extension_duplicate_rejected") {
@@ -200,13 +201,13 @@ TEST_CASE("components::sql::two_extensions_route_by_keyword") {
     std::pmr::monotonic_buffer_resource arena;
 
     SECTION("demo claims DEMO, echo does not") {
-        auto* tree = raw_parser(&arena, "DEMO 2 + 3", registry);
+        auto* tree = parse_ok(&arena, "DEMO 2 + 3", registry);
         CHECK(extension_payload<demo_ext::demo_node>(tree, "demo") != nullptr);
         CHECK(extension_payload<echo_payload>(tree, "echo") == nullptr);
     }
 
     SECTION("echo claims ECHO, demo does not") {
-        auto* tree = raw_parser(&arena, "ECHO 42", registry);
+        auto* tree = parse_ok(&arena, "ECHO 42", registry);
         auto* payload = extension_payload<echo_payload>(tree, "echo");
         REQUIRE(payload != nullptr);
         CHECK(payload->value == 42);
@@ -215,16 +216,16 @@ TEST_CASE("components::sql::two_extensions_route_by_keyword") {
 
     SECTION("keyword that only prefixes an identifier is not claimed") {
         // "ECHOES" must not be mistaken for the ECHO keyword, this is parse error
-        CHECK_THROWS_AS(raw_parser(&arena, "ECHOES 1", registry), parser_exception_t);
+        CHECK(raw_parser(&arena, "ECHOES 1", registry).has_error());
     }
 
     SECTION("core SQL is claimed by neither extension") {
-        auto* tree = raw_parser(&arena, "SELECT * FROM t;", registry);
+        auto* tree = parse_ok(&arena, "SELECT * FROM t;", registry);
         REQUIRE(nodeTag(linitial(tree)) == T_SelectStmt);
     }
 
     SECTION("a keyword nobody owns surfaces core parser error") {
-        CHECK_THROWS_AS(raw_parser(&arena, "FOOBAR 1", registry), parser_exception_t);
+        CHECK(raw_parser(&arena, "FOOBAR 1", registry).has_error());
     }
 }
 
@@ -233,14 +234,20 @@ TEST_CASE("components::sql::two_extensions_error_handling") {
     std::pmr::monotonic_buffer_resource arena;
 
     SECTION("demo parse error") {
-        CHECK_THROWS_AS(raw_parser(&arena, "DEMO 2 +", registry), parser_exception_t);
-        CHECK_THROWS_AS(raw_parser(&arena, "DEMO (1 + 2", registry), parser_exception_t);
+        CHECK(raw_parser(&arena, "DEMO 2 +", registry).has_error());
+        CHECK(raw_parser(&arena, "DEMO (1 + 2", registry).has_error());
     }
 
     SECTION("echo parse error") {
-        CHECK_THROWS_AS(raw_parser(&arena, "ECHO", registry), parser_exception_t);     // missing argument
-        CHECK_THROWS_AS(raw_parser(&arena, "ECHO abc", registry), parser_exception_t); // not an integer
-        CHECK_THROWS_AS(raw_parser(&arena, "ECHO 1 2", registry), parser_exception_t); // trailing tokens
+        CHECK(raw_parser(&arena, "ECHO", registry).has_error());     // missing argument
+        CHECK(raw_parser(&arena, "ECHO abc", registry).has_error()); // not an integer
+        CHECK(raw_parser(&arena, "ECHO 1 2", registry).has_error()); // trailing tokens
+    }
+
+    SECTION("the extension's own diagnostic wins over the core parser's") {
+        auto parsed = raw_parser(&arena, "ECHO abc", registry);
+        REQUIRE(parsed.has_error());
+        CHECK(std::string_view{parsed.error().what} == "echo: expected a single integer argument");
     }
 }
 
@@ -249,7 +256,7 @@ TEST_CASE("components::sql::two_extensions_transform_routing") {
     std::pmr::monotonic_buffer_resource arena;
 
     SECTION("echo node transform") {
-        auto* node = reinterpret_cast<Node*>(linitial(raw_parser(&arena, "ECHO 99", registry)));
+        auto* node = reinterpret_cast<Node*>(linitial(parse_ok(&arena, "ECHO 99", registry)));
         REQUIRE(nodeTag(node) == T_ExtensionNode);
         components::sql::transform::transformer tr(&arena, nullptr, &registry);
         auto result = tr.transform(*node);
@@ -261,7 +268,7 @@ TEST_CASE("components::sql::two_extensions_transform_routing") {
     }
 
     SECTION("demo node transform") {
-        auto* node = reinterpret_cast<Node*>(linitial(raw_parser(&arena, "DEMO 2 + 3 * 4", registry)));
+        auto* node = reinterpret_cast<Node*>(linitial(parse_ok(&arena, "DEMO 2 + 3 * 4", registry)));
         REQUIRE(nodeTag(node) == T_ExtensionNode);
         components::sql::transform::transformer tr(&arena, nullptr, &registry);
         auto result = tr.transform(*node);
@@ -302,7 +309,7 @@ TEST_CASE("components::sql::empty_parse_is_not_a_failed_parse") {
     SECTION("an extension's own empty list is not a claim") {
         parser_extension_registry_t registry;
         REQUIRE_FALSE(registry.add(parser_extension_t{"own-empty", &own_empty_list_parse}).has_error());
-        CHECK_THROWS_AS(raw_parser(&arena, "SELECT FROM", registry), parser_exception_t);
+        CHECK(raw_parser(&arena, "SELECT FROM", registry).has_error());
     }
 
     SECTION("text the core parser accepted is never offered to an extension") {
@@ -310,18 +317,18 @@ TEST_CASE("components::sql::empty_parse_is_not_a_failed_parse") {
         REQUIRE_FALSE(registry.add(parser_extension_t{"quiet", &quiet_parse}).has_error());
         for (const char* text : {"", "   ", "-- only a comment", "/* only a comment */", ";"}) {
             quiet_was_called = false;
-            List* tree = raw_parser(&arena, text, registry);
+            List* tree = parse_ok(&arena, text, registry);
             CHECK(list_length(tree) == 0);
             CHECK_FALSE(quiet_was_called);
         }
     }
 
-    SECTION("nothing to parse is an empty list, a failure is a throw") {
+    SECTION("nothing to parse is an empty list, a failure is an error") {
         for (const char* text : {"", "   ", "-- only a comment", ";"}) {
             // list_length(), not linitial(): linitial has no emptiness guard (pg_std_list.h:
             // lfirst(list_head(l)) dereferences the end sentinel on an empty list).
-            CHECK(list_length(raw_parser(&arena, text)) == 0);
+            CHECK(list_length(parse_ok(&arena, text)) == 0);
         }
-        CHECK_THROWS_AS(raw_parser(&arena, "SELECT FROM"), parser_exception_t);
+        CHECK(raw_parser(&arena, "SELECT FROM").has_error());
     }
 }

@@ -3,6 +3,7 @@ project(test_core)
 add_definitions(-DDEV_MODE)
 
 set(${PROJECT_NAME}_SOURCES
+        test_budget_resource.cpp
         test_counting_resource.cpp
         test_resource_tracer.cpp
         test_regex.cpp

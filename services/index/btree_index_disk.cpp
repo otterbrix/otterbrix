@@ -16,7 +16,7 @@ namespace services::index {
         , flush_threshold_(flush_threshold)
         , path_(path)
         , fs_(core::filesystem::local_file_system_t())
-        , db_(std::make_unique<btree_t>(resource, fs_, path, item_key_getter)) {
+        , db_(std::make_unique<btree_t>(&tree_budget_, fs_, path, item_key_getter)) {
         db_->load();
     }
 
@@ -190,7 +190,7 @@ namespace services::index {
         // Wipes tree contents in place (unlike drop(), the instance stays usable): re-creates an empty btree.
         db_.reset();
         const bool directory_removed = core::filesystem::remove_directory(fs_, path_);
-        db_ = std::make_unique<btree_t>(resource(), fs_, path_, item_key_getter);
+        db_ = std::make_unique<btree_t>(&tree_budget_, fs_, path_, item_key_getter);
         db_->load();
         reset_flush_state();
         if (!directory_removed) {

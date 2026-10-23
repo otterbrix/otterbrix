@@ -1,7 +1,7 @@
 # Otterbrix error handling approach
 
 ## Basic overview
-* We are actively discourage using exceptions for error handling. They might be used to indicate an unrecoverable or unreachable state
+* Exceptions are never used, for error handling or anything else; unreachable states abort
 * For errors caused by the user, like invalid query, for example, errors should be as clear as possible
 * For internal errors we do not enforce any specific pattern, performance take priority there
 

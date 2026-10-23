@@ -175,7 +175,9 @@ Pitfalls:
   scan and at the end, each split into rounds of at most `flush_row_threshold()` rows. A round's error is the
   statement's; the rounds before it stay written (`a_failed_sink_round_is_the_statement_error`, #663).
 - Errors travel only as `core::error_t` / `result_wrapper_t`. The backend's error reaches the cursor unchanged, code
-  and text (`a_storage_error_reaches_the_cursor`, `a_storage_write_error_reaches_the_cursor`).
+  and text (`a_storage_error_reaches_the_cursor`, `a_storage_write_error_reaches_the_cursor`). Host hooks
+  (`decide`, `make_*`, `apply_*`) and operators never throw; a refusal is an `error_t` / `result_wrapper_t`; an
+  exception escaping into the executor is undefined (the coroutine swallows it).
 
 ## INSERT
 
@@ -308,6 +310,16 @@ Bindings: C `int32_t cursor_error_position(cursor_ptr)` (-1 also for a cursor wi
 `ErrorMessage.position` (`int?`), Rust `Error::Engine { position, .. }` (`Option<u32>`) and sqlx
 `OtterbrixDbError::position`, Python `RuntimeError.position` beside `transaction_status` and `Cursor.error_position`
 (`None` or `int`).
+
+## C ABI
+
+Every entry point of `integration/c/otterbrix.h` is `noexcept` (`OTTERBRIX_NOEXCEPT`, empty under C): a refusal is
+an `error_message` or an error cursor, and running out of memory terminates the process. When the OS refuses a
+thread, `otterbrix_create` answers `thread_start_failed` for a manager loop thread and terminates the process for an
+actor-zeta scheduler thread (actor-zeta#188). A `const char*` answered from a cursor or a value (`cursor_column_name`,
+`cursor_error_message`, `value_get_string`) is borrowed: it stays valid until `release_cursor` / `release_value` of
+that handle and is never passed to `otterbrix_free_string`. The only owned string is `otterbrix_create`'s
+`error_message.message`, freed with `otterbrix_free_string`.
 
 ## Plans built by the host
 

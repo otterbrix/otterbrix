@@ -46,52 +46,52 @@ private:
 
 // The guards below skip formatting only, so they change no observable behaviour; an expensive
 // argument must still be guarded at the call site.
-template<typename S, typename... Args>
-auto info(log_t& log, const S& format_str, Args&&... args) -> void {
+template<typename... Args>
+auto info(log_t& log, fmt::format_string<Args...> format_str, Args&&... args) -> void {
     if (!log.should_log(log_t::level::info)) {
         return;
     }
-    log->info(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
+    log->info(fmt::format(format_str, std::forward<Args>(args)...));
 }
 
-template<typename S, typename... Args>
-auto debug(log_t& log, const S& format_str, Args&&... args) -> void {
+template<typename... Args>
+auto debug(log_t& log, fmt::format_string<Args...> format_str, Args&&... args) -> void {
     if (!log.should_log(log_t::level::debug)) {
         return;
     }
-    log->debug(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
+    log->debug(fmt::format(format_str, std::forward<Args>(args)...));
 }
 
-template<typename S, typename... Args>
-auto warn(log_t& log, const S& format_str, Args&&... args) -> void {
+template<typename... Args>
+auto warn(log_t& log, fmt::format_string<Args...> format_str, Args&&... args) -> void {
     if (!log.should_log(log_t::level::warn)) {
         return;
     }
-    log->warn(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
+    log->warn(fmt::format(format_str, std::forward<Args>(args)...));
 }
 
-template<typename S, typename... Args>
-auto error(log_t& log, const S& format_str, Args&&... args) -> void {
+template<typename... Args>
+auto error(log_t& log, fmt::format_string<Args...> format_str, Args&&... args) -> void {
     if (!log.should_log(log_t::level::err)) {
         return;
     }
-    log->error(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
+    log->error(fmt::format(format_str, std::forward<Args>(args)...));
 }
 
-template<typename S, typename... Args>
-auto critical(log_t& log, const S& format_str, Args&&... args) -> void {
+template<typename... Args>
+auto critical(log_t& log, fmt::format_string<Args...> format_str, Args&&... args) -> void {
     if (!log.should_log(log_t::level::critical)) {
         return;
     }
-    log->critical(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
+    log->critical(fmt::format(format_str, std::forward<Args>(args)...));
 }
 
-template<typename S, typename... Args>
-auto trace(log_t& log, const S& format_str, Args&&... args) -> void {
+template<typename... Args>
+auto trace(log_t& log, fmt::format_string<Args...> format_str, Args&&... args) -> void {
     if (!log.should_log(log_t::level::trace)) {
         return;
     }
-    log->trace(fmt::format(fmt::runtime(format_str), std::forward<Args>(args)...));
+    log->trace(fmt::format(format_str, std::forward<Args>(args)...));
 }
 
 // A logger owned by its caller: nothing is registered with spdlog, so two engines in one process

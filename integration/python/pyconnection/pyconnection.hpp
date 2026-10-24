@@ -125,8 +125,6 @@ namespace otterbrix {
         components::cursor::cursor_t_ptr query_relation(const components::logical_plan::node_ptr& rel);
 
     public:
-        py::list list_tables();
-
         pyconnection_ptr enter();
         void exit(const py::object& exc_type, const py::object& exc, const py::object& traceback);
 
@@ -135,7 +133,7 @@ namespace otterbrix {
         pycursor_ptr cursor();
 
         // Returns py_result_t, not the connection: the connection can't carry a result set.
-        // A rejected statement raises (Python's only error channel), same as connect/listTables.
+        // A rejected statement raises (Python's only error channel), same as connect.
         std::unique_ptr<py_result_t> execute(const py::object& query);
 
     public:

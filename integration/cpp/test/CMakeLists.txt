@@ -158,7 +158,6 @@ set( ${PROJECT_NAME}_SOURCES
         test_view_expansion.cpp
         test_view_binding.cpp
         test_statement_shape_refusal.cpp
-        test_list_tables.cpp
         test_index_null_correctness.cpp
         test_aggregate_filter.cpp
         test_dispatcher_watchdog_log.cpp

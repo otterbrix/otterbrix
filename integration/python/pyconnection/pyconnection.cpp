@@ -5,7 +5,6 @@
 #include <components/planner/optimizer.hpp>
 #include <connection_environment/connection_environment.hpp>
 #include <connection_environment/relation/relation_factory.hpp>
-#include <integration/cpp/catalog_listing.hpp>
 #include <memory>
 #include <otterbrix_wrapper/pyrelation.hpp>
 #include <otterbrix_wrapper/pyresult.hpp>
@@ -22,8 +21,7 @@ namespace otterbrix {
     default_connection_holder_t::~default_connection_holder_t() = default;
 
     namespace {
-        // Where make_space's error channel meets Python's only error channel (an exception);
-        // list_tables below uses the same shape.
+        // Where make_space's error channel meets Python's only error channel (an exception).
         boost::intrusive_ptr<otterbrix_t> open_space_or_raise(const module_arena_ptr& arena,
                                                               const std::filesystem::path& path) {
             // `space.error().what` is copied into the exception's std::string right here, so
@@ -229,29 +227,6 @@ namespace otterbrix {
             components::logical_plan::execution_plan_t{space->dispatcher()->resource(),
                                                        rel,
                                                        expression_factory_t::get_params()});
-    }
-
-    py::list py_connection_t::list_tables() {
-        py::gil_scoped_acquire gil;
-
-        // The query and the pg_class decode live in integration/cpp/catalog_listing.hpp so
-        // the C++ suite can test them; this wrapper only translates errors to Python's.
-        auto cursor = execute_internal(std::string{kListTablesQuery});
-        auto names = user_table_names_from_pg_class(space->dispatcher()->resource(), cursor);
-
-        // A failed catalog read is not "no tables"; returning [] here would make
-        // the two indistinguishable to every caller.
-        if (names.has_error()) {
-            const auto& err = names.error();
-            throw std::runtime_error("listTables: reading pg_class failed: " +
-                                     std::string(err.what.begin(), err.what.end()));
-        }
-
-        py::list res;
-        for (const auto& name : names.value()) {
-            res.append(py::str(std::string(name.begin(), name.end())));
-        }
-        return res;
     }
 
     pyconnection_ptr py_connection_t::enter() { return shared_from_this(); }

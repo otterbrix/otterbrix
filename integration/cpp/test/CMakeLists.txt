@@ -217,6 +217,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_autocommit.cpp
         test_savepoint.cpp
         test_transaction_status.cpp
+        test_empty_statement_transaction.cpp
+        test_session_settings.cpp
         test_parse_error_position.cpp
         test_streaming_ddl_leaf.cpp
         test_streaming_recursive_cte.cpp

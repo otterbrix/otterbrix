@@ -8,6 +8,7 @@
 #include <components/logical_plan/node_register_cast.hpp>
 #include <components/logical_plan/node_register_udf.hpp>
 #include <components/logical_plan/node_sequence.hpp>
+#include <components/logical_plan/node_set_setting.hpp>
 #include <components/logical_plan/node_transaction.hpp>
 #include <components/logical_plan/node_unregister_udf.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -26,6 +27,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 
 using namespace components::cursor;
@@ -61,7 +65,6 @@ namespace services::dispatcher {
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_commit_drain_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_abort_drain_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_accumulate_msg>,
-            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_abort_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_savepoint_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_release_savepoint_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_rollback_to_drain_msg>,
@@ -317,10 +320,6 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_accumulate_msg, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_abort_msg>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_abort_msg, msg);
-                break;
-            }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_savepoint_msg>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::txn_savepoint_msg, msg);
                 break;
@@ -471,6 +470,7 @@ namespace services::dispatcher {
                         std::pmr::string{"the engine is shutting down: only CHECKPOINT is admitted", resource()}}));
         }
         const auto control = transaction_control_of(plan);
+        const auto settings_statement = settings_statement_of(plan);
         co_await take_turn_(session, control);
         session_turn_t turn{this, session, control};
         // A failed transaction's writes wait for its end; a COMMIT ends it as a ROLLBACK.
@@ -495,23 +495,6 @@ namespace services::dispatcher {
         }
         auto exec_result = co_await std::move(future);
 
-        if (!exec_result.applied_setting_value.empty()) {
-            const auto& setting_def = components::catalog::find_setting_by_id(exec_result.applied_setting);
-            auto apply_err = components::catalog::set_setting(default_settings_,
-                                                              exec_result.applied_setting,
-                                                              exec_result.applied_setting_value,
-                                                              resource());
-            if (apply_err.contains_error()) {
-                error(log_,
-                      "manager_dispatcher_t::execute_plan: settings cache refused {} = '{}' AFTER it was "
-                      "persisted to pg_settings: {}",
-                      setting_def.sql_name,
-                      exec_result.applied_setting_value,
-                      apply_err.what);
-                exec_result.cursor = components::cursor::make_cursor(resource(), std::move(apply_err));
-            }
-        }
-
         trace(log_,
               "manager_dispatcher_t::execute_plan: result received, success: {}",
               exec_result.cursor->is_success());
@@ -524,7 +507,10 @@ namespace services::dispatcher {
                               std::pmr::string{"the transaction failed while this statement ran", resource()}});
         } else if (control == components::table::transaction_control_t::rollback_to) {
             failed_sessions_.erase(session);
+        } else {
+            end_statement_transaction_(session, statement_txn_id);
         }
+        finish_settings_(session, settings_statement, commits_failed, exec_result);
         co_return stamp_transaction_status_(session, std::move(exec_result.cursor));
     }
 
@@ -830,10 +816,8 @@ namespace services::dispatcher {
         auto res = co_await std::move(fut);
         if (!res.cursor || res.cursor->is_error()) {
             co_await finish_failed_statement_(session, statement_txn_id);
-        } else if (auto* txn = statement_transaction_(session, statement_txn_id);
-                   txn != nullptr && txn->scope() == components::table::transaction_scope_t::statement) {
-            txn_manager_.abort(session);
-            try_trigger_cleanup_if_horizon_advanced();
+        } else {
+            end_statement_transaction_(session, statement_txn_id);
         }
         if (!res.cursor) {
             co_return core::error_t{core::error_code_t::other_error,
@@ -927,10 +911,8 @@ namespace services::dispatcher {
         auto res = co_await std::move(fut);
         if (!res.cursor || res.cursor->is_error()) {
             co_await finish_failed_statement_(session, statement_txn_id);
-        } else if (auto* txn = statement_transaction_(session, statement_txn_id);
-                   txn != nullptr && txn->scope() == components::table::transaction_scope_t::statement) {
-            txn_manager_.abort(session);
-            try_trigger_cleanup_if_horizon_advanced();
+        } else {
+            end_statement_transaction_(session, statement_txn_id);
         }
         if (!res.cursor) {
             co_return core::error_t{
@@ -1015,11 +997,22 @@ namespace services::dispatcher {
                 failed_sessions_.erase(session);
             }
         }
-        const auto& settings = session_settings(session);
-        const auto scope = settings.autocommit ? components::table::transaction_scope_t::statement
-                                               : components::table::transaction_scope_t::until_commit;
+        const auto settings = session_settings(session);
+        const auto statement = settings_statement_of(*plan);
+        // An ALTER SYSTEM opens no implicit transaction of autocommit off (psql's command_no_begin): it runs alone,
+        // or is refused inside the block already open.
+        const auto scope = settings.autocommit || statement.alter_system
+                               ? components::table::transaction_scope_t::statement
+                               : components::table::transaction_scope_t::until_commit;
+        const bool opens = txn_manager_.find_transaction(session) == nullptr;
         auto& txn = txn_manager_.resolve_transaction(session, scope);
         plan->commits_when_done = txn.scope() == components::table::transaction_scope_t::statement;
+        // The settings as the transaction found them: what ROLLBACK returns to.
+        if (opens &&
+            (txn.scope() == components::table::transaction_scope_t::until_commit ||
+             (statement.is_transaction_control && statement.op == components::logical_plan::transaction_op::begin))) {
+            session_settings_.try_emplace(session, resource()).first->second.begin_transaction();
+        }
         txn_session_context_t context;
         context.txn = txn.data();
         context.settings = settings;
@@ -1052,6 +1045,112 @@ namespace services::dispatcher {
                   session.data());
         }
         co_return;
+    }
+
+    components::catalog::session_catalog_t
+    manager_dispatcher_t::session_settings(components::session::session_id_t session) const {
+        const auto own = session_settings_.find(session);
+        return own == session_settings_.end() ? default_settings_ : own->second.effective(default_settings_);
+    }
+
+    manager_dispatcher_t::settings_statement_t
+    manager_dispatcher_t::settings_statement_of(const components::logical_plan::execution_plan_t& plan) const {
+        settings_statement_t statement{false, {}, std::pmr::string{resource()}, false};
+        const auto* root = plan.sub_queries.back().get();
+        if (root == nullptr) {
+            return statement;
+        }
+        if (root->type() == components::logical_plan::node_type::transaction_t) {
+            const auto* control = static_cast<const components::logical_plan::node_transaction_t*>(root);
+            statement.is_transaction_control = true;
+            statement.op = control->op();
+            statement.savepoint = control->savepoint_name();
+        } else if (root->type() == components::logical_plan::node_type::set_setting_t) {
+            statement.alter_system = static_cast<const components::logical_plan::node_set_setting_t*>(root)->scope() ==
+                                     components::catalog::setting_scope_t::system;
+        }
+        return statement;
+    }
+
+    void manager_dispatcher_t::finish_settings_(components::session::session_id_t session,
+                                                const settings_statement_t& statement,
+                                                bool commit_rolled_back,
+                                                const collection::executor::execute_result_t& result) {
+        using components::logical_plan::transaction_op;
+        const bool succeeded = result.cursor && result.cursor->is_success();
+        if (succeeded && !result.applied_settings.empty()) {
+            if (result.applied_setting_scope == components::catalog::setting_scope_t::system) {
+                for (const auto& assignment : result.applied_settings) {
+                    if (auto applied = components::catalog::set_setting(default_settings_,
+                                                                         assignment.id,
+                                                                         assignment.value,
+                                                                         resource());
+                        applied.contains_error()) {
+                        std::fprintf(stderr,
+                                     "dispatcher: ALTER SYSTEM reported a value its setting refuses: %s\n",
+                                     applied.what.c_str());
+                        assert(false && "dispatcher: ALTER SYSTEM reported a value its setting refuses");
+                        std::abort();
+                    }
+                }
+            } else {
+                auto& own = session_settings_.try_emplace(session, resource()).first->second;
+                for (const auto& assignment : result.applied_settings) {
+                    if (assignment.is_default) {
+                        own.reset(result.applied_setting_scope, assignment.id);
+                    } else {
+                        own.assign(result.applied_setting_scope, assignment.id, assignment.value);
+                    }
+                }
+            }
+        }
+        const auto own = session_settings_.find(session);
+        if (own == session_settings_.end()) {
+            return;
+        }
+        if (succeeded && statement.is_transaction_control) {
+            switch (statement.op) {
+                case transaction_op::savepoint:
+                    own->second.savepoint(statement.savepoint);
+                    break;
+                case transaction_op::release_savepoint:
+                    own->second.release_savepoint(statement.savepoint);
+                    break;
+                case transaction_op::rollback_to_savepoint:
+                    own->second.rollback_to_savepoint(statement.savepoint);
+                    break;
+                case transaction_op::begin:
+                case transaction_op::commit:
+                case transaction_op::abort:
+                    break;
+            }
+        }
+        if (txn_manager_.find_transaction(session) == nullptr) {
+            own->second.end_transaction(succeeded && statement.is_transaction_control &&
+                                        statement.op == transaction_op::commit && !commit_rolled_back);
+        }
+        if (own->second.empty()) {
+            session_settings_.erase(own);
+        }
+    }
+
+    void manager_dispatcher_t::end_statement_transaction_(components::session::session_id_t session,
+                                                          uint64_t transaction_id) {
+        auto* txn = statement_transaction_(session, transaction_id);
+        if (txn == nullptr || txn->scope() != components::table::transaction_scope_t::statement) {
+            return;
+        }
+        if (txn->has_accumulated()) {
+            std::fprintf(stderr,
+                         "dispatcher: the statement succeeded, but its transaction %llu (session %llu) still holds "
+                         "uncommitted work: the commit pipeline was skipped\n",
+                         static_cast<unsigned long long>(txn->transaction_id()),
+                         static_cast<unsigned long long>(session.data()));
+            assert(false && "dispatcher: a statement transaction still holds uncommitted work");
+            std::abort();
+        }
+        txn_manager_.abort(session);
+        try_trigger_cleanup_if_horizon_advanced();
     }
 
     components::cursor::cursor_t_ptr
@@ -1289,16 +1388,6 @@ namespace services::dispatcher {
             txn_t->accumulate_referenced_delete(std::move(rows));
         }
         co_return core::error_t::no_error();
-    }
-
-    manager_dispatcher_t::unique_future<void>
-    manager_dispatcher_t::txn_abort_msg(components::session::session_id_t session, uint64_t transaction_id) {
-        trace(log_, "manager_dispatcher_t::txn_abort_msg, session: {}", session.data());
-        [[maybe_unused]] const auto* txn = statement_transaction_(session, transaction_id);
-        assert(txn != nullptr);
-        txn_manager_.abort(session);
-        try_trigger_cleanup_if_horizon_advanced();
-        co_return;
     }
 
     core::result_wrapper_t<components::table::transaction_t*>

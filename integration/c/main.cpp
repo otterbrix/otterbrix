@@ -49,9 +49,14 @@ namespace {
         std::pmr::string text;
     };
 
-    otterbrix_t* live_otterbrix(otterbrix_ptr ptr) {
+    struct handle_storage_t {
+        otterbrix::otterbrix_ptr engine;
+        const otterbrix::session_id_t session;
+    };
+
+    handle_storage_t* live_otterbrix(otterbrix_ptr ptr) {
         assert(ptr != nullptr);
-        return reinterpret_cast<otterbrix_t*>(ptr);
+        return reinterpret_cast<handle_storage_t*>(ptr);
     }
 
     cursor_storage_t* convert_cursor(cursor_ptr ptr) {
@@ -111,23 +116,23 @@ extern "C" otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error
         *out_error = make_error_message(engine.error());
         return nullptr;
     }
-    otterbrix_t* handle = engine.value().get();
-    intrusive_ptr_add_ref(handle);
-    return reinterpret_cast<otterbrix_ptr>(handle);
+    return reinterpret_cast<otterbrix_ptr>(new handle_storage_t{engine.value(), otterbrix::session_id_t{}});
 }
 
-extern "C" void otterbrix_destroy(otterbrix_ptr ptr) noexcept { intrusive_ptr_release(live_otterbrix(ptr)); }
+extern "C" void otterbrix_destroy(otterbrix_ptr ptr) noexcept { delete live_otterbrix(ptr); }
 
 extern "C" cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query) noexcept {
-    otterbrix_t* engine = live_otterbrix(ptr);
-    auto cursor = engine->dispatcher()->execute_sql(otterbrix::session_id_t(), std::string{to_view(query)});
+    const handle_storage_t* handle = live_otterbrix(ptr);
+    otterbrix_t* engine = handle->engine.get();
+    auto cursor = engine->dispatcher()->execute_sql(handle->session, std::string{to_view(query)});
     return store_cursor(engine, std::move(cursor));
 }
 
 extern "C" cursor_ptr
 execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_param_t* params, size_t param_count) noexcept {
     assert(params != nullptr || param_count == 0);
-    otterbrix_t* engine = live_otterbrix(ptr);
+    const handle_storage_t* handle = live_otterbrix(ptr);
+    otterbrix_t* engine = handle->engine.get();
     auto* resource = engine->dispatcher()->resource();
     std::vector<std::pair<size_t, components::vector::vector_t>> bound;
     bound.reserve(param_count);
@@ -165,8 +170,7 @@ execute_sql_params(otterbrix_ptr ptr, string_view_t query, const sql_param_t* pa
                 return error_cursor(engine, core::error_code_t::invalid_parameter, "sql_param_t: unknown kind");
         }
     }
-    auto cursor =
-        engine->dispatcher()->execute_sql_with_params(otterbrix::session_id_t(), std::string{to_view(query)}, bound);
+    auto cursor = engine->dispatcher()->execute_sql_with_params(handle->session, std::string{to_view(query)}, bound);
     return store_cursor(engine, std::move(cursor));
 }
 

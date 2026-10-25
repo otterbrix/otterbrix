@@ -259,7 +259,6 @@ namespace services::dispatcher::validation {
                 auto resolved = resolve_function(
                     context_.resource,
                     context_.cast_registry,
-                    context_.execution_context,
                     context_.function_registry,
                     function_qualified_name_t{core::function_name_t{std::string{components::compute::like_match_name}}},
                     arguments,
@@ -551,7 +550,6 @@ namespace services::dispatcher::validation {
                 auto resolved =
                     resolve_function(context_.resource,
                                      context_.cast_registry,
-                                     context_.execution_context,
                                      context_.function_registry,
                                      aggregate->full_name(),
                                      argument_types,
@@ -599,7 +597,6 @@ namespace services::dispatcher::validation {
                                      : context_.allowed_functions;
                 auto resolved = resolve_function(context_.resource,
                                                  context_.cast_registry,
-                                                 context_.execution_context,
                                                  context_.function_registry,
                                                  call->full_name(),
                                                  argument_types,

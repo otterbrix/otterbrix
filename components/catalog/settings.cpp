@@ -15,10 +15,8 @@ namespace components::catalog {
 
     namespace {
 
-        constexpr std::array<setting_def_t, 4> known_settings{
+        constexpr std::array<setting_def_t, 2> known_settings{
             setting_def_t{"timezone", "TimeZone", setting_id::timezone},
-            setting_def_t{"decimal_width", "decimal_width", setting_id::decimal_width},
-            setting_def_t{"decimal_scale", "decimal_scale", setting_id::decimal_scale},
             setting_def_t{"autocommit", "autocommit", setting_id::autocommit}};
 
         std::string to_lower(std::string_view text) {
@@ -27,26 +25,6 @@ namespace components::catalog {
                 return static_cast<char>(std::tolower(character));
             });
             return lowered;
-        }
-
-        core::result_wrapper_t<std::pmr::string> canonical_unsigned(std::string_view sql_name,
-                                                                    std::string_view raw,
-                                                                    uint8_t low,
-                                                                    uint8_t high,
-                                                                    std::pmr::memory_resource* resource) {
-            unsigned parsed = 0;
-            const auto* first = raw.data();
-            const auto* last = raw.data() + raw.size();
-            const auto converted = std::from_chars(first, last, parsed);
-            if (converted.ec != std::errc{} || converted.ptr != last || parsed < low || parsed > high) {
-                return core::error_t(core::error_code_t::invalid_parameter,
-                                     std::pmr::string{std::string(sql_name) + " takes a whole number between " +
-                                                          std::to_string(static_cast<unsigned>(low)) + " and " +
-                                                          std::to_string(static_cast<unsigned>(high)) + ", not '" +
-                                                          std::string(raw) + "'",
-                                                      resource});
-            }
-            return std::pmr::string{std::to_string(parsed), resource};
         }
 
         core::result_wrapper_t<std::pmr::string>
@@ -65,6 +43,19 @@ namespace components::catalog {
         }
 
     } // namespace
+
+    setting_assignment_t::setting_assignment_t(setting_id id,
+                                               std::string_view value,
+                                               std::pmr::memory_resource* resource)
+        : id(id)
+        , is_default(false)
+        , value(value, resource) {}
+
+    setting_assignment_t setting_assignment_t::to_default(setting_id id, std::pmr::memory_resource* resource) {
+        setting_assignment_t assignment{id, std::string_view{}, resource};
+        assignment.is_default = true;
+        return assignment;
+    }
 
     std::span<const setting_def_t> all_settings() noexcept { return known_settings; }
 
@@ -93,22 +84,11 @@ namespace components::catalog {
         switch (id) {
             case setting_id::timezone:
                 return std::pmr::string{cache.timezone_name.data(), cache.timezone_name.size(), resource};
-            case setting_id::decimal_width:
-                return std::pmr::string{std::to_string(static_cast<unsigned>(cache.decimal_width)), resource};
-            case setting_id::decimal_scale:
-                return std::pmr::string{std::to_string(static_cast<unsigned>(cache.decimal_scale)), resource};
             case setting_id::autocommit:
                 return std::pmr::string{cache.autocommit ? "on" : "off", resource};
         }
         assert(false && "a setting_id with no value in the cache");
         std::abort();
-    }
-
-    uint8_t unsigned_setting_value(std::string_view canonical) noexcept {
-        unsigned parsed = 0;
-        // Canonical by contract: canonical_setting_value produced it, so it is digits in range.
-        std::from_chars(canonical.data(), canonical.data() + canonical.size(), parsed);
-        return static_cast<uint8_t>(parsed);
     }
 
     bool boolean_setting_value(std::string_view canonical) noexcept { return canonical == "on"; }
@@ -126,27 +106,10 @@ namespace components::catalog {
                 }
                 return std::pmr::string{lowered.data(), lowered.size(), resource};
             }
-            case setting_id::decimal_width:
-                return canonical_unsigned("decimal_width", raw, 1, types::DECIMAL_MAX_WIDTH, resource);
-            case setting_id::decimal_scale:
-                return canonical_unsigned("decimal_scale", raw, 0, types::DECIMAL_MAX_WIDTH, resource);
             case setting_id::autocommit:
                 return canonical_boolean("autocommit", raw, resource);
         }
         return core::error_t(core::error_code_t::invalid_parameter, std::pmr::string{"unknown setting", resource});
-    }
-
-    core::error_t validate_decimal_defaults(uint8_t width, uint8_t scale, std::pmr::memory_resource* resource) {
-        if (!types::is_valid_decimal_spec(width, scale)) {
-            return core::error_t(core::error_code_t::invalid_parameter,
-                                 std::pmr::string{"decimal_width " + std::to_string(static_cast<unsigned>(width)) +
-                                                      " with decimal_scale " +
-                                                      std::to_string(static_cast<unsigned>(scale)) +
-                                                      " is not a DECIMAL this engine can express: scale must not "
-                                                      "exceed width",
-                                                  resource});
-        }
-        return core::error_t::no_error();
     }
 
     core::error_t
@@ -164,12 +127,6 @@ namespace components::catalog {
                 cache.timezone_offset = *offset;
                 return core::error_t::no_error();
             }
-            case setting_id::decimal_width:
-                cache.decimal_width = unsigned_setting_value(value);
-                return core::error_t::no_error();
-            case setting_id::decimal_scale:
-                cache.decimal_scale = unsigned_setting_value(value);
-                return core::error_t::no_error();
             case setting_id::autocommit:
                 cache.autocommit = boolean_setting_value(value);
                 return core::error_t::no_error();

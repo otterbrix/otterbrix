@@ -79,6 +79,7 @@ namespace otterbrix {
     private:
         cursors_t cursors;
         boost::intrusive_ptr<otterbrix_t> space;
+        const session_id_t session_{};
 
     public:
         py_connection_t(const boost::intrusive_ptr<otterbrix_t>& space);

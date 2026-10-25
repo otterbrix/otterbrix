@@ -54,6 +54,53 @@ public class Tests
     }
 
     [Test]
+    public void RollbackUndoesTheInsertItsBeginOpened() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("RollbackUndoesTheInsertItsBeginOpened");
+        foreach (string statement in new[] { "CREATE DATABASE s;",
+                                             "CREATE TABLE s.t (a BIGINT);",
+                                             "BEGIN;",
+                                             "INSERT INTO s.t (a) VALUES (1);",
+                                             "ROLLBACK;" }) {
+            using CursorWrapper cursor = otterbrix.Execute(statement);
+            Assert.IsTrue(cursor.IsSuccess(), statement);
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT a FROM s.t;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.Size(), Is.EqualTo(0));
+        }
+    }
+
+    [Test]
+    public void DropOfABuiltInTypeAnswersDependentObjectsStillExist() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("DropOfABuiltInTypeAnswersDependentObjectsStillExist");
+        using CursorWrapper cursor = otterbrix.Execute("DROP TYPE integer;");
+        Assert.IsTrue(cursor.IsError());
+        Assert.That(cursor.GetError().type, Is.EqualTo(ErrorCode.DependentObjectsStillExist));
+        Assert.That(cursor.GetError().what,
+                    Is.EqualTo("cannot drop type integer because it is required by the database system"));
+    }
+
+    [Test]
+    public void AlterSystemInsideABlockAnswersActiveSqlTransaction() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("AlterSystemInsideABlockAnswersActiveSqlTransaction");
+        {
+            using CursorWrapper cursor = otterbrix.Execute("BEGIN;");
+            Assert.IsTrue(cursor.IsSuccess());
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("ALTER SYSTEM SET timezone = '+03:00';");
+            Assert.IsTrue(cursor.IsError());
+            Assert.That(cursor.GetError().type, Is.EqualTo(ErrorCode.ActiveSqlTransaction));
+            Assert.That(cursor.GetError().what, Is.EqualTo("ALTER SYSTEM cannot run inside a transaction block"));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("ROLLBACK;");
+            Assert.IsTrue(cursor.IsSuccess());
+        }
+    }
+
+    [Test]
     public void ParseErrorCarriesItsPosition() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("ParseErrorCarriesItsPosition");
         {

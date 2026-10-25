@@ -113,20 +113,14 @@ namespace otterbrix {
     py_connection_t::py_connection_t(const boost::intrusive_ptr<otterbrix_t>& space)
         : relation_factory_t(space)
         , expression_factory_t(space)
-        , space(space) {
-        // `tmp` is relation_factory_t's scratch database for DataFrame aggregates. IF NOT EXISTS, since
-        // make_space does not wipe the directory, so a second connect finds it already there (normal, not a
-        // failure); any other failure is raised.
-        auto session = otterbrix::session_id_t();
-        raise_if_error("connect: creating the scratch database 'tmp'",
-                       space->dispatcher()->execute_sql(session, "CREATE DATABASE IF NOT EXISTS tmp;"));
-    }
+        , space(space) {}
 
     py_connection_t::py_connection_t(const py_connection_t& other)
         : relation_factory_t(other)
         , expression_factory_t(other)
         , std::enable_shared_from_this<py_connection_t>(other)
-        , space(other.space) {}
+        , space(other.space)
+        , session_(other.session_) {}
 
     pyconnection_ptr py_connection_t::connect(const module_arena_ptr& arena,
                                               const py::object& database_p,
@@ -183,8 +177,7 @@ namespace otterbrix {
     }
 
     void py_connection_t::create_database(const std::string& name) {
-        auto session = session_id_t();
-        space->dispatcher()->execute_sql(session, "CREATE DATABASE " + name + ";");
+        space->dispatcher()->execute_sql(session_, "CREATE DATABASE " + name + ";");
     }
 
     // A closed connection has a null space; calling `space->dispatcher()` on it relies on an assert that
@@ -202,28 +195,25 @@ namespace otterbrix {
         // Delegates rather than re-implementing wrapper_dispatcher_t::execute_sql, which
         // already turns raw_parser's error into an error cursor, guards `linitial` against an empty parse list,
         // and passes the registered parser extensions and query text to the transformer.
-        auto session = session_id_t();
-        return space->dispatcher()->execute_sql(session, query);
+        return space->dispatcher()->execute_sql(session_, query);
     }
 
     result_t py_connection_t::execute(const components::logical_plan::node_ptr& node_in, bool optimize) {
         refuse_if_closed();
-        auto session = session_id_t();
         auto node = node_in;
         if (optimize) {
             node =
                 components::planner::optimize(node->resource(), node, nullptr, components::graph_execution_context{});
         }
         return space->dispatcher()->execute_plan(
-            session,
+            session_,
             components::logical_plan::execution_plan_t{node->resource(), node, expression_factory_t::get_params()});
     }
 
     cursor::cursor_t_ptr py_connection_t::query_relation(const components::logical_plan::node_ptr& rel) {
         refuse_if_closed();
-        auto session = otterbrix::session_id_t();
         return space->dispatcher()->execute_plan(
-            session,
+            session_,
             components::logical_plan::execution_plan_t{space->dispatcher()->resource(),
                                                        rel,
                                                        expression_factory_t::get_params()});

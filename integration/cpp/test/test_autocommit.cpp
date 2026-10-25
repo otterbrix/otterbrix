@@ -273,7 +273,7 @@ TEST_CASE("integration::cpp::autocommit::the_setting_survives_restart") {
         auto* dispatcher = space.dispatcher();
         create_table(dispatcher);
         auto session = otterbrix::session_id_t();
-        REQUIRE(run(dispatcher, session, "SET autocommit = off;")->is_success());
+        REQUIRE(run(dispatcher, session, "ALTER SYSTEM SET autocommit = off;")->is_success());
         REQUIRE(run(dispatcher, session, "INSERT INTO TestDatabase.marks (id) VALUES (1);")->is_success());
         REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
     }

@@ -10,9 +10,7 @@ namespace components::table {
                                      const graph_execution_context& context)
         : expression(std::move(expression))
         , parameters(std::move(parameters))
-        , timezone_offset(context.timezone_offset)
-        , decimal_width(context.decimal_width)
-        , decimal_scale(context.decimal_scale) {}
+        , timezone_offset(context.timezone_offset) {}
 
     std::unique_ptr<pushed_filter_t> make_pushed_filter(std::pmr::memory_resource* target,
                                                         const expressions::expression_ptr& expression,
@@ -38,7 +36,7 @@ namespace components::table {
             }
             graph = std::move(built.value());
         }
-        const graph_execution_context context{filter.timezone_offset, filter.decimal_width, filter.decimal_scale};
+        const graph_execution_context context{filter.timezone_offset};
         return std::make_unique<table_filter_t>(std::move(parameters), context, std::move(graph), condition);
     }
 

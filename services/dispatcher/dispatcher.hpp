@@ -26,11 +26,13 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/catalog/session_catalog.hpp>
+#include <components/catalog/session_settings.hpp>
 #include <components/compute/function.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
 #include <components/logical_plan/execution_plan.hpp>
+#include <components/logical_plan/node_transaction.hpp>
 #include <components/session/session.hpp>
 #include <components/table/transaction_manager.hpp>
 #include <core/result_wrapper.hpp>
@@ -59,7 +61,8 @@ namespace services::dispatcher {
 
     // Thin router + txn-state mailbox service + executor-pool admin: per-query work lives entirely
     // in executor_t; the dispatcher owns only state that must stay global — txn_manager_ (reachable
-    // solely through the txn_*_msg handlers below), default_settings_, the executor pool, DROP-GC flags.
+    // solely through the txn_*_msg handlers below), the settings (shared defaults and each session's own), the
+    // executor pool, DROP-GC flags.
     class manager_dispatcher_t final : public actor_zeta::actor::actor_mixin<manager_dispatcher_t> {
     public:
         template<typename T>
@@ -133,7 +136,6 @@ namespace services::dispatcher {
         unique_future<core::error_t> txn_accumulate_msg(components::session::session_id_t session,
                                                         uint64_t transaction_id,
                                                         txn_accumulate_payload_t payload);
-        unique_future<void> txn_abort_msg(components::session::session_id_t session, uint64_t transaction_id);
 
         unique_future<core::error_t>
         txn_savepoint_msg(components::session::session_id_t session, uint64_t transaction_id, std::string name);
@@ -166,7 +168,6 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::txn_commit_drain_msg,
                                                             &manager_dispatcher_t::txn_abort_drain_msg,
                                                             &manager_dispatcher_t::txn_accumulate_msg,
-                                                            &manager_dispatcher_t::txn_abort_msg,
                                                             &manager_dispatcher_t::txn_savepoint_msg,
                                                             &manager_dispatcher_t::txn_release_savepoint_msg,
                                                             &manager_dispatcher_t::txn_rollback_to_drain_msg,
@@ -202,8 +203,22 @@ namespace services::dispatcher {
         create_session_context(components::session::session_id_t session,
                                components::logical_plan::execution_plan_t* plan);
 
+        struct settings_statement_t {
+            bool is_transaction_control{false};
+            components::logical_plan::transaction_op op{};
+            std::pmr::string savepoint;
+            bool alter_system{false};
+        };
+        settings_statement_t settings_statement_of(const components::logical_plan::execution_plan_t& plan) const;
+        void finish_settings_(components::session::session_id_t session,
+                              const settings_statement_t& statement,
+                              bool commit_rolled_back,
+                              const collection::executor::execute_result_t& result);
+
         unique_future<void> finish_failed_statement_(components::session::session_id_t session,
                                                      uint64_t transaction_id);
+        // PostgreSQL 18 finish_xact_command; work still held here aborts the process.
+        void end_statement_transaction_(components::session::session_id_t session, uint64_t transaction_id);
 
         components::cursor::cursor_t_ptr stamp_transaction_status_(components::session::session_id_t session,
                                                                    components::cursor::cursor_t_ptr cursor);
@@ -292,14 +307,13 @@ namespace services::dispatcher {
         components::casts::cast_registry_t cast_registry_;
         // The engine's master: builtins plus host UDFs. Executors hold copies, updated by fan-out.
         components::compute::function_registry_t function_registry_;
-        // global cached settings. updated on every set.
-        // TODO: settings for the session
+        // What pg_settings holds: the value of a setting for every session that has none of its own.
         components::catalog::session_catalog_t default_settings_;
+        // Only sessions that set something or are inside a transaction block have an entry.
+        std::pmr::unordered_map<components::session::session_id_t, components::catalog::session_settings_t>
+            session_settings_{resource_};
 
-        const components::catalog::session_catalog_t&
-        session_settings(components::session::session_id_t /*session*/) const {
-            return default_settings_;
-        }
+        components::catalog::session_catalog_t session_settings(components::session::session_id_t session) const;
 
         // Fire-and-forget GC list for broadcast/register sends, drained via poll_pending().
         std::pmr::vector<actor_zeta::unique_future<void>> pending_void_;

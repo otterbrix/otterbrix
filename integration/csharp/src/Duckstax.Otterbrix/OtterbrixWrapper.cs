@@ -68,6 +68,8 @@ namespace Duckstax.Otterbrix
         ActorAgentMissing,
         ConnectionClosed,
         ThreadStartFailed,
+        ActiveSqlTransaction,
+        DependentObjectsStillExist,
     }
 
     public struct ErrorMessage {

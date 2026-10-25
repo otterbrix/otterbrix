@@ -29,6 +29,7 @@ namespace otterbrix {
 
         const std::string name_;
         spaces_ptr ptr_;
+        const session_id_t session_{};
         mutable log_t log_;
     };
 } // namespace otterbrix

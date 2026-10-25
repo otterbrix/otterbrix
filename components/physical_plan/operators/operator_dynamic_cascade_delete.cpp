@@ -12,6 +12,9 @@
 #include <services/index/manager_index.hpp>
 
 #include <cstdint>
+#include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -118,7 +121,12 @@ namespace components::operators {
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
 
         if (seed_objid == catalog::INVALID_OID) {
-            co_return core::error_t::no_error();
+            // Unreachable from SQL: the executor decides a missing target before planning.
+            std::fprintf(stderr,
+                         "drop_with_dependents: %s has no catalog oid; the executor's target check was skipped\n",
+                         described(seed_classid, relkind, target, column).c_str());
+            assert(false && "drop_with_dependents: the target has no catalog oid");
+            std::abort();
         }
 
         constexpr catalog::oid_t kPgDepend = catalog::well_known_oid::pg_depend_table;

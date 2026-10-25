@@ -270,6 +270,18 @@ CREATE inside `BEGIN … ROLLBACK` answers its oid, and after the ROLLBACK no ta
 Bindings: C `bool cursor_created_oid(cursor_ptr, uint32_t*)` (false and `*oid` untouched without a table), C#
 `CreatedOid()` (`uint?`), Rust `Cursor::created_oid()` (`Option<u32>`), Python `created_oid` (`None` or `int`).
 
+## Statement transaction
+
+Outside a transaction block every statement runs in a transaction of its own that ends with it, as PostgreSQL 18
+`finish_xact_command` ends it: a write commits, and a statement with nothing to write (a read, `SET`, a DDL whose
+`IF EXISTS` / `IF NOT EXISTS` found nothing to do, an `ALTER TABLE` whose every subcommand was skipped by its own
+`IF EXISTS`) succeeds and ends its transaction, so the session's next statement reads a fresh snapshot
+(`test_empty_statement_transaction.cpp`). Whether such a DDL has anything to do is decided before its columns and
+subcommands are checked: `ALTER TABLE IF EXISTS nosuch ADD COLUMN c nosuchtype` and `CREATE TABLE IF NOT EXISTS t
+(a int, a int)` over an existing `t` succeed. Inside a block such a statement leaves the block as it was. A DROP that
+RESTRICT refuses for its dependents, and a DROP of a built-in type, answer `dependent_objects_still_exist`
+(PostgreSQL 2BP01).
+
 ## Transaction status
 
 ```cpp
@@ -296,6 +308,39 @@ error into an error value, the status travels with it: Rust `Error::Engine { tra
 engine refused to start) and sqlx `OtterbrixDbError::transaction_status`, Python `RuntimeError.transaction_status` on the exception a connection's `execute` and a
 relation's fetch (`fetchone`, `fetchmany`, `fetchall`, `df`) raise (`None` when the engine answered no cursor).
 C# and Python `Client.execute` keep the error on the cursor.
+
+## Sessions
+
+A binding handle is one session, so a `BEGIN` sent through it stays open for its next statement: C `otterbrix_ptr`
+(`execute_sql` and `execute_sql_params`; Rust `Database` and C# `OtterbrixWrapper` through it), Python `connect()`'s
+connection with its `cursor()` copies and the relations built from it, Python `Client` with the cursors it answered.
+Statements sent through one handle from several threads are ordered as one session's: an autocommit statement waits
+for the one before it to end. The free C++ `otterbrix::execute_sql(ptr, query)` opens a new session per call; a C++
+caller that needs one session uses `otterbrix::connection_t` (`integration/cpp/connection.hpp`).
+
+## Settings
+
+`timezone` and `autocommit`, as PostgreSQL 18 keeps its parameters (`test_session_settings.cpp`):
+
+- `SET name = value` (`SET SESSION`, `SET TIME ZONE`, `wrapper_dispatcher_t::set_timezone`) changes the value for
+  its own session only, until the session sets it again. Nothing is stored: after a restart a session starts from the
+  stored defaults.
+- `RESET name`, `SET name TO DEFAULT` and `RESET ALL` take the session's own value away: the stored default applies
+  again. `SET LOCAL name TO DEFAULT` uses the stored default until the transaction ends. Both roll back like `SET`.
+- `SET LOCAL name = value` lasts until the transaction ends, by COMMIT or ROLLBACK; outside a transaction block it
+  changes nothing and is not an error (PostgreSQL 18 also warns; the engine has no warning channel). A `SET` after a
+  `SET LOCAL` of the same setting in one transaction outlives the transaction; a `SET LOCAL` after a `SET` masks it
+  until the transaction ends.
+- ROLLBACK returns a session's settings to where its transaction found them: the transaction of `BEGIN`, or the one
+  the first statement opens while `autocommit` is off. ROLLBACK TO a savepoint returns them to where the savepoint
+  found them, and the savepoint stays; RELEASE leaves them to the transaction.
+- `ALTER SYSTEM SET name = value` stores the value in `pg_settings`: every session without a value of its own uses it
+  from its next statement on, and after a restart. `ALTER SYSTEM RESET name`, `ALTER SYSTEM SET name TO DEFAULT` and
+  `ALTER SYSTEM RESET ALL` store the built-in value. Inside a transaction block it is refused with
+  `active_sql_transaction` (PostgreSQL 25001), `ALTER SYSTEM cannot run inside a transaction block`; while
+  `autocommit` is off and no block is open it runs as its own statement, as psql sends it.
+- A session's own values stay in the dispatcher as long as the engine runs; the executor of a statement gets a copy
+  of the values in effect (`context_storage_t::execution_context`).
 
 ## Error position
 

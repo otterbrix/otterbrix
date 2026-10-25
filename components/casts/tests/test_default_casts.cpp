@@ -776,9 +776,7 @@ TEST_CASE("default casts: date/time conversions, string parse/format, and to_str
 
     {
         // decimal is not used
-        graph_execution_context offset_context{.timezone_offset = cd::timezone_offset_t{3600},
-                                               .decimal_width = 0,
-                                               .decimal_scale = 0};
+        graph_execution_context offset_context{.timezone_offset = cd::timezone_offset_t{3600}};
         vector::vector_t local{resource, timestamp_type};
         local.set_value(0, *cd::parse_timestamp("2024-03-15 12:30:00"));
         vector::vector_t utc{resource, timestamptz_type};
@@ -823,9 +821,7 @@ TEST_CASE("default casts: date/time conversions, string parse/format, and to_str
         REQUIRE(back.get_value<std::string_view>(0) == "2 years 3 mons 10 days");
     }
     {
-        graph_execution_context zone_context{.timezone_offset = cd::timezone_offset_t{19800},
-                                             .decimal_width = 0,
-                                             .decimal_scale = 0};
+        graph_execution_context zone_context{.timezone_offset = cd::timezone_offset_t{19800}};
         vector::vector_t times{resource, time_type};
         times.set_value(0, *cd::parse_time("13:45:06"));
         vector::vector_t tz{resource, timetz_type};

@@ -73,8 +73,9 @@ namespace components::pipeline {
         // commit_id drained by operator_commit_transaction_t, for follow-ups like an inline CREATE INDEX commit.
         uint64_t committed_id{0};
 
-        catalog::setting_id applied_setting{};
-        std::string applied_setting_value;
+        // What a SET / SET LOCAL / ALTER SYSTEM ran: the dispatcher applies it once the statement succeeded.
+        catalog::setting_scope_t applied_setting_scope{};
+        std::pmr::vector<catalog::setting_assignment_t> applied_settings;
 
         // By reference: a by-value parameter froze the default allocator into `parameters` (context.cpp).
         context_t(const logical_plan::storage_parameters& init_parameters,

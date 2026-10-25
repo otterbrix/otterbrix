@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory_resource>
 #include <span>
+#include <string>
 #include <string_view>
 
 namespace components::catalog {
@@ -13,9 +14,31 @@ namespace components::catalog {
     enum class setting_id : uint8_t
     {
         timezone,
-        decimal_width,
-        decimal_scale,
         autocommit
+    };
+
+    // Where a value goes: SET to its session, SET LOCAL to its session until the transaction ends, ALTER SYSTEM to
+    // pg_settings as the default of every session that has no value of its own.
+    enum class setting_scope_t : uint8_t
+    {
+        session,
+        local,
+        system
+    };
+
+    // A value for a setting, or its default (RESET, SET ... TO DEFAULT). A copy would put the value on the default
+    // resource, so there is none.
+    struct setting_assignment_t {
+        setting_assignment_t(setting_id id, std::string_view value, std::pmr::memory_resource* resource);
+        static setting_assignment_t to_default(setting_id id, std::pmr::memory_resource* resource);
+        setting_assignment_t(const setting_assignment_t&) = delete;
+        setting_assignment_t& operator=(const setting_assignment_t&) = delete;
+        setting_assignment_t(setting_assignment_t&&) noexcept = default;
+        setting_assignment_t& operator=(setting_assignment_t&&) = default;
+
+        setting_id id;
+        bool is_default;
+        std::pmr::string value;
     };
 
     struct setting_def_t {
@@ -38,10 +61,6 @@ namespace components::catalog {
     [[nodiscard]] core::error_t
     set_setting(session_catalog_t& cache, setting_id id, std::string_view raw, std::pmr::memory_resource* resource);
 
-    [[nodiscard]] core::error_t
-    validate_decimal_defaults(uint8_t width, uint8_t scale, std::pmr::memory_resource* resource);
-
-    [[nodiscard]] uint8_t unsigned_setting_value(std::string_view canonical) noexcept;
     [[nodiscard]] bool boolean_setting_value(std::string_view canonical) noexcept;
 
     [[nodiscard]] std::pmr::string

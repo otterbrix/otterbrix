@@ -73,7 +73,6 @@ namespace {
         auto arguments = args(types);
         return resolve_function(resource(),
                                 casts(),
-                                components::graph_execution_context{},
                                 functions(),
                                 function_qualified_name_t{core::function_name_t{std::string{name}}},
                                 arguments,
@@ -167,7 +166,6 @@ TEST_CASE("dispatcher::resolve_function: the function decides its own return typ
     std::pmr::vector<complex_logical_type> none(resource());
     auto star = resolve_function(resource(),
                                  casts(),
-                                 components::graph_execution_context{},
                                  functions(),
                                  function_qualified_name_t{core::function_name_t{"count"}},
                                  none,
@@ -202,7 +200,6 @@ TEST_CASE("dispatcher::resolve_function: a family entry keeps the argument's par
 
     auto resolved = resolve_function(resource(),
                                      casts(),
-                                     components::graph_execution_context{},
                                      functions(),
                                      function_qualified_name_t{core::function_name_t{"sum"}},
                                      arguments,
@@ -226,7 +223,6 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
 
     auto sum_in_where = resolve_function(resource(),
                                          casts(),
-                                         components::graph_execution_context{},
                                          functions(),
                                          function_qualified_name_t{core::function_name_t{"sum"}},
                                          integer,
@@ -237,7 +233,6 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
 
     auto length_in_aggregate = resolve_function(resource(),
                                                 casts(),
-                                                components::graph_execution_context{},
                                                 functions(),
                                                 function_qualified_name_t{core::function_name_t{"length"}},
                                                 text,
@@ -248,7 +243,6 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
     // Each is fine in the clause that accepts it.
     REQUIRE_FALSE(resolve_function(resource(),
                                    casts(),
-                                   components::graph_execution_context{},
                                    functions(),
                                    function_qualified_name_t{core::function_name_t{"sum"}},
                                    integer,
@@ -257,7 +251,6 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                       .has_error());
     REQUIRE_FALSE(resolve_function(resource(),
                                    casts(),
-                                   components::graph_execution_context{},
                                    functions(),
                                    function_qualified_name_t{core::function_name_t{"length"}},
                                    text,
@@ -286,7 +279,6 @@ TEST_CASE("dispatcher::resolve_function: abs resolves per argument type") {
     decimal_arg.emplace_back(decimal);
     auto scaled = resolve_function(resource(),
                                    casts(),
-                                   components::graph_execution_context{},
                                    functions(),
                                    function_qualified_name_t{core::function_name_t{"abs"}},
                                    decimal_arg,
@@ -349,7 +341,6 @@ TEST_CASE("dispatcher::resolve_function: an internal builtin resolves only for a
     const components::compute::function_pin_t pin{row->second, 0};
     auto pinned = resolve_function(resource(),
                                    casts(),
-                                   components::graph_execution_context{},
                                    functions(),
                                    function_qualified_name_t{core::function_name_t{"like_match"}},
                                    arguments,

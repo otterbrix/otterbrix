@@ -295,9 +295,7 @@ namespace services::dispatcher { namespace {
             found->second.push_back(&cell);
         }
 
-        const components::graph_execution_context settings{.timezone_offset = session_tz,
-                                                           .decimal_width = 0,
-                                                           .decimal_scale = 0};
+        const components::graph_execution_context settings{.timezone_offset = session_tz};
         for (const auto& [column, column_cells] : by_column) {
             auto& binding = node->column_bindings()[column];
             auto target_type = binding.target_type;
@@ -784,6 +782,61 @@ namespace services::catalog_resolve {
             return refuse_segments(resource, "REFERENCES target", written);
         }
         return core::error_t::no_error();
+    }
+
+    namespace {
+        std::string_view statement_of(components::logical_plan::node_type type) noexcept {
+            using components::logical_plan::node_type;
+            switch (type) {
+                case node_type::create_collection_t:
+                    return "CREATE TABLE";
+                case node_type::create_view_t:
+                    return "CREATE VIEW";
+                case node_type::create_sequence_t:
+                    return "CREATE SEQUENCE";
+                case node_type::create_index_t:
+                    return "CREATE INDEX";
+                case node_type::create_type_t:
+                    return "CREATE TYPE";
+                case node_type::create_macro_t:
+                    return "CREATE FUNCTION";
+                case node_type::refresh_matview_t:
+                    return "REFRESH MATERIALIZED VIEW";
+                case node_type::drop_t:
+                    return "DROP";
+                case node_type::alter_table_t:
+                    return "ALTER TABLE";
+                case node_type::insert_t:
+                case node_type::insert_on_conflict_t:
+                    return "INSERT";
+                case node_type::update_t:
+                    return "UPDATE";
+                case node_type::delete_t:
+                    return "DELETE";
+                default:
+                    return "write";
+            }
+        }
+    } // namespace
+
+    core::error_t refuse_external_targets(std::pmr::memory_resource* resource,
+                                          const components::logical_plan::catalog_resolves_t& resolves) {
+        if (resolves.external_targets.empty()) {
+            return core::error_t::no_error();
+        }
+        const auto& target = resolves.external_targets.front();
+        std::string role{statement_of(target.type)};
+        role += " target";
+        if (!target.written.unique_identifier.t.empty() || !target.written.schema.t.empty()) {
+            return refuse_segments(resource, role, target.written);
+        }
+        // Nothing but a database is left, and the only statement that records one is a type:
+        // pg_type rows all sit in public, so the database it names is unreachable.
+        std::pmr::string msg{role, resource};
+        msg += " \"";
+        msg += target.written.to_string();
+        msg += "\" names a database, but a type always lives in \"public\"; nothing was changed";
+        return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
     }
 
     core::error_t refuse_storage_write_in_savepoint(std::pmr::memory_resource* resource,
@@ -1360,62 +1413,6 @@ namespace services::dispatcher { namespace {
 }} // namespace services::dispatcher::
 
 namespace services::dispatcher {
-    namespace {
-        std::string_view statement_of(components::logical_plan::node_type type) noexcept {
-            using components::logical_plan::node_type;
-            switch (type) {
-                case node_type::create_collection_t:
-                    return "CREATE TABLE";
-                case node_type::create_view_t:
-                    return "CREATE VIEW";
-                case node_type::create_sequence_t:
-                    return "CREATE SEQUENCE";
-                case node_type::create_index_t:
-                    return "CREATE INDEX";
-                case node_type::create_type_t:
-                    return "CREATE TYPE";
-                case node_type::create_macro_t:
-                    return "CREATE FUNCTION";
-                case node_type::refresh_matview_t:
-                    return "REFRESH MATERIALIZED VIEW";
-                case node_type::drop_t:
-                    return "DROP";
-                case node_type::alter_table_t:
-                    return "ALTER TABLE";
-                case node_type::insert_t:
-                case node_type::insert_on_conflict_t:
-                    return "INSERT";
-                case node_type::update_t:
-                    return "UPDATE";
-                case node_type::delete_t:
-                    return "DELETE";
-                default:
-                    return "write";
-            }
-        }
-
-        // TODO: remove after federation & search path work
-        core::error_t refuse_external_targets(std::pmr::memory_resource* resource,
-                                              const components::logical_plan::catalog_resolves_t& resolves) {
-            if (resolves.external_targets.empty()) {
-                return core::error_t::no_error();
-            }
-            const auto& target = resolves.external_targets.front();
-            std::string role{statement_of(target.type)};
-            role += " target";
-            if (!target.written.unique_identifier.t.empty() || !target.written.schema.t.empty()) {
-                return catalog_resolve::refuse_segments(resource, role, target.written);
-            }
-            // Nothing but a database is left, and the only statement that records one is a type:
-            // pg_type rows all sit in public, so the database it names is unreachable.
-            std::pmr::string msg{role, resource};
-            msg += " \"";
-            msg += target.written.to_string();
-            msg += "\" names a database, but a type always lives in \"public\"; nothing was changed";
-            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
-        }
-    } // namespace
-
     actor_zeta::unique_future<core::error_t> enrich_plan(std::pmr::memory_resource* resource,
                                                          components::logical_plan::node_ptr root,
                                                          components::execution_context_t ctx,
@@ -1425,9 +1422,6 @@ namespace services::dispatcher {
         if (!root)
             co_return core::error_t::no_error();
         if (resolves) {
-            if (auto refusal = refuse_external_targets(resource, *resolves); refusal.contains_error()) {
-                co_return refusal;
-            }
             bind_catalog_data(root.get(), *resolves);
         }
         auto err = co_await enrich_node(resource, root, ctx, resolves);

@@ -426,12 +426,16 @@ TEST_CASE("integration::cpp::param_fold::timezone_pin_cast_folded_with_the_sessi
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "SET TIMEZONE TO '+03:00';"));
+    auto session = otterbrix::session_id_t();
+    REQUIRE(d->execute_sql(session, "SET TIMEZONE TO '+03:00';")->is_success());
     REQUIRE(ok(d, "CREATE DATABASE m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT, tstz TIMESTAMPTZ);"));
     REQUIRE(ok(d, "INSERT INTO m.t (id, tstz) VALUES (1, '2024-01-01 07:00:00+00'), (2, '2024-01-01 10:00:00+00');"));
     // 10:00 local at +03:00 is 07:00 UTC: row 1.
-    expect_ids(d, "SELECT id FROM m.t WHERE tstz = '2024-01-01 10:00:00'::timestamp;", {1});
+    auto cur = d->execute_sql(session, "SELECT id FROM m.t WHERE tstz = '2024-01-01 10:00:00'::timestamp;");
+    INFO(describe(*cur));
+    REQUIRE(cur->is_success());
+    CHECK(column_values(*cur) == std::set<int64_t>{1});
 }
 
 // The control: under UTC the same literal is row 2, so the pin above can only pass if the session zone was used.

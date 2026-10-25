@@ -497,7 +497,8 @@ namespace components::planner {
             return seq;
         }
 
-        // A missing index is refused; the statement's IF EXISTS turns that refusal into success (executor).
+        // A missing index is refused: IF EXISTS is decided by the executor before planning, so only a plan that
+        // skipped it reaches here without an index oid.
         core::result_wrapper_t<node_ptr> rewrite_drop_index(std::pmr::memory_resource* r, node_ptr node) {
             auto* di = static_cast<logical_plan::node_drop_t*>(node.get());
             const catalog::oid_t index_oid = di->index_oid();

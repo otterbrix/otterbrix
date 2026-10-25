@@ -71,6 +71,11 @@ namespace services::catalog_resolve {
     core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource,
                                              const components::logical_plan::catalog_resolves_t& resolves);
 
+    // A statement target this catalog has no place for (a uid or schema segment, a type in a named database) is
+    // refused, IF [NOT] EXISTS or not: PostgreSQL 18 refuses a cross-database name before missing_ok.
+    core::error_t refuse_external_targets(std::pmr::memory_resource* resource,
+                                          const components::logical_plan::catalog_resolves_t& resolves);
+
     core::error_t refuse_storage_write_in_savepoint(std::pmr::memory_resource* resource,
                                                     const components::logical_plan::catalog_resolves_t& resolves,
                                                     const components::logical_plan::node_t& write);

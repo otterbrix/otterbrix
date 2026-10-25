@@ -925,3 +925,90 @@ TEST_CASE("c-api: cursor_error_position points at the character a parse error is
     CHECK(cursor_error_position(success) == -1);
     release_cursor(success);
 }
+
+TEST_CASE("c-api: a ROLLBACK undoes the INSERT its BEGIN opened, one handle being one session", "[c-api][session]") {
+    test_db_t t("one_session_rollback");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE DATABASE s;");
+    run_ok(t.ptr, "CREATE TABLE s.t (a BIGINT);");
+    run_ok(t.ptr, "BEGIN;");
+    run_ok(t.ptr, "INSERT INTO s.t (a) VALUES (1);");
+    run_ok(t.ptr, "ROLLBACK;");
+
+    cursor_ptr read = execute_sql(t.ptr, sv(std::string("SELECT a FROM s.t;")));
+    REQUIRE(cursor_is_success(read));
+    CHECK(cursor_size(read) == 0);
+    release_cursor(read);
+}
+
+TEST_CASE("c-api: execute_sql_params runs in the session of its handle", "[c-api][session][params]") {
+    test_db_t t("one_session_params");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE DATABASE s;");
+    run_ok(t.ptr, "CREATE TABLE s.t (a BIGINT);");
+    run_ok(t.ptr, "BEGIN;");
+    sql_param_t param{};
+    param.index = 1;
+    param.kind = SQL_PARAM_INT64;
+    param.int64_value = 1;
+    const std::string insert = "INSERT INTO s.t (a) VALUES ($1);";
+    cursor_ptr inserted = execute_sql_params(t.ptr, sv(insert), &param, 1);
+    REQUIRE(cursor_is_success(inserted));
+    CHECK(cursor_transaction_status(inserted) == TRANSACTION_STATUS_IN_TRANSACTION);
+    release_cursor(inserted);
+    run_ok(t.ptr, "ROLLBACK;");
+
+    cursor_ptr read = execute_sql(t.ptr, sv(std::string("SELECT a FROM s.t;")));
+    REQUIRE(cursor_is_success(read));
+    CHECK(cursor_size(read) == 0);
+    release_cursor(read);
+}
+
+TEST_CASE("c-api: an error inside BEGIN fails the handle's block until ROLLBACK", "[c-api][session]") {
+    test_db_t t("one_session_failed_block");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "BEGIN;");
+
+    const std::string failing = "SELECT no_such_column FROM no_such_db.no_such_table;";
+    cursor_ptr refused = execute_sql(t.ptr, sv(failing));
+    REQUIRE(cursor_is_error(refused));
+    CHECK(cursor_transaction_status(refused) == TRANSACTION_STATUS_FAILED);
+    release_cursor(refused);
+
+    const std::string rollback = "ROLLBACK;";
+    cursor_ptr ended = execute_sql(t.ptr, sv(rollback));
+    REQUIRE(cursor_is_success(ended));
+    CHECK(cursor_transaction_status(ended) == TRANSACTION_STATUS_IDLE);
+    release_cursor(ended);
+
+    const std::string select = "SELECT 1;";
+    cursor_ptr after = execute_sql(t.ptr, sv(select));
+    REQUIRE(cursor_is_success(after));
+    CHECK(cursor_transaction_status(after) == TRANSACTION_STATUS_IDLE);
+    release_cursor(after);
+}
+
+TEST_CASE("c-api: ALTER SYSTEM inside a transaction block answers active_sql_transaction", "[c-api][errors]") {
+    test_db_t t("alter_system_in_a_block");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "BEGIN;");
+    const std::string alter = "ALTER SYSTEM SET timezone = '+03:00';";
+    require_error_cursor(execute_sql(t.ptr, sv(alter)),
+                         EC_ACTIVE_SQL_TRANSACTION,
+                         "ALTER SYSTEM cannot run inside a transaction block");
+    run_ok(t.ptr, "ROLLBACK;");
+}
+
+TEST_CASE("c-api: DROP of a built-in type answers dependent_objects_still_exist", "[c-api][errors]") {
+    test_db_t t("drop_built_in_type");
+    REQUIRE(t.ptr != nullptr);
+
+    const std::string drop = "DROP TYPE integer;";
+    require_error_cursor(execute_sql(t.ptr, sv(drop)),
+                         EC_DEPENDENT_OBJECTS_STILL_EXIST,
+                         "cannot drop type integer because it is required by the database system");
+}

@@ -20,6 +20,7 @@ set(${PROJECT_NAME}_SOURCES
         test_parser_extension.cpp
         test_silent_narrowing.cpp
         test_transaction.cpp
+        test_set_setting.cpp
         test_parser_internals.cpp
         test_name_bugs.cpp
 )

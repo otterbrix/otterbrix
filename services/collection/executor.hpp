@@ -82,7 +82,7 @@ namespace services::collection::executor {
 
     struct execute_result_t {
         components::cursor::cursor_t_ptr cursor;
-        // Drained by execute_plan_full's commit tail; the dispatcher reads only cursor and applied setting.
+        // Drained by execute_plan_full's commit tail; the dispatcher reads only cursor and applied settings.
         std::vector<components::pg_catalog_append_range_t> pg_catalog_appends{};
         std::set<components::catalog::oid_t> pg_catalog_delete_tables{};
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills{};
@@ -95,8 +95,9 @@ namespace services::collection::executor {
         std::vector<components::table::created_index_t> created_indexes{};
         // Non-zero only after a commit ran; CREATE INDEX's backfill tail needs the allocated commit_id.
         uint64_t commit_id{0};
-        components::catalog::setting_id applied_setting{};
-        std::string applied_setting_value{};
+        components::catalog::setting_scope_t applied_setting_scope{};
+        // Filled only from a SET's sub-plan result, which gives it its resource; empty everywhere else.
+        std::pmr::vector<components::catalog::setting_assignment_t> applied_settings{};
         // Move-only, and everything from here down is appended at the END: a brace initializer that sets
         // only a prefix of the members has to keep compiling.
         std::optional<explain_plan_node> captured_explain_ir{};
@@ -143,8 +144,8 @@ namespace services::collection::executor {
         std::set<components::catalog::oid_t> pg_catalog_delete_tables;
         std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills;
         uint64_t commit_id{0};
-        components::catalog::setting_id applied_setting{};
-        std::string applied_setting_value;
+        components::catalog::setting_scope_t applied_setting_scope{};
+        std::pmr::vector<components::catalog::setting_assignment_t> applied_settings;
         uint64_t written{0};
     };
 
@@ -258,14 +259,24 @@ namespace services::collection::executor {
                                 components::logical_plan::execution_plan_t& plan,
                                 const services::dispatcher::txn_session_context_t& session_ctx);
 
-        // The statement's IF EXISTS (read off its node) turns "its target does not exist", reported only through
-        // this, into an empty success; every other refusal stays one.
-        components::cursor::cursor_t_ptr refuse_missing_target_(bool if_exists, core::error_t missing);
         core::error_t missing_relation_(std::string_view dbname, std::string_view relname) const;
         core::error_t missing_database_(std::string_view dbname) const;
 
-        components::cursor::cursor_t_ptr check_drop_target_(const components::logical_plan::execution_plan_t& plan,
-                                                            const components::catalog::table_id& id);
+        enum class target_outcome_t
+        {
+            act,
+            nothing_to_do
+        };
+        core::result_wrapper_t<target_outcome_t> decide_target_(components::logical_plan::execution_plan_t& plan,
+                                                                const components::catalog::table_id& id);
+        core::error_t missing_target_(const components::logical_plan::execution_plan_t& plan,
+                                      const components::catalog::table_id& id) const;
+        core::error_t existing_target_(const components::logical_plan::execution_plan_t& plan,
+                                       const components::catalog::table_id& id) const;
+
+        // A DROP's target that exists, refused for what it is (built-in, system catalog, another relation kind).
+        core::error_t check_drop_target_(const components::logical_plan::execution_plan_t& plan,
+                                         const components::catalog::table_id& id) const;
 
         // How many table and type entries of the resolve are the statement's own, before a view expansion adds any.
         struct own_entries_t {

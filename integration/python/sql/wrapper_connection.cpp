@@ -11,7 +11,8 @@ namespace otterbrix {
         : client_(client)
         , cursor_store_(new wrapper_cursor{new components::cursor::cursor_t(client_->ptr_->dispatcher()->resource()),
                                            client_->ptr_->dispatcher(),
-                                           client_->ptr_}) {}
+                                           client_->ptr_,
+                                           client_->session_}) {}
 
     wrapper_cursor_ptr wrapper_connection::execute(const std::string& query) {
         cursor_store_ = client_->execute(query);

@@ -61,6 +61,7 @@ otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error) OTTERBRIX
 // itself must not be passed to any call again.
 void otterbrix_destroy(otterbrix_ptr) OTTERBRIX_NOEXCEPT;
 
+// A handle is one session: a BEGIN sent through it stays open for its next statement (execute_sql_params included).
 cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query) OTTERBRIX_NOEXCEPT;
 
 typedef enum sql_param_kind_t

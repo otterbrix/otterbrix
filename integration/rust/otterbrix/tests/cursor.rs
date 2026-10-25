@@ -102,3 +102,15 @@ fn transaction_status_reports_where_the_session_stands() {
         Some(otterbrix::TransactionStatus::InTransaction)
     );
 }
+
+#[test]
+fn a_rollback_undoes_the_insert_its_begin_opened() {
+    let db = common::open_test_db();
+    db.execute("CREATE DATABASE s;").unwrap();
+    db.execute("CREATE TABLE s.t (a BIGINT);").unwrap();
+    db.execute("BEGIN;").unwrap();
+    db.execute("INSERT INTO s.t (a) VALUES (1);").unwrap();
+    db.execute("ROLLBACK;").unwrap();
+    let read = db.execute("SELECT a FROM s.t;").unwrap();
+    assert_eq!(read.size(), 0);
+}

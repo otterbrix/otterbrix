@@ -2658,7 +2658,6 @@ namespace services::dispatcher {
                 auto fn_resolved =
                     resolve_function(resource,
                                      *cast_registry,
-                                     context.execution_context,
                                      context.function_registry,
                                      function_node->full_name(),
                                      function_input,

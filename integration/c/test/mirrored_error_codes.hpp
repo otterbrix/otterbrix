@@ -6,3 +6,5 @@
 inline constexpr int32_t EC_INVALID_PARAMETER = 22;
 inline constexpr int32_t EC_SQL_PARSE_ERROR = 30;
 inline constexpr int32_t EC_IO_ERROR = 40;
+inline constexpr int32_t EC_ACTIVE_SQL_TRANSACTION = 46;
+inline constexpr int32_t EC_DEPENDENT_OBJECTS_STILL_EXIST = 47;

@@ -225,6 +225,7 @@ namespace otterbrix {
 
     auto wrapper_dispatcher_t::set_timezone(const session_id_t& session, std::string timezone_name) -> cursor_t_ptr {
         auto node = components::logical_plan::make_node_set_setting(resource(),
+                                                                    components::catalog::setting_scope_t::session,
                                                                     components::catalog::setting_id::timezone,
                                                                     std::move(timezone_name));
         return send_plan(

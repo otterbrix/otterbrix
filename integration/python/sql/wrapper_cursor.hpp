@@ -20,7 +20,10 @@ public:
 
     // `space` must be held, not borrowed: the result batch is pmr-allocated from its
     // resource, and `dispatcher` points into the same object.
-    wrapper_cursor(pointer cursor, otterbrix::wrapper_dispatcher_t* dispatcher, otterbrix::spaces_ptr space);
+    wrapper_cursor(pointer cursor,
+                   otterbrix::wrapper_dispatcher_t* dispatcher,
+                   otterbrix::spaces_ptr space,
+                   otterbrix::session_id_t session);
 
     void close();
     bool has_next();
@@ -50,6 +53,7 @@ private:
     otterbrix::spaces_ptr space_;
     pointer ptr_;
     otterbrix::wrapper_dispatcher_t* dispatcher_;
+    const otterbrix::session_id_t session_;
 
     py::object get_(const std::string& key) const;
     py::object get_(std::size_t index) const;

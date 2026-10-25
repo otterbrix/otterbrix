@@ -119,10 +119,14 @@ namespace {
     }
 } // namespace
 
-wrapper_cursor::wrapper_cursor(pointer cursor, otterbrix::wrapper_dispatcher_t* dispatcher, otterbrix::spaces_ptr space)
+wrapper_cursor::wrapper_cursor(pointer cursor,
+                               otterbrix::wrapper_dispatcher_t* dispatcher,
+                               otterbrix::spaces_ptr space,
+                               otterbrix::session_id_t session)
     : space_(std::move(space))
     , ptr_(std::move(cursor))
-    , dispatcher_(dispatcher) {}
+    , dispatcher_(dispatcher)
+    , session_(session) {}
 
 void wrapper_cursor::close() { close_ = true; }
 
@@ -218,9 +222,7 @@ std::string wrapper_cursor::print() {
 
 wrapper_cursor& wrapper_cursor::sort(py::object /*sorter*/, py::object /*order*/) { return *this; }
 
-void wrapper_cursor::execute(std::string& query) {
-    ptr_ = dispatcher_->execute_sql(components::session::session_id_t(), query);
-}
+void wrapper_cursor::execute(std::string& query) { ptr_ = dispatcher_->execute_sql(session_, query); }
 
 py::object wrapper_cursor::get_(const std::string& key) const {
     if (ptr_->is_write() || ptr_->size() == 0) {

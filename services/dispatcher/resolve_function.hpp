@@ -30,7 +30,6 @@ namespace services::dispatcher {
     [[nodiscard]] core::result_wrapper_t<resolved_function_t>
     resolve_function(std::pmr::memory_resource* resource,
                      const components::casts::cast_registry_t& cast_registry,
-                     const components::graph_execution_context& graph_execution_context,
                      const components::compute::function_registry_t& function_registry,
                      const function_qualified_name_t& name,
                      const std::pmr::vector<components::types::complex_logical_type>& arguments,

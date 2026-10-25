@@ -67,9 +67,7 @@ namespace services {
                           const components::catalog::session_catalog_t& settings)
             : resource(resource)
             , log(std::move(log))
-            , execution_context{.timezone_offset = settings.timezone_offset,
-                                .decimal_width = settings.decimal_width,
-                                .decimal_scale = settings.decimal_scale}
+            , execution_context{.timezone_offset = settings.timezone_offset}
             , table_indexes(resource)
             , cte_working_sets(resource)
             , row_counts(resource) {}

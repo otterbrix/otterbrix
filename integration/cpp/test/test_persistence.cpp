@@ -2540,20 +2540,20 @@ TEST_CASE("integration::cpp::test_persistence::index_recovery_phase4_catalog_dri
     }
 }
 
-// SET TIMEZONE persists via pg_settings, refreshed into default_tz_cat_ on restart; not
-// queryable via SELECT, so this only characterizes that the write survives restart and stays usable.
+// ALTER SYSTEM SET timezone persists via pg_settings, read back into the dispatcher's defaults on restart; this only
+// characterizes that the write survives restart and SET stays usable.
 TEST_CASE("integration::cpp::test_persistence::set_timezone_survives_restart") {
     auto config = test_create_config(integration_fixture_path("test_persistence/set_timezone_survives_restart"));
     test_clear_directory(config);
 
-    INFO("phase 1: SET TIMEZONE, then create + populate a table");
+    INFO("phase 1: ALTER SYSTEM SET timezone, then create + populate a table");
     {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "SET TIMEZONE TO 'Asia/Tokyo';");
+            auto cur = dispatcher->execute_sql(session, "ALTER SYSTEM SET timezone TO 'Asia/Tokyo';");
             REQUIRE(cur->is_success());
         }
 

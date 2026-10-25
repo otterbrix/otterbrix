@@ -8,7 +8,6 @@
 #include <utility>
 
 namespace services::dispatcher {
-    using components::graph_execution_context;
     using components::casts::allowed_in;
     using components::casts::cast_cost;
     using components::casts::cast_registry_t;
@@ -132,32 +131,15 @@ namespace services::dispatcher {
             }
         }
 
-        //! `resource` is only for the refusal message create_decimal may build on an
-        //! out-of-window session setting.
-        std::optional<complex_logical_type> materialize_family(std::pmr::memory_resource* resource,
-                                                               const graph_execution_context& context,
-                                                               const complex_logical_type& family,
+        std::optional<complex_logical_type> materialize_family(const complex_logical_type& family,
                                                                const complex_logical_type& argument) {
             if (family.type() == argument.type()) {
                 return argument;
             }
-            if (family.type() != logical_type::DECIMAL) {
-                return std::nullopt;
-            }
-            // The session's DECIMAL width/scale are settings, not literals: an
-            // out-of-window pair means "no materialization for this family", never a
-            // decimal type nothing can persist.
-            auto materialized =
-                complex_logical_type::create_decimal(resource, context.decimal_width, context.decimal_scale);
-            if (materialized.has_error()) {
-                return std::nullopt;
-            }
-            return std::move(materialized.value());
+            return std::nullopt;
         }
 
-        std::optional<complex_logical_type> constrain_to_domain(std::pmr::memory_resource* resource,
-                                                                const cast_registry_t& cast_registry,
-                                                                const graph_execution_context& context,
+        std::optional<complex_logical_type> constrain_to_domain(const cast_registry_t& cast_registry,
                                                                 const parameter_type& parameter,
                                                                 const complex_logical_type& unified) {
             if (parameter.admissible().empty() || is_null_argument(unified) || parameter.admits(unified)) {
@@ -166,8 +148,7 @@ namespace services::dispatcher {
             std::optional<complex_logical_type> best;
             std::optional<cast_cost> best_cost;
             for (const auto& entry : parameter.admissible()) {
-                auto materialized =
-                    is_family_entry(entry) ? materialize_family(resource, context, entry, unified) : entry;
+                auto materialized = is_family_entry(entry) ? materialize_family(entry, unified) : entry;
                 if (!materialized.has_value()) {
                     continue;
                 }
@@ -186,7 +167,6 @@ namespace services::dispatcher {
 
         std::optional<candidate_t> try_signature(std::pmr::memory_resource* resource,
                                                  const cast_registry_t& cast_registry,
-                                                 const graph_execution_context& context,
                                                  const kernel_signature_t& signature,
                                                  const std::pmr::vector<complex_logical_type>& arguments) {
             if (signature.input_types.size() != arguments.size() || signature.output_types.empty()) {
@@ -204,7 +184,7 @@ namespace services::dispatcher {
                 complex_logical_type target;
                 if (!parameter.is_variable()) {
                     if (is_family_entry(parameter.type())) {
-                        auto materialized = materialize_family(resource, context, parameter.type(), arguments[i]);
+                        auto materialized = materialize_family(parameter.type(), arguments[i]);
                         if (!materialized.has_value()) {
                             return std::nullopt;
                         }
@@ -223,7 +203,7 @@ namespace services::dispatcher {
                         if (!unified.has_value()) {
                             return std::nullopt;
                         }
-                        auto constrained = constrain_to_domain(resource, cast_registry, context, parameter, *unified);
+                        auto constrained = constrain_to_domain(cast_registry, parameter, *unified);
                         if (!constrained.has_value()) {
                             return std::nullopt;
                         }
@@ -303,7 +283,6 @@ namespace services::dispatcher {
     core::result_wrapper_t<resolved_function_t>
     resolve_function(std::pmr::memory_resource* resource,
                      const cast_registry_t& cast_registry,
-                     const graph_execution_context& context,
                      const function_registry_t& function_registry,
                      const function_qualified_name_t& name,
                      const std::pmr::vector<complex_logical_type>& arguments,
@@ -346,7 +325,7 @@ namespace services::dispatcher {
                     rejected_by_context = true;
                     continue;
                 }
-                auto candidate = try_signature(resource, cast_registry, context, signature, arguments);
+                auto candidate = try_signature(resource, cast_registry, signature, arguments);
                 if (!candidate.has_value()) {
                     continue;
                 }

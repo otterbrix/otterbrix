@@ -140,6 +140,7 @@ namespace components::sql::transform {
         // BEGIN / COMMIT / ROLLBACK / SAVEPOINT / RELEASE / ROLLBACK TO; 2PC is refused.
         core::result_wrapper_t<logical_plan::node_ptr> transform_transaction(TransactionStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_set_setting(VariableSetStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_alter_system(AlterSystemStmt& node);
         // EXPLAIN / EXPLAIN ANALYZE: read the `analyze` option, restrict the inner to
         // SELECT/INSERT/UPDATE/DELETE, stamp plan->explain, and lower the inner so sub_queries.back()
         // stays the real query node. Output formatting is a host concern (the executor's renderer
@@ -423,7 +424,7 @@ namespace components::sql::transform {
             register_catalog_resolve_types(resource_, &catalog_resolves_, type_names);
         }
 
-        // A slot of `written` the node does not keep is recorded as an external target, which enrich refuses.
+        // A slot of `written` the node does not keep is recorded as an external target, which the executor refuses.
         std::string set_target(logical_plan::node_t& node, const qualified_name_t& written, target_slots slots) {
             qualified_name_t target{database_for(written, policy_of(node)), core::relname_t{}};
             if (slots != target_slots::database) {

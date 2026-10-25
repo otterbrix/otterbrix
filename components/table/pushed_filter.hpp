@@ -24,8 +24,6 @@ namespace components::table {
         expressions::detached_expression_t expression;
         vector::storage_parameters parameters;
         core::date::timezone_offset_t timezone_offset;
-        uint8_t decimal_width;
-        uint8_t decimal_scale;
     };
 
     // Sender side: deep copies onto `target`, the receiving actor's resource.

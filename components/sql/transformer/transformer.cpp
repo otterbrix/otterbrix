@@ -229,6 +229,9 @@ namespace components::sql::transform {
             case T_VariableSetStmt:
                 log_node = transform_set_setting(pg_cast<VariableSetStmt>(node));
                 break;
+            case T_AlterSystemStmt:
+                log_node = transform_alter_system(pg_cast<AlterSystemStmt>(node));
+                break;
             case T_ExtensionNode: {
                 // route to the owning extension's transform stage by extension_id
                 auto& ext_node = pg_cast<ExtensionNode>(node);

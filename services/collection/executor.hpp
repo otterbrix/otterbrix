@@ -3,8 +3,8 @@
 #include <components/base/collection_full_name.hpp>
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/place.hpp>
 #include <components/catalog/settings.hpp>
-#include <components/catalog/table_id.hpp>
 #include <components/compute/function.hpp>
 #include <components/configuration/configuration.hpp>
 #include <components/context/pg_catalog_swap.hpp>
@@ -184,12 +184,18 @@ namespace services::collection::executor {
                                                           components::logical_plan::execution_plan_t plan,
                                                           services::dispatcher::txn_session_context_t session_ctx);
 
+        // A connector factory that refused to make this executor's connector refuses the engine's start.
+        [[nodiscard]] const core::error_t& construction_error() const noexcept { return construction_error_; }
+
+        // `schema_oid`: the schema the function is registered in.
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
-                                                                       components::compute::function_ptr function);
+                                                                       components::compute::function_ptr function,
+                                                                       components::catalog::oid_t schema_oid);
 
         unique_future<bool> unregister_udf(components::session::session_id_t session,
                                            core::function_name_t name,
-                                           std::pmr::vector<components::types::complex_logical_type> inputs);
+                                           std::pmr::vector<components::types::complex_logical_type> inputs,
+                                           components::catalog::oid_t schema_oid);
 
         // Compensation for a failed register_udf fan-out; appended last in dispatch_traits (message ids positional).
         unique_future<bool> unregister_udf_uid(components::session::session_id_t session,
@@ -222,25 +228,26 @@ namespace services::collection::executor {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
-        // A read the host's name resolution asked for does not consult the host again.
-        enum class host_names_t : bool
-        {
-            resolve,
-            local_only
-        };
-
         unique_future<execute_result_t> execute_statement_(components::session::session_id_t session,
                                                            components::logical_plan::execution_plan_t plan,
                                                            services::dispatcher::txn_session_context_t session_ctx,
-                                                           host_names_t host_names,
                                                            std::pmr::vector<expanded_view_t> expanded_views);
 
         unique_future<execute_result_t>
         run_resolve_subplan_(components::session::session_id_t session,
                              const services::dispatcher::txn_session_context_t& session_ctx,
-                             const components::graph_execution_context& settings,
+                             const services::context_storage_t& statement,
                              components::logical_plan::catalog_resolves_t* resolves,
                              std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes);
+
+        // What the DROPs of the planned statement take of connections' databases (DROP TABLE, SCHEMA, DATABASE, TYPE
+        // ... CASCADE, ALTER TABLE ... DROP COLUMN), found before it runs: the RESTRICT refusal, and the tables,
+        // columns and schemas stamped on the drop for their connectors' operators. Only in autocommit.
+        unique_future<core::error_t> stamp_remote_drops_(components::session::session_id_t session,
+                                                         const services::dispatcher::txn_session_context_t& session_ctx,
+                                                         const services::context_storage_t& statement,
+                                                         components::table::transaction_data txn,
+                                                         components::logical_plan::execution_plan_t& plan);
 
         // The functions a view body calls are the ones CREATE bound it to (pg_proc read by the 'f' rows' oids).
         unique_future<core::error_t> pin_functions_(components::session::session_id_t session,
@@ -251,16 +258,17 @@ namespace services::collection::executor {
         unique_future<execute_result_t> refresh_matview_(components::session::session_id_t session,
                                                          const components::logical_plan::execution_plan_t& plan,
                                                          const services::dispatcher::txn_session_context_t& session_ctx,
-                                                         host_names_t host_names,
                                                          const components::graph_execution_context& settings);
 
-        unique_future<core::error_t>
-        resolve_external_names_(components::session::session_id_t session,
-                                components::logical_plan::execution_plan_t& plan,
-                                const services::dispatcher::txn_session_context_t& session_ctx);
+        // Every table of a connection's database the statement reads or writes gets its storage from the connector,
+        // once per table oid; the entry that met the oid first owns it until the statement ends.
+        core::error_t bind_remote_storages_(components::session::session_id_t session,
+                                            const components::logical_plan::execution_plan_t& plan,
+                                            const services::dispatcher::txn_session_context_t& session_ctx,
+                                            const services::context_storage_t& context,
+                                            components::logical_plan::catalog_resolves_t& resolves);
 
-        core::error_t missing_relation_(std::string_view dbname, std::string_view relname) const;
-        core::error_t missing_database_(std::string_view dbname) const;
+        core::error_t missing_relation_(const qualified_name_t& name) const;
 
         enum class target_outcome_t
         {
@@ -268,15 +276,18 @@ namespace services::collection::executor {
             nothing_to_do
         };
         core::result_wrapper_t<target_outcome_t> decide_target_(components::logical_plan::execution_plan_t& plan,
-                                                                const components::catalog::table_id& id);
+                                                                const qualified_name_t& target);
         core::error_t missing_target_(const components::logical_plan::execution_plan_t& plan,
-                                      const components::catalog::table_id& id) const;
+                                      const qualified_name_t& target) const;
         core::error_t existing_target_(const components::logical_plan::execution_plan_t& plan,
-                                       const components::catalog::table_id& id) const;
+                                       const qualified_name_t& target) const;
+        // A target in a connection's database: only a table is created there, and its DDL runs only in autocommit.
+        core::error_t check_connection_target_(const components::logical_plan::execution_plan_t& plan,
+                                               const qualified_name_t& target) const;
 
         // A DROP's target that exists, refused for what it is (built-in, system catalog, another relation kind).
         core::error_t check_drop_target_(const components::logical_plan::execution_plan_t& plan,
-                                         const components::catalog::table_id& id) const;
+                                         const qualified_name_t& target) const;
 
         // How many table and type entries of the resolve are the statement's own, before a view expansion adds any.
         struct own_entries_t {
@@ -293,10 +304,9 @@ namespace services::collection::executor {
                                                            const std::pmr::vector<expanded_view_t>& expanded_views);
 
         // A column as CREATE TABLE and ALTER TABLE ... ADD COLUMN take it: a type written by its catalog name is that
-        // built-in, another unknown name a type on `search_path` (the table database's); the type must be persistable
-        // and the DEFAULT is cast to it.
+        // built-in, another name a type main.pg_catalog or the session's place has (a qualified one, its schema's);
+        // the type must be persistable and the DEFAULT is cast to it.
         core::error_t prepare_column_(const components::logical_plan::catalog_resolves_t& resolves,
-                                      std::span<const std::string> search_path,
                                       const components::graph_execution_context& settings,
                                       components::table::column_definition_t& column);
 
@@ -379,7 +389,9 @@ namespace services::collection::executor {
         components::casts::cast_registry_t cast_registry_;
         // Host customization, copied from the dispatcher's at spawn.
         std::pmr::vector<components::planner::optimizer_rule_t> optimizer_rules_;
-        components::planner::name_resolution_hook_t name_resolution_;
+        // This executor's own connector, made at spawn; only this actor calls it. Null: a host without connections.
+        components::planner::connector_ptr connector_{nullptr, core::pmr::polymorphic_deleter_t{nullptr, 0, 0}};
+        core::error_t construction_error_{core::error_t::no_error()};
         // Bound on buffered rows before the pump forces an incremental flush; 0 disables the gate.
         uint64_t dml_flush_row_threshold_{0};
         static constexpr uint32_t kExplainRendererSlotLimit = 1024;

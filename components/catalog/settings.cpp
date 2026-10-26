@@ -1,5 +1,7 @@
 #include "settings.hpp"
 
+#include "place.hpp"
+
 #include <components/types/types.hpp>
 #include <core/date/timezones.hpp>
 
@@ -15,9 +17,10 @@ namespace components::catalog {
 
     namespace {
 
-        constexpr std::array<setting_def_t, 2> known_settings{
+        constexpr std::array<setting_def_t, 3> known_settings{
             setting_def_t{"timezone", "TimeZone", setting_id::timezone},
-            setting_def_t{"autocommit", "autocommit", setting_id::autocommit}};
+            setting_def_t{"autocommit", "autocommit", setting_id::autocommit},
+            setting_def_t{"search_path", "search_path", setting_id::search_path}};
 
         std::string to_lower(std::string_view text) {
             std::string lowered(text);
@@ -86,6 +89,8 @@ namespace components::catalog {
                 return std::pmr::string{cache.timezone_name.data(), cache.timezone_name.size(), resource};
             case setting_id::autocommit:
                 return std::pmr::string{cache.autocommit ? "on" : "off", resource};
+            case setting_id::search_path:
+                return std::pmr::string{cache.search_path.data(), cache.search_path.size(), resource};
         }
         assert(false && "a setting_id with no value in the cache");
         std::abort();
@@ -108,6 +113,8 @@ namespace components::catalog {
             }
             case setting_id::autocommit:
                 return canonical_boolean("autocommit", raw, resource);
+            case setting_id::search_path:
+                return canonical_search_path(raw, resource);
         }
         return core::error_t(core::error_code_t::invalid_parameter, std::pmr::string{"unknown setting", resource});
     }
@@ -129,6 +136,9 @@ namespace components::catalog {
             }
             case setting_id::autocommit:
                 cache.autocommit = boolean_setting_value(value);
+                return core::error_t::no_error();
+            case setting_id::search_path:
+                cache.search_path = std::string(value);
                 return core::error_t::no_error();
         }
         return core::error_t(core::error_code_t::invalid_parameter, std::pmr::string{"unknown setting", resource});

@@ -219,7 +219,7 @@ TEST_CASE("integration::cpp::index_stale_marker_crash::a_restart_may_not_wire_an
         test_spaces space(config);
         auto* d = space.dispatcher();
 
-        REQUIRE(exec(d, "CREATE DATABASE sdb;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA sdb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE sdb.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec(d, "CREATE INDEX t_k ON sdb.t USING hash (k);")->is_success());
         load(d);

@@ -44,36 +44,6 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
-    // ctx.txn, not the default snapshot (same rule below): under committed() a namespace
-    // this transaction created or dropped reads as its opposite, corrupting its own
-    // name-collision / follow-up-DDL checks.
-    manager_disk_t::unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
-    manager_disk_t::resolve_namespace(execution_context_t ctx, std::string name) {
-        resolve_namespace_result_t out(resource());
-
-        auto batches_r = co_await scan_table(pg_namespace_oid_tbl, std::vector<std::size_t>{0, 1}, ctx.txn);
-        if (batches_r.has_error()) {
-            co_return batches_r.convert_error<resolve_namespace_result_t>();
-        }
-        for (auto& chunk : batches_r.value()) {
-            bool stop = false;
-            for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.is_null(0, i) || chunk.is_null(1, i))
-                    continue;
-                if (chunk.get_value<std::string_view>(1, i) != name)
-                    continue;
-                out.found = true;
-                out.oid = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                out.name = name;
-                stop = true;
-                break;
-            }
-            if (stop)
-                break;
-        }
-        co_return out;
-    }
-
     // ctx.txn, not the default snapshot: operator_unregister_udf_t treats a delete-spec count
     // of 0 as "function still in catalog", and the delete's own scan
     // (agent_disk_t::delete_pg_catalog_rows_inner) carries the caller's transaction — a read on
@@ -123,25 +93,6 @@ namespace services::disk {
             }
         }
         co_return components::catalog::INVALID_OID;
-    }
-
-    // ctx.txn, for the reason on resolve_namespace above: the list must show this transaction's
-    // own uncommitted namespaces and hide the ones it dropped, or a verdict built on it lies too.
-    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>>
-    manager_disk_t::list_namespaces(execution_context_t ctx) {
-        std::pmr::vector<std::string> out(resource());
-        auto batches_r = co_await scan_table(pg_namespace_oid_tbl, std::vector<std::size_t>{0, 1}, ctx.txn);
-        if (batches_r.has_error()) {
-            co_return batches_r.convert_error<std::pmr::vector<std::string>>();
-        }
-        for (auto& chunk : batches_r.value()) {
-            for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (!chunk.is_null(1, i)) {
-                    out.emplace_back(std::string(chunk.get_value<std::string_view>(1, i)));
-                }
-            }
-        }
-        co_return out;
     }
 
     // Direct replay methods: synchronous, no MVCC, for physical WAL replay.

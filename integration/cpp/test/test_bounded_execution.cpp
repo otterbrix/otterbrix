@@ -25,11 +25,11 @@ TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", 
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + bounded_db + ";");
+        dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + bounded_db + ";");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{bounded_db}, core::relname_t{bounded_coll});
+        test_create_collection(dispatcher, session, core::schema_t{bounded_db}, core::relname_t{bounded_coll});
     }
 
     {

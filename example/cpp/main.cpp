@@ -40,7 +40,7 @@ TEST_CASE("example::sql::base") {
         auto made = otterbrix::make_otterbrix(config);
         REQUIRE_FALSE(made.has_error());
         otterbrix = made.value();
-        execute_sql(otterbrix, R"_(CREATE DATABASE TestDatabase;)_");
+        execute_sql(otterbrix, R"_(CREATE SCHEMA TestDatabase;)_");
         execute_sql(otterbrix, R"_(CREATE TABLE TestDatabase.TestCollection();)_");
     }
 
@@ -177,7 +177,7 @@ TEST_CASE("example::sql::group_by") {
         auto made = otterbrix::make_otterbrix(config);
         REQUIRE_FALSE(made.has_error());
         otterbrix = made.value();
-        execute_sql(otterbrix, R"_(CREATE DATABASE TestDatabase;)_");
+        execute_sql(otterbrix, R"_(CREATE SCHEMA TestDatabase;)_");
         execute_sql(otterbrix, R"_(CREATE TABLE TestDatabase.TestCollection();)_");
 
         std::stringstream query;
@@ -270,7 +270,7 @@ TEST_CASE("example::sql::invalid_queries") {
         REQUIRE(c->get_error().type == error_code_t::database_not_exists);
     }
 
-    INFO("create database"); { execute_sql(otterbrix, R"_(CREATE DATABASE TestDatabase;)_"); }
+    INFO("create database"); { execute_sql(otterbrix, R"_(CREATE SCHEMA TestDatabase;)_"); }
 
     INFO("not exists database");
     {

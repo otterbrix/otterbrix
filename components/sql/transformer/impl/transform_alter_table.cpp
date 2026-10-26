@@ -274,7 +274,6 @@ namespace components::sql::transform {
             return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
         }
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string rel_for_resolve = qn.collection.t;
         std::string old_name = node.subname ? node.subname : "";
         std::string new_name = node.newname ? node.newname : "";
         // operator_alter_column_rename_t carries the same empty-name no-op as its
@@ -291,16 +290,13 @@ namespace components::sql::transform {
         n->set_if_exists(node.missing_ok);
         // The altered table's identity stays ON the node: enrich binds it to a
         // resolved entry by name and stamps table_oid() + relkind from there.
-        const std::string db_for_resolve = set_target(*n, qn, target_slots::relation);
-        register_table(db_for_resolve, rel_for_resolve, constraint_resolve_kind::none);
+        register_table(set_target(*n, qn, target_slots::relation), constraint_resolve_kind::none);
         return n;
     }
 
     core::result_wrapper_t<logical_plan::node_ptr>
     transformer::transform_alter_table(AlterTableStmt& node, logical_plan::execution_plan_t* plan) {
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string& db = qn.database.t;
-        const std::string& rel = qn.collection.t;
         // The grammar hands the table subcommands of ALTER VIEW / INDEX / SEQUENCE / MATERIALIZED VIEW /
         // FOREIGN TABLE over as an AlterTableStmt of that kind; they would otherwise change whatever table has
         // the name. ALTER TYPE shares the statement too and keeps its own path.
@@ -320,21 +316,21 @@ namespace components::sql::transform {
             default:
                 break;
         }
-        // Helper: every return path below targets (db, rel) — name the node, hand it the statement's
+        // Helper: every return path below targets the altered table — name the node, hand it the statement's
         // IF EXISTS (AlterTableStmt.missing_ok) and register the lookup once.
         auto wrap_primary = [&](logical_plan::node_ptr n) {
-            std::string target_db = db;
+            qualified_name_t target = qn;
             if (n && n->type() == logical_plan::node_type::alter_table_t) {
                 auto* alter = static_cast<logical_plan::node_alter_table_t*>(n.get());
                 if (node.relkind == OBJECT_TYPE) {
                     alter->set_relkind(components::catalog::relkind::composite_type);
                 }
                 alter->set_if_exists(node.missing_ok);
-                target_db = set_target(*alter, qn, target_slots::relation);
+                target = set_target(*alter, qn, target_slots::relation);
             } else if (n && n->type() == logical_plan::node_type::create_constraint_t) {
                 static_cast<logical_plan::node_create_constraint_t*>(n.get())->set_if_exists(node.missing_ok);
             }
-            register_table(target_db, rel, constraint_resolve_kind::none);
+            register_table(target, constraint_resolve_kind::none);
             return n;
         };
         if (!node.cmds || node.cmds->lst.empty()) {
@@ -369,11 +365,12 @@ namespace components::sql::transform {
                             std::pmr::string{"ALTER TABLE ... ADD COLUMN requires a column definition", resource_});
                     }
                     {
-                        // Its type resolves like a CREATE TABLE column's (a user type lives in public).
-                        std::vector<std::string> udt_names;
-                        components::types::walk_user_type_refs(cols.front().type(), [&](std::string_view name) {
-                            udt_names.emplace_back(name);
-                        });
+                        // Its type resolves like a CREATE TABLE column's.
+                        std::vector<qualified_name_t> udt_names;
+                        components::types::walk_user_type_refs(cols.front().type(),
+                                                               [&](const types::complex_logical_type& ref) {
+                                                                   udt_names.push_back(type_reference_of(ref));
+                                                               });
                         register_types(udt_names);
                     }
                     logical_plan::alter_table_subcommand_t sub;
@@ -418,17 +415,21 @@ namespace components::sql::transform {
                         return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
                     }
                     if (constr->contype == CONSTR_FOREIGN && constr->pktable) {
-                        const auto referenced = referenced_table_as_written(constr->pktable);
-                        catalog_resolves_.referenced_tables.push_back(referenced);
+                        const auto referenced = rangevar_to_qualified_name(constr->pktable);
+                        catalog_resolves_.referenced_tables.push_back(logical_plan::referenced_table_t{qn, referenced});
                         std::string con_name = constr->conname ? constr->conname : "";
-                        const std::string& ref_db = referenced.database.t.empty() ? db : referenced.database.t;
+                        // An unqualified target lives in the altered table's schema.
+                        const qualified_name_t ref =
+                            referenced.schema.t.empty()
+                                ? qualified_name_t{qn.connection, qn.database, qn.schema, referenced.collection}
+                                : referenced;
                         const std::string& ref_rel = referenced.collection.t;
                         auto fk_node = logical_plan::make_node_create_constraint(
                             resource_,
-                            qualified_name_t{qn.database, qn.collection},
+                            qualified_name_t{qn.connection, qn.database, qn.schema, qn.collection},
                             core::constraint_name_t{std::move(con_name)},
                             logical_plan::constraint_kind::foreign_key,
-                            qualified_name_t{core::dbname_t{ref_db}, core::relname_t{ref_rel}});
+                            ref);
                         // Returned straight out (its own two-table registration), so not through wrap_primary.
                         fk_node->set_if_exists(node.missing_ok);
                         if (constr->fk_attrs) {
@@ -462,13 +463,17 @@ namespace components::sql::transform {
                         // off the resolved entry).
                         const auto gather = fk_node->ref_col_names().empty() ? constraint_resolve_kind::outgoing
                                                                              : constraint_resolve_kind::none;
-                        if (!ref_rel.empty() && ref_db.empty()) {
-                            // Neither name says a database: the target lives where the altered table is found.
-                            register_table_in_owner_database(db, rel, ref_rel, gather);
+                        if (!ref_rel.empty() && ref.schema.t.empty()) {
+                            // Neither name says a schema: the target lives where the altered table is found.
+                            register_catalog_resolve_table_in_owner_schema(resource_,
+                                                                           &catalog_resolves_,
+                                                                           qn,
+                                                                           ref_rel,
+                                                                           gather);
                         } else {
-                            register_table(db, rel, constraint_resolve_kind::none);
+                            register_table(qn, constraint_resolve_kind::none);
                             if (!ref_rel.empty()) {
-                                register_table(ref_db, ref_rel, gather);
+                                register_table(ref, gather);
                             }
                         }
                         return logical_plan::node_ptr{std::move(fk_node)};
@@ -493,11 +498,11 @@ namespace components::sql::transform {
                                                  resource_});
                         }
                         std::string con_name = constr->conname ? constr->conname : "";
-                        auto check_node =
-                            logical_plan::make_node_create_constraint(resource_,
-                                                                      qualified_name_t{qn.database, qn.collection},
-                                                                      core::constraint_name_t{std::move(con_name)},
-                                                                      logical_plan::constraint_kind::check);
+                        auto check_node = logical_plan::make_node_create_constraint(
+                            resource_,
+                            qualified_name_t{qn.connection, qn.database, qn.schema, qn.collection},
+                            core::constraint_name_t{std::move(con_name)},
+                            logical_plan::constraint_kind::check);
                         check_node->set_check_expression(std::move(expr));
                         check_node->set_check_expression_sql(std::move(expr_text));
                         return wrap_primary(logical_plan::node_ptr{std::move(check_node)});
@@ -512,11 +517,11 @@ namespace components::sql::transform {
                         const auto kind = (constr->contype == CONSTR_PRIMARY)
                                               ? logical_plan::constraint_kind::primary_key
                                               : logical_plan::constraint_kind::unique;
-                        auto uq_node =
-                            logical_plan::make_node_create_constraint(resource_,
-                                                                      qualified_name_t{qn.database, qn.collection},
-                                                                      core::constraint_name_t{std::move(con_name)},
-                                                                      kind);
+                        auto uq_node = logical_plan::make_node_create_constraint(
+                            resource_,
+                            qualified_name_t{qn.connection, qn.database, qn.schema, qn.collection},
+                            core::constraint_name_t{std::move(con_name)},
+                            kind);
                         if (constr->keys) {
                             std::vector<std::string> cols;
                             cols.reserve(constr->keys->lst.size());
@@ -556,7 +561,7 @@ namespace components::sql::transform {
                     sub.behavior = drop_behavior_of(cmd->behavior);
                     subs.push_back(std::move(sub));
                     // names_only so a doubled-PRIMARY-KEY catalog cannot refuse its own repair statement.
-                    register_table(db, rel, constraint_resolve_kind::names_only);
+                    register_table(qn, constraint_resolve_kind::names_only);
                     break;
                 }
                 default: {

@@ -293,10 +293,10 @@ struct oid_round_fixture : actor_zeta::actor::actor_mixin<oid_round_fixture> {
     }
 
     catalog::oid_t namespace_oid(const std::string& name) {
-        auto r = disk_invoke(&manager_disk_t::resolve_namespace, read_ctx(), name);
-        REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value().found);
-        return r.value().oid;
+        auto adapter = probe_fx();
+        auto r = test_probe::probe_namespace(adapter, read_ctx(), name);
+        REQUIRE(r.found);
+        return r.oid;
     }
 
     test_probe::probe_table_result_t table(const std::string& ns, const std::string& tname) {
@@ -455,11 +455,11 @@ TEST_CASE(
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     oid_round_fixture test(mr.get(), oid_alloc_dir("alter_add_column"));
 
-    // CREATE DATABASE answers an empty cursor, not success, so it's checked for the absence of an error.
-    REQUIRE_FALSE(test.run_sql("CREATE DATABASE oidround;")->is_error());
+    // CREATE SCHEMA answers an empty cursor, not success, so it's checked for the absence of an error.
+    REQUIRE_FALSE(test.run_sql("CREATE SCHEMA oidround;")->is_error());
     REQUIRE(test.run_sql("CREATE TABLE oidround.items(id int, val int);")->is_success());
 
-    // Installed after setup — ALTER TABLE consumes no planner OIDs, so every round from here is the one under test.
+    // Installed after setup — each ALTER TABLE ADD COLUMN is one round (the planner's), the one under test.
     oid_alloc_fault_scope_t fault;
 
     REQUIRE(test.run_sql("ALTER TABLE oidround.items ADD COLUMN extra_ok bigint;")->is_success());
@@ -494,7 +494,7 @@ TEST_CASE(
          "column stamped with an identity nothing allocated");
     REQUIRE(refused->is_error());
     REQUIRE(refused->get_error().type == core::error_code_t::io_error);
-    REQUIRE(mentions(refused->get_error(), "alter_column_add"));
+    REQUIRE(mentions(refused->get_error(), "OID allocation round"));
 
     REQUIRE(fault.rounds_seen == 2);
     REQUIRE(fault.rounds_failed == 1);

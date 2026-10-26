@@ -29,7 +29,7 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_checkpoint_and
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE b;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA b;")->is_success());
         REQUIRE(exec("CREATE TABLE b.t (id BIGINT, v BIGINT, s STRING) ;")->is_success());
         REQUIRE(exec("INSERT INTO b.t (id, v, s) VALUES (1, 10, 'a'), (2, NULL, NULL), (3, 30, 'c');")->is_success());
 
@@ -119,7 +119,7 @@ TEST_CASE("integration::cpp::test_null_persistence::nested_nulls_survive_checkpo
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE b;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA b;")->is_success());
         REQUIRE(exec("CREATE TYPE np_pair AS (a BIGINT, b BIGINT);")->is_success());
         REQUIRE(exec("CREATE TABLE b.n (id BIGINT, l BIGINT[], arr BIGINT[3], p np_pair) "
                      ";")
@@ -282,7 +282,7 @@ TEST_CASE("integration::cpp::test_null_persistence::nulls_survive_past_first_row
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE b;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA b;")->is_success());
         REQUIRE(exec("CREATE TABLE b.big (id BIGINT, v BIGINT, s STRING) ;")->is_success());
 
         for (int64_t base = 1; base <= ROWS; base += NULL_STEP) {
@@ -397,7 +397,7 @@ TEST_CASE("integration::cpp::test_null_persistence::all_null_lists_survive_two_c
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE b;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA b;")->is_success());
         REQUIRE(exec("CREATE TABLE b.e (id BIGINT, a BIGINT[], s STRING[]);")->is_success());
         REQUIRE(exec("INSERT INTO b.e (id, a, s) VALUES (1, NULL, NULL), (2, NULL, NULL);")->is_success());
         REQUIRE(exec("CHECKPOINT;")->is_success());

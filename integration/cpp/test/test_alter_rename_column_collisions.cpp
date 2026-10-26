@@ -34,7 +34,7 @@ namespace {
     }
 
     void seed(otterbrix::wrapper_dispatcher_t* dispatcher, const otterbrix::session_id_t& session) {
-        run_ok(dispatcher, session, "CREATE DATABASE db;");
+        run_ok(dispatcher, session, "CREATE SCHEMA db;");
         run_ok(dispatcher, session, "CREATE TABLE db.t (a int, b int);");
         run_ok(dispatcher, session, "INSERT INTO db.t (a, b) VALUES (1, 2);");
     }

@@ -3,6 +3,8 @@
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/results/ddl_result.hpp>
+#include <components/logical_plan/node_dynamic_cascade_delete.hpp>
+#include <components/physical_plan/operators/catalog_name_lookup.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 
 #include <string>
@@ -13,6 +15,7 @@ namespace components::operators {
     // anywhere in the closure, CASCADE deletes the catalog rows children-first and tombstones the storage of the
     // relations among them. The refusal names the seed: its classid, `target`, `relkind` of the relation (the
     // column's relation for pg_attribute) and `column`. Shared by DROP, DROP COLUMN and the host API's unregister_udf.
+    // The tables of a connection's database have no storage here, so none is tombstoned for them.
     actor_zeta::unique_future<core::error_t> drop_with_dependents(std::pmr::memory_resource* resource,
                                                                   pipeline::context_t* ctx,
                                                                   components::catalog::oid_t seed_classid,
@@ -21,6 +24,27 @@ namespace components::operators {
                                                                   const qualified_name_t& target,
                                                                   char relkind,
                                                                   const core::columnname_t& column);
+
+    // The catalog rows of the column `attoid` of `table_oid`: its pg_attribute row and its own pg_depend edges go; a
+    // column of a table otterbrix stores (`stored`) leaves a tombstone row the storage and COMMIT read. What depends
+    // on the column is the caller's (drop_with_dependents).
+    actor_zeta::unique_future<core::error_t> drop_column_rows(std::pmr::memory_resource* resource,
+                                                              pipeline::context_t* ctx,
+                                                              components::catalog::oid_t table_oid,
+                                                              components::catalog::oid_t attoid,
+                                                              bool stored);
+
+    // What a DROP of (seed_classid, seed_objid) reaches of the databases of connections, found before it runs (the
+    // RESTRICT refusal of drop_with_dependents included), in drop order: dependents first.
+    actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<logical_plan::remote_object_t>>>
+    drop_closure(std::pmr::memory_resource* resource,
+                 pipeline::context_t* ctx,
+                 components::catalog::oid_t seed_classid,
+                 components::catalog::oid_t seed_objid,
+                 components::catalog::drop_behavior_t behavior,
+                 const qualified_name_t& target,
+                 char relkind,
+                 const core::columnname_t& column);
 
     // How the pg_proc rows of a function go. with_dependents: the way any DROP takes its dependents
     // (unregister_udf). keep_dependents: the rows and the edges they own (objid) only; the edges of what depends on

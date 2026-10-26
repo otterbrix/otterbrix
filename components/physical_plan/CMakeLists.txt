@@ -3,6 +3,7 @@ project(physical_plan)
 
 set(${PROJECT_NAME}_SOURCES
         table_storage.cpp
+        connector.cpp
         operators/operator.cpp
         operators/operator_data.cpp
         operators/operator_write_data.cpp
@@ -69,6 +70,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_computed_field_register.cpp
         operators/operator_computed_field_unregister.cpp
         operators/operator_resolve_namespace.cpp
+        operators/catalog_name_lookup.cpp
         operators/operator_resolve_database.cpp
         operators/operator_resolve_table.cpp
         operators/operator_resolve_type.cpp

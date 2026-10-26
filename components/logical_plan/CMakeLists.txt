@@ -24,6 +24,7 @@ set(SOURCE_${PROJECT_NAME}
         node_create_collection.cpp
         node_create_constraint.cpp
         node_create_database.cpp
+        node_create_schema.cpp
         node_create_index.cpp
         node_create_macro.cpp
         node_create_matview.cpp

@@ -14,7 +14,6 @@
 #include <core/spinlock/spinlock.hpp>
 
 #include <components/casts/cast_entry.hpp>
-#include <components/catalog/table_id.hpp>
 #include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>

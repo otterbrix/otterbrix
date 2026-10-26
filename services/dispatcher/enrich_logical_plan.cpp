@@ -23,6 +23,7 @@
 #include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_create_macro.hpp>
+#include <components/logical_plan/node_create_schema.hpp>
 #include <components/logical_plan/node_create_sequence.hpp>
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_create_view.hpp>
@@ -399,6 +400,7 @@ namespace services::catalog_resolve {
             explicit operator bool() const noexcept { return entry != nullptr; }
             const entry_view_t* operator->() const noexcept { return this; }
             components::catalog::oid_t namespace_oid() const noexcept { return entry->namespace_oid; }
+            components::catalog::oid_t database_oid() const noexcept { return entry->database_oid; }
             components::catalog::oid_t type_oid() const noexcept { return entry->type_oid; }
             components::catalog::oid_t table_oid() const noexcept {
                 return entry->table_md.has_value() ? entry->table_md->table_oid : components::catalog::INVALID_OID;
@@ -410,64 +412,66 @@ namespace services::catalog_resolve {
             }
         };
 
+        // What a node names: its table (or schema, or database) as its target spells it, the second relation it
+        // names (DROP/CREATE INDEX: the index; a FOREIGN KEY: the referenced table) and a type.
         struct target_names_t {
-            std::string_view dbname{};
-            std::string_view relname{};
-            std::string_view secondary_relname{};
-            std::string_view namespace_dbname{};
+            qualified_name_t table{};
+            qualified_name_t secondary{};
             std::string_view type_name{};
-            std::string_view secondary_dbname{};
-            // The uid and schema slots of uid.database.schema.name, as written (see resolve_entry_t).
-            std::string_view uid{};
-            std::string_view schema{};
         };
-
-        qualified_name_t
-        written_name(std::string_view uid, std::string_view dbname, std::string_view schema, std::string_view relname) {
-            return qualified_name_t{core::uid_t{std::string{uid}},
-                                    core::dbname_t{std::string{dbname}},
-                                    core::schema_t{std::string{schema}},
-                                    core::relname_t{std::string{relname}}};
-        }
 
         target_names_t target_names_of(const components::logical_plan::node_t* node) {
             using namespace components::logical_plan;
             const auto& target = node->target();
-            target_names_t names{.dbname = target.database.t,
-                                 .relname = target.collection.t,
-                                 .uid = target.unique_identifier.t,
-                                 .schema = target.schema.t};
+            target_names_t names{.table = target};
             switch (node->type()) {
                 case node_type::drop_t: {
                     const auto* d = static_cast<const node_drop_t*>(node);
                     if (d->kind() == drop_target_kind::type) {
-                        names.type_name = names.relname;
-                        names.relname = {};
-                    } else {
-                        names.secondary_relname = d->index_name().t;
+                        names.type_name = target.collection.t;
+                        names.table.collection = core::relname_t{};
+                    } else if (!d->index_name().t.empty()) {
+                        names.secondary = qualified_name_t{target.connection,
+                                                           target.database,
+                                                           target.schema,
+                                                           core::relname_t{d->index_name().t}};
+                    }
+                    return names;
+                }
+                case node_type::create_type_t:
+                    names.type_name = static_cast<const node_create_type_t*>(node)->type().type_name();
+                    return names;
+                case node_type::create_view_t: {
+                    // CREATE OR REPLACE finds the view it replaces in the schema it creates in.
+                    const auto* view = static_cast<const node_create_view_t*>(node);
+                    if (view->replace()) {
+                        names.secondary = qualified_name_t{target.connection,
+                                                           target.database,
+                                                           target.schema,
+                                                           core::relname_t{view->viewname().t}};
                     }
                     return names;
                 }
                 case node_type::create_index_t:
-                    names.secondary_relname = static_cast<const node_create_index_t*>(node)->indexname().t;
+                    names.secondary = qualified_name_t{
+                        target.connection,
+                        target.database,
+                        target.schema,
+                        core::relname_t{static_cast<const node_create_index_t*>(node)->indexname().t}};
                     return names;
-                case node_type::create_constraint_t: {
-                    const auto& ref = static_cast<const node_create_constraint_t*>(node)->ref();
-                    names.secondary_relname = ref.collection.t;
-                    names.secondary_dbname = ref.database.t;
+                case node_type::create_constraint_t:
+                    names.secondary = static_cast<const node_create_constraint_t*>(node)->ref();
                     return names;
-                }
                 case node_type::aggregate_t:
                 case node_type::match_t:
                 case node_type::insert_t:
                 case node_type::update_t:
                 case node_type::delete_t:
                 case node_type::create_database_t:
+                case node_type::create_schema_t:
                 case node_type::create_collection_t:
                 case node_type::create_sequence_t:
-                case node_type::create_view_t:
                 case node_type::create_macro_t:
-                case node_type::create_type_t:
                 case node_type::alter_table_t:
                 case node_type::refresh_matview_t:
                     return names;
@@ -565,16 +569,13 @@ namespace services::catalog_resolve {
         for_each_node(root, [&resolves](node_t* n) {
             const auto names = target_names_of(n);
             {
-                const entry_view_t rn{
-                    resolves.namespace_entry(names.namespace_dbname.empty() ? names.dbname : names.namespace_dbname)};
-                const entry_view_t rt{
-                    resolves.table_entry(written_name(names.uid, names.dbname, names.schema, names.relname))};
-                const entry_view_t rt_index{resolves.table_entry(
-                    written_name({},
-                                 names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname,
-                                 {},
-                                 names.secondary_relname))};
-                const entry_view_t ry{resolves.type_entry(names.dbname, names.type_name)};
+                const entry_view_t rn{resolves.namespace_entry(names.table)};
+                const entry_view_t rt{resolves.table_entry(names.table)};
+                const entry_view_t rt_index{resolves.table_entry(names.secondary)};
+                const entry_view_t ry{
+                    resolves.type_entry(qualified_name_t{names.table.database,
+                                                         names.table.schema,
+                                                         core::relname_t{std::string{names.type_name}}})};
                 // Pasted whole, except relkind='v': a view's oid would make create_plan_match_ scan the empty heap.
                 const bool targets_a_view = rt && rt.resolved_metadata().has_value() &&
                                             rt.resolved_metadata()->relkind == components::catalog::relkind::view;
@@ -592,6 +593,13 @@ namespace services::catalog_resolve {
                             auto* d = static_cast<node_drop_t*>(n);
                             switch (d->kind()) {
                                 case drop_target_kind::database: {
+                                    if (const auto* database = resolves.database_entry(names.table.connection.t,
+                                                                                       names.table.database.t)) {
+                                        d->set_database_oid(database->database_oid);
+                                    }
+                                    break;
+                                }
+                                case drop_target_kind::schema: {
                                     if (rn && rn->namespace_oid() != components::catalog::INVALID_OID) {
                                         d->set_namespace_oid(rn->namespace_oid());
                                     }
@@ -638,6 +646,12 @@ namespace services::catalog_resolve {
                                     }
                                     break;
                                 }
+                            }
+                            break;
+                        }
+                        case node_type::create_schema_t: {
+                            if (rn) {
+                                static_cast<node_create_schema_t*>(n)->set_database_oid(rn->database_oid());
                             }
                             break;
                         }
@@ -719,20 +733,20 @@ namespace services::catalog_resolve {
         }
         for_each_node(root, [resource, resolves](const node_t* n) {
             const auto names = target_names_of(n);
-            const auto namespace_dbname = names.namespace_dbname.empty() ? names.dbname : names.namespace_dbname;
-            if (!namespace_dbname.empty()) {
-                resolve_entry_t entry;
-                entry.dbname = namespace_dbname;
-                resolves->ensure(resource, resolve_kind::namespace_).add(std::move(entry));
+            components::sql::transform::register_catalog_resolve_namespace(resource, resolves, names.table);
+            if (n->type() == node_type::create_database_t || n->type() == node_type::drop_t) {
+                components::sql::transform::register_catalog_resolve_database(resource,
+                                                                              resolves,
+                                                                              names.table.connection.t,
+                                                                              names.table.database.t);
             }
-            const auto secondary_dbname = names.secondary_dbname.empty() ? names.dbname : names.secondary_dbname;
             std::size_t primary_index = resolve_entry_t::no_target;
-            if (!names.relname.empty()) {
+            if (!names.table.collection.t.empty()) {
                 resolve_entry_t entry;
-                entry.dbname = names.dbname;
-                entry.uid = names.uid;
-                entry.schema = names.schema;
-                entry.relname = names.relname;
+                entry.connection = names.table.connection.t;
+                entry.database = names.table.database.t;
+                entry.schema = names.table.schema.t;
+                entry.relname = names.table.collection.t;
                 primary_index = resolves->ensure(resource, resolve_kind::table).add(std::move(entry));
                 const auto direction = constraint_direction_of(n->type());
                 if (direction.has_value()) {
@@ -742,220 +756,64 @@ namespace services::catalog_resolve {
                     resolves->ensure(resource, resolve_kind::constraint).add(std::move(constraint_entry));
                 }
             }
-            if (!names.secondary_relname.empty()) {
+            if (!names.secondary.collection.t.empty()) {
                 resolve_entry_t entry;
-                entry.dbname = secondary_dbname;
-                entry.relname = names.secondary_relname;
+                entry.connection = names.secondary.connection.t;
+                entry.database = names.secondary.database.t;
+                entry.schema = names.secondary.schema.t;
+                entry.relname = names.secondary.collection.t;
                 // An unqualified REFERENCES target lives where the table owning the key is found.
-                if (n->type() == node_type::create_constraint_t && secondary_dbname.empty()) {
+                if (n->type() == node_type::create_constraint_t && names.secondary.schema.t.empty()) {
                     entry.namespace_of = primary_index;
                 }
                 resolves->ensure(resource, resolve_kind::table).add(std::move(entry));
             }
             if (!names.type_name.empty()) {
                 resolve_entry_t entry;
-                entry.dbname = names.dbname;
+                entry.database = names.table.database.t;
+                entry.schema = names.table.schema.t;
                 entry.type_name = names.type_name;
                 resolves->ensure(resource, resolve_kind::type).add(std::move(entry));
             }
         });
     }
 
-    namespace {
-        // `role` is what the name is in its statement, e.g. "REFERENCES target".
-        core::error_t
-        refuse_segments(std::pmr::memory_resource* resource, std::string_view role, const qualified_name_t& written) {
-            std::pmr::string msg{role, resource};
-            msg += " \"";
-            msg += written.to_string();
-            msg += "\" names a uid or schema segment, which this catalog has no place for: a relation lives in a "
-                   "database — write it as [database.]name; nothing was changed";
-            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
-        }
-    } // namespace
-
-    core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
-        for (const auto& written : resolves.referenced_tables) {
-            if (written.unique_identifier.t.empty() && written.schema.t.empty()) {
+    // PostgreSQL 18 (namespace.c, RangeVarGetRelidExtended) refuses a relation of another database before looking it
+    // up; here only a FOREIGN KEY may not cross databases.
+    core::error_t refuse_cross_database_references(std::pmr::memory_resource* resource,
+                                                   const catalog_resolves_t& resolves) {
+        // A database is named by its connection and name; a name without a database is in the place's.
+        const auto database_of = [&resolves](const qualified_name_t& written) {
+            return written.database.t.empty()
+                       ? std::pair<std::string, std::string>{resolves.place.connection, resolves.place.database}
+                       : std::pair<std::string, std::string>{written.connection.t, written.database.t};
+        };
+        for (const auto& [owner, target] : resolves.referenced_tables) {
+            if (target.schema.t.empty() && target.connection.t.empty()) {
                 continue;
             }
-            return refuse_segments(resource, "REFERENCES target", written);
+            if (database_of(target) == database_of(owner)) {
+                continue;
+            }
+            std::pmr::string msg{"cross-database references are not implemented: \"", resource};
+            msg += target.to_string();
+            msg += '"';
+            return core::error_t{core::error_code_t::unimplemented_yet, std::move(msg)};
         }
         return core::error_t::no_error();
-    }
-
-    namespace {
-        std::string_view statement_of(components::logical_plan::node_type type) noexcept {
-            using components::logical_plan::node_type;
-            switch (type) {
-                case node_type::create_collection_t:
-                    return "CREATE TABLE";
-                case node_type::create_view_t:
-                    return "CREATE VIEW";
-                case node_type::create_sequence_t:
-                    return "CREATE SEQUENCE";
-                case node_type::create_index_t:
-                    return "CREATE INDEX";
-                case node_type::create_type_t:
-                    return "CREATE TYPE";
-                case node_type::create_macro_t:
-                    return "CREATE FUNCTION";
-                case node_type::refresh_matview_t:
-                    return "REFRESH MATERIALIZED VIEW";
-                case node_type::drop_t:
-                    return "DROP";
-                case node_type::alter_table_t:
-                    return "ALTER TABLE";
-                case node_type::insert_t:
-                case node_type::insert_on_conflict_t:
-                    return "INSERT";
-                case node_type::update_t:
-                    return "UPDATE";
-                case node_type::delete_t:
-                    return "DELETE";
-                default:
-                    return "write";
-            }
-        }
-    } // namespace
-
-    core::error_t refuse_external_targets(std::pmr::memory_resource* resource,
-                                          const components::logical_plan::catalog_resolves_t& resolves) {
-        if (resolves.external_targets.empty()) {
-            return core::error_t::no_error();
-        }
-        const auto& target = resolves.external_targets.front();
-        std::string role{statement_of(target.type)};
-        role += " target";
-        if (!target.written.unique_identifier.t.empty() || !target.written.schema.t.empty()) {
-            return refuse_segments(resource, role, target.written);
-        }
-        // Nothing but a database is left, and the only statement that records one is a type:
-        // pg_type rows all sit in public, so the database it names is unreachable.
-        std::pmr::string msg{role, resource};
-        msg += " \"";
-        msg += target.written.to_string();
-        msg += "\" names a database, but a type always lives in \"public\"; nothing was changed";
-        return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
     }
 
     core::error_t refuse_storage_write_in_savepoint(std::pmr::memory_resource* resource,
                                                     const catalog_resolves_t& resolves,
                                                     const components::logical_plan::node_t& write) {
-        const auto* entry = resolves.table_entry(write.target());
-        if (entry == nullptr || !entry->storage) {
+        const auto* table = resolves.table_md(write.target());
+        if (table == nullptr || table->storage == nullptr) {
             return core::error_t::no_error();
         }
         std::pmr::string msg{"cannot write to storage table \"", resource};
         msg += write.target().to_string();
         msg += "\" while a savepoint is open: ROLLBACK TO cannot undo what its backend wrote";
         return core::error_t{core::error_code_t::unimplemented_yet, std::move(msg)};
-    }
-
-    core::error_t refuse_unbound_names(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
-        if (!resolves.tables) {
-            return core::error_t::no_error();
-        }
-        for (const auto& entry : resolves.tables->entries()) {
-            if (entry.pin.kind == components::logical_plan::view_pin_t::kind_t::storage && !entry.storage) {
-                return components::planner::view_stale_error(resource,
-                                                             entry.pin.view.t,
-                                                             "the host no longer resolves \"" + entry.relname +
-                                                                 "\" named by its body");
-            }
-            // A missing database is the first thing wrong with such a name: validate reports it. A storage table
-            // keeps its schema slot: the host resolved the whole name.
-            if (entry.storage || !entry.uid.empty() || entry.schema.empty() ||
-                resolves.namespace_oid(entry.dbname) == components::catalog::INVALID_OID) {
-                continue;
-            }
-            std::pmr::string msg{"schema \"", resource};
-            msg += entry.schema;
-            msg += "\" does not exist: a relation lives in a database — write ";
-            msg += entry.dbname;
-            msg += '.';
-            msg += entry.schema;
-            msg += '.';
-            msg += entry.relname;
-            msg += " as [database.]name";
-            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
-        }
-        return core::error_t::no_error();
-    }
-
-    bool has_unresolved_entries(const catalog_resolves_t& resolves) {
-        using namespace components::logical_plan;
-        if (resolves.tables) {
-            for (const auto& entry : resolves.tables->entries()) {
-                if (!entry.table_md.has_value()) {
-                    return true;
-                }
-            }
-        }
-        if (resolves.namespaces) {
-            for (const auto& entry : resolves.namespaces->entries()) {
-                if (entry.namespace_oid == components::catalog::INVALID_OID) {
-                    return true;
-                }
-            }
-        }
-        if (resolves.database) {
-            for (const auto& entry : resolves.database->entries()) {
-                if (entry.database_oid == components::catalog::INVALID_OID) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    std::pmr::vector<qualified_name_t> unresolved_tables(std::pmr::memory_resource* resource,
-                                                         const catalog_resolves_t& resolves) {
-        std::pmr::vector<qualified_name_t> names{resource};
-        if (!resolves.tables) {
-            return names;
-        }
-        for (const auto& entry : resolves.tables->entries()) {
-            if (!entry.table_md.has_value()) {
-                names.emplace_back(core::uid_t{entry.uid},
-                                   core::dbname_t{entry.dbname},
-                                   core::schema_t{entry.schema},
-                                   core::relname_t{entry.relname});
-            }
-        }
-        return names;
-    }
-
-    void bind_storages(catalog_resolves_t& resolves, std::span<components::planner::table_storage_answer_t> answers) {
-        if (!resolves.tables) {
-            return;
-        }
-        std::size_t next = 0;
-        for (auto& entry : resolves.tables->entries()) {
-            if (entry.table_md.has_value()) {
-                continue;
-            }
-            assert(next < answers.size());
-            auto& answer = answers[next++];
-            if (!answer.storage) {
-                continue;
-            }
-            components::logical_plan::resolved_table_metadata_t table;
-            table.relkind = components::catalog::relkind::foreign_table;
-            table.name = entry.relname;
-            table.columns.reserve(answer.columns.size());
-            for (std::size_t i = 0; i < answer.columns.size(); ++i) {
-                components::logical_plan::resolved_column_metadata_t column;
-                column.attname = answer.columns[i].alias();
-                column.type = answer.columns[i];
-                column.attnum = static_cast<std::int32_t>(i + 1);
-                column.chunk_position = static_cast<std::int32_t>(i);
-                table.columns.push_back(std::move(column));
-            }
-            table.storage = answer.storage.get();
-            entry.table_md = std::move(table);
-            entry.storage = std::move(answer.storage);
-        }
     }
 
     core::error_t refuse_stale_pins(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
@@ -973,28 +831,6 @@ namespace services::catalog_resolve {
             }
         }
         return core::error_t::no_error();
-    }
-
-    const components::logical_plan::resolved_type_metadata_t*
-    probe_type_in_path(const catalog_resolves_t& resolves,
-                       std::string_view name,
-                       std::span<const std::string> search_dbnames) {
-        for (const auto& db : search_dbnames) {
-            if (const auto* md = resolves.type_md(db, name)) {
-                return md;
-            }
-        }
-        return nullptr;
-    }
-
-    std::vector<std::string> build_type_search_path_str(std::string_view target_dbname) {
-        std::vector<std::string> path;
-        if (!target_dbname.empty() && target_dbname != "public" && target_dbname != "pg_catalog") {
-            path.emplace_back(target_dbname);
-        }
-        path.emplace_back("public");
-        path.emplace_back("pg_catalog");
-        return path;
     }
 
 } // namespace services::catalog_resolve

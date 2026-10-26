@@ -90,7 +90,7 @@ BIG_SAMPLE = [0, 1, 2046, 2047, 2048, 2049, 4999]
 
 
 def _setup(execute):
-    execute("CREATE DATABASE d;")
+    execute("CREATE SCHEMA d;")
     for i, (_, sql_type, values) in enumerate(TABLE_CASES):
         execute(f"CREATE TABLE d.t{i} (id INTEGER, v {sql_type});")
         execute(f"INSERT INTO d.t{i} (id, v) VALUES {values};")
@@ -311,7 +311,7 @@ def test_cursor_entry_points_on_unnamed_columns(client):
 def test_a_uuid_column_cannot_be_filled_from_sql(tmp_path):
     # No SQL literal yields a UUID, so UUID values are unreachable from Python today.
     c = Client(str(tmp_path / "uuid"))
-    c.execute("CREATE DATABASE d;")
+    c.execute("CREATE SCHEMA d;")
     assert c.execute("CREATE TABLE d.t (id INTEGER, v UUID);").is_success()
     inserted = c.execute("INSERT INTO d.t (id, v) VALUES (1, '123e4567-e89b-12d3-a456-426614174000');")
     assert inserted.is_error()

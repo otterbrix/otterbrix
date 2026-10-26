@@ -69,7 +69,7 @@ namespace {
     }
 
     void seed_items(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        require_ok(dispatcher, "CREATE DATABASE ocdb;");
+        require_ok(dispatcher, "CREATE SCHEMA ocdb;");
         require_ok(dispatcher, "CREATE TABLE ocdb.items (id bigint, v bigint);");
         require_ok(dispatcher, "INSERT INTO ocdb.items (id, v) VALUES (1, 10), (2, 20), (3, 30);");
         require_ok(dispatcher, "ALTER TABLE ocdb.items ADD CONSTRAINT pk_items_id PRIMARY KEY (id);");
@@ -372,7 +372,7 @@ TEST_CASE("integration::cpp::insert_on_conflict") {
         test_clear_directory(config);
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        require_ok(dispatcher, "CREATE DATABASE ocdb;");
+        require_ok(dispatcher, "CREATE SCHEMA ocdb;");
         require_ok(dispatcher, "CREATE TABLE ocdb.items (id bigint, v bigint, w bigint);");
         require_ok(dispatcher, "INSERT INTO ocdb.items (id, v, w) VALUES (1, 10, 100), (2, 20, NULL);");
         require_ok(dispatcher, "ALTER TABLE ocdb.items ADD CONSTRAINT pk_items_id PRIMARY KEY (id);");
@@ -453,7 +453,7 @@ TEST_CASE("integration::cpp::insert_on_conflict") {
         config.execution.dml_flush_row_threshold = 1000;
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        require_ok(dispatcher, "CREATE DATABASE ocdb;");
+        require_ok(dispatcher, "CREATE SCHEMA ocdb;");
         require_ok(dispatcher, "CREATE TABLE ocdb.items (id bigint, v bigint);");
         require_ok(dispatcher, "ALTER TABLE ocdb.items ADD CONSTRAINT pk_items_id PRIMARY KEY (id);");
 

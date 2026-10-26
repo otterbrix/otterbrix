@@ -15,7 +15,6 @@
 #include <atomic>
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/system_table_schemas.hpp>
-#include <components/catalog/table_id.hpp>
 #include <components/catalog/type_display.hpp>
 #include <components/compute/function.hpp>
 #include <components/compute/kernel_signature.hpp>
@@ -387,10 +386,13 @@ namespace services::dispatcher {
                     }
                     return result;
                 } else {
-                    std::pmr::string msg{"collection does not exist: ", resource};
-                    msg.append(node->target().database.t.begin(), node->target().database.t.end());
-                    msg += '.';
-                    msg.append(node->target().collection.t.begin(), node->target().collection.t.end());
+                    if (auto level = check_read_levels(resource, context.resolves, node->target());
+                        level.contains_error()) {
+                        return level;
+                    }
+                    std::pmr::string msg{"relation \"", resource};
+                    msg.append(node->target().to_string());
+                    msg.append("\" does not exist");
                     return core::error_t(core::error_code_t::table_not_exists, std::move(msg));
                 }
             } else {
@@ -1339,29 +1341,112 @@ namespace services::dispatcher {
 
     } // namespace impl
 
+    core::error_t check_database_exists(std::pmr::memory_resource* resource,
+                                        const catalog_resolves_t* resolves,
+                                        const qualified_name_t& name) {
+        if (resolves &&
+            resolves->database_oid(name.connection.t, name.database.t) != components::catalog::INVALID_OID) {
+            return core::error_t::no_error();
+        }
+        std::pmr::string msg{"database \"", resource};
+        msg.append(qualified_name_t{name.connection, name.database, {}, {}}.to_string());
+        msg.append("\" does not exist");
+        return core::error_t(core::error_code_t::database_not_exists, std::move(msg));
+    }
+
+    namespace {
+        // The missing level of `name` above its relation (`entry` is what the resolve found of it), spelled as the
+        // place completes the name.
+        core::error_t missing_level(std::pmr::memory_resource* resource,
+                                    const catalog_resolves_t* resolves,
+                                    const qualified_name_t& name,
+                                    const components::logical_plan::resolve_entry_t* entry);
+    } // namespace
+
     core::error_t check_namespace_exists(std::pmr::memory_resource* resource,
                                          const catalog_resolves_t* resolves,
-                                         const components::catalog::table_id& id) {
-        if (id.database().empty()) {
-            return core::error_t(core::error_code_t::database_not_exists,
-                                 std::pmr::string{"database does not exist", resource});
+                                         const qualified_name_t& name) {
+        const auto* entry = resolves ? resolves->namespace_entry(name) : nullptr;
+        if (entry && entry->namespace_oid != components::catalog::INVALID_OID) {
+            return core::error_t::no_error();
         }
-        if (!resolves || resolves->namespace_oid(id.database()) == components::catalog::INVALID_OID) {
-            return core::error_t(core::error_code_t::database_not_exists,
-                                 std::pmr::string{"database does not exist", resource});
-        }
-        return core::error_t::no_error();
+        return missing_level(resource, resolves, name, entry);
     }
+
+    core::error_t check_relation_levels(std::pmr::memory_resource* resource,
+                                        const catalog_resolves_t* resolves,
+                                        const qualified_name_t& name) {
+        // A bare name looks in pg_catalog and then in the place's schema: no level of its own to check.
+        if (resolves == nullptr || name.schema.t.empty()) {
+            return core::error_t::no_error();
+        }
+        const auto* entry = resolves->table_entry(name);
+        if (entry == nullptr || entry->table_md.has_value() ||
+            (entry->database_oid != components::catalog::INVALID_OID &&
+             entry->namespace_oid != components::catalog::INVALID_OID)) {
+            return core::error_t::no_error();
+        }
+        return missing_level(resource, resolves, name, entry);
+    }
+
+    core::error_t check_read_levels(std::pmr::memory_resource* resource,
+                                    const catalog_resolves_t* resolves,
+                                    const qualified_name_t& name) {
+        if (resolves == nullptr || name.connection.t.empty()) {
+            return core::error_t::no_error();
+        }
+        const auto* entry = resolves->table_entry(name);
+        if (entry == nullptr || entry->table_md.has_value() ||
+            entry->database_oid != components::catalog::INVALID_OID) {
+            return core::error_t::no_error();
+        }
+        return missing_level(resource, resolves, name, entry);
+    }
+
+    namespace {
+        core::error_t missing_level(std::pmr::memory_resource* resource,
+                                    const catalog_resolves_t* resolves,
+                                    const qualified_name_t& name,
+                                    const components::logical_plan::resolve_entry_t* entry) {
+            static const components::catalog::place_t no_place{};
+            const auto& place = resolves ? resolves->place : no_place;
+            const auto completed =
+                components::catalog::complete_name(place, name.connection.t, name.database.t, name.schema.t);
+            const auto missing =
+                [resource](core::error_code_t code, std::string_view level, const std::string& written) {
+                    std::pmr::string msg{level, resource};
+                    msg.append(" \"");
+                    msg.append(written);
+                    msg.append("\" does not exist");
+                    return core::error_t(code, std::move(msg));
+                };
+            if (!entry || entry->database_oid == components::catalog::INVALID_OID) {
+                return missing(core::error_code_t::database_not_exists,
+                               "database",
+                               qualified_name_t{core::connection_name_t{completed.connection},
+                                                core::dbname_t{completed.database},
+                                                {},
+                                                {}}
+                                   .to_string());
+            }
+            return missing(core::error_code_t::schema_not_exists, "schema", completed.schema);
+        }
+    } // namespace
 
     core::error_t check_collection_exists(std::pmr::memory_resource* resource,
                                           const catalog_resolves_t* resolves,
-                                          const components::catalog::table_id& id) {
-        if (auto err = check_namespace_exists(resource, resolves, id); err.contains_error()) {
-            return err;
+                                          const qualified_name_t& name) {
+        // A bare name looks in pg_catalog and then in the place's schema: no schema of its own to check.
+        if (!name.schema.t.empty()) {
+            if (auto err = check_namespace_exists(resource, resolves, name); err.contains_error()) {
+                return err;
+            }
         }
-        if (!resolves->table_md(id.database(), std::string_view(id.table_name()))) {
-            return core::error_t(core::error_code_t::table_not_exists,
-                                 std::pmr::string{"collection does not exist", resource});
+        if (!resolves || !resolves->table_md(name)) {
+            std::pmr::string msg{"relation \"", resource};
+            msg.append(name.to_string());
+            msg.append("\" does not exist");
+            return core::error_t(core::error_code_t::table_not_exists, std::move(msg));
         }
         return core::error_t::no_error();
     }
@@ -1385,10 +1470,10 @@ namespace services::dispatcher {
     namespace {
         core::error_t check_dml_target_not_catalog(std::pmr::memory_resource* resource,
                                                    const components::logical_plan::node_t* node) {
-            if (!components::catalog::is_catalog_table(node->table_oid())) {
+            const auto* tbl = node->table_metadata();
+            if (tbl == nullptr || !components::catalog::in_system_schema(tbl->namespace_oid)) {
                 return core::error_t::no_error();
             }
-            const auto* tbl = node->table_metadata();
             std::pmr::string msg{"cannot modify system catalog", resource};
             if (tbl && !tbl->name.empty()) {
                 msg += " \"";
@@ -1401,22 +1486,18 @@ namespace services::dispatcher {
 
     core::error_t check_type_exists(std::pmr::memory_resource* resource,
                                     const catalog_resolves_t* resolves,
-                                    const std::string& alias,
-                                    std::span<const std::string> search_dbnames) {
-        if (components::catalog::pg_name_to_logical_type(alias) != components::types::logical_type::UNKNOWN) {
+                                    const qualified_name_t& written) {
+        const bool in_pg_catalog = written.schema.t.empty() || written.schema.t == "pg_catalog";
+        if (in_pg_catalog && components::catalog::pg_name_to_logical_type(written.collection.t) !=
+                                 components::types::logical_type::UNKNOWN) {
             return core::error_t::no_error();
         }
-        static const std::string kPublic{"public"};
-        static const std::string kPgCatalog{"pg_catalog"};
-        const std::string default_path[] = {kPublic, kPgCatalog};
-        const auto path = search_dbnames.empty() ? std::span<const std::string>(default_path) : search_dbnames;
-        for (const auto& db : path) {
-            if (resolves && resolves->type_md(std::string_view(db), std::string_view(alias))) {
-                return core::error_t::no_error();
-            }
+        if (resolves && resolves->type_md(written)) {
+            return core::error_t::no_error();
         }
-        return core::error_t(core::error_code_t::schema_error,
-                             std::pmr::string{"type: \'" + alias + "\' is not registered in catalog", resource});
+        return core::error_t(
+            core::error_code_t::schema_error,
+            std::pmr::string{"type: \'" + written.to_string() + "\' is not registered in catalog", resource});
     }
 
     core::error_t convert_column_default(std::pmr::memory_resource* resource,
@@ -1586,7 +1667,6 @@ namespace services::dispatcher {
                          const components::logical_plan::storage_parameters& parameters,
                          cte_schemas_t* cte_schemas) {
         auto* resource = context.resource;
-        const auto* resolves = context.resolves;
         const auto* cast_registry = &context.cast_registry;
         named_schema result{resource};
 
@@ -1671,7 +1751,6 @@ namespace services::dispatcher {
                     }
                 } else if (auto* agg_node = static_cast<node_aggregate_t*>(node);
                            !static_cast<const std::string&>(agg_node->target().collection).empty()) {
-                    const auto& agg_dbname_s = static_cast<const std::string&>(agg_node->target().database);
                     const auto& agg_relname_s = static_cast<const std::string&>(agg_node->target().collection);
                     const auto& visible_alias = node->result_alias().empty() ? agg_relname_s : node->result_alias();
                     const auto* tbl = node->table_metadata();
@@ -1681,19 +1760,13 @@ namespace services::dispatcher {
                             table_schema.emplace_back(catalog_column(visible_alias, *tbl, column));
                         }
                     } else {
-                        if (!agg_dbname_s.empty() &&
-                            (!resolves || resolves->namespace_oid(std::string_view(agg_dbname_s)) ==
-                                              components::catalog::INVALID_OID)) {
-                            std::pmr::string msg{"database does not exist: ", resource};
-                            msg.append(agg_dbname_s.begin(), agg_dbname_s.end());
-                            return core::error_t(core::error_code_t::database_not_exists, std::move(msg));
+                        if (auto level = check_read_levels(resource, context.resolves, agg_node->target());
+                            level.contains_error()) {
+                            return level;
                         }
-                        std::pmr::string msg{"collection does not exist: ", resource};
-                        if (!agg_dbname_s.empty()) {
-                            msg.append(agg_dbname_s.begin(), agg_dbname_s.end());
-                            msg += '.';
-                        }
-                        msg.append(agg_relname_s.begin(), agg_relname_s.end());
+                        std::pmr::string msg{"relation \"", resource};
+                        msg.append(agg_node->target().to_string());
+                        msg.append("\" does not exist");
                         return core::error_t(core::error_code_t::table_not_exists, std::move(msg));
                     }
                 }
@@ -2663,6 +2736,7 @@ namespace services::dispatcher {
                                      function_input,
                                      components::compute::create_mask(components::compute::function_type_t::vector,
                                                                       components::compute::function_type_t::expand),
+                                     function_node->scope(),
                                      {});
                 if (fn_resolved.has_error()) {
                     return fn_resolved.convert_error<named_schema>();
@@ -3246,7 +3320,8 @@ namespace services::dispatcher {
             }
             case node_type::create_index_t: {
                 auto* idx_node = static_cast<node_create_index_t*>(node);
-                if (components::catalog::is_catalog_table(idx_node->table_oid())) {
+                if (idx_node->table_metadata() != nullptr &&
+                    components::catalog::in_system_schema(idx_node->table_metadata()->namespace_oid)) {
                     return core::error_t(
                         core::error_code_t::sql_parse_error,
                         std::pmr::string{"cannot create an index on a system catalog table", resource});

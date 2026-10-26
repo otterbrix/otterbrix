@@ -70,6 +70,8 @@ namespace Duckstax.Otterbrix
         ThreadStartFailed,
         ActiveSqlTransaction,
         DependentObjectsStillExist,
+        SchemaAlreadyExists,
+        SchemaNotExists,
     }
 
     public struct ErrorMessage {

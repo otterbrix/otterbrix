@@ -1,5 +1,10 @@
 #include "executor.hpp"
 
+#include <components/catalog/alter_column_validators.hpp>
+#include <components/logical_plan/node_dynamic_cascade_delete.hpp>
+#include <components/physical_plan/operators/operator_dynamic_cascade_delete.hpp>
+#include <components/physical_plan/operators/operator_sequence.hpp>
+
 #include <algorithm>
 
 #include <array>
@@ -10,6 +15,7 @@
 #include <components/casts/default_casts.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/helpers.hpp>
+#include <components/catalog/place.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/planner/planner.hpp>
 #include <components/vector/vector_builders.hpp>
@@ -17,8 +23,8 @@
 #include <services/index/manager_index.hpp>
 
 #include <components/catalog/system_table_schemas.hpp>
-#include <components/catalog/table_id.hpp>
 #include <components/logical_plan/effective_table_oid.hpp>
+#include <components/logical_plan/for_each_plan_call.hpp>
 #include <components/logical_plan/forward.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_allocate_oids.hpp>
@@ -31,6 +37,7 @@
 #include <components/logical_plan/node_create_index.hpp>
 #include <components/logical_plan/node_create_macro.hpp>
 #include <components/logical_plan/node_create_matview.hpp>
+#include <components/logical_plan/node_create_schema.hpp>
 #include <components/logical_plan/node_create_sequence.hpp>
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_create_view.hpp>
@@ -38,6 +45,7 @@
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_extension.hpp>
+#include <components/logical_plan/node_function.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -52,6 +60,7 @@
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/planner/view_expansion.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <core/executor.hpp>
 #include <services/collection/view_definition.hpp>
 #include <services/dispatcher/dispatcher.hpp>
@@ -193,6 +202,16 @@ namespace services::collection::executor {
         }
     } // namespace
 
+    namespace {
+        // A sequence's steps, each a plan of its own; none for any other operator.
+        std::span<const components::operators::operator_ptr> steps_of(const components::operators::operator_t* op) {
+            if (op == nullptr || op->type() != components::operators::operator_type::sequence) {
+                return {};
+            }
+            return static_cast<const components::operators::operator_sequence_t*>(op)->steps();
+        }
+    } // namespace
+
     plan_t::plan_t(components::operators::operator_ptr root,
                    std::stack<components::operators::operator_ptr>&& sub_plans,
                    const components::logical_plan::storage_parameters* parameters,
@@ -220,12 +239,19 @@ namespace services::collection::executor {
         , function_registry_(resource)
         , cast_registry_(resource)
         , optimizer_rules_(primitives.optimizer_rules.begin(), primitives.optimizer_rules.end(), resource)
-        , name_resolution_(primitives.name_resolution)
         , dml_flush_row_threshold_(execution.dml_flush_row_threshold)
         , explain_renderers_(resource) {
         register_default_functions(function_registry_);
         components::casts::register_default_casts(cast_registry_);
         explain_renderers_.push_back(&render_postgres);
+        if (primitives.connector != nullptr) {
+            auto made = primitives.connector->make(resource);
+            if (made.has_error()) {
+                construction_error_ = core::error_on(resource, made.error());
+                return;
+            }
+            connector_ = std::move(made.value());
+        }
     }
 
     actor_zeta::behavior_t executor_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -404,14 +430,13 @@ namespace services::collection::executor {
         co_return co_await execute_statement_(session,
                                               std::move(plan),
                                               std::move(session_ctx),
-                                              host_names_t::resolve,
                                               std::pmr::vector<expanded_view_t>{resource()});
     }
 
     executor_t::unique_future<execute_result_t>
     executor_t::run_resolve_subplan_(components::session::session_id_t session,
                                      const services::dispatcher::txn_session_context_t& session_ctx,
-                                     const components::graph_execution_context& settings,
+                                     const services::context_storage_t& statement,
                                      components::logical_plan::catalog_resolves_t* resolves,
                                      std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes) {
         auto root = boost::intrusive_ptr<components::logical_plan::node_t>(
@@ -420,7 +445,8 @@ namespace services::collection::executor {
             root->append_child(n);
         }
         auto params = components::logical_plan::make_parameter_node(resource());
-        services::context_storage_t cstor{resource(), log_.clone(), settings};
+        services::context_storage_t cstor{resource(), log_.clone(), statement.execution_context};
+        cstor.place = statement.place;
         cstor.catalog_resolves = resolves;
         co_return co_await execute_plan(session,
                                         components::logical_plan::execution_plan_t{resource(), root, params},
@@ -428,6 +454,171 @@ namespace services::collection::executor {
                                         session_ctx.txn,
                                         session_ctx.lowest_active_start_time,
                                         std::pmr::vector<explain_plan_node>{resource()});
+    }
+
+    namespace {
+        // The DROPs of a planned statement whose closure may reach a connection's database: a type (a column of a
+        // connection's table may be of it), any schema or database (a type of it may reach one), a connection's
+        // table.
+        void
+        collect_remote_drop_seeds(components::logical_plan::node_t* node,
+                                  const components::logical_plan::catalog_resolves_t& resolves,
+                                  std::pmr::vector<components::logical_plan::node_dynamic_cascade_delete_t*>& drops,
+                                  std::pmr::vector<components::logical_plan::node_alter_column_t*>& columns) {
+            using components::logical_plan::node_type;
+            namespace wk = components::catalog::well_known_oid;
+            if (node == nullptr) {
+                return;
+            }
+            if (node->type() == node_type::dynamic_cascade_delete_t) {
+                auto* drop = static_cast<components::logical_plan::node_dynamic_cascade_delete_t*>(node);
+                bool reaches = false;
+                switch (drop->seed_classid()) {
+                    case wk::pg_type_table:
+                    case wk::pg_namespace_table:
+                    case wk::pg_database_table:
+                        reaches = true;
+                        break;
+                    case wk::pg_class_table: {
+                        const auto* table = resolves.table_md(drop->target());
+                        reaches = table != nullptr && table->is_remote();
+                        break;
+                    }
+                    default:
+                        break;
+                }
+                if (reaches) {
+                    drops.push_back(drop);
+                }
+            } else if (node->type() == node_type::alter_column_t) {
+                auto* column = static_cast<components::logical_plan::node_alter_column_t*>(node);
+                if (column->op() == components::logical_plan::alter_column_op::drop &&
+                    column->remote_table().is_remote()) {
+                    columns.push_back(column);
+                }
+            }
+            for (const auto& child : node->children()) {
+                collect_remote_drop_seeds(child.get(), resolves, drops, columns);
+            }
+        }
+    } // namespace
+
+    executor_t::unique_future<core::error_t>
+    executor_t::stamp_remote_drops_(components::session::session_id_t session,
+                                    const services::dispatcher::txn_session_context_t& session_ctx,
+                                    const services::context_storage_t& statement,
+                                    components::table::transaction_data txn,
+                                    components::logical_plan::execution_plan_t& plan) {
+        using kind_t = components::logical_plan::remote_object_t::kind_t;
+        std::pmr::vector<components::logical_plan::node_dynamic_cascade_delete_t*> drops{resource()};
+        std::pmr::vector<components::logical_plan::node_alter_column_t*> columns{resource()};
+        collect_remote_drop_seeds(plan.sub_queries.back().get(), plan.catalog_resolves, drops, columns);
+        if (drops.empty() && columns.empty()) {
+            co_return core::error_t::no_error();
+        }
+        components::logical_plan::storage_parameters local_params(resource());
+        components::pipeline::context_t pctx{session,
+                                             address(),
+                                             parent_address_,
+                                             nullptr,
+                                             local_params,
+                                             disk_address_,
+                                             index_address_,
+                                             wal_address_};
+        pctx.txn = txn;
+        pctx.place = statement.place;
+
+        std::string connection;
+        // RESTRICT of a dropped column, before the connector's DROP COLUMN.
+        for (auto* column : columns) {
+            const auto& table = column->remote_table();
+            const auto dropped =
+                std::find_if(table.columns.begin(), table.columns.end(), [column](const auto& candidate) {
+                    return candidate.attname == column->column_name().t;
+                });
+            if (dropped == table.columns.end()) {
+                continue;
+            }
+            auto closure =
+                co_await components::operators::drop_closure(resource(),
+                                                             &pctx,
+                                                             components::catalog::well_known_oid::pg_attribute_table,
+                                                             dropped->attoid,
+                                                             column->behavior(),
+                                                             column->target(),
+                                                             column->relkind(),
+                                                             column->column_name());
+            if (closure.has_error()) {
+                co_return closure.error();
+            }
+            connection = table.connection;
+        }
+
+        std::pmr::vector<std::pmr::vector<components::logical_plan::remote_object_t>> found{resource()};
+        found.reserve(drops.size());
+        bool unresolved = false;
+        for (auto* drop : drops) {
+            auto closure = co_await components::operators::drop_closure(resource(),
+                                                                        &pctx,
+                                                                        drop->seed_classid(),
+                                                                        drop->seed_objid(),
+                                                                        drop->behavior(),
+                                                                        drop->target(),
+                                                                        drop->relkind(),
+                                                                        core::columnname_t{});
+            if (closure.has_error()) {
+                co_return closure.error();
+            }
+            for (const auto& object : closure.value()) {
+                if (object.kind != kind_t::schema && plan.catalog_resolves.table_md(object.table_oid) == nullptr) {
+                    components::logical_plan::resolve_entry_t entry;
+                    entry.relation_oid = object.table_oid;
+                    plan.catalog_resolves.ensure(resource(), components::logical_plan::resolve_kind::table)
+                        .add(std::move(entry));
+                    unresolved = true;
+                }
+            }
+            found.push_back(std::move(closure.value()));
+        }
+        if (unresolved) {
+            std::pmr::vector<components::logical_plan::node_ptr> nodes{resource()};
+            nodes.push_back(plan.catalog_resolves.tables);
+            auto resolved = co_await run_resolve_subplan_(session,
+                                                          session_ctx,
+                                                          statement,
+                                                          &plan.catalog_resolves,
+                                                          std::move(nodes));
+            if (resolved.cursor->is_error()) {
+                co_return resolved.cursor->get_error();
+            }
+        }
+        for (std::size_t i = 0; i < drops.size(); ++i) {
+            for (const auto& object : found[i]) {
+                if (object.kind == kind_t::schema) {
+                    connection = object.schema.connection;
+                    continue;
+                }
+                const auto* table = plan.catalog_resolves.table_md(object.table_oid);
+                if (table == nullptr) {
+                    // Unreachable: the closure read the table's pg_class row in this statement's snapshot.
+                    std::fprintf(stderr,
+                                 "stamp_remote_drops_: table oid %u of the DROP's closure did not resolve\n",
+                                 static_cast<unsigned>(object.table_oid));
+                    assert(false && "stamp_remote_drops_: a table of the DROP's closure did not resolve");
+                    std::abort();
+                }
+                connection = table->connection;
+            }
+            drops[i]->set_remote_drops(std::move(found[i]));
+        }
+        // DDL on the backend cannot be undone by a ROLLBACK (#663).
+        if (!connection.empty() && !plan.commits_when_done) {
+            std::pmr::string msg{"connection \"", resource()};
+            msg.append(connection);
+            msg.append("\" only supports DDL in autocommit");
+            co_return core::error_t{core::error_code_t::unimplemented_yet, std::move(msg)};
+        }
+        co_return core::error_t::no_error();
     }
 
     executor_t::unique_future<core::error_t>
@@ -461,18 +652,13 @@ namespace services::collection::executor {
     executor_t::refresh_matview_(components::session::session_id_t session,
                                  const components::logical_plan::execution_plan_t& plan,
                                  const services::dispatcher::txn_session_context_t& session_ctx,
-                                 host_names_t host_names,
                                  const components::graph_execution_context& settings) {
         const auto* refresh =
             static_cast<const components::logical_plan::node_refresh_matview_t*>(plan.sub_queries.back().get());
         const auto& matview_name = refresh->target();
-        const auto* matview = plan.catalog_resolves.table_md(matview_name.database.t, matview_name.collection.t);
+        const auto* matview = plan.catalog_resolves.table_md(matview_name);
         if (matview == nullptr) {
-            std::pmr::string msg{"\"", resource()};
-            msg.append(matview_name.collection.t);
-            msg.append("\" does not exist");
-            co_return execute_result_t{
-                make_cursor(resource(), core::error_t{core::error_code_t::table_not_exists, std::move(msg)})};
+            co_return execute_result_t{make_cursor(resource(), missing_relation_(matview_name))};
         }
         if (matview->relkind != components::catalog::relkind::materialized_view) {
             co_return execute_result_t{
@@ -482,18 +668,17 @@ namespace services::collection::executor {
                                                 components::catalog::relkind::materialized_view))};
         }
         {
-            auto done = co_await execute_statement_(
-                session,
-                components::planner::refresh_matview_delete_plan(resource(), *matview, matview_name.database),
-                session_ctx,
-                host_names,
-                std::pmr::vector<expanded_view_t>{resource()});
+            auto done =
+                co_await execute_statement_(session,
+                                            components::planner::refresh_matview_delete_plan(resource(), *matview),
+                                            session_ctx,
+                                            std::pmr::vector<expanded_view_t>{resource()});
             if (done.cursor->is_error()) {
                 co_return done;
             }
         }
         if (refresh->with_data()) {
-            auto refill = components::planner::refresh_matview_plan(resource(), *matview, matview_name.database);
+            auto refill = components::planner::refresh_matview_plan(resource(), *matview);
             if (refill.has_error()) {
                 co_return execute_result_t{make_cursor(resource(), refill.error())};
             }
@@ -511,7 +696,6 @@ namespace services::collection::executor {
             auto done = co_await execute_statement_(session,
                                                     std::move(insert.plan),
                                                     session_ctx,
-                                                    host_names,
                                                     std::move(stored_body));
             if (done.cursor->is_error()) {
                 co_return done;
@@ -530,68 +714,64 @@ namespace services::collection::executor {
         co_return execute_result_t{make_cursor(resource())};
     }
 
-    executor_t::unique_future<core::error_t>
-    executor_t::resolve_external_names_(components::session::session_id_t session,
-                                        components::logical_plan::execution_plan_t& plan,
-                                        const services::dispatcher::txn_session_context_t& session_ctx) {
-        auto unresolved = services::catalog_resolve::unresolved_tables(resource(), plan.catalog_resolves);
-        if (!unresolved.empty()) {
-            auto reads = name_resolution_.need(resource(), plan.sub_queries.back(), unresolved);
-            if (reads.has_error()) {
-                co_return core::error_on(resource(), reads.error());
-            }
-            std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> read_results{resource()};
-            read_results.reserve(reads.value().size());
-            for (auto& read : reads.value()) {
-                auto read_result = co_await execute_statement_(session,
-                                                               std::move(read),
-                                                               session_ctx,
-                                                               host_names_t::local_only,
-                                                               std::pmr::vector<expanded_view_t>{resource()});
-                if (read_result.cursor->is_error()) {
-                    co_return core::error_on(resource(), read_result.cursor->get_error());
-                }
-                read_results.push_back(std::move(read_result.cursor->chunks()));
-            }
-            auto answers = name_resolution_.decide(resource(), unresolved, read_results, !plan.commits_when_done);
-            if (answers.has_error()) {
-                co_return core::error_on(resource(), answers.error());
-            }
-            if (answers.value().size() != unresolved.size()) {
-                std::pmr::string msg{"the name resolution hook answered ", resource()};
-                msg += std::to_string(answers.value().size());
-                msg += " names for ";
-                msg += std::to_string(unresolved.size());
-                msg += " unresolved ones";
-                co_return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
-            }
-            services::catalog_resolve::bind_storages(plan.catalog_resolves, answers.value());
+    core::error_t executor_t::bind_remote_storages_(components::session::session_id_t session,
+                                                    const components::logical_plan::execution_plan_t& plan,
+                                                    const services::dispatcher::txn_session_context_t& session_ctx,
+                                                    const services::context_storage_t& context,
+                                                    components::logical_plan::catalog_resolves_t& resolves) {
+        if (!resolves.tables) {
+            return core::error_t::no_error();
         }
-        co_return core::error_t::no_error();
+        const components::planner::statement_ctx_t statement{session,
+                                                             session_ctx.txn.transaction_id,
+                                                             !plan.commits_when_done};
+        std::pmr::unordered_map<components::catalog::oid_t, components::logical_plan::table_storage_t*> made{
+            resource()};
+        for (auto& entry : resolves.tables->entries()) {
+            if (!entry.table_md.has_value() || !entry.table_md->is_remote()) {
+                continue;
+            }
+            auto& md = *entry.table_md;
+            if (auto known = made.find(md.table_oid); known != made.end()) {
+                md.storage = known->second;
+                continue;
+            }
+            std::pmr::vector<components::planner::remote_column_t> columns{resource()};
+            const auto table = services::planner::remote_table_of(md, columns);
+            auto connector = services::planner::connector_for(context, table.name);
+            if (connector.has_error()) {
+                return connector.error();
+            }
+            auto storage = connector.value()->storage_for(resource(), table, statement);
+            if (storage.has_error()) {
+                return core::error_on(resource(), storage.error());
+            }
+            entry.storage = std::move(storage.value());
+            md.storage = entry.storage.get();
+            made.emplace(md.table_oid, entry.storage.get());
+        }
+        return core::error_t::no_error();
     }
 
     core::error_t executor_t::prepare_column_(const components::logical_plan::catalog_resolves_t& resolves,
-                                              std::span<const std::string> search_path,
                                               const components::graph_execution_context& settings,
                                               components::table::column_definition_t& column) {
         using components::types::logical_type;
         auto& type = column.type();
         if (type.type() == logical_type::UNKNOWN && !type.type_name().empty()) {
             const std::string alias = type.has_alias() ? type.alias() : std::string{};
-            if (const auto builtin = components::catalog::pg_name_to_logical_type(type.type_name());
-                builtin != logical_type::UNKNOWN) {
-                type = components::types::complex_logical_type{builtin};
+            const auto written = components::sql::transform::type_reference_of(type);
+            if (auto missing = services::dispatcher::check_type_exists(resource(), &resolves, written);
+                missing.contains_error()) {
+                return missing;
+            }
+            if (const auto* md = resolves.type_md(written)) {
+                type = md->type;
+                // The column depends on its type in pg_depend through it, as in PostgreSQL 18.
+                column.set_atttypid(static_cast<std::uint32_t>(md->type_oid));
             } else {
-                if (auto missing =
-                        services::dispatcher::check_type_exists(resource(), &resolves, type.type_name(), search_path);
-                    missing.contains_error()) {
-                    return missing;
-                }
-                if (const auto* md = services::catalog_resolve::probe_type_in_path(resolves,
-                                                                                   std::string_view(type.type_name()),
-                                                                                   search_path)) {
-                    type = md->type;
-                }
+                type = components::types::complex_logical_type{
+                    components::catalog::pg_name_to_logical_type(written.collection.t)};
             }
             if (!alias.empty()) {
                 type.set_alias(alias);
@@ -617,22 +797,11 @@ namespace services::collection::executor {
                 resolves.types ? resolves.types->entries().size() : std::size_t{0}};
     }
 
-    core::error_t executor_t::missing_relation_(std::string_view dbname, std::string_view relname) const {
+    core::error_t executor_t::missing_relation_(const qualified_name_t& name) const {
         std::pmr::string msg{"relation \"", resource()};
-        if (!dbname.empty()) {
-            msg.append(dbname);
-            msg.append(".");
-        }
-        msg.append(relname);
+        msg.append(name.to_string());
         msg.append("\" does not exist");
         return core::error_t{core::error_code_t::table_not_exists, std::move(msg)};
-    }
-
-    core::error_t executor_t::missing_database_(std::string_view dbname) const {
-        std::pmr::string msg{"database \"", resource()};
-        msg.append(dbname);
-        msg.append("\" does not exist");
-        return core::error_t{core::error_code_t::database_not_exists, std::move(msg)};
     }
 
     namespace {
@@ -655,6 +824,8 @@ namespace services::collection::executor {
             switch (root.type()) {
                 case node_type::create_database_t:
                     return static_cast<const components::logical_plan::node_create_database_t&>(root).if_not_exists();
+                case node_type::create_schema_t:
+                    return static_cast<const components::logical_plan::node_create_schema_t&>(root).if_not_exists();
                 case node_type::create_collection_t:
                     return static_cast<const components::logical_plan::node_create_collection_t&>(root).if_not_exists();
                 default:
@@ -664,32 +835,47 @@ namespace services::collection::executor {
     } // namespace
 
     core::error_t executor_t::missing_target_(const components::logical_plan::execution_plan_t& plan,
-                                              const components::catalog::table_id& id) const {
+                                              const qualified_name_t& target) const {
         using components::logical_plan::drop_target_kind;
         using components::logical_plan::node_type;
         const auto& root = *plan.sub_queries.back();
         const auto& resolves = plan.catalog_resolves;
-        const auto relation_missing = [&](std::string_view relname) {
-            return resolves.table_md(id.database(), relname) == nullptr;
-        };
+        const auto relation_missing = [&](const qualified_name_t& name) { return resolves.table_md(name) == nullptr; };
         switch (root.type()) {
+            case node_type::insert_t:
+            case node_type::insert_on_conflict_t:
+            case node_type::update_t:
+            case node_type::delete_t:
+                return services::dispatcher::check_relation_levels(resource(), &resolves, target);
+            case node_type::create_collection_t:
+            case node_type::create_sequence_t:
+            case node_type::create_view_t:
+            case node_type::create_macro_t:
+            case node_type::create_type_t:
+                // IF NOT EXISTS does not cover it: what is missing is the schema, not the object.
+                return target.schema.t.empty()
+                           ? core::error_t::no_error()
+                           : services::dispatcher::check_namespace_exists(resource(), &resolves, target);
             case node_type::alter_table_t: {
-                if (!relation_missing(id.table_name())) {
+                if (!relation_missing(target)) {
                     return core::error_t::no_error();
                 }
-                const auto& target = root.target();
-                std::pmr::string msg{"ALTER TABLE: relation \"", resource()};
-                if (!target.database.t.empty()) {
-                    msg.append(target.database.t);
-                    msg.push_back('.');
+                if (auto level = services::dispatcher::check_relation_levels(resource(), &resolves, target);
+                    level.contains_error()) {
+                    return level;
                 }
-                msg.append(target.collection.t);
+                std::pmr::string msg{"ALTER TABLE: relation \"", resource()};
+                msg.append(target.to_string());
                 msg.append("\" does not exist");
                 return core::error_t{core::error_code_t::table_not_exists, std::move(msg)};
             }
-            case node_type::create_constraint_t:
-                return relation_missing(id.table_name()) ? missing_relation_(id.database(), id.table_name())
-                                                         : core::error_t::no_error();
+            case node_type::create_constraint_t: {
+                if (!relation_missing(target)) {
+                    return core::error_t::no_error();
+                }
+                auto level = services::dispatcher::check_relation_levels(resource(), &resolves, target);
+                return level.contains_error() ? std::move(level) : missing_relation_(target);
+            }
             case node_type::drop_t:
                 break;
             default:
@@ -698,44 +884,52 @@ namespace services::collection::executor {
         const auto& drop = static_cast<const components::logical_plan::node_drop_t&>(root);
         switch (drop.kind()) {
             case drop_target_kind::database:
-                return services::dispatcher::check_namespace_exists(resource(), &resolves, id).contains_error()
-                           ? missing_database_(id.database())
-                           : core::error_t::no_error();
+                return services::dispatcher::check_database_exists(resource(), &resolves, target);
+            case drop_target_kind::schema:
+                return services::dispatcher::check_namespace_exists(resource(), &resolves, target);
             case drop_target_kind::collection: {
-                auto err = services::dispatcher::check_collection_exists(resource(), &resolves, id);
+                auto err = services::dispatcher::check_collection_exists(resource(), &resolves, target);
                 if (!err.contains_error()) {
                     return err;
                 }
-                return err.type == core::error_code_t::database_not_exists
-                           ? std::move(err)
-                           : missing_relation_(id.database(), id.table_name());
+                return err.type == core::error_code_t::table_not_exists ? missing_relation_(target) : std::move(err);
             }
             case drop_target_kind::type: {
-                const std::string& type_name = drop.target().collection.t;
-                if (!services::dispatcher::check_type_exists(resource(), &resolves, type_name, {}).contains_error()) {
+                if (!services::dispatcher::check_type_exists(resource(), &resolves, drop.target()).contains_error()) {
                     return core::error_t::no_error();
                 }
                 std::pmr::string msg{"type \"", resource()};
-                msg.append(type_name);
+                msg.append(drop.target().to_string());
                 msg.append("\" does not exist");
                 return core::error_t{core::error_code_t::type_not_exists, std::move(msg)};
             }
             case drop_target_kind::sequence:
             case drop_target_kind::macro:
             case drop_target_kind::view:
-            case drop_target_kind::materialized_view:
-                return relation_missing(id.table_name()) ? missing_relation_(id.database(), id.table_name())
-                                                         : core::error_t::no_error();
+            case drop_target_kind::materialized_view: {
+                // A relation of every kind: the missing database or schema first, as for a table.
+                auto err = services::dispatcher::check_collection_exists(resource(), &resolves, target);
+                if (!err.contains_error()) {
+                    return err;
+                }
+                return err.type == core::error_code_t::table_not_exists ? missing_relation_(target) : std::move(err);
+            }
             case drop_target_kind::index: {
                 // The index's own pg_class row, as resolve found it by name.
                 const auto& index_name = drop.index_name().t;
-                if (!relation_missing(index_name)) {
+                const qualified_name_t index{target.connection,
+                                             target.database,
+                                             target.schema,
+                                             core::relname_t{index_name}};
+                if (!relation_missing(index)) {
                     return core::error_t::no_error();
                 }
+                if (auto level = services::dispatcher::check_relation_levels(resource(), &resolves, index);
+                    level.contains_error()) {
+                    return level;
+                }
                 std::pmr::string msg{"DROP INDEX: index ", resource()};
-                msg.append(id.database());
-                msg.append(".");
-                msg.append(id.table_name());
+                msg.append(target.to_string());
                 msg.append(".");
                 msg.append(index_name);
                 msg.append(" does not exist");
@@ -746,19 +940,29 @@ namespace services::collection::executor {
     }
 
     core::error_t executor_t::existing_target_(const components::logical_plan::execution_plan_t& plan,
-                                               const components::catalog::table_id& id) const {
+                                               const qualified_name_t& target) const {
         using components::logical_plan::node_type;
+        const auto& resolves = plan.catalog_resolves;
+        const auto already_exists = [this](core::error_code_t code, std::string_view kind, const std::string& name) {
+            std::pmr::string msg{kind, resource()};
+            msg.append(" \"");
+            msg.append(name);
+            msg.append("\" already exists");
+            return core::error_t{code, std::move(msg)};
+        };
         switch (plan.sub_queries.back()->type()) {
             case node_type::create_database_t:
-                if (services::dispatcher::check_namespace_exists(resource(), &plan.catalog_resolves, id)
-                        .contains_error()) {
+                if (services::dispatcher::check_database_exists(resource(), &resolves, target).contains_error()) {
                     return core::error_t::no_error();
                 }
-                return core::error_t{core::error_code_t::database_already_exists,
-                                     std::pmr::string{"database already exists", resource()}};
+                return already_exists(core::error_code_t::database_already_exists, "database", target.to_string());
+            case node_type::create_schema_t:
+                if (services::dispatcher::check_namespace_exists(resource(), &resolves, target).contains_error()) {
+                    return core::error_t::no_error();
+                }
+                return already_exists(core::error_code_t::schema_already_exists, "schema", target.schema.t);
             case node_type::create_collection_t:
-                if (services::dispatcher::check_collection_exists(resource(), &plan.catalog_resolves, id)
-                        .contains_error()) {
+                if (services::dispatcher::check_collection_exists(resource(), &resolves, target).contains_error()) {
                     return core::error_t::no_error();
                 }
                 return core::error_t{core::error_code_t::table_already_exists,
@@ -768,30 +972,129 @@ namespace services::collection::executor {
         }
     }
 
-    // PostgreSQL 18's order: a name the catalog has no place for is refused before IF [NOT] EXISTS (namespace.c,
-    // cross-database), existence before the target's columns and subcommands, except that a CREATE TABLE without
-    // IF NOT EXISTS reports a column named twice before the table that already exists.
+    core::error_t executor_t::check_connection_target_(const components::logical_plan::execution_plan_t& plan,
+                                                       const qualified_name_t& target) const {
+        using components::logical_plan::node_type;
+        const auto* root = plan.sub_queries.back().get();
+        const auto type = root->type();
+        // A database of a connection is created and dropped by a host's plan: created empty, dropped with the
+        // connector's DROP of every table and schema in it.
+        if (type == node_type::create_database_t || type == node_type::drop_t) {
+            const bool database = type == node_type::create_database_t ||
+                                  static_cast<const components::logical_plan::node_drop_t*>(root)->kind() ==
+                                      components::logical_plan::drop_target_kind::database;
+            if (database) {
+                return core::error_t::no_error();
+            }
+        }
+        const auto refuse = [this](core::error_code_t code, std::string_view what, const std::string& connection) {
+            std::pmr::string msg{what, resource()};
+            msg.append(" \"");
+            msg.append(connection);
+            msg.append("\"");
+            return core::error_t{code, std::move(msg)};
+        };
+        // The connection the statement's target is of: written or completed with the place for a CREATE, the
+        // resolved table's for what a statement finds.
+        std::string connection = target.connection.t;
+        if (const auto* table = plan.catalog_resolves.table_md(target); table != nullptr) {
+            connection = table->connection;
+        }
+        if (connection.empty()) {
+            return core::error_t::no_error();
+        }
+        switch (type) {
+            case node_type::create_view_t:
+            case node_type::create_sequence_t:
+            case node_type::create_macro_t:
+            case node_type::create_type_t:
+                return refuse(core::error_code_t::invalid_parameter,
+                              "only tables can be created in a schema of connection",
+                              connection);
+            case node_type::create_index_t:
+            case node_type::create_constraint_t:
+                return refuse(core::error_code_t::unimplemented_yet,
+                              "indexes and constraints are not kept for a table of connection",
+                              connection);
+            case node_type::alter_table_t: {
+                const auto& alter = static_cast<const components::logical_plan::node_alter_table_t&>(*root);
+                for (const auto& sub : alter.subcommands()) {
+                    if (sub.kind != components::logical_plan::alter_table_kind::add_column &&
+                        sub.kind != components::logical_plan::alter_table_kind::drop_column) {
+                        return refuse(core::error_code_t::unimplemented_yet,
+                                      "ALTER TABLE of a table of a connection takes ADD COLUMN and DROP COLUMN only; "
+                                      "connection",
+                                      connection);
+                    }
+                    if (sub.kind == components::logical_plan::alter_table_kind::add_column &&
+                        sub.column.has_default_value()) {
+                        return refuse(core::error_code_t::unimplemented_yet,
+                                      "keys, checks and defaults are not kept for a table of connection",
+                                      connection);
+                    }
+                }
+                break;
+            }
+            case node_type::create_collection_t: {
+                // The backend keeps its own keys, checks and defaults; otterbrix keeps NOT NULL only.
+                const auto& create = static_cast<const components::logical_plan::node_create_collection_t&>(*root);
+                const bool constrained =
+                    !create.constraints().empty() ||
+                    std::any_of(
+                        create.children().begin(),
+                        create.children().end(),
+                        [](const auto& child) { return child && child->type() == node_type::create_constraint_t; }) ||
+                    std::any_of(create.column_definitions().begin(),
+                                create.column_definitions().end(),
+                                [](const auto& column) { return column.has_default_value(); });
+                if (constrained) {
+                    return refuse(core::error_code_t::unimplemented_yet,
+                                  "keys, checks and defaults are not kept for a table of connection",
+                                  connection);
+                }
+                break;
+            }
+            case node_type::create_schema_t:
+            case node_type::drop_t:
+                break;
+            default:
+                return core::error_t::no_error();
+        }
+        // DDL on the backend cannot be undone by a ROLLBACK (#663).
+        if (!plan.commits_when_done) {
+            std::pmr::string msg{"connection \"", resource()};
+            msg.append(connection);
+            msg.append("\" only supports DDL in autocommit");
+            return core::error_t{core::error_code_t::unimplemented_yet, std::move(msg)};
+        }
+        return core::error_t::no_error();
+    }
+
+    // PostgreSQL 18's order: existence before the target's columns and subcommands, except that a CREATE TABLE
+    // without IF NOT EXISTS reports a column named twice before the table that already exists.
     core::result_wrapper_t<executor_t::target_outcome_t>
-    executor_t::decide_target_(components::logical_plan::execution_plan_t& plan,
-                               const components::catalog::table_id& id) {
+    executor_t::decide_target_(components::logical_plan::execution_plan_t& plan, const qualified_name_t& target) {
         using components::logical_plan::node_type;
         auto* root = plan.sub_queries.back().get();
         if (root == nullptr) {
             return target_outcome_t::act;
         }
-        if (auto external = services::catalog_resolve::refuse_external_targets(resource(), plan.catalog_resolves);
-            external.contains_error()) {
-            return external;
-        }
-        if (auto missing = missing_target_(plan, id); missing.contains_error()) {
+        // A missing level of the name comes first: before IF [NOT] EXISTS and before what a connection's database
+        // refuses.
+        if (auto missing = missing_target_(plan, target); missing.contains_error()) {
             if (!if_exists_of(*root)) {
                 return missing;
             }
             return target_outcome_t::nothing_to_do;
         }
-        auto existing = existing_target_(plan, id);
+        // IF NOT EXISTS of an object that is there does nothing, as for a local table, before what a connection's
+        // database refuses.
+        auto existing = existing_target_(plan, target);
         if (existing.contains_error() && if_not_exists_of(*root)) {
             return target_outcome_t::nothing_to_do;
+        }
+        if (auto refused = check_connection_target_(plan, target); refused.contains_error()) {
+            return refused;
         }
         if (root->type() == node_type::create_collection_t) {
             auto* create = static_cast<components::logical_plan::node_create_collection_t*>(root);
@@ -807,12 +1110,12 @@ namespace services::collection::executor {
             return target_outcome_t::act;
         }
         auto* alter = static_cast<components::logical_plan::node_alter_table_t*>(root);
-        if (components::catalog::is_catalog_table(alter->table_oid())) {
+        const auto* table = plan.catalog_resolves.table_md(target);
+        if (components::catalog::in_system_schema(table->namespace_oid)) {
             // System catalog shape is fixed at bootstrap; altering it desyncs positional column readers.
             return core::error_t{core::error_code_t::sql_parse_error,
                                  std::pmr::string{"cannot alter a system catalog table", resource()}};
         }
-        const auto* table = plan.catalog_resolves.table_md(id.database(), std::string_view(id.table_name()));
         auto checked = check_alter_subcommands_(plan.catalog_resolves, *table, alter->subcommands());
         if (checked.has_error()) {
             return checked.error();
@@ -822,21 +1125,34 @@ namespace services::collection::executor {
     }
 
     core::error_t executor_t::check_drop_target_(const components::logical_plan::execution_plan_t& plan,
-                                                 const components::catalog::table_id& id) const {
+                                                 const qualified_name_t& target) const {
         using components::logical_plan::drop_target_kind;
         using components::logical_plan::node_drop_t;
         const auto* drop_node = static_cast<const node_drop_t*>(plan.sub_queries.back().get());
+        auto refuse_built_in = [this](std::string_view kind, const std::string& name) {
+            std::pmr::string msg{"cannot drop the built-in ", resource()};
+            msg.append(kind);
+            msg.append(" ");
+            msg.append(name);
+            msg.append(": the database system requires it");
+            return core::error_t{core::error_code_t::sql_parse_error, std::move(msg)};
+        };
         switch (drop_node->kind()) {
             case drop_target_kind::database:
-                if (components::catalog::is_catalog_table(drop_node->namespace_oid())) {
-                    return core::error_t{core::error_code_t::sql_parse_error,
-                                         std::pmr::string{"cannot drop a built-in namespace: the database "
-                                                          "system requires it",
-                                                          resource()}};
+                if (drop_node->database_oid() == components::catalog::well_known_oid::main_database) {
+                    return refuse_built_in("database", target.database.t);
+                }
+                return core::error_t::no_error();
+            case drop_target_kind::schema:
+                // Every database's information_schema is the system's.
+                if (components::catalog::is_catalog_table(drop_node->namespace_oid()) ||
+                    target.schema.t == "information_schema") {
+                    return refuse_built_in("schema", target.schema.t);
                 }
                 return core::error_t::no_error();
             case drop_target_kind::collection:
-                if (components::catalog::is_catalog_table(drop_node->table_oid())) {
+                if (const auto* table = plan.catalog_resolves.table_md(target);
+                    table != nullptr && components::catalog::in_system_schema(table->namespace_oid)) {
                     // Same rule as the DML arms — DDL never touches a system catalog (orphans storage).
                     return core::error_t{core::error_code_t::sql_parse_error,
                                          std::pmr::string{"cannot drop a system catalog table", resource()}};
@@ -856,13 +1172,13 @@ namespace services::collection::executor {
             }
             case drop_target_kind::view:
             case drop_target_kind::materialized_view: {
-                const auto* md = plan.catalog_resolves.table_md(id.database(), std::string_view(id.table_name()));
+                const auto* md = plan.catalog_resolves.table_md(target);
                 // The statement names the kind it drops (PostgreSQL: wrong object type).
                 const char expected = drop_node->kind() == drop_target_kind::view
                                           ? components::catalog::relkind::view
                                           : components::catalog::relkind::materialized_view;
                 if (md != nullptr && md->relkind != expected) {
-                    return wrong_relation_kind_to_drop(resource(), id.table_name(), expected, md->relkind);
+                    return wrong_relation_kind_to_drop(resource(), target.collection.t, expected, md->relkind);
                 }
                 return core::error_t::no_error();
             }
@@ -904,7 +1220,11 @@ namespace services::collection::executor {
             co_return core::error_on(resource(), output.error());
         }
         const auto* existing =
-            view->replace() ? plan.catalog_resolves.table_md(view->target().database.t, view->viewname().t) : nullptr;
+            view->replace() ? plan.catalog_resolves.table_md(qualified_name_t{view->target().connection,
+                                                                              view->target().database,
+                                                                              view->target().schema,
+                                                                              core::relname_t{view->viewname().t}})
+                            : nullptr;
         if (existing != nullptr) {
             view->set_replaced_oid(existing->table_oid);
         }
@@ -963,15 +1283,41 @@ namespace services::collection::executor {
     executor_t::check_alter_subcommands_(const components::logical_plan::catalog_resolves_t& resolves,
                                          const components::logical_plan::resolved_table_metadata_t& table,
                                          std::vector<components::logical_plan::alter_table_subcommand_t>& subcommands) {
-        // Walked from the back so erasing keeps the lower indices.
-        for (std::size_t index = subcommands.size(); index-- > 0;) {
+        using components::logical_plan::alter_table_kind;
+        // The columns as each subcommand finds them: the earlier subcommands of the statement applied, as PostgreSQL
+        // 18 checks them one after another. All of them are checked before any runs, so a connection's backend sees
+        // none of a statement that is refused.
+        const bool ordinary = table.relkind == components::catalog::relkind::regular;
+        std::pmr::vector<std::string> names{resource()};
+        for (const auto& column : table.columns) {
+            names.push_back(column.attname);
+        }
+        for (std::size_t index = 0; index < subcommands.size();) {
             auto& sub = subcommands[index];
             bool missing = false;
-            if (sub.kind == components::logical_plan::alter_table_kind::drop_column) {
-                missing = std::none_of(table.columns.begin(), table.columns.end(), [&sub](const auto& column) {
-                    return column.attname == sub.column_name;
-                });
-            } else if (sub.kind == components::logical_plan::alter_table_kind::drop_constraint) {
+            if (sub.kind == alter_table_kind::drop_column) {
+                const auto found = std::find(names.begin(), names.end(), sub.column_name);
+                missing = found == names.end();
+                if (!missing && ordinary) {
+                    names.erase(found);
+                } else if (missing && !sub.if_exists && ordinary) {
+                    std::pmr::string msg{"column \"", resource()};
+                    msg.append(sub.column_name);
+                    msg.append("\" of relation \"");
+                    msg.append(table.name);
+                    msg.append("\" does not exist; use DROP COLUMN IF EXISTS to ignore it");
+                    return core::error_t{core::error_code_t::schema_error, std::move(msg)};
+                }
+            } else if (sub.kind == alter_table_kind::add_column && ordinary) {
+                if (auto duplicate =
+                        components::catalog::alter_column_validators::validate_column_not_duplicate(resource(),
+                                                                                                    names,
+                                                                                                    sub.column.name());
+                    duplicate.contains_error()) {
+                    return duplicate;
+                }
+                names.push_back(sub.column.name());
+            } else if (sub.kind == alter_table_kind::drop_constraint) {
                 sub.constraint_oid = resolves.constraint_oid(table.table_oid, sub.constraint_name);
                 missing = sub.constraint_oid == components::catalog::INVALID_OID;
                 if (missing && !sub.if_exists) {
@@ -986,21 +1332,215 @@ namespace services::collection::executor {
             if (missing && sub.if_exists) {
                 info(log_,
                      "notice: {} \"{}\" of relation \"{}\" does not exist, skipping",
-                     sub.kind == components::logical_plan::alter_table_kind::drop_column ? "column" : "constraint",
-                     sub.kind == components::logical_plan::alter_table_kind::drop_column ? sub.column_name
-                                                                                         : sub.constraint_name,
+                     sub.kind == alter_table_kind::drop_column ? "column" : "constraint",
+                     sub.kind == alter_table_kind::drop_column ? sub.column_name : sub.constraint_name,
                      table.name);
                 subcommands.erase(subcommands.begin() + static_cast<std::ptrdiff_t>(index));
+                continue;
             }
+            ++index;
         }
         return subcommands.empty() ? alter_subcommands_t::none_left : alter_subcommands_t::remain;
     }
+
+    namespace {
+        // A CREATE without a database or schema creates in the session's place (PostgreSQL 18: the first schema
+        // of the search path); CREATE SCHEMA in the place's database.
+        void complete_create_target(components::logical_plan::node_t& root, const components::catalog::place_t& place) {
+            using components::logical_plan::node_type;
+            switch (root.type()) {
+                case node_type::create_collection_t:
+                case node_type::create_view_t:
+                case node_type::create_sequence_t:
+                case node_type::create_macro_t:
+                case node_type::create_type_t:
+                case node_type::create_schema_t:
+                    break;
+                default:
+                    return;
+            }
+            auto target = root.target();
+            auto completed =
+                components::catalog::complete_name(place, target.connection.t, target.database.t, target.schema.t);
+            target.connection = core::connection_name_t{std::move(completed.connection)};
+            target.database = core::dbname_t{std::move(completed.database)};
+            target.schema = core::schema_t{std::move(completed.schema)};
+            root.set_target(std::move(target));
+        }
+
+        // The schema a call is looked up in, as written: none for a bare call or pg_catalog's (the place's schema
+        // completes a bare one).
+        bool names_a_user_schema(const function_qualified_name_t& name) {
+            return !name.schema.t.empty() && name.schema.t != "pg_catalog";
+        }
+
+        qualified_name_t schema_of_call(const function_qualified_name_t& name) {
+            return qualified_name_t{name.database, name.schema, core::relname_t{}};
+        }
+
+        // a call reaches functions as a relation name reaches relations. The schemas the calls name
+        // (the place's, for a bare call of a name a user function has) are resolved with the statement.
+        void register_call_schemas(std::pmr::memory_resource* resource,
+                                   components::logical_plan::node_t* root,
+                                   const components::compute::function_registry_t& registry,
+                                   components::logical_plan::catalog_resolves_t& resolves) {
+            const auto register_schema = [&](const function_qualified_name_t& name) {
+                const bool names_the_place = name.function.t == components::compute::current_database_name ||
+                                             name.function.t == components::compute::current_schema_name;
+                if (names_a_user_schema(name)) {
+                    components::sql::transform::register_catalog_resolve_namespace(resource,
+                                                                                   &resolves,
+                                                                                   schema_of_call(name));
+                    return;
+                }
+                const auto uids = registry.find_functions(name.function.t);
+                const bool user_function = name.schema.t.empty() && std::any_of(uids.begin(), uids.end(), [](auto uid) {
+                                               return !components::compute::is_builtin(uid);
+                                           });
+                if (user_function || names_the_place) {
+                    resolves.ensure(resource, components::logical_plan::resolve_kind::namespace_)
+                        .add(components::logical_plan::resolve_entry_t{});
+                }
+            };
+            auto visit = [&](const auto& call, const auto&, bool) { register_schema(call.full_name()); };
+            components::logical_plan::for_each_plan_call(root, visit);
+        }
+
+        // The schema a call is looked up in: a qualified call's own; a bare call the place's, a bare call in a CHECK
+        // its table's schema's whatever the place: CREATE TABLE's target schema, the constrained table's for ADD
+        // CONSTRAINT and a write.
+        void scope_calls(components::logical_plan::node_t* root,
+                         const components::logical_plan::catalog_resolves_t& resolves) {
+            using components::logical_plan::node_type;
+            const auto table_schema = [&](const components::logical_plan::node_t& owner) {
+                if (root->type() == node_type::create_collection_t) {
+                    return resolves.namespace_oid(root->target());
+                }
+                if (const auto* table = owner.table_metadata(); table != nullptr) {
+                    return table->namespace_oid;
+                }
+                const auto* table = resolves.table_md(owner.target());
+                return table != nullptr ? table->namespace_oid : components::catalog::INVALID_OID;
+            };
+            auto visit = [&](auto& call, const components::logical_plan::node_t& owner, bool in_check) {
+                const auto& name = call.full_name();
+                components::compute::function_scope_t scope{.builtins = true, .schema_oid = 0};
+                if (names_a_user_schema(name)) {
+                    scope.builtins = false;
+                    scope.schema_oid = resolves.namespace_oid(schema_of_call(name));
+                } else if (name.schema.t.empty()) {
+                    scope.schema_oid = in_check ? table_schema(owner) : resolves.namespace_oid(qualified_name_t{});
+                }
+                call.set_scope(scope);
+            };
+            components::logical_plan::for_each_plan_call(root, visit);
+        }
+
+        // current_database() / current_schema(): the place's name as the catalog has it, NULL when that level is
+        // gone (PostgreSQL 18 answers a dropped schema so); a written argument is no call of theirs.
+        core::error_t bind_place_calls(std::pmr::memory_resource* resource,
+                                       components::logical_plan::node_t* root,
+                                       const components::logical_plan::catalog_resolves_t& resolves,
+                                       components::logical_plan::parameter_node_t& parameters) {
+            const auto* place = resolves.namespace_entry(qualified_name_t{});
+            core::error_t refused = core::error_t::no_error();
+            auto visit = [&](auto& call, const auto&, bool) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(call)>,
+                                             components::expressions::function_expression_t>) {
+                    const auto& name = call.full_name();
+                    const bool database = name.function.t == components::compute::current_database_name;
+                    if (names_a_user_schema(name) ||
+                        (!database && name.function.t != components::compute::current_schema_name)) {
+                        return;
+                    }
+                    if (!call.args().empty()) {
+                        if (!refused.contains_error()) {
+                            refused = core::error_t{
+                                core::error_code_t::unrecognized_function,
+                                std::pmr::string{"function " + name.to_string() + " takes no arguments", resource}};
+                        }
+                        return;
+                    }
+                    const bool exists = place != nullptr && (database ? place->database_oid : place->namespace_oid) !=
+                                                                components::catalog::INVALID_OID;
+                    const auto& value = database ? resolves.place.database : resolves.place.schema;
+                    auto bound =
+                        exists ? components::vector::make_scalar(resource, std::string_view{value})
+                               : components::vector::make_null(resource,
+                                                               components::types::complex_logical_type{
+                                                                   components::types::logical_type::STRING_LITERAL});
+                    call.args().emplace_back(
+                        parameters.add_parameter(std::move(bound), components::vector::parameter_kind::literal));
+                }
+            };
+            components::logical_plan::for_each_plan_call(root, visit);
+            return refused;
+        }
+
+        // ALTER TABLE of a connection's table: its name, oid and columns, for the connector's operator.
+        void stamp_remote_table(components::logical_plan::execution_plan_t& plan, const qualified_name_t& target) {
+            auto* root = plan.sub_queries.back().get();
+            const auto* table = plan.catalog_resolves.table_md(target);
+            if (root == nullptr || table == nullptr || !table->is_remote() ||
+                root->type() != components::logical_plan::node_type::alter_table_t) {
+                return;
+            }
+            static_cast<components::logical_plan::node_alter_table_t*>(root)->set_remote_table(*table);
+        }
+
+        // SET [LOCAL] search_path = '<place>': the place completed with the current one.
+        struct set_place_t {
+            bool sets{false};
+            components::catalog::place_t place;
+        };
+
+        core::result_wrapper_t<set_place_t> place_set_by(std::pmr::memory_resource* resource,
+                                                         const components::logical_plan::node_t* root,
+                                                         const components::catalog::place_t& current) {
+            if (root == nullptr || root->type() != components::logical_plan::node_type::set_setting_t) {
+                return set_place_t{};
+            }
+            const auto* set = static_cast<const components::logical_plan::node_set_setting_t*>(root);
+            if (set->scope() == components::catalog::setting_scope_t::system) {
+                return set_place_t{};
+            }
+            for (const auto& assignment : set->assignments()) {
+                if (assignment.id != components::catalog::setting_id::search_path || assignment.is_default) {
+                    continue;
+                }
+                auto canonical = components::catalog::canonical_search_path(assignment.value, resource);
+                if (canonical.has_error()) {
+                    return canonical.error();
+                }
+                return set_place_t{true, components::catalog::complete_place(canonical.value(), current)};
+            }
+            return set_place_t{};
+        }
+
+        // The SET with its search_path spelled as the session keeps it: the full place.
+        components::logical_plan::node_ptr with_full_place(std::pmr::memory_resource* resource,
+                                                           const components::logical_plan::node_t* root,
+                                                           const components::catalog::place_t& place) {
+            const auto* set = static_cast<const components::logical_plan::node_set_setting_t*>(root);
+            std::pmr::vector<components::catalog::setting_assignment_t> assignments{resource};
+            for (const auto& assignment : set->assignments()) {
+                if (assignment.is_default) {
+                    assignments.push_back(
+                        components::catalog::setting_assignment_t::to_default(assignment.id, resource));
+                } else if (assignment.id == components::catalog::setting_id::search_path) {
+                    assignments.emplace_back(assignment.id, place.to_string(), resource);
+                } else {
+                    assignments.emplace_back(assignment.id, assignment.value, resource);
+                }
+            }
+            return components::logical_plan::make_node_set_setting(resource, set->scope(), std::move(assignments));
+        }
+    } // namespace
 
     executor_t::unique_future<execute_result_t>
     executor_t::execute_statement_(components::session::session_id_t session,
                                    components::logical_plan::execution_plan_t plan,
                                    services::dispatcher::txn_session_context_t session_ctx,
-                                   host_names_t host_names,
                                    std::pmr::vector<expanded_view_t> expanded_views) {
         using node_type = components::logical_plan::node_type;
         using components::logical_plan::node_aggregate_t;
@@ -1037,7 +1577,6 @@ namespace services::collection::executor {
             auto sub_result = co_await execute_statement_(session,
                                                           std::move(sub_plan),
                                                           session_ctx,
-                                                          host_names,
                                                           std::pmr::vector<expanded_view_t>{resource()});
             if (sub_result.cursor->is_error()) {
                 co_return execute_result_t{std::move(sub_result.cursor)};
@@ -1101,9 +1640,30 @@ namespace services::collection::executor {
             return r ? r->type() : node_type::unused;
         }();
 
-        services::dispatcher::register_plan_targets(resource(), plan.sub_queries.back().get(), &plan.catalog_resolves);
+        const auto place = components::catalog::place_of(session_ctx.settings.search_path);
+        plan.catalog_resolves.place = place;
+        if (auto* root = plan.sub_queries.back().get()) {
+            complete_create_target(*root, place);
+        }
+        auto set_place = place_set_by(resource(), plan.sub_queries.back().get(), place);
+        if (set_place.has_error()) {
+            co_return execute_result_t{make_cursor(resource(), set_place.error())};
+        }
+        const qualified_name_t set_place_name{core::connection_name_t{set_place.value().place.connection},
+                                              core::dbname_t{set_place.value().place.database},
+                                              core::schema_t{set_place.value().place.schema},
+                                              core::relname_t{}};
+        if (set_place.value().sets) {
+            components::sql::transform::register_catalog_resolve_namespace(resource(),
+                                                                           &plan.catalog_resolves,
+                                                                           set_place_name);
+        }
 
+        services::dispatcher::register_plan_targets(resource(), plan.sub_queries.back().get(), &plan.catalog_resolves);
+        register_call_schemas(resource(), plan.sub_queries.back().get(), function_registry_, plan.catalog_resolves);
         services::context_storage_t context_storage(resource(), log_.clone(), session_ctx.settings);
+        context_storage.place = place;
+        context_storage.connector = connector_.get();
 
         if (original_type == node_type::transaction_t && plan.explain == components::logical_plan::explain_type::none &&
             static_cast<const components::logical_plan::node_transaction_t*>(plan.sub_queries.back().get())->op() ==
@@ -1120,7 +1680,8 @@ namespace services::collection::executor {
             original_type == node_type::create_sequence_t || original_type == node_type::create_view_t ||
             original_type == node_type::create_macro_t || original_type == node_type::create_type_t ||
             original_type == node_type::create_index_t || original_type == node_type::drop_t ||
-            original_type == node_type::create_database_t || original_type == node_type::alter_table_t;
+            original_type == node_type::create_database_t || original_type == node_type::create_schema_t ||
+            original_type == node_type::alter_table_t;
         const bool is_plan_only_explain = plan.explain == components::logical_plan::explain_type::plan;
         const bool needs_dml_txn =
             !is_plan_only_explain &&
@@ -1151,7 +1712,7 @@ namespace services::collection::executor {
             if (!resolve_nodes.empty()) {
                 auto pass1_result = co_await run_resolve_subplan_(session,
                                                                   session_ctx,
-                                                                  context_storage.execution_context,
+                                                                  context_storage,
                                                                   &plan.catalog_resolves,
                                                                   std::move(resolve_nodes));
                 if (pass1_result.cursor->is_error()) {
@@ -1162,12 +1723,19 @@ namespace services::collection::executor {
                 }
             }
         }
+        // PostgreSQL 18 checks a search_path's schemas on use; a place is checked when it is set and
+        // kept by name.
+        if (set_place.value().sets) {
+            if (auto missing =
+                    services::dispatcher::check_namespace_exists(resource(), &plan.catalog_resolves, set_place_name);
+                missing.contains_error()) {
+                co_return execute_result_t{make_cursor(resource(), std::move(missing))};
+            }
+            plan.sub_queries.back() =
+                with_full_place(resource(), plan.sub_queries.back().get(), set_place.value().place);
+        }
         if (original_type == node_type::refresh_matview_t) {
-            co_return co_await refresh_matview_(session,
-                                                plan,
-                                                session_ctx,
-                                                host_names,
-                                                context_storage.execution_context);
+            co_return co_await refresh_matview_(session, plan, session_ctx, context_storage.execution_context);
         }
         if (plan.sub_queries.back()) {
             auto* root = plan.sub_queries.back().get();
@@ -1221,12 +1789,14 @@ namespace services::collection::executor {
                     }
                     expanded_views.push_back({components::logical_plan::node_ptr{ref.node}, std::move(views[i])});
                 }
-                if (services::catalog_resolve::has_unresolved_entries(plan.catalog_resolves)) {
+                register_call_schemas(resource(), root, function_registry_, plan.catalog_resolves);
+                // The resolve operators leave what an earlier pass resolved: this reads the bodies' names only.
+                {
                     std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
                     collect_resolve_nodes(plan.catalog_resolves, resolve_nodes);
                     auto pass2_result = co_await run_resolve_subplan_(session,
                                                                       session_ctx,
-                                                                      context_storage.execution_context,
+                                                                      context_storage,
                                                                       &plan.catalog_resolves,
                                                                       std::move(resolve_nodes));
                     if (pass2_result.cursor->is_error()) {
@@ -1238,31 +1808,33 @@ namespace services::collection::executor {
                 }
             }
         }
+        if (auto refused =
+                bind_place_calls(resource(), plan.sub_queries.back().get(), plan.catalog_resolves, *plan.parameters);
+            refused.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(refused))};
+        }
         if (auto stale = services::catalog_resolve::refuse_stale_pins(resource(), plan.catalog_resolves);
             stale.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(stale))};
         }
-        // The host resolves what the catalog did not: its reads run here, in this statement's snapshot, and it
-        // answers each name with an external storage or leaves it unresolved; the tree stays as written. A
-        // statement whose names all resolved never reaches the host. A view body is a query too, at CREATE VIEW as
-        // on every read.
-        const bool host_resolves_names = !needs_ddl_txn || original_type == node_type::create_view_t;
-        if (host_names == host_names_t::resolve && host_resolves_names && plan.sub_queries.back()) {
-            if (auto external = co_await resolve_external_names_(session, plan, session_ctx);
-                external.contains_error()) {
-                co_return execute_result_t{make_cursor(resource(), std::move(external))};
+        // A statement that reads or writes rows; DDL (CREATE VIEW over a connection's table included) reads none, and
+        // asks the connector for no storage.
+        if (!needs_ddl_txn) {
+            if (auto unbound =
+                    bind_remote_storages_(session, plan, session_ctx, context_storage, plan.catalog_resolves);
+                unbound.contains_error()) {
+                co_return execute_result_t{make_cursor(resource(), std::move(unbound))};
             }
         }
-        if (auto unbound = services::catalog_resolve::refuse_unbound_names(resource(), plan.catalog_resolves);
-            unbound.contains_error()) {
-            co_return execute_result_t{make_cursor(resource(), std::move(unbound))};
-        }
-        if (auto segment = services::catalog_resolve::refuse_referenced_segments(resource(), plan.catalog_resolves);
-            segment.contains_error()) {
-            co_return execute_result_t{make_cursor(resource(), std::move(segment))};
+        if (auto crossing =
+                services::catalog_resolve::refuse_cross_database_references(resource(), plan.catalog_resolves);
+            crossing.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(crossing))};
         }
         if (plan.sub_queries.back()) {
             services::dispatcher::bind_catalog_data(plan.sub_queries.back().get(), plan.catalog_resolves);
+            // With the CHECK predicates bind_catalog_data brought.
+            scope_calls(plan.sub_queries.back().get(), plan.catalog_resolves);
         }
         if (needs_dml_txn && session_ctx.savepoint_open) {
             if (auto refused = services::catalog_resolve::refuse_storage_write_in_savepoint(resource(),
@@ -1274,7 +1846,6 @@ namespace services::collection::executor {
         }
         context_storage.catalog_resolves = &plan.catalog_resolves;
 
-        using components::catalog::table_id;
         using components::logical_plan::constraint_kind;
         using components::logical_plan::node_create_collection_t;
         using components::logical_plan::node_create_constraint_t;
@@ -1320,38 +1891,48 @@ namespace services::collection::executor {
             co_return ok;
         }
 
-        table_id id(resource(), plan.sub_queries.back() ? plan.sub_queries.back()->target() : qualified_name_t{});
+        const qualified_name_t target =
+            plan.sub_queries.back() ? plan.sub_queries.back()->target() : qualified_name_t{};
         {
-            auto target = decide_target_(plan, id);
-            if (target.has_error()) {
-                co_return execute_result_t{make_cursor(resource(), target.error())};
+            auto outcome = decide_target_(plan, target);
+            if (outcome.has_error()) {
+                co_return execute_result_t{make_cursor(resource(), outcome.error())};
             }
-            if (target.value() == target_outcome_t::nothing_to_do) {
+            if (outcome.value() == target_outcome_t::nothing_to_do) {
                 co_return execute_result_t{make_cursor(resource())};
             }
         }
+        stamp_remote_table(plan, target);
         cursor_t_ptr error;
-        // A CREATE never writes into a database the catalog does not hold: its rows would have no namespace. IF NOT
-        // EXISTS does not cover it, since what is missing is the database, not the object.
-        const bool creates_in_a_database =
+        // A CREATE never writes into a schema the catalog does not hold: its rows would have no namespace. IF NOT
+        // EXISTS does not cover it, since what is missing is the schema, not the object.
+        const bool creates_in_a_schema =
             original_type == node_type::create_collection_t || original_type == node_type::create_sequence_t ||
             original_type == node_type::create_view_t || original_type == node_type::create_macro_t ||
-            original_type == node_type::create_index_t;
-        if (creates_in_a_database && !id.database().empty() &&
-            services::dispatcher::check_namespace_exists(resource(), &plan.catalog_resolves, id).contains_error()) {
-            co_return execute_result_t{make_cursor(resource(), missing_database_(id.database()))};
+            original_type == node_type::create_index_t || original_type == node_type::create_type_t;
+        if (creates_in_a_schema && !target.schema.t.empty()) {
+            if (auto missing = services::dispatcher::check_namespace_exists(resource(), &plan.catalog_resolves, target);
+                missing.contains_error()) {
+                co_return execute_result_t{make_cursor(resource(), std::move(missing))};
+            }
+            if (original_type != node_type::create_index_t &&
+                components::catalog::in_system_schema(plan.catalog_resolves.namespace_oid(target))) {
+                std::pmr::string msg{"cannot modify system catalog \"", resource()};
+                msg.append(target.to_string());
+                msg.append("\"");
+                co_return execute_result_t{
+                    make_cursor(resource(), core::error_t{core::error_code_t::sql_parse_error, std::move(msg)})};
+            }
         }
         switch (original_type) {
             case node_type::create_database_t:
+            case node_type::create_schema_t:
                 break;
             case node_type::create_collection_t: {
                 auto* n = static_cast<node_create_collection_t*>(plan.sub_queries.back().get());
-                const auto search_path = services::catalog_resolve::build_type_search_path_str(id.database());
                 for (auto& col_def : n->column_definitions()) {
-                    if (auto invalid = prepare_column_(plan.catalog_resolves,
-                                                       search_path,
-                                                       context_storage.execution_context,
-                                                       col_def);
+                    if (auto invalid =
+                            prepare_column_(plan.catalog_resolves, context_storage.execution_context, col_def);
                         invalid.contains_error()) {
                         error = make_cursor(resource(), std::move(invalid));
                         break;
@@ -1361,14 +1942,8 @@ namespace services::collection::executor {
             }
             case node_type::create_type_t: {
                 auto* n = static_cast<node_create_type_t*>(plan.sub_queries.back().get());
-                components::catalog::oid_t target_ns = components::catalog::well_known_oid::public_namespace;
-                const std::string default_path[] = {"public", "pg_catalog"};
-                std::span<const std::string> str_path(default_path);
-                if (!services::dispatcher::check_type_exists(resource(),
-                                                             &plan.catalog_resolves,
-                                                             n->type().type_name(),
-                                                             str_path)
-                         .contains_error()) {
+                const qualified_name_t created{target.database, target.schema, core::relname_t{n->type().type_name()}};
+                if (plan.catalog_resolves.type_md(created) != nullptr) {
                     error = make_cursor(
                         resource(),
                         core::error_t{core::error_code_t::schema_error,
@@ -1378,35 +1953,25 @@ namespace services::collection::executor {
                 }
                 if (n->type().type() == logical_type::STRUCT) {
                     for (auto& field : n->type().child_types()) {
-                        if (field.type() == logical_type::UNKNOWN) {
-                            const auto lt = components::catalog::pg_name_to_logical_type(field.type_name());
-                            if (lt != logical_type::UNKNOWN) {
-                                std::string alias = field.has_alias() ? field.alias() : std::string{};
-                                field = components::types::complex_logical_type{lt};
-                                if (!alias.empty()) {
-                                    field.set_alias(alias);
-                                }
-                                continue;
-                            }
-                            if (auto err = services::dispatcher::check_type_exists(resource(),
-                                                                                   &plan.catalog_resolves,
-                                                                                   field.type_name(),
-                                                                                   str_path);
-                                err.contains_error()) {
-                                error = make_cursor(resource(), err);
-                                break;
-                            }
-                            const auto* md =
-                                services::catalog_resolve::probe_type_in_path(plan.catalog_resolves,
-                                                                              std::string_view(field.type_name()),
-                                                                              str_path);
-                            if (md) {
-                                std::string alias = field.has_alias() ? field.alias() : std::string{};
-                                field = md->type;
-                                if (!alias.empty()) {
-                                    field.set_alias(alias);
-                                }
-                            }
+                        if (field.type() != logical_type::UNKNOWN) {
+                            continue;
+                        }
+                        const auto written = components::sql::transform::type_reference_of(field);
+                        if (auto err =
+                                services::dispatcher::check_type_exists(resource(), &plan.catalog_resolves, written);
+                            err.contains_error()) {
+                            error = make_cursor(resource(), err);
+                            break;
+                        }
+                        std::string alias = field.has_alias() ? field.alias() : std::string{};
+                        if (const auto* md = plan.catalog_resolves.type_md(written)) {
+                            field = md->type;
+                        } else {
+                            field = components::types::complex_logical_type{
+                                components::catalog::pg_name_to_logical_type(written.collection.t)};
+                        }
+                        if (!alias.empty()) {
+                            field.set_alias(alias);
                         }
                     }
                     if (error) {
@@ -1420,11 +1985,11 @@ namespace services::collection::executor {
                     error = make_cursor(resource(), type_err);
                     break;
                 }
-                n->set_namespace_oid(target_ns);
+                n->set_namespace_oid(plan.catalog_resolves.namespace_oid(target));
                 break;
             }
             case node_type::drop_t:
-                if (auto refused = check_drop_target_(plan, id); refused.contains_error()) {
+                if (auto refused = check_drop_target_(plan, target); refused.contains_error()) {
                     error = make_cursor(resource(), std::move(refused));
                 }
                 break;
@@ -1459,15 +2024,12 @@ namespace services::collection::executor {
             case node_type::alter_table_t: {
                 auto* alter_node =
                     static_cast<components::logical_plan::node_alter_table_t*>(plan.sub_queries.back().get());
-                const auto search_path = services::catalog_resolve::build_type_search_path_str(id.database());
                 for (auto& cmd : alter_node->subcommands()) {
                     if (cmd.kind != components::logical_plan::alter_table_kind::add_column) {
                         continue;
                     }
-                    if (auto invalid = prepare_column_(plan.catalog_resolves,
-                                                       search_path,
-                                                       context_storage.execution_context,
-                                                       cmd.column);
+                    if (auto invalid =
+                            prepare_column_(plan.catalog_resolves, context_storage.execution_context, cmd.column);
                         invalid.contains_error()) {
                         error = make_cursor(resource(), std::move(invalid));
                         break;
@@ -1482,8 +2044,7 @@ namespace services::collection::executor {
                         cstr->kind() == constraint_kind::unique || cstr->kind() == constraint_kind::primary_key;
                     if (cstr->kind() == constraint_kind::foreign_key || cstr->kind() == constraint_kind::check ||
                         key_kind) {
-                        const auto* tbl_local =
-                            plan.catalog_resolves.table_md(id.database(), std::string_view(id.table_name()));
+                        const auto* tbl_local = plan.catalog_resolves.table_md(target);
                         const bool local_is_g = tbl_local && tbl_local->relkind == 'g';
                         bool ref_is_g = false;
                         if (cstr->kind() == constraint_kind::foreign_key &&
@@ -1544,7 +2105,8 @@ namespace services::collection::executor {
             case node_type::create_index_t: {
                 const auto* index_node =
                     static_cast<const components::logical_plan::node_create_index_t*>(plan.sub_queries.back().get());
-                if (components::catalog::is_catalog_table(index_node->table_oid())) {
+                if (index_node->table_metadata() != nullptr &&
+                    components::catalog::in_system_schema(index_node->table_metadata()->namespace_oid)) {
                     error =
                         make_cursor(resource(),
                                     core::error_t{core::error_code_t::sql_parse_error,
@@ -1613,6 +2175,35 @@ namespace services::collection::executor {
                 trace(log_, "executor::execute_plan_full: enrich error: {}", enrich_err.what);
                 co_return execute_result_t{make_cursor(resource(), std::move(enrich_err))};
             }
+            // The CHECK predicates enrich read from the catalog: the schemas their qualified calls name are resolved
+            // now; a bare call is its table's schema's.
+            {
+                std::pmr::vector<components::logical_plan::node_ptr> schemas{resource()};
+                auto named = [&](auto& call, const components::logical_plan::node_t&, bool in_check) {
+                    const auto& name = call.full_name();
+                    if (in_check && names_a_user_schema(name) &&
+                        plan.catalog_resolves.namespace_entry(schema_of_call(name)) == nullptr) {
+                        components::sql::transform::register_catalog_resolve_namespace(resource(),
+                                                                                       &plan.catalog_resolves,
+                                                                                       schema_of_call(name));
+                        if (schemas.empty()) {
+                            schemas.push_back(plan.catalog_resolves.namespaces);
+                        }
+                    }
+                };
+                components::logical_plan::for_each_plan_call(plan.sub_queries.back().get(), named);
+                if (!schemas.empty()) {
+                    auto resolved = co_await run_resolve_subplan_(session,
+                                                                  session_ctx,
+                                                                  context_storage,
+                                                                  &plan.catalog_resolves,
+                                                                  std::move(schemas));
+                    if (resolved.cursor->is_error()) {
+                        co_return execute_result_t{std::move(resolved.cursor)};
+                    }
+                }
+                scope_calls(plan.sub_queries.back().get(), plan.catalog_resolves);
+            }
             {
                 services::dispatcher::validation::validation_context_t constraint_context{
                     resource(),
@@ -1639,9 +2230,13 @@ namespace services::collection::executor {
                 }
                 if (plan.catalog_resolves.tables) {
                     for (const auto& entry : plan.catalog_resolves.tables->entries()) {
-                        // A storage table has no oid to key it by; its scan comes from the storage.
-                        if (entry.table_md.has_value() && !entry.storage) {
+                        if (entry.table_md.has_value()) {
                             context_storage.table_metadata[entry.table_md->table_oid] = &*entry.table_md;
+                            // A known oid is a table otterbrix stores and scans; a connection's table's rows come
+                            // from the connector's storage.
+                            if (entry.table_md->storage != nullptr) {
+                                context_storage.known_oids.erase(entry.table_md->table_oid);
+                            }
                         }
                     }
                 }
@@ -1789,6 +2384,7 @@ namespace services::collection::executor {
                 switch (t) {
                     case node_type::create_collection_t:
                     case node_type::create_database_t:
+                    case node_type::create_schema_t:
                     case node_type::create_type_t:
                     case node_type::create_sequence_t:
                     case node_type::create_view_t:
@@ -1848,6 +2444,11 @@ namespace services::collection::executor {
                     co_return execute_result_t{make_cursor(resource(), rewritten.error())};
                 }
                 plan.sub_queries.back() = std::move(rewritten.value());
+                if (auto remote =
+                        co_await stamp_remote_drops_(session, session_ctx, context_storage, resolve_txn, plan);
+                    remote.contains_error()) {
+                    co_return execute_result_t{make_cursor(resource(), std::move(remote))};
+                }
 
                 if (original_type == node_type::create_collection_t) {
                     created_table_oid = eff->table_oid();
@@ -2037,8 +2638,9 @@ namespace services::collection::executor {
             for (const auto& del : exec_result.dml_deletes) {
                 payload.base_deletes.push_back(components::table::dml_delete_range_t{del.table_oid, del.txn_id});
             }
-            payload.pg_catalog_appends = std::move(exec_result.pg_catalog_appends);
-            payload.pg_catalog_delete_tables = std::move(exec_result.pg_catalog_delete_tables);
+            // Copied, not moved: a refused accumulate reverts them.
+            payload.pg_catalog_appends = exec_result.pg_catalog_appends;
+            payload.pg_catalog_delete_tables = exec_result.pg_catalog_delete_tables;
             payload.backfills = std::move(exec_result.pg_attribute_commit_id_backfills);
             payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
             payload.created_storage_oids = std::move(exec_result.created_storage_oids);
@@ -2112,37 +2714,17 @@ namespace services::collection::executor {
                 }
             }
 
-            if (!exec_result.pg_catalog_appends.empty() || !exec_result.pg_catalog_delete_tables.empty() ||
-                !exec_result.pg_attribute_commit_id_backfills.empty() || !exec_result.dropped_storage_oids.empty() ||
-                !exec_result.created_storage_oids.empty() || !exec_result.created_indexes.empty()) {
-                services::dispatcher::txn_accumulate_payload_t payload;
-                // Copied, not moved
-                payload.pg_catalog_appends = exec_result.pg_catalog_appends;
-                payload.pg_catalog_delete_tables = exec_result.pg_catalog_delete_tables;
-                payload.backfills = std::move(exec_result.pg_attribute_commit_id_backfills);
-                payload.dropped_storage_oids = std::move(exec_result.dropped_storage_oids);
-                payload.created_storage_oids = std::move(exec_result.created_storage_oids);
-                payload.created_indexes = std::move(exec_result.created_indexes);
-                auto [_ac, acf] =
-                    actor_zeta::otterbrix::send(parent_address_,
-                                                &services::dispatcher::manager_dispatcher_t::txn_accumulate_msg,
-                                                session,
-                                                resolve_txn.transaction_id,
-                                                std::move(payload));
-                auto accumulate_err = co_await std::move(acf);
-                if (accumulate_err.contains_error()) {
-                    exec_result.cursor = make_cursor(resource(), std::move(accumulate_err));
-                    co_await revert_failed_txn(this, exec_result);
-                    has_create_index_pg_index_range = false;
-                }
-                exec_result.pg_catalog_appends.clear();
-                exec_result.pg_catalog_delete_tables.clear();
-                exec_result.pg_attribute_commit_id_backfills.clear();
-                exec_result.dropped_storage_oids.clear();
-                exec_result.created_storage_oids.clear();
-                exec_result.created_indexes.clear();
+            // The rows a host's DDL operator wrote into otterbrix tables commit with the catalog's.
+            co_await park_in_transaction(this, exec_result);
+            if (exec_result.cursor->is_error()) {
+                has_create_index_pg_index_range = false;
             }
-
+            exec_result.pg_catalog_appends.clear();
+            exec_result.pg_catalog_delete_tables.clear();
+            exec_result.pg_attribute_commit_id_backfills.clear();
+            exec_result.dropped_storage_oids.clear();
+            exec_result.created_storage_oids.clear();
+            exec_result.created_indexes.clear();
             exec_result.dml_appends.clear();
             exec_result.dml_deletes.clear();
 
@@ -2213,12 +2795,15 @@ namespace services::collection::executor {
     }
 
     executor_t::unique_future<std::unique_ptr<function_result_t>>
-    executor_t::register_udf(components::session::session_id_t session, components::compute::function_ptr function) {
+    executor_t::register_udf(components::session::session_id_t session,
+                             components::compute::function_ptr function,
+                             components::catalog::oid_t schema_oid) {
         trace(log_, "executor::register_udf, session: {}, {}", session.data(), function->name());
         std::string name{function->name()};
         auto signatures = function->get_signatures();
         for (const auto& [registered_name, uid] : function_registry_.get_functions()) {
-            if (registered_name != name) {
+            if (registered_name != name ||
+                (!components::compute::is_builtin(uid) && function_registry_.schema_of(uid) != schema_oid)) {
                 continue;
             }
             const auto* registered = function_registry_.get_function(uid);
@@ -2231,15 +2816,19 @@ namespace services::collection::executor {
                 std::pmr::string{"function '" + name + "' is already registered with this signature", resource()}));
         }
         auto res = function_registry_.add_function(std::move(function));
+        if (!res.has_error()) {
+            function_registry_.set_schema(res.value(), schema_oid);
+        }
         co_return std::make_unique<function_result_t>(std::move(res));
     }
 
     executor_t::unique_future<bool>
     executor_t::unregister_udf(components::session::session_id_t session,
                                core::function_name_t name,
-                               std::pmr::vector<components::types::complex_logical_type> inputs) {
+                               std::pmr::vector<components::types::complex_logical_type> inputs,
+                               components::catalog::oid_t schema_oid) {
         trace(log_, "executor::unregister_udf, session: {}, {}", session.data(), name.t);
-        co_return function_registry_.remove_function_by_signature(name.t, inputs);
+        co_return function_registry_.remove_function_by_signature(name.t, inputs, schema_oid);
     }
 
     executor_t::unique_future<bool> executor_t::unregister_udf_uid(components::session::session_id_t session,
@@ -2289,11 +2878,17 @@ namespace services::collection::executor {
                     break;
                 }
             }
-            sub_plans.push(look_up.top());
+            auto popped = look_up.top();
+            sub_plans.push(popped);
             look_up.pop();
             if (check_op != nullptr) {
                 look_up.push(check_op->right());
                 look_up.push(check_op->left());
+            }
+            // A sequence's steps run before it, first step first: pushed last, the first step is popped last and so
+            // lands on top of sub_plans.
+            for (const auto& step : steps_of(popped.get())) {
+                look_up.push(step);
             }
         }
 
@@ -2593,6 +3188,9 @@ namespace services::collection::executor {
                 out.push_back(op);
                 pending.push_back(op->left().get());
                 pending.push_back(op->right().get());
+                for (const auto& step : steps_of(op)) {
+                    pending.push_back(step.get());
+                }
             }
         }
     } // namespace
@@ -2710,6 +3308,7 @@ namespace services::collection::executor {
                                                 wal_address_};
         context.txn = txn;
         context.execution_context = plan_data.context_storage_.execution_context;
+        context.place = plan_data.context_storage_.place;
         context.lowest_active_start_time = lowest_active_start_time;
         context.runner = this;
         return context;
@@ -2732,6 +3331,9 @@ namespace services::collection::executor {
                 piece_t{root,
                         parent,
                         std::pmr::vector<components::operators::operator_t*>{pieces.get_allocator().resource()}});
+            for (const auto& step : steps_of(root)) {
+                collect_pieces(step.get(), self, pieces);
+            }
             for (auto* op = root; op != nullptr; op = op->left().get()) {
                 if (op->opens_at_start()) {
                     pieces[self].opens_at_start.push_back(op);

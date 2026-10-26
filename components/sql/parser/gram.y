@@ -15667,8 +15667,8 @@ qualified_name:
 					{
 						case 1:
 						    $$->uid = NULL;
-							$$->catalogname = $1;
-							$$->schemaname = NULL;
+							$$->catalogname = NULL;
+							$$->schemaname = $1;
 							$$->relname = strVal(linitial($2));
 							break;
 						case 2:
@@ -17372,9 +17372,8 @@ makeRangeVarFromAnyName(std::pmr::memory_resource* resource, List *names, int po
 			r->relname = strVal(linitial(names));
 			break;
 		case 2:
-			/* `db.name` convention, schema is empty */
-			r->catalogname = strVal(linitial(names));
-			r->schemaname = NULL;
+			r->catalogname = NULL;
+			r->schemaname = strVal(linitial(names));
 			r->relname = strVal(lsecond(names));
 			break;
 		case 3:

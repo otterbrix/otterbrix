@@ -27,7 +27,7 @@ TEST_CASE("integration::cpp::join_key_width::int32_int64") {
     auto config = test_helpers::make_test_config(integration_fixture_path("join_key_width/int32_int64"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.narrow (k INT, a INT);"));
     REQUIRE(ok(d, "CREATE TABLE m.wide (k BIGINT, b INT);"));
     REQUIRE(ok(d, "INSERT INTO m.narrow (k, a) VALUES (1,10),(2,20),(3,30);"));
@@ -43,7 +43,7 @@ TEST_CASE("integration::cpp::join_key_width::smallint_int32") {
     auto config = test_helpers::make_test_config(integration_fixture_path("join_key_width/smallint_int32"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.s (k SMALLINT);"));
     REQUIRE(ok(d, "CREATE TABLE m.i (k INT);"));
     REQUIRE(ok(d, "INSERT INTO m.s (k) VALUES (1),(2),(3);"));
@@ -106,7 +106,7 @@ namespace {
 
     // 4294967297 and -4294967295 share their low 32 bits with 1: an INT64 key read as int32 would match x.k = 1.
     void seed_cast_key_tables(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(ok(d, "CREATE DATABASE m;"));
+        REQUIRE(ok(d, "CREATE SCHEMA m;"));
         REQUIRE(ok(d, "CREATE TABLE m.a (id INT, k INT);"));
         REQUIRE(ok(d, "CREATE TABLE m.b (id INT, k BIGINT);"));
         REQUIRE(ok(d, "CREATE TABLE m.w (id INT, p1 INT, k INT, p3 INT);"));
@@ -230,7 +230,7 @@ TEST_CASE("integration::cpp::join_key_width::cast_key_star") {
     auto config = test_helpers::make_test_config(integration_fixture_path("join_key_width/cast_key_star"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.d1 (id INT, n BIGINT);"));
     REQUIRE(ok(d, "CREATE TABLE m.d2 (id INT, n BIGINT);"));
     REQUIRE(ok(d, "CREATE TABLE m.f (a BIGINT, b BIGINT, v BIGINT);"));
@@ -252,7 +252,7 @@ TEST_CASE("integration::cpp::join_key_width::comma_join_on_function_key") {
     auto config = test_helpers::make_test_config(integration_fixture_path("join_key_width/comma_function_key"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.f (a BIGINT, v BIGINT);"));
     REQUIRE(ok(d, "CREATE TABLE m.d (id BIGINT, n BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO m.f (a, v) VALUES (1,10),(-2,20),(3,30),(-1,40);"));
@@ -276,7 +276,7 @@ TEST_CASE("integration::cpp::join_key_width::empty_side_skips_the_other_sides_ke
     auto config = test_helpers::make_test_config(integration_fixture_path("join_key_width/empty_side"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.e (id INT, k INT);"));
     REQUIRE(ok(d, "CREATE TABLE m.n (id INT, k INT);"));
     REQUIRE(ok(d, "CREATE TABLE m.s (id INT, s TEXT);"));
@@ -320,7 +320,7 @@ TEST_CASE("integration::cpp::join_key_width::computed_build_key_across_chunks") 
     auto config = test_helpers::make_test_config(integration_fixture_path("join_key_width/computed_build_key"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.p (k BIGINT, s TEXT);"));
     REQUIRE(ok(d, "CREATE TABLE m.q (k BIGINT, v BIGINT, s TEXT);"));
     constexpr unsigned rows = 3000;
@@ -377,7 +377,7 @@ TEST_CASE("integration::cpp::join_key_width::left_join_onto_empty_build_side") {
     auto config = test_helpers::make_test_config(integration_fixture_path("join_key_width/left_join_empty_build"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.a (k INT);"));
     REQUIRE(ok(d, "CREATE TABLE m.empty (k INT);"));
     REQUIRE(ok(d, "CREATE TABLE m.b (k INT);"));

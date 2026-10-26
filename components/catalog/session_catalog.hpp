@@ -12,6 +12,9 @@ namespace components::catalog {
         std::string timezone_name{"UTC"};
         core::date::timezone_offset_t timezone_offset{};
         bool autocommit{true};
+        // The current place as the session keeps it (see place.hpp): 'database.schema' or
+        // 'connection.database.schema', or one part as ALTER SYSTEM SET wrote it, read against main.
+        std::string search_path{"main.public"};
     };
 
 } // namespace components::catalog

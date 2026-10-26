@@ -2349,6 +2349,8 @@ namespace services::disk {
             const char* kind;
             // A row with this flag set is a tombstone and holds no name; -1 when the catalog has none
             int64_t tombstone_col;
+            // The scope column is text (pg_database.datconnection), not an oid.
+            bool text_scope{false};
         };
 
         const catalog_name_key_t* catalog_name_key_for(components::catalog::oid_t table_oid) {
@@ -2360,13 +2362,24 @@ namespace services::disk {
                                                              core::error_code_t::table_already_exists,
                                                              "relation",
                                                              int64_t{-1}};
-            static constexpr catalog_name_key_t pg_namespace_key{cat::pg_namespace_col::nspname,
-                                                                 int64_t{-1},
-                                                                 "nspname",
-                                                                 nullptr,
-                                                                 core::error_code_t::database_already_exists,
-                                                                 "database",
-                                                                 int64_t{-1}};
+            static constexpr catalog_name_key_t pg_namespace_key{
+                cat::pg_namespace_col::nspname,
+                static_cast<int64_t>(cat::pg_namespace_col::nspdatabase),
+                "nspname",
+                "nspdatabase",
+                core::error_code_t::schema_already_exists,
+                "schema",
+                int64_t{-1}};
+            // A database name is unique per connection: a local database and a connection's may share it.
+            static constexpr catalog_name_key_t pg_database_key{
+                cat::pg_database_col::datname,
+                static_cast<int64_t>(cat::pg_database_col::datconnection),
+                "datname",
+                "datconnection",
+                core::error_code_t::database_already_exists,
+                "database",
+                int64_t{-1},
+                true};
             static constexpr catalog_name_key_t pg_type_key{cat::pg_type_col::typname,
                                                             static_cast<int64_t>(cat::pg_type_col::typnamespace),
                                                             "typname",
@@ -2387,6 +2400,8 @@ namespace services::disk {
                     return &pg_class_key;
                 case cat::well_known_oid::pg_namespace_table:
                     return &pg_namespace_key;
+                case cat::well_known_oid::pg_database_table:
+                    return &pg_database_key;
                 case cat::well_known_oid::pg_type_table:
                     return &pg_type_key;
                 case cat::well_known_oid::pg_attribute_table:
@@ -2465,6 +2480,13 @@ namespace services::disk {
                 std::string_view name;
                 bool has_ns;
                 std::uint32_t ns;
+                std::string_view ns_text;
+            };
+            const auto oid_scope = [&key](const components::vector::data_chunk_t& rows, uint64_t column, uint64_t i) {
+                return key.text_scope ? std::uint32_t{0} : rows.get_value<std::uint32_t>(column, i);
+            };
+            const auto text_scope = [&key](const components::vector::data_chunk_t& rows, uint64_t column, uint64_t i) {
+                return key.text_scope ? rows.get_value<std::string_view>(column, i) : std::string_view{};
             };
             std::pmr::vector<incoming_name_t> incoming(resource);
             for (uint64_t in_r = 0; in_r < row.size(); in_r++) {
@@ -2474,10 +2496,12 @@ namespace services::disk {
                 }
                 const bool has_ns =
                     key.ns_col >= 0 && in_ns_col >= 0 && !row.is_null(static_cast<uint64_t>(in_ns_col), in_r);
+                const auto ns_col = static_cast<uint64_t>(in_ns_col);
                 incoming.push_back(
                     incoming_name_t{row.get_value<std::string_view>(static_cast<uint64_t>(in_name_col), in_r),
                                     has_ns,
-                                    has_ns ? row.get_value<std::uint32_t>(static_cast<uint64_t>(in_ns_col), in_r) : 0});
+                                    has_ns ? oid_scope(row, ns_col, in_r) : 0,
+                                    has_ns ? text_scope(row, ns_col, in_r) : std::string_view{}});
             }
             if (incoming.empty()) {
                 return core::error_t::no_error();
@@ -2508,13 +2532,15 @@ namespace services::disk {
                     }
                     auto held_name = chunk.get_value<std::string_view>(held_name_col, i);
                     bool held_has_ns = held_ns_col >= 0 && !chunk.is_null(static_cast<uint64_t>(held_ns_col), i);
-                    std::uint32_t held_ns =
-                        held_has_ns ? chunk.get_value<std::uint32_t>(static_cast<uint64_t>(held_ns_col), i) : 0;
+                    const auto ns_col = static_cast<uint64_t>(held_ns_col);
+                    const std::uint32_t held_ns = held_has_ns ? oid_scope(chunk, ns_col, i) : 0;
+                    const std::string_view held_ns_text =
+                        held_has_ns ? text_scope(chunk, ns_col, i) : std::string_view{};
                     for (const auto& wanted : incoming) {
                         if (held_name != wanted.name) {
                             continue;
                         }
-                        if (wanted.has_ns && held_has_ns && held_ns != wanted.ns) {
+                        if (wanted.has_ns && held_has_ns && (held_ns != wanted.ns || held_ns_text != wanted.ns_text)) {
                             continue;
                         }
                         const uint64_t stamp = table.row_group()->delete_stamp(got_ids[i]);

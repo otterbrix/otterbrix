@@ -251,9 +251,7 @@ namespace services::planner::impl {
                     // refusing here (not the `none` sentinel) stops a regression from silently answering a
                     // synthetic row for a nonexistent table.
                     const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
-                    return unresolved_table_refusal(context.resource,
-                                                    static_cast<const std::string&>(match_node->target().database),
-                                                    static_cast<const std::string&>(match_node->target().collection));
+                    return unresolved_table_refusal(context.resource, match_node->target());
                 }
             }
             assert(false && "unknown source of a WHERE scan");

@@ -94,7 +94,7 @@ TEST_CASE("c-api: CREATE TABLE without columns returns successful empty cursor",
     test_db_t t("create_collection");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE mydb;");
+    run_ok(t.ptr, "CREATE SCHEMA mydb;");
 
     cursor_ptr cur = execute_sql(t.ptr, sv(std::string("CREATE TABLE mydb.users();")));
     REQUIRE(cur != nullptr);
@@ -103,7 +103,7 @@ TEST_CASE("c-api: CREATE TABLE without columns returns successful empty cursor",
     release_cursor(cur);
 }
 
-TEST_CASE("c-api: CREATE TABLE in a database that does not exist is refused", "[c-api][ddl]") {
+TEST_CASE("c-api: CREATE TABLE in a schema that does not exist is refused", "[c-api][ddl]") {
     test_db_t t("create_collection_no_db");
     REQUIRE(t.ptr != nullptr);
 
@@ -112,10 +112,11 @@ TEST_CASE("c-api: CREATE TABLE in a database that does not exist is refused", "[
     REQUIRE(cursor_is_error(cur));
     const char* reason = cursor_error_message(cur);
     REQUIRE(reason != nullptr);
-    CHECK(std::string(reason) == "database \"nodb\" does not exist");
+    CHECK(std::string(reason) == "schema \"nodb\" does not exist");
+    CHECK(cursor_error_code(cur) == EC_SCHEMA_NOT_EXISTS);
     release_cursor(cur);
 
-    run_ok(t.ptr, "CREATE DATABASE otherdb;");
+    run_ok(t.ptr, "CREATE SCHEMA otherdb;");
     cursor_ptr other = execute_sql(t.ptr, sv(std::string("CREATE TABLE otherdb.t();")));
     REQUIRE(other != nullptr);
     CHECK(cursor_is_success(other));
@@ -126,7 +127,7 @@ TEST_CASE("c-api: document flow in a database created through the C API", "[c-ap
     test_db_t t("document_flow");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE docdb;");
+    run_ok(t.ptr, "CREATE SCHEMA docdb;");
     run_ok(t.ptr, "CREATE TABLE docdb.docs();");
 
     run_ok(t.ptr, "INSERT INTO docdb.docs (id, name) VALUES (1, 'a'), (2, 'b');");
@@ -142,9 +143,9 @@ TEST_CASE("c-api: DROP TABLE then DROP DATABASE succeed with empty cursors", "[c
     REQUIRE(t.ptr != nullptr);
 
     run_ok(t.ptr, "CREATE DATABASE dropme;");
-    run_ok(t.ptr, "CREATE TABLE dropme.t();");
+    run_ok(t.ptr, "CREATE TABLE dropme.public.t();");
 
-    cursor_ptr drop_coll = execute_sql(t.ptr, sv(std::string("DROP TABLE dropme.t;")));
+    cursor_ptr drop_coll = execute_sql(t.ptr, sv(std::string("DROP TABLE dropme.public.t;")));
     REQUIRE(drop_coll != nullptr);
     REQUIRE(cursor_is_success(drop_coll));
     REQUIRE_FALSE(cursor_is_error(drop_coll));
@@ -163,7 +164,7 @@ TEST_CASE("c-api: DDL via execute_sql returns successful empty cursors", "[c-api
     test_db_t t("ddl_sql");
     REQUIRE(t.ptr != nullptr);
 
-    cursor_ptr db_cur = execute_sql(t.ptr, sv(std::string("CREATE DATABASE testdb;")));
+    cursor_ptr db_cur = execute_sql(t.ptr, sv(std::string("CREATE SCHEMA testdb;")));
     REQUIRE(db_cur != nullptr);
     REQUIRE(cursor_is_success(db_cur));
     REQUIRE(cursor_size(db_cur) == 0);
@@ -182,7 +183,7 @@ TEST_CASE("c-api: cursor_size matches inserted row count", "[c-api][cursor]") {
     test_db_t t("select_size");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE test_db;");
+    run_ok(t.ptr, "CREATE SCHEMA test_db;");
     run_ok(t.ptr, "CREATE TABLE test_db.users (name string, age bigint);");
     run_ok(t.ptr, "INSERT INTO test_db.users (name, age) VALUES ('Alice', 30), ('Bob', 25);");
 
@@ -197,7 +198,7 @@ TEST_CASE("c-api: cursor_affected_rows reports the rows a write changed", "[c-ap
     test_db_t t("affected_rows");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE test_db;");
+    run_ok(t.ptr, "CREATE SCHEMA test_db;");
     run_ok(t.ptr, "CREATE TABLE test_db.users (name string, age bigint);");
 
     auto affected = [&](const std::string& sql, uint64_t* rows) {
@@ -232,7 +233,7 @@ TEST_CASE("c-api: cursor_created_oid reports the table a CREATE TABLE created", 
     test_db_t t("created_oid");
     REQUIRE(t.ptr != nullptr);
 
-    cursor_ptr database = execute_sql(t.ptr, sv(std::string("CREATE DATABASE test_db;")));
+    cursor_ptr database = execute_sql(t.ptr, sv(std::string("CREATE SCHEMA test_db;")));
     REQUIRE(cursor_is_success(database));
     uint32_t oid = 7;
     CHECK_FALSE(cursor_created_oid(database, &oid));
@@ -348,7 +349,7 @@ TEST_CASE("c-api: cursor_column_logical_type rejects negative and OOB indices", 
     test_db_t t("col_type_oob");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE typedb;");
+    run_ok(t.ptr, "CREATE SCHEMA typedb;");
     run_ok(t.ptr, "CREATE TABLE typedb.t (n integer);");
     run_ok(t.ptr, "INSERT INTO typedb.t (n) VALUES (1);");
 
@@ -367,7 +368,7 @@ TEST_CASE("c-api: cursor_column_name returns nullptr for OOB index", "[c-api][cu
     test_db_t t("col_name_oob");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE namedb;");
+    run_ok(t.ptr, "CREATE SCHEMA namedb;");
     run_ok(t.ptr, "CREATE TABLE namedb.t (n integer);");
     run_ok(t.ptr, "INSERT INTO namedb.t (n) VALUES (1);");
 
@@ -389,7 +390,7 @@ TEST_CASE("c-api: cursor_column_name and value_get_string lend the handle's own 
     test_db_t t("borrowed_strings");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr, "CREATE TABLE db.t (name string);");
     run_ok(t.ptr, "INSERT INTO db.t (name) VALUES ('lent');");
 
@@ -429,7 +430,7 @@ TEST_CASE("c-api: cursor_column_logical_type reports basic types", "[c-api][curs
     test_db_t t("col_types");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE typedb;");
+    run_ok(t.ptr, "CREATE SCHEMA typedb;");
     run_ok(t.ptr, "CREATE TABLE typedb.mix (i integer, big bigint, flag boolean, val double, label string);");
     run_ok(t.ptr, "INSERT INTO typedb.mix (i, big, flag, val, label) VALUES (1, 2, true, 3.5, 'x');");
 
@@ -453,7 +454,7 @@ TEST_CASE("c-api: cursor_has_next is true on non-empty SELECT", "[c-api][cursor]
     test_db_t t("has_next");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr, "CREATE TABLE db.t();");
 
     run_ok(t.ptr, "INSERT INTO db.t (x) VALUES (1), (2), (3);");
@@ -472,7 +473,7 @@ TEST_CASE("c-api: value dispatch for an integer column", "[c-api][value]") {
     test_db_t t("value_int");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr, "CREATE TABLE db.t (num bigint);");
     run_ok(t.ptr, "INSERT INTO db.t (num) VALUES (42);");
 
@@ -498,7 +499,7 @@ TEST_CASE("c-api: value dispatch for a string column", "[c-api][value]") {
     test_db_t t("value_string");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr, "CREATE TABLE db.t (name string);");
     run_ok(t.ptr, "INSERT INTO db.t (name) VALUES ('hello');");
 
@@ -527,7 +528,7 @@ TEST_CASE("c-api: cursor_get_value returns nullptr for OOB row/column", "[c-api]
     test_db_t t("value_oob");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr, "CREATE TABLE db.t (num bigint);");
     run_ok(t.ptr, "INSERT INTO db.t (num) VALUES (7);");
 
@@ -731,7 +732,7 @@ TEST_CASE("c-api: a cursor and a value outlive otterbrix_destroy", "[c-api][life
     test_db_t t("outlive_destroy");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr, "CREATE TABLE db.t (name string);");
     run_ok(t.ptr, "INSERT INTO db.t (name) VALUES ('kept');");
 
@@ -794,7 +795,7 @@ TEST_CASE("c-api: value kinds of every scalar column type", "[c-api][value]") {
     test_db_t t("value_kinds");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr,
            "CREATE TABLE db.t (b boolean, i bigint, u ubigint, d double, s string, dt date, dec decimal(10,2), "
            "l bigint[], n bigint);");
@@ -849,7 +850,7 @@ TEST_CASE("c-api: a 128-bit and a NULL UUID cell", "[c-api][value]") {
     test_db_t t("value_wide");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE db;");
+    run_ok(t.ptr, "CREATE SCHEMA db;");
     run_ok(t.ptr, "CREATE TABLE db.t (h hugeint, u uuid);");
     run_ok(t.ptr, "INSERT INTO db.t (h, u) VALUES (5, NULL);");
 
@@ -930,7 +931,7 @@ TEST_CASE("c-api: a ROLLBACK undoes the INSERT its BEGIN opened, one handle bein
     test_db_t t("one_session_rollback");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE s;");
+    run_ok(t.ptr, "CREATE SCHEMA s;");
     run_ok(t.ptr, "CREATE TABLE s.t (a BIGINT);");
     run_ok(t.ptr, "BEGIN;");
     run_ok(t.ptr, "INSERT INTO s.t (a) VALUES (1);");
@@ -946,7 +947,7 @@ TEST_CASE("c-api: execute_sql_params runs in the session of its handle", "[c-api
     test_db_t t("one_session_params");
     REQUIRE(t.ptr != nullptr);
 
-    run_ok(t.ptr, "CREATE DATABASE s;");
+    run_ok(t.ptr, "CREATE SCHEMA s;");
     run_ok(t.ptr, "CREATE TABLE s.t (a BIGINT);");
     run_ok(t.ptr, "BEGIN;");
     sql_param_t param{};

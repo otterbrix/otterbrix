@@ -163,7 +163,9 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
     {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE ns_probe;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA ns_probe;")->is_success());
+        // main.public is a schema of fixed oid, found without a read: the registration's place is one that is read.
+        REQUIRE(test_helpers::exec(dispatcher, "ALTER SYSTEM SET search_path = 'ns_probe';")->is_success());
     }
 
     const auto marker =
@@ -241,7 +243,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_healthy_registra
 
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE ns_probe;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA ns_probe;")->is_success());
 
     auto ok = dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()));
     REQUIRE_FALSE(ok.contains_error());
@@ -258,7 +260,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_registration_lef
     {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE d;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA d;")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE d.t (id BIGINT);")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO d.t (id) VALUES (1), (2), (3);")->is_success());
         REQUIRE_FALSE(dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()))
@@ -337,7 +339,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_refused_unregist
 
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE d;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA d;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE d.t (id BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO d.t (id) VALUES (1), (2), (3);")->is_success());
     REQUIRE_FALSE(

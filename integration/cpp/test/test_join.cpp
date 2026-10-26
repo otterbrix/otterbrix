@@ -28,7 +28,7 @@ TEST_CASE("integration::cpp::test_join") {
     {
         auto session = otterbrix::session_id_t();
         {
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name + ";");
             dispatcher->execute_sql(session, "CREATE TABLE " + database_name + "." + collection_name_1 + "();");
             dispatcher->execute_sql(session, "CREATE TABLE " + database_name + "." + collection_name_2 + "();");
         }

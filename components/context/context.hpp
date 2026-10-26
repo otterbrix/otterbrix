@@ -4,6 +4,7 @@
 #include <actor-zeta/detail/future.hpp>
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/place.hpp>
 #include <components/catalog/settings.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/execution_context/graph_execution_context.hpp>
@@ -43,6 +44,8 @@ namespace components::pipeline {
 
         table::transaction_data txn{0, 0};
         components::graph_execution_context execution_context{};
+        // The statement's place: what a short name is completed with.
+        catalog::place_t place{};
         // VACUUM/MVCC threshold; no transaction_manager_t* here -- the dispatcher owns all txn state.
         uint64_t lowest_active_start_time{0};
 

@@ -56,7 +56,7 @@ TEST_CASE("integration::cpp::engine_startup_refusal::an_executor_pool_of_any_siz
         {
             test_spaces space(config);
             auto* d = space.dispatcher();
-            REQUIRE(exec(d, "CREATE DATABASE p;")->is_success());
+            REQUIRE(exec(d, "CREATE SCHEMA p;")->is_success());
             REQUIRE(exec(d, "CREATE TABLE p.t (id BIGINT);")->is_success());
             REQUIRE(exec(d, "INSERT INTO p.t (id) VALUES (1), (2), (3);")->is_success());
         }
@@ -95,7 +95,7 @@ TEST_CASE("integration::cpp::engine_startup_refusal::an_unreadable_namespace_dir
     config.log.level = log_t::level::off;
     {
         test_spaces space(config);
-        REQUIRE(exec(space.dispatcher(), "CREATE DATABASE u;")->is_success());
+        REQUIRE(exec(space.dispatcher(), "CREATE SCHEMA u;")->is_success());
         REQUIRE(exec(space.dispatcher(), "CREATE TABLE u.t (id BIGINT);")->is_success());
         REQUIRE(exec(space.dispatcher(), "INSERT INTO u.t (id) VALUES (1);")->is_success());
     }

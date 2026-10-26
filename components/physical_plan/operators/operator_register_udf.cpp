@@ -23,8 +23,10 @@ namespace components::operators {
     operator_register_udf_t::operator_register_udf_t(std::pmr::memory_resource* resource,
                                                      log_t log,
                                                      components::compute::function_ptr function,
-                                                     executor_uids_t executor_uids)
+                                                     executor_uids_t executor_uids,
+                                                     components::catalog::oid_t schema_oid)
         : read_only_operator_t(resource, std::move(log), operator_type::register_udf)
+        , schema_oid_(schema_oid)
         , function_(std::move(function))
         , executor_uids_(std::move(executor_uids)) {}
 
@@ -74,7 +76,7 @@ namespace components::operators {
             }
             for (std::size_t i = 0; i < signatures.size(); ++i) {
                 const auto existing = std::find_if(matches.begin(), matches.end(), [&](const auto& m) {
-                    return m.signature.proargmatchers == signatures[i].proargmatchers;
+                    return m.namespace_oid == schema_oid_ && m.signature.proargmatchers == signatures[i].proargmatchers;
                 });
                 if (existing == matches.end()) {
                     continue;
@@ -133,41 +135,8 @@ namespace components::operators {
                 }
             }
 
-            // 4. Persist to pg_proc, attached to the first existing user namespace;
-            //    if none exists, the row lives in pg_catalog.
-            catalog::oid_t target_ns = catalog::well_known_oid::pg_catalog_namespace;
-            {
-                auto [_ln, lnf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                              &services::disk::manager_disk_t::list_namespaces,
-                                                              exec_ctx);
-                auto ns_names_r = co_await std::move(lnf);
-                if (ns_names_r.has_error()) {
-                    // Losing this lookup does not merely lose a lookup: target_ns would stay
-                    // pg_catalog and the pg_proc row would be written into the WRONG namespace.
-                    set_error(ns_names_r.error());
-                    mark_failed();
-                    co_return;
-                }
-                for (auto& nname : ns_names_r.value()) {
-                    if (!nname.empty() && nname != "pg_catalog") {
-                        auto [_rn, rnf] =
-                            actor_zeta::otterbrix::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::resolve_namespace,
-                                                        exec_ctx,
-                                                        std::string(nname));
-                        auto rns_r = co_await std::move(rnf);
-                        if (rns_r.has_error()) {
-                            set_error(rns_r.error());
-                            mark_failed();
-                            co_return;
-                        }
-                        if (rns_r.value().found) {
-                            target_ns = rns_r.value().oid;
-                            break;
-                        }
-                    }
-                }
-            }
+            // 4. Persist to pg_proc, in the schema of the registering session's place.
+            const catalog::oid_t target_ns = schema_oid_;
 
             const std::int64_t prouid = uids.empty() ? std::int64_t{0} : static_cast<std::int64_t>(uids.front());
 

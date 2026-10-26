@@ -37,7 +37,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_select_mid_flushes") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE FlushDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA FlushDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.src (id bigint, grp int, val bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.dst (id bigint, grp int, val bigint);")->is_success());
     seed_source(dispatcher, "FlushDb.src");
@@ -82,7 +82,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::update_mid_flushes") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE FlushDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA FlushDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.t (id bigint, grp int, val bigint);")->is_success());
     seed_source(dispatcher, "FlushDb.t");
 
@@ -147,7 +147,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::error_after_mid_flush_reverts_al
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE FlushDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA FlushDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.src (id bigint, grp int, val bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.acc (id bigint, grp int, val bigint);")->is_success());
     REQUIRE(exec(dispatcher, "ALTER TABLE FlushDb.acc ADD CONSTRAINT uq_acc_id UNIQUE (id);")->is_success());
@@ -205,7 +205,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::insert_from_recursive_cte_mid_fl
 
     constexpr unsigned kCteRows = 1500; // > kFlushThreshold (512): the gate must trip mid-pump
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE FlushDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA FlushDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.dst (n bigint);")->is_success());
 
     const auto flushes_before = services::collection::executor::dml_flush_count();
@@ -244,7 +244,7 @@ TEST_CASE("integration::cpp::bounded_dml_flush::delete_using_limit_spans_flushes
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE FlushDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA FlushDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.tgt (id bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE FlushDb.src (k bigint);")->is_success());
     // Every target row joins a src row (k in 0..9), so all rows are eligible; only the LIMIT stops the delete.

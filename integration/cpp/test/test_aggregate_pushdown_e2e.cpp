@@ -14,7 +14,7 @@ using namespace test_helpers;
 namespace {
 
     std::string seed(otterbrix::wrapper_dispatcher_t* dispatcher, char relkind) {
-        exec(dispatcher, "CREATE DATABASE TestDatabase;");
+        exec(dispatcher, "CREATE SCHEMA TestDatabase;");
         const std::string table = relkind == 'g' ? "TestDatabase.docs" : "TestDatabase.TestCollection";
         if (relkind == 'g') {
             // Empty column list => relkind='g' (dynamic schema); g,v register on the first INSERT.
@@ -232,7 +232,7 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_aggregation_bails_und
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    exec(dispatcher, "CREATE DATABASE TestDatabase;");
+    exec(dispatcher, "CREATE SCHEMA TestDatabase;");
     REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.t1 (g bigint, x bigint, k bigint, a bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.t2 (k bigint, b bigint, c bigint);")->is_success());
     REQUIRE(exec(dispatcher,
@@ -267,7 +267,7 @@ TEST_CASE("integration::cpp::aggregate_pushdown_e2e::eager_partial_min_keeps_dou
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    exec(dispatcher, "CREATE DATABASE TestDatabase;");
+    exec(dispatcher, "CREATE SCHEMA TestDatabase;");
     REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.a (x double, g bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.b (k bigint);")->is_success());
     REQUIRE(exec(dispatcher,

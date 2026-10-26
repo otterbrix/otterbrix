@@ -5,7 +5,7 @@
 #include <integration/cpp/connection.hpp>
 #include <unistd.h>
 
-static const core::dbname_t database_name{"testdatabase"};
+static const core::schema_t database_name{"testdatabase"};
 static const core::relname_t collection_name{"testcollection"};
 constexpr size_t doc_num = 1000;
 constexpr size_t num_threads = 4;
@@ -21,7 +21,7 @@ TEST_CASE("integration::cpp::test_otterbrix_multithread") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -91,7 +91,7 @@ TEST_CASE("integration::cpp::test_connectors") {
         auto* dispatcher = otterbrix->dispatcher();
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -157,7 +157,7 @@ TEST_CASE("integration::cpp::test_connectors") {
 namespace {
 
     void create_marks(otterbrix::connection_t& connection) {
-        REQUIRE(connection.execute("CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(connection.execute("CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(connection.execute("CREATE TABLE TestDatabase.marks (id bigint);")->is_success());
     }
 

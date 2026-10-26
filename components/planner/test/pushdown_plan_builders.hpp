@@ -20,7 +20,7 @@
 
 namespace planner_test {
 
-    inline core::dbname_t dbn() { return core::dbname_t{std::string{"database"}}; }
+    inline core::schema_t dbn() { return core::schema_t{std::string{"database"}}; }
     inline core::relname_t reln() { return core::relname_t{std::string{"collection"}}; }
 
     // Wrap `group` in an aggregate_t at `table_oid` (no output types, not distinct).

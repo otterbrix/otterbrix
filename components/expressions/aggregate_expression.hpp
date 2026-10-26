@@ -33,6 +33,8 @@ namespace components::expressions {
         const compute::function* function() const noexcept;
         void set_pins(std::pmr::vector<compute::function_pin_t> pins);
         const std::pmr::vector<compute::function_pin_t>& pins() const noexcept;
+        void set_scope(const compute::function_scope_t& scope) noexcept;
+        const compute::function_scope_t& scope() const noexcept;
         std::pmr::vector<param_storage>& params();
         const std::pmr::vector<param_storage>& params() const;
 

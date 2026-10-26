@@ -18,7 +18,7 @@ using namespace components::logical_plan;
 using namespace components::expressions;
 
 namespace {
-    core::dbname_t adb() { return core::dbname_t{std::string{"database"}}; }
+    core::schema_t adb() { return core::schema_t{std::string{"database"}}; }
     core::relname_t arel() { return core::relname_t{std::string{"collection"}}; }
 
     using core::pmr::default_resource_counter_t;

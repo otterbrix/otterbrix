@@ -10,7 +10,7 @@ namespace {
     void setup(otterbrix::wrapper_dispatcher_t* dispatcher) {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -211,7 +211,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using") {
     auto* dispatcher = space.dispatcher();
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -341,7 +341,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using_absolute_row_ids") {
     auto* dispatcher = space.dispatcher();
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -426,7 +426,7 @@ TEST_CASE("integration::cpp::test_returning::update_from") {
     auto* dispatcher = space.dispatcher();
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -540,7 +540,7 @@ TEST_CASE("integration::cpp::test_returning::roundtrip") {
     auto* dispatcher = space.dispatcher();
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -714,7 +714,7 @@ TEST_CASE("integration::cpp::test_returning::update_from_absolute_row_ids") {
     auto* dispatcher = space.dispatcher();
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -819,7 +819,7 @@ TEST_CASE("integration::cpp::test_returning::join_dml_streaming_multibatch") {
     auto* dispatcher = space.dispatcher();
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -991,7 +991,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using_returning_boolean_read
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.T (k bigint, flag boolean);")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.S (k bigint, flag boolean);")->is_success());
     // T row 0 is unmatched with a NULL flag, so the matched row 1 is output row 0 over a NULL outer position.
@@ -1034,7 +1034,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using_returning_slices_outli
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.Orders (id bigint, customer_id bigint, note string);")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.Customers (id bigint, name string);")->is_success());
     {
@@ -1096,7 +1096,7 @@ TEST_CASE("integration::cpp::test_returning::delete_returning_over_filtered_scan
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.T (id bigint, note string);")->is_success());
     std::string sql = "INSERT INTO TestDatabase.T (id, note) VALUES ";
     for (int i = 0; i < kRows; ++i) {
@@ -1130,7 +1130,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using_returning_casts_compos
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.L (id bigint, v bigint[]);")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.S (id bigint);")->is_success());
     // L row 0 is unmatched, so every matched row sits at an output position other than its own.
@@ -1165,7 +1165,7 @@ TEST_CASE("integration::cpp::test_returning::delete_using_returning_expression_o
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    REQUIRE(exec("CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.A (id bigint);")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.B (id bigint, w bigint);")->is_success());
     REQUIRE(exec("INSERT INTO TestDatabase.A (id) VALUES (0), (1), (2), (3);")->is_success());

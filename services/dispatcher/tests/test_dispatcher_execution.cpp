@@ -271,7 +271,7 @@ TEST_CASE("services::dispatcher::insert_select_registers_computed_columns") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("insert_select_computed"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE cdc;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA cdc;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cdc.src (id bigint, price bigint);")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO cdc.src (id, price) VALUES (1, 10), (2, 20);")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cdc.docs ();")->is_success());
@@ -300,7 +300,7 @@ TEST_CASE("services::dispatcher::alter_unresolved_table_is_refused") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("alter_unresolved"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
 
     auto cur = test.execute_sql("ALTER TABLE db.no_such_table ADD COLUMN extra bigint;");
     REQUIRE(cur->is_error());
@@ -312,7 +312,7 @@ TEST_CASE("services::dispatcher::boolean_subquery_unstamped_schema_is_refused") 
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("bool_subq_unstamped"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO db.t (b) VALUES (1);")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.docs ();")->is_success());
@@ -325,7 +325,7 @@ TEST_CASE("services::dispatcher::array_equality_subquery_unstamped_schema_is_ref
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("array_subq_unstamped"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO db.t (b) VALUES (1);")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.docs ();")->is_success());
@@ -342,7 +342,7 @@ TEST_CASE("services::dispatcher::host_optimizer_rules_reach_optimize") {
         {components::planner::optimizer_stage::last, &counting_host_pass}};
     dispatcher_fixture test(mr.get(), dispatcher_dir("host_pass"), rules);
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO db.t (b) VALUES (7);")->is_success());
     REQUIRE(test.execute_sql("SELECT * FROM db.t;")->is_success());
@@ -355,8 +355,8 @@ TEST_CASE("services::dispatcher::cross_db_foreign_key_binds") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("cross_db_fk"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db1;")->is_success());
-    REQUIRE(test.execute_sql("CREATE DATABASE db2;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db1;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db2;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db1.parent (id bigint, PRIMARY KEY (id));")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO db1.parent (id) VALUES (1);")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db2.child (pid bigint);")->is_success());
@@ -409,7 +409,7 @@ TEST_CASE("services::dispatcher::alter_add_column_gates_persistable_type") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("alter_add_gate"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
 
     // LIST nested past MAX_SPEC_DEPTH (64) — encode_type_spec refuses it.
@@ -420,7 +420,7 @@ TEST_CASE("services::dispatcher::alter_add_column_gates_persistable_type") {
     auto node = components::logical_plan::make_node_alter_table_add_column(
         mr.get(),
         components::table::column_definition_t{"too_deep", deep});
-    node->set_target(qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
+    node->set_target(qualified_name_t{core::schema_t{"db"}, core::relname_t{"t"}});
     components::logical_plan::execution_plan_t plan{mr.get(),
                                                     components::logical_plan::node_ptr{node},
                                                     components::logical_plan::make_parameter_node(mr.get())};
@@ -435,7 +435,7 @@ TEST_CASE("services::dispatcher::insert_select_column_list_renames_into_computed
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("insert_select_rename_computed"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE cdd;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA cdd;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cdd.src (a bigint, b bigint);")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO cdd.src (a, b) VALUES (10, 100), (20, 200);")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cdd.docs ();")->is_success());
@@ -473,7 +473,7 @@ TEST_CASE("services::dispatcher::create_index_refuses_a_taken_name") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("create_index_name_unique"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE cdi;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA cdi;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cdi.t (a bigint, b bigint);")->is_success());
     REQUIRE(test.execute_sql("CREATE INDEX idx ON cdi.t (a);")->is_success());
 
@@ -493,7 +493,7 @@ TEST_CASE("services::dispatcher::insert_names_the_all_null_column_it_drops") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("insert_all_null_column_named"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE anc;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA anc;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE anc.t ();")->is_success());
 
     auto cur = test.execute_sql("INSERT INTO anc.t (a, x) VALUES (NULL, 'z');");
@@ -523,7 +523,7 @@ TEST_CASE("services::dispatcher::create_index_refuses_without_an_index_manager")
                             {},
                             /*wire_index=*/false);
 
-    REQUIRE(test.execute_sql("CREATE DATABASE cim;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA cim;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cim.t (a bigint);")->is_success());
 
     auto cur = test.execute_sql("CREATE INDEX idx ON cim.t (a);");
@@ -537,7 +537,7 @@ TEST_CASE("services::dispatcher::alter_add_column_default_is_coerced_like_create
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("alter_add_default_type"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
 
     REQUIRE(test.execute_sql("CREATE TABLE db.created (a bigint, c integer DEFAULT 7);")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO db.created (a) VALUES (1);")->is_success());
@@ -619,7 +619,7 @@ TEST_CASE("services::dispatcher::default_fills_every_row_of_a_large_insert") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("default_fill_large"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (a bigint, s text DEFAULT 'filled', n bigint DEFAULT NULL, "
                              "d numeric(10,2) DEFAULT 12.5);")
                 ->is_success());

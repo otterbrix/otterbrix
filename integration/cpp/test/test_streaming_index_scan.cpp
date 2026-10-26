@@ -61,7 +61,7 @@ TEST_CASE("integration::cpp::streaming_index_scan::indexed_select_streams_many_w
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE IdxDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA IdxDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE IdxDb.t (id bigint, grp int, val bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE INDEX idx_grp ON IdxDb.t (grp);")->is_success());
     seed(dispatcher);
@@ -100,7 +100,7 @@ TEST_CASE("integration::cpp::streaming_index_scan::point_lookup_and_empty_result
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE IdxDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA IdxDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE IdxDb.t (id bigint, grp int, val bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE INDEX idx_id ON IdxDb.t (id);")->is_success());
     seed(dispatcher);
@@ -142,7 +142,7 @@ TEST_CASE("integration::cpp::streaming_index_scan::offset_limit_on_indexed_scan"
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE IdxDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA IdxDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE IdxDb.t (id bigint, grp int, val bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE INDEX idx_grp ON IdxDb.t (grp);")->is_success());
     seed(dispatcher);
@@ -165,7 +165,7 @@ TEST_CASE("integration::cpp::streaming_index_scan::indexed_delete_and_update") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE IdxDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA IdxDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE IdxDb.t (id bigint, grp int, val bigint);")->is_success());
     // Index on grp drives the index_scan SOURCE feeding the DML sink; index on id is the
     // mirror-consistency check for the streamed DELETE/UPDATE.

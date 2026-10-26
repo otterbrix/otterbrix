@@ -252,7 +252,7 @@ namespace {
     }
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
-        run_ok(d, "CREATE DATABASE vb;");
+        run_ok(d, "CREATE SCHEMA vb;");
         run_ok(d, "CREATE TABLE vb.t (a BIGINT, b STRING);");
         run_ok(d, "INSERT INTO vb.t (a, b) VALUES (1, 'x'), (2, 'y');");
     }
@@ -306,11 +306,13 @@ TEST_CASE("integration::cpp::view_binding::the_output_columns_are_the_views_attr
 TEST_CASE("integration::cpp::view_binding::an_unqualified_body_name_stays_on_the_relation_it_was_bound_to") {
     test_spaces space(config_for("unqualified"));
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE db1;");
+    run_ok(d, "CREATE SCHEMA db1;");
     run_ok(d, "CREATE TABLE db1.t (a BIGINT);");
     run_ok(d, "INSERT INTO db1.t (a) VALUES (1);");
-    run_ok(d, "CREATE VIEW db1.v AS SELECT a FROM t;");
-    run_ok(d, "CREATE DATABASE db2;");
+    auto in_db1 = otterbrix::session_id_t();
+    REQUIRE(d->execute_sql(in_db1, "SET search_path = 'db1';")->is_success());
+    REQUIRE(d->execute_sql(in_db1, "CREATE VIEW db1.v AS SELECT a FROM t;")->is_success());
+    run_ok(d, "CREATE SCHEMA db2;");
     run_ok(d, "CREATE TABLE db2.t (a BIGINT);");
     run_ok(d, "INSERT INTO db2.t (a) VALUES (2);");
 
@@ -602,7 +604,7 @@ TEST_CASE("integration::cpp::view_binding::or_replace_refuses_to_rename_a_struct
     auto* d = space.dispatcher();
     run_ok(d, "CREATE TYPE ta AS (a int);");
     run_ok(d, "CREATE TYPE tb AS (b int);");
-    run_ok(d, "CREATE DATABASE vb;");
+    run_ok(d, "CREATE SCHEMA vb;");
     run_ok(d, "CREATE TABLE vb.t1 (s ta);");
     run_ok(d, "CREATE TABLE vb.t2 (s tb);");
     run_ok(d, "CREATE VIEW vb.v AS SELECT s FROM vb.t1;");

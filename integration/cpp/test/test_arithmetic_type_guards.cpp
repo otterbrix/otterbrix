@@ -19,7 +19,7 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::mixed_bool_int_insert_survi
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA db;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -50,7 +50,7 @@ namespace {
     void setup(otterbrix::wrapper_dispatcher_t* dispatcher) {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA db;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -114,7 +114,7 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::where_null_3vl_preserved") 
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA db;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -184,7 +184,7 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::min_value_divided_by_minus_
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.big (x BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.small (x INTEGER);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.tiny (x TINYINT);")->is_success());
@@ -341,7 +341,7 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::mixed_operands_refuse_and_n
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.m (id INT, v BIGINT, d DOUBLE, s TEXT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.m (id, v, d, s) VALUES (2, 3, 2.0, 'a');")->is_success());
 

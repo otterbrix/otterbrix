@@ -31,7 +31,7 @@ import otterbrix
 @pytest.fixture(scope="module")
 def conn(tmp_path_factory):
     connection = otterbrix.connect(str(tmp_path_factory.mktemp("connection_execute_db")))
-    connection.execute("CREATE DATABASE ex;")
+    connection.execute("CREATE SCHEMA ex;")
     connection.execute("CREATE TABLE ex.rows (id INTEGER, name TEXT);")
     connection.execute("INSERT INTO ex.rows (id, name) VALUES (1, 'a'), (2, 'b'), (3, 'c');")
     yield connection
@@ -100,7 +100,7 @@ def test_a_result_outlives_the_connection_that_produced_it(tmp_path):
     result owns the batch it was handed, not a borrowed view into a space that
     `close()` may have been the last reference to."""
     connection = otterbrix.connect(str(tmp_path / "outlive_db"))
-    connection.execute("CREATE DATABASE ol;")
+    connection.execute("CREATE SCHEMA ol;")
     connection.execute("CREATE TABLE ol.rows (id INTEGER);")
     connection.execute("INSERT INTO ol.rows (id) VALUES (11), (12);")
     result = connection.execute("SELECT id FROM ol.rows ORDER BY id;")

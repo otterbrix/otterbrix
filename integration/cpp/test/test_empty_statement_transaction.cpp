@@ -4,7 +4,9 @@
 #include <integration/cpp/connection.hpp>
 #include <unistd.h>
 
+#include <initializer_list>
 #include <string>
+#include <utility>
 
 namespace {
 
@@ -40,16 +42,22 @@ TEST_CASE("integration::cpp::empty_statement_transaction::each_empty_success_end
     auto instance = test_make_otterbrix(config);
     otterbrix::connection_t connection(instance);
     otterbrix::connection_t writer(instance);
-    require_ok(connection, "CREATE DATABASE leakdb;");
+    require_ok(connection, "CREATE SCHEMA leakdb;");
     require_ok(connection, "CREATE TABLE leakdb.t (id bigint);");
 
+    SECTION("CREATE SCHEMA IF NOT EXISTS on an existing schema") {
+        require_next_statement_sees_a_fresh_snapshot(connection, writer, "CREATE SCHEMA IF NOT EXISTS leakdb;");
+    }
     SECTION("CREATE DATABASE IF NOT EXISTS on an existing database") {
-        require_next_statement_sees_a_fresh_snapshot(connection, writer, "CREATE DATABASE IF NOT EXISTS leakdb;");
+        require_next_statement_sees_a_fresh_snapshot(connection, writer, "CREATE DATABASE IF NOT EXISTS main;");
     }
     SECTION("CREATE TABLE IF NOT EXISTS on an existing table") {
         require_next_statement_sees_a_fresh_snapshot(connection,
                                                      writer,
                                                      "CREATE TABLE IF NOT EXISTS leakdb.t (id bigint);");
+    }
+    SECTION("DROP SCHEMA IF EXISTS on a missing schema") {
+        require_next_statement_sees_a_fresh_snapshot(connection, writer, "DROP SCHEMA IF EXISTS nosuchdb CASCADE;");
     }
     SECTION("DROP DATABASE IF EXISTS on a missing database") {
         require_next_statement_sees_a_fresh_snapshot(connection, writer, "DROP DATABASE IF EXISTS nosuchdb;");
@@ -57,7 +65,7 @@ TEST_CASE("integration::cpp::empty_statement_transaction::each_empty_success_end
     SECTION("DROP TABLE IF EXISTS on a missing table") {
         require_next_statement_sees_a_fresh_snapshot(connection, writer, "DROP TABLE IF EXISTS leakdb.nosuch;");
     }
-    SECTION("DROP TABLE IF EXISTS in a missing database") {
+    SECTION("DROP TABLE IF EXISTS in a missing schema") {
         require_next_statement_sees_a_fresh_snapshot(connection, writer, "DROP TABLE IF EXISTS nosuchdb.nosuch;");
     }
     SECTION("DROP TYPE IF EXISTS on a missing type") {
@@ -120,7 +128,7 @@ TEST_CASE("integration::cpp::empty_statement_transaction::without_if_exists_each
     config.log.level = log_t::level::off;
     auto instance = test_make_otterbrix(config);
     otterbrix::connection_t connection(instance);
-    require_ok(connection, "CREATE DATABASE leakdb;");
+    require_ok(connection, "CREATE SCHEMA leakdb;");
     require_ok(connection, "CREATE TABLE leakdb.t (id bigint);");
 
     struct refusal_t {
@@ -129,13 +137,15 @@ TEST_CASE("integration::cpp::empty_statement_transaction::without_if_exists_each
         std::string what;
     };
     const refusal_t refusals[] = {
-        {"CREATE DATABASE leakdb;", core::error_code_t::database_already_exists, "database already exists"},
+        {"CREATE SCHEMA leakdb;", core::error_code_t::schema_already_exists, "schema \"leakdb\" already exists"},
+        {"CREATE DATABASE main;", core::error_code_t::database_already_exists, "database \"main\" already exists"},
         {"CREATE TABLE leakdb.t (id bigint);", core::error_code_t::table_already_exists, "collection already exists"},
+        {"DROP SCHEMA nosuchdb CASCADE;", core::error_code_t::schema_not_exists, "schema \"nosuchdb\" does not exist"},
         {"DROP DATABASE nosuchdb;", core::error_code_t::database_not_exists, "database \"nosuchdb\" does not exist"},
         {"DROP TABLE leakdb.nosuch;",
          core::error_code_t::table_not_exists,
          "relation \"leakdb.nosuch\" does not exist"},
-        {"DROP TABLE nosuchdb.nosuch;", core::error_code_t::database_not_exists, "database does not exist"},
+        {"DROP TABLE nosuchdb.nosuch;", core::error_code_t::schema_not_exists, "schema \"nosuchdb\" does not exist"},
         {"DROP TYPE nosuch_type;", core::error_code_t::type_not_exists, "type \"nosuch_type\" does not exist"},
         {"DROP SEQUENCE leakdb.nosuch;",
          core::error_code_t::table_not_exists,
@@ -185,7 +195,7 @@ TEST_CASE("integration::cpp::empty_statement_transaction::a_missing_table_is_dec
     config.log.level = log_t::level::off;
     auto instance = test_make_otterbrix(config);
     otterbrix::connection_t connection(instance);
-    require_ok(connection, "CREATE DATABASE leakdb;");
+    require_ok(connection, "CREATE SCHEMA leakdb;");
 
     require_ok(connection, "ALTER TABLE IF EXISTS leakdb.nosuch ADD COLUMN c nosuchtype;");
     auto refused = connection.execute("ALTER TABLE leakdb.nosuch ADD COLUMN c nosuchtype;");
@@ -201,7 +211,7 @@ TEST_CASE("integration::cpp::empty_statement_transaction::an_existing_table_is_d
     config.log.level = log_t::level::off;
     auto instance = test_make_otterbrix(config);
     otterbrix::connection_t connection(instance);
-    require_ok(connection, "CREATE DATABASE leakdb;");
+    require_ok(connection, "CREATE SCHEMA leakdb;");
     require_ok(connection, "CREATE TABLE leakdb.t (id bigint);");
 
     require_ok(connection, "CREATE TABLE IF NOT EXISTS leakdb.t (a int, a int);");
@@ -211,29 +221,44 @@ TEST_CASE("integration::cpp::empty_statement_transaction::an_existing_table_is_d
     CHECK(std::string(refused->get_error().what) == "column \"a\" specified more than once");
 }
 
-TEST_CASE("integration::cpp::empty_statement_transaction::a_name_the_catalog_has_no_place_for_is_refused") {
+// A missing database, local (three parts) or a connection's (four parts), is a missing target: IF [NOT] EXISTS
+// answers it as PostgreSQL 18 answers a missing schema, and without it DROP names the missing database.
+TEST_CASE("integration::cpp::empty_statement_transaction::a_target_in_a_missing_database_or_connection") {
     auto config = test_create_config(integration_fixture_path("empty_statement_transaction_external") /
                                      std::to_string(::getpid()));
     test_clear_directory(config);
     config.log.level = log_t::level::off;
     auto instance = test_make_otterbrix(config);
     otterbrix::connection_t connection(instance);
-    require_ok(connection, "CREATE DATABASE leakdb;");
+    require_ok(connection, "CREATE SCHEMA leakdb;");
     require_ok(connection, "CREATE TABLE leakdb.t (id bigint);");
 
-    for (const std::string sql : {"DROP VIEW leakdb.s.v;",
-                                  "DROP VIEW IF EXISTS leakdb.s.v;",
-                                  "DROP MATERIALIZED VIEW leakdb.s.mv;",
+    for (const std::string sql : {"DROP VIEW IF EXISTS leakdb.s.v;",
                                   "DROP MATERIALIZED VIEW IF EXISTS leakdb.s.mv;",
                                   "DROP TABLE IF EXISTS leakdb.s.t;",
-                                  "DROP TABLE IF EXISTS u.leakdb.s.t;",
-                                  "ALTER TABLE IF EXISTS leakdb.s.t ADD COLUMN x BIGINT;",
-                                  "CREATE TABLE IF NOT EXISTS leakdb.s.t (a BIGINT);"}) {
+                                  "ALTER TABLE IF EXISTS leakdb.s.t ADD COLUMN x BIGINT;"}) {
+        require_ok(connection, sql);
+    }
+    for (const std::string sql : {"DROP VIEW leakdb.s.v;", "DROP MATERIALIZED VIEW leakdb.s.mv;"}) {
         auto refused = connection.execute(sql);
         INFO("statement: " << sql);
         REQUIRE(refused->is_error());
-        CHECK(refused->get_error().type == core::error_code_t::invalid_parameter);
-        CHECK(std::string(refused->get_error().what).find("names a uid or schema segment") != std::string::npos);
+        CHECK(refused->get_error().type == core::error_code_t::database_not_exists);
+        CHECK(std::string(refused->get_error().what) == "database \"leakdb\" does not exist");
+    }
+    {
+        auto refused = connection.execute("CREATE TABLE IF NOT EXISTS leakdb.s.t (a BIGINT);");
+        REQUIRE(refused->is_error());
+        CHECK(refused->get_error().type == core::error_code_t::database_not_exists);
+        CHECK(std::string(refused->get_error().what) == "database \"leakdb\" does not exist");
+    }
+    // A database of a connection is missing as a local one is.
+    require_ok(connection, "DROP TABLE IF EXISTS u.leakdb.s.t;");
+    {
+        auto refused = connection.execute("DROP TABLE u.leakdb.s.t;");
+        REQUIRE(refused->is_error());
+        CHECK(refused->get_error().type == core::error_code_t::database_not_exists);
+        CHECK(std::string(refused->get_error().what) == "database \"u.leakdb\" does not exist");
     }
     require_ok(connection, "SELECT id FROM leakdb.t;");
 }
@@ -254,7 +279,7 @@ TEST_CASE("integration::cpp::empty_statement_transaction::a_built_in_type_cannot
         CHECK(std::string(refused->get_error().what) ==
               "cannot drop type integer because it is required by the database system");
     }
-    require_ok(connection, "CREATE DATABASE leakdb;");
+    require_ok(connection, "CREATE SCHEMA leakdb;");
     require_ok(connection, "CREATE TABLE leakdb.t (id integer);");
 }
 
@@ -265,7 +290,7 @@ TEST_CASE("integration::cpp::empty_statement_transaction::restrict_refuses_a_dro
     config.log.level = log_t::level::off;
     auto instance = test_make_otterbrix(config);
     otterbrix::connection_t connection(instance);
-    require_ok(connection, "CREATE DATABASE leakdb;");
+    require_ok(connection, "CREATE SCHEMA leakdb;");
     require_ok(connection, "CREATE TABLE leakdb.t (id bigint);");
     require_ok(connection, "CREATE VIEW leakdb.v AS SELECT id FROM leakdb.t;");
 
@@ -285,7 +310,7 @@ TEST_CASE("integration::cpp::empty_statement_transaction::next_statement_sees_a_
     auto instance = test_make_otterbrix(config);
     otterbrix::connection_t reader(instance);
     otterbrix::connection_t writer(instance);
-    require_ok(writer, "CREATE DATABASE leakdb;");
+    require_ok(writer, "CREATE SCHEMA leakdb;");
     require_ok(writer, "CREATE TABLE leakdb.t (id bigint);");
 
     require_ok(reader, "CREATE TABLE IF NOT EXISTS leakdb.t (id bigint);");
@@ -301,7 +326,7 @@ TEST_CASE("integration::cpp::empty_statement_transaction::explicit_block_keeps_i
     auto instance = test_make_otterbrix(config);
     otterbrix::connection_t connection(instance);
     otterbrix::connection_t observer(instance);
-    require_ok(connection, "CREATE DATABASE leakdb;");
+    require_ok(connection, "CREATE SCHEMA leakdb;");
     require_ok(connection, "CREATE TABLE leakdb.t (id bigint);");
 
     SECTION("COMMIT keeps the block's work") {

@@ -20,7 +20,7 @@ namespace {
 
     void create_table(otterbrix::wrapper_dispatcher_t* dispatcher) {
         auto setup = otterbrix::session_id_t();
-        REQUIRE(run(dispatcher, setup, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(run(dispatcher, setup, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(run(dispatcher, setup, "CREATE TABLE TestDatabase.marks (id bigint);")->is_success());
     }
 } // namespace

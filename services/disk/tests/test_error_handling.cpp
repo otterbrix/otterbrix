@@ -89,13 +89,6 @@ namespace {
     };
 } // namespace
 
-TEST_CASE("services::disk::error::resolve_unknown_namespace") {
-    fixture fx;
-    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("does_not_exist"));
-    REQUIRE_FALSE(r.has_error());
-    REQUIRE_FALSE(r.value().found);
-}
-
 TEST_CASE("services::disk::error::resolve_unknown_table") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns");
@@ -116,17 +109,20 @@ TEST_CASE("services::disk::error::duplicate_namespace_name_refused_at_write") {
     REQUIRE(a >= FIRST_USER_OID);
 
     auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
-    auto writes = catalog::build_create_namespace_writes(&fx.resource, std::string("dup"), oids[0]);
-    REQUIRE(writes.size() == 1);
+    auto writes = catalog::build_create_namespace_writes(&fx.resource,
+                                                         std::string("dup"),
+                                                         oids[0],
+                                                         catalog::well_known_oid::main_database);
+    REQUIRE(writes.size() == 2);
+    REQUIRE(writes[0].table_oid == catalog::well_known_oid::pg_namespace_table);
     auto second =
         fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.ctx(), writes[0].table_oid, std::move(writes[0].row));
     REQUIRE(second.has_error());
-    REQUIRE(second.error().type == core::error_code_t::database_already_exists);
+    REQUIRE(second.error().type == core::error_code_t::schema_already_exists);
 
-    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("dup"));
-    REQUIRE_FALSE(r.has_error());
-    REQUIRE(r.value().found);
-    REQUIRE(r.value().oid == a);
+    auto r = test_probe::probe_namespace(fx, fx.ctx(), std::string("dup"));
+    REQUIRE(r.found);
+    REQUIRE(r.oid == a);
 }
 
 TEST_CASE("services::disk::error::topological_drop_empty") {
@@ -146,9 +142,8 @@ TEST_CASE("services::disk::error::long_namespace_name_accepted") {
     std::string long_name(200, 'x');
     auto ns_oid = test_create_namespace(fx, long_name);
     REQUIRE(ns_oid >= FIRST_USER_OID);
-    auto rs = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), long_name);
-    REQUIRE_FALSE(rs.has_error());
-    REQUIRE(rs.value().found);
+    auto rs = test_probe::probe_namespace(fx, fx.ctx(), long_name);
+    REQUIRE(rs.found);
 }
 
 TEST_CASE("services::disk::error::empty_name_accepted") {

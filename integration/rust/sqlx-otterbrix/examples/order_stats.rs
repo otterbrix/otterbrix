@@ -43,7 +43,7 @@ fn main() {
 pub async fn run(data_dir: &Path) -> Result<(), sqlx::Error> {
     let mut conn = OtterbrixConnectOptions::new(data_dir).connect().await?;
 
-    sqlx::query::<Otterbrix>("CREATE DATABASE shop;")
+    sqlx::query::<Otterbrix>("CREATE SCHEMA shop;")
         .execute(&mut conn)
         .await?;
     sqlx::query::<Otterbrix>(

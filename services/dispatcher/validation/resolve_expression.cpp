@@ -263,6 +263,7 @@ namespace services::dispatcher::validation {
                     function_qualified_name_t{core::function_name_t{std::string{components::compute::like_match_name}}},
                     arguments,
                     context_.allowed_functions,
+                    components::compute::function_scope_t{},
                     std::span<const components::compute::function_pin_t>{&pin, 1});
                 if (resolved.has_error()) {
                     error_ = core::error_on(context_.resource, resolved.error());
@@ -554,6 +555,7 @@ namespace services::dispatcher::validation {
                                      aggregate->full_name(),
                                      argument_types,
                                      components::compute::create_mask(components::compute::function_type_t::aggregate),
+                                     aggregate->scope(),
                                      aggregate->pins());
                 if (resolved.has_error()) {
                     error_ = core::error_on(context_.resource, resolved.error());
@@ -601,6 +603,7 @@ namespace services::dispatcher::validation {
                                                  call->full_name(),
                                                  argument_types,
                                                  allowed_functions,
+                                                 call->scope(),
                                                  call->pins());
                 if (resolved.has_error()) {
                     error_ = core::error_on(context_.resource, resolved.error());

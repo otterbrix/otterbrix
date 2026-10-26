@@ -3,6 +3,7 @@
 #include <components/catalog/cascade_planner.hpp>
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/ddl_metadata_builder.hpp>
 #include <components/catalog/dependency_walker.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/context/context.hpp>
@@ -11,8 +12,9 @@
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/index/manager_index.hpp>
 
-#include <cstdint>
+#include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -69,14 +71,152 @@ namespace components::operators {
                 out.push_back({pg_namespace_table, 0});
                 out.push_back({pg_depend_table, 1});
                 out.push_back({pg_depend_table, 3});
+            } else if (classid == pg_database_table) {
+                out.push_back({pg_database_table, 0});
+                out.push_back({pg_depend_table, 1});
+                out.push_back({pg_depend_table, 3});
             }
             return out;
+        }
+
+        // Whether the schema `namespace_oid` is of a connection's database (its pg_database.datconnection is set);
+        // main's built-in schemas are not. Read once per schema and statement.
+        actor_zeta::unique_future<core::result_wrapper_t<bool>>
+        is_remote_namespace(std::pmr::memory_resource* resource,
+                            pipeline::context_t* ctx,
+                            catalog::oid_t namespace_oid,
+                            std::pmr::unordered_map<catalog::oid_t, bool>& known) {
+            if (catalog::is_catalog_table(namespace_oid)) {
+                co_return false;
+            }
+            if (auto found = known.find(namespace_oid); found != known.end()) {
+                co_return found->second;
+            }
+            auto named = co_await names_of_namespace(resource, ctx, namespace_oid);
+            if (named.has_error()) {
+                co_return named.error();
+            }
+            const bool remote = !named.value().connection.empty();
+            known.emplace(namespace_oid, remote);
+            co_return remote;
+        }
+
+        // The attoids of the pg_attribute rows of `relation`.
+        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<catalog::oid_t>>>
+        attoids_of(std::pmr::memory_resource* resource, pipeline::context_t* ctx, catalog::oid_t relation) {
+            execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+            std::pmr::vector<std::uint64_t> keys(resource);
+            keys.emplace_back(catalog::pg_attribute_col::attrelid);
+            std::pmr::vector<std::uint64_t> columns(resource);
+            columns.emplace_back(catalog::pg_attribute_col::attoid);
+            auto [_a, af] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::read_chunks_by_key,
+                                                        exec_ctx,
+                                                        catalog::well_known_oid::pg_attribute_table,
+                                                        std::move(keys),
+                                                        components::operators::make_key_chunk(resource, relation),
+                                                        std::move(columns));
+            auto rows = co_await std::move(af);
+            if (rows.has_error()) {
+                co_return rows.error();
+            }
+            std::pmr::vector<catalog::oid_t> attoids(resource);
+            for (const auto& chunk : rows.value()) {
+                for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                    if (!chunk.is_null(0, i)) {
+                        attoids.push_back(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)));
+                    }
+                }
+            }
+            co_return attoids;
+        }
+
+        // The relnamespace and relkind of a pg_class row; INVALID_OID when there is none.
+        actor_zeta::unique_future<core::result_wrapper_t<std::pair<catalog::oid_t, char>>>
+        namespace_and_kind(std::pmr::memory_resource* resource, pipeline::context_t* ctx, catalog::oid_t relation) {
+            execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+            std::pmr::vector<std::uint64_t> keys(resource);
+            keys.emplace_back(catalog::pg_class_col::oid);
+            std::pmr::vector<std::uint64_t> columns(resource);
+            columns.emplace_back(catalog::pg_class_col::relnamespace);
+            columns.emplace_back(catalog::pg_class_col::relkind);
+            auto [_c, cf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                        &services::disk::manager_disk_t::read_chunks_by_key,
+                                                        exec_ctx,
+                                                        catalog::well_known_oid::pg_class_table,
+                                                        std::move(keys),
+                                                        components::operators::make_key_chunk(resource, relation),
+                                                        std::move(columns));
+            auto rows = co_await std::move(cf);
+            if (rows.has_error()) {
+                co_return rows.error();
+            }
+            for (const auto& chunk : rows.value()) {
+                if (chunk.size() != 0 && !chunk.is_null(0, 0)) {
+                    const auto kind =
+                        chunk.is_null(1, 0) ? std::string_view{"r"} : chunk.get_value<std::string_view>(1, 0);
+                    co_return std::pair{static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, 0)),
+                                        kind.empty() ? catalog::relkind::regular : kind[0]};
+                }
+            }
+            co_return std::pair{catalog::INVALID_OID, catalog::relkind::regular};
+        }
+
+        // The relations a cascade plan drops: a column of one goes with it, whatever the order of the steps.
+        std::pmr::vector<catalog::oid_t> dropped_relations_of(std::pmr::memory_resource* resource,
+                                                              const std::pmr::vector<catalog::drop_step_t>& steps) {
+            std::pmr::vector<catalog::oid_t> dropped(resource);
+            for (const auto& step : steps) {
+                if (step.classid == catalog::well_known_oid::pg_class_table) {
+                    dropped.push_back(step.objid);
+                }
+            }
+            return dropped;
+        }
+
+        // The table of a column a cascade reaches and whether it is a connection's; no table when the column goes
+        // with its dropped table (`dropped`) or has none.
+        struct reached_column_t {
+            catalog::oid_t table{catalog::INVALID_OID};
+            bool remote{false};
+        };
+        actor_zeta::unique_future<core::result_wrapper_t<reached_column_t>>
+        reached_column(std::pmr::memory_resource* resource,
+                       pipeline::context_t* ctx,
+                       catalog::oid_t attoid,
+                       const std::pmr::vector<catalog::oid_t>& dropped,
+                       std::pmr::unordered_map<catalog::oid_t, bool>& remote_namespaces) {
+            std::pmr::vector<std::uint64_t> keys(resource);
+            keys.emplace_back(catalog::pg_attribute_col::attoid);
+            auto table = co_await read_oid(resource,
+                                           ctx,
+                                           catalog::well_known_oid::pg_attribute_table,
+                                           std::move(keys),
+                                           components::operators::make_key_chunk(resource, attoid),
+                                           catalog::pg_attribute_col::attrelid);
+            if (table.has_error()) {
+                co_return table.error();
+            }
+            if (table.value() == catalog::INVALID_OID ||
+                std::find(dropped.begin(), dropped.end(), table.value()) != dropped.end()) {
+                co_return reached_column_t{};
+            }
+            auto relation = co_await namespace_and_kind(resource, ctx, table.value());
+            if (relation.has_error()) {
+                co_return relation.error();
+            }
+            auto remote = co_await is_remote_namespace(resource, ctx, relation.value().first, remote_namespaces);
+            if (remote.has_error()) {
+                co_return remote.error();
+            }
+            co_return reached_column_t{table.value(), remote.value()};
         }
 
         std::string described(catalog::oid_t classid,
                               char relkind,
                               const qualified_name_t& target,
-                              const core::columnname_t& column) {
+                              const core::columnname_t& column,
+                              const catalog::place_t& place) {
             using namespace catalog::well_known_oid;
             const auto relation = [relkind, &target] {
                 switch (relkind) {
@@ -93,8 +233,18 @@ namespace components::operators {
                 }
             };
             switch (classid) {
-                case pg_namespace_table:
-                    return "database " + target.to_string();
+                case pg_database_table:
+                    return "database " + qualified_name_t{target.connection, target.database, {}, {}}.to_string();
+                case pg_namespace_table: {
+                    // A schema is named with its database: an empty one is the place's.
+                    const bool placed = target.database.t.empty();
+                    return "schema " +
+                           qualified_name_t{core::connection_name_t{placed ? place.connection : target.connection.t},
+                                            core::dbname_t{placed ? place.database : target.database.t},
+                                            target.schema,
+                                            {}}
+                               .to_string();
+                }
                 case pg_type_table:
                     return "type " + target.to_string();
                 case pg_constraint_table:
@@ -110,6 +260,112 @@ namespace components::operators {
 
     } // namespace
 
+    namespace {
+        // The closure of the seed in drop order, or the RESTRICT refusal.
+        actor_zeta::unique_future<core::result_wrapper_t<catalog::cascade_plan_t>>
+        plan_drop_of(std::pmr::memory_resource* resource,
+                     pipeline::context_t* ctx,
+                     catalog::oid_t seed_classid,
+                     catalog::oid_t seed_objid,
+                     catalog::drop_behavior_t behavior,
+                     const qualified_name_t& target,
+                     char relkind,
+                     const core::columnname_t& column) {
+            execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+
+            if (seed_objid == catalog::INVALID_OID) {
+                // Unreachable from SQL: the executor decides a missing target before planning.
+                std::fprintf(stderr,
+                             "drop_with_dependents: %s has no catalog oid; the executor's target check was skipped\n",
+                             described(seed_classid, relkind, target, column, ctx->place).c_str());
+                assert(false && "drop_with_dependents: the target has no catalog oid");
+                std::abort();
+            }
+            constexpr catalog::oid_t kPgDepend = catalog::well_known_oid::pg_depend_table;
+
+            // dep_graph doubles as the visited set (present key = already expanded).
+            std::pmr::unordered_map<std::uint64_t, std::pmr::vector<catalog::dependency_t>> dep_graph(resource);
+            std::pmr::vector<std::uint64_t> stack(resource);
+            stack.push_back(encode_key(seed_classid, seed_objid));
+
+            while (!stack.empty()) {
+                const auto k = stack.back();
+                stack.pop_back();
+                if (dep_graph.count(k))
+                    continue;
+
+                const auto ref_cls = static_cast<catalog::oid_t>(k >> 32);
+                const auto ref_oid = static_cast<catalog::oid_t>(k & 0xFFFFFFFFu);
+
+                std::pmr::vector<std::uint64_t> rd_keys(resource);
+                rd_keys.emplace_back(catalog::pg_depend_col::refclassid);
+                rd_keys.emplace_back(catalog::pg_depend_col::refobjid);
+                auto [_rd, rdf] =
+                    actor_zeta::otterbrix::send(ctx->disk_address,
+                                                &services::disk::manager_disk_t::read_chunks_by_key,
+                                                exec_ctx,
+                                                kPgDepend,
+                                                std::move(rd_keys),
+                                                components::operators::make_key_chunk(resource, ref_cls, ref_oid),
+                                                std::pmr::vector<std::uint64_t>{resource});
+                auto dep_batches_r = co_await std::move(rdf);
+                if (dep_batches_r.has_error()) {
+                    co_return dep_batches_r.error();
+                }
+                auto& dep_batches = dep_batches_r.value();
+
+                std::pmr::vector<catalog::dependency_t> deps(resource);
+                for (auto& chunk : dep_batches) {
+                    if (chunk.column_count() < 5)
+                        continue;
+                    for (uint64_t i = 0; i < chunk.size(); ++i) {
+                        catalog::dependency_t d;
+                        d.classid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
+                        d.objid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                        auto deptype = catalog::deptype_of(chunk, i);
+                        if (deptype.has_error()) {
+                            co_return core::error_on(resource, deptype.error());
+                        }
+                        d.deptype = deptype.value();
+                        deps.push_back(d);
+                        stack.push_back(encode_key(d.classid, d.objid));
+                    }
+                }
+                dep_graph.insert_or_assign(k, std::move(deps));
+            }
+
+            // RESTRICT is a gate, not a smaller drop: refuses on a normal dependent anywhere in the closure, else plans
+            // CASCADE.
+            auto plan = catalog::plan_drop(
+                resource,
+                seed_classid,
+                seed_objid,
+                behavior,
+                [&dep_graph](std::pmr::memory_resource* mr,
+                             catalog::oid_t cls,
+                             catalog::oid_t oid) -> std::pmr::vector<catalog::dependency_t> {
+                    auto it = dep_graph.find(encode_key(cls, oid));
+                    if (it == dep_graph.end()) {
+                        return std::pmr::vector<catalog::dependency_t>{mr};
+                    }
+                    return std::pmr::vector<catalog::dependency_t>{it->second.begin(), it->second.end(), mr};
+                });
+            dep_graph.clear();
+
+            if (plan.status == catalog::ddl_status::restrict_blocked) {
+                co_return catalog::dependent_objects_error(resource,
+                                                           described(seed_classid, relkind, target, column, ctx->place),
+                                                           plan.blocking_oid);
+            }
+            if (plan.status == catalog::ddl_status::cycle_detected) {
+                std::string msg = "DROP: pg_depend cycle detected at oid ";
+                msg += std::to_string(plan.blocking_oid);
+                co_return core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource}};
+            }
+            co_return std::move(plan);
+        }
+    } // namespace
+
     actor_zeta::unique_future<core::error_t> drop_with_dependents(std::pmr::memory_resource* resource,
                                                                   pipeline::context_t* ctx,
                                                                   catalog::oid_t seed_classid,
@@ -119,97 +375,12 @@ namespace components::operators {
                                                                   char relkind,
                                                                   const core::columnname_t& column) {
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
-
-        if (seed_objid == catalog::INVALID_OID) {
-            // Unreachable from SQL: the executor decides a missing target before planning.
-            std::fprintf(stderr,
-                         "drop_with_dependents: %s has no catalog oid; the executor's target check was skipped\n",
-                         described(seed_classid, relkind, target, column).c_str());
-            assert(false && "drop_with_dependents: the target has no catalog oid");
-            std::abort();
+        auto planned =
+            co_await plan_drop_of(resource, ctx, seed_classid, seed_objid, behavior, target, relkind, column);
+        if (planned.has_error()) {
+            co_return planned.error();
         }
-
-        constexpr catalog::oid_t kPgDepend = catalog::well_known_oid::pg_depend_table;
-
-        // dep_graph doubles as the visited set (present key = already expanded).
-        std::pmr::unordered_map<std::uint64_t, std::pmr::vector<catalog::dependency_t>> dep_graph(resource);
-        std::pmr::vector<std::uint64_t> stack(resource);
-        stack.push_back(encode_key(seed_classid, seed_objid));
-
-        while (!stack.empty()) {
-            const auto k = stack.back();
-            stack.pop_back();
-            if (dep_graph.count(k))
-                continue;
-
-            const auto ref_cls = static_cast<catalog::oid_t>(k >> 32);
-            const auto ref_oid = static_cast<catalog::oid_t>(k & 0xFFFFFFFFu);
-
-            std::pmr::vector<std::uint64_t> rd_keys(resource);
-            rd_keys.emplace_back(catalog::pg_depend_col::refclassid);
-            rd_keys.emplace_back(catalog::pg_depend_col::refobjid);
-            auto [_rd, rdf] =
-                actor_zeta::otterbrix::send(ctx->disk_address,
-                                            &services::disk::manager_disk_t::read_chunks_by_key,
-                                            exec_ctx,
-                                            kPgDepend,
-                                            std::move(rd_keys),
-                                            components::operators::make_key_chunk(resource, ref_cls, ref_oid),
-                                            std::pmr::vector<std::uint64_t>{resource});
-            auto dep_batches_r = co_await std::move(rdf);
-            if (dep_batches_r.has_error()) {
-                co_return dep_batches_r.error();
-            }
-            auto& dep_batches = dep_batches_r.value();
-
-            std::pmr::vector<catalog::dependency_t> deps(resource);
-            for (auto& chunk : dep_batches) {
-                if (chunk.column_count() < 5)
-                    continue;
-                for (uint64_t i = 0; i < chunk.size(); ++i) {
-                    catalog::dependency_t d;
-                    d.classid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                    d.objid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
-                    auto deptype = catalog::deptype_of(chunk, i);
-                    if (deptype.has_error()) {
-                        co_return core::error_on(resource, deptype.error());
-                    }
-                    d.deptype = deptype.value();
-                    deps.push_back(d);
-                    stack.push_back(encode_key(d.classid, d.objid));
-                }
-            }
-            dep_graph.insert_or_assign(k, std::move(deps));
-        }
-
-        // RESTRICT is a gate, not a smaller drop: refuses on a normal dependent anywhere in the closure, else plans
-        // CASCADE.
-        const auto plan = catalog::plan_drop(
-            resource,
-            seed_classid,
-            seed_objid,
-            behavior,
-            [&dep_graph](std::pmr::memory_resource* mr,
-                         catalog::oid_t cls,
-                         catalog::oid_t oid) -> std::pmr::vector<catalog::dependency_t> {
-                auto it = dep_graph.find(encode_key(cls, oid));
-                if (it == dep_graph.end()) {
-                    return std::pmr::vector<catalog::dependency_t>{mr};
-                }
-                return std::pmr::vector<catalog::dependency_t>{it->second.begin(), it->second.end(), mr};
-            });
-        dep_graph.clear();
-
-        if (plan.status == catalog::ddl_status::restrict_blocked) {
-            co_return catalog::dependent_objects_error(resource,
-                                                       described(seed_classid, relkind, target, column),
-                                                       plan.blocking_oid);
-        }
-        if (plan.status == catalog::ddl_status::cycle_detected) {
-            std::string msg = "DROP: pg_depend cycle detected at oid ";
-            msg += std::to_string(plan.blocking_oid);
-            co_return core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource}};
-        }
+        const auto& plan = planned.value();
 
         // topological_drop_order already emits each object once, so a caller-side dedup is deliberately
         // omitted here.
@@ -219,6 +390,8 @@ namespace components::operators {
             catalog::oid_t table_oid{catalog::INVALID_OID};
         };
         std::pmr::vector<pending_storage_drop_t> pending_storage_drops(resource);
+        // Namespace oid -> whether its database is a connection's.
+        std::pmr::unordered_map<catalog::oid_t, bool> remote_namespaces(resource);
 
         constexpr catalog::oid_t kPgClass = catalog::well_known_oid::pg_class_table;
 
@@ -256,7 +429,17 @@ namespace components::operators {
                 if (relkind != catalog::relkind::regular && relkind != catalog::relkind::computed &&
                     relkind != catalog::relkind::materialized_view)
                     continue;
-
+                if (pc_batches[0].is_null(2, 0)) {
+                    continue;
+                }
+                const auto ns = static_cast<catalog::oid_t>(pc_batches[0].get_value<std::uint32_t>(2, 0));
+                auto remote = co_await is_remote_namespace(resource, ctx, ns, remote_namespaces);
+                if (remote.has_error()) {
+                    co_return remote.error();
+                }
+                if (remote.value()) {
+                    continue;
+                }
                 pending_storage_drops.push_back({probe_oids[k]});
             }
         }
@@ -268,6 +451,17 @@ namespace components::operators {
         };
         std::pmr::vector<own_row_spec_t> own_rows(resource);
         std::pmr::vector<services::disk::pg_catalog_delete_spec_t> catalog_specs(resource);
+        // The columns of a relation that goes take their own pg_depend edges (to their types) with them.
+        const auto dropped_relations = dropped_relations_of(resource, steps);
+        for (const auto relation : dropped_relations) {
+            auto attoids = co_await attoids_of(resource, ctx, relation);
+            if (attoids.has_error()) {
+                co_return attoids.error();
+            }
+            for (const auto attoid : attoids.value()) {
+                catalog_specs.push_back({catalog::well_known_oid::pg_depend_table, std::int64_t{1}, attoid});
+            }
+        }
         for (const auto& step : steps) {
             for (auto& d : deletes_for_classid(resource, step.classid)) {
                 if (d.catalog_table_oid == step.classid && d.oid_col_idx == 0) {
@@ -310,6 +504,27 @@ namespace components::operators {
                 msg += ") has no catalog row to delete — the pg_depend graph names an object "
                        "the catalog does not hold";
                 co_return core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource}};
+            }
+        }
+
+        // A column the DROP reaches (DROP TYPE ... CASCADE) goes as ALTER TABLE ... DROP COLUMN takes it; the seed
+        // column of a DROP COLUMN is its operator's, and a dropped relation's columns went with it.
+        for (const auto& step : steps) {
+            if (step.classid != catalog::well_known_oid::pg_attribute_table ||
+                (seed_classid == step.classid && seed_objid == step.objid)) {
+                continue;
+            }
+            auto reached = co_await reached_column(resource, ctx, step.objid, dropped_relations, remote_namespaces);
+            if (reached.has_error()) {
+                co_return reached.error();
+            }
+            const auto [table, remote] = reached.value();
+            if (table == catalog::INVALID_OID) {
+                continue;
+            }
+            if (auto dropped = co_await drop_column_rows(resource, ctx, table, step.objid, !remote);
+                dropped.contains_error()) {
+                co_return dropped;
             }
         }
 
@@ -363,6 +578,206 @@ namespace components::operators {
         }
 
         co_return core::error_t::no_error();
+    }
+
+    actor_zeta::unique_future<core::error_t> drop_column_rows(std::pmr::memory_resource* resource,
+                                                              pipeline::context_t* ctx,
+                                                              catalog::oid_t table_oid,
+                                                              catalog::oid_t attoid,
+                                                              bool stored) {
+        constexpr catalog::oid_t pg_attr_oid = catalog::well_known_oid::pg_attribute_table;
+        execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+        namespace col = catalog::pg_attribute_col;
+
+        std::pmr::vector<std::uint64_t> keys(resource);
+        keys.emplace_back(col::attoid);
+        auto [_r, rf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::read_chunks_by_key,
+                                                    exec_ctx,
+                                                    pg_attr_oid,
+                                                    std::move(keys),
+                                                    components::operators::make_key_chunk(resource, attoid),
+                                                    std::pmr::vector<std::uint64_t>{resource});
+        auto rows = co_await std::move(rf);
+        if (rows.has_error()) {
+            co_return rows.error();
+        }
+        bool found = false;
+        std::string attname;
+        std::string typspec;
+        std::string defspec;
+        catalog::oid_t atttypid = catalog::INVALID_OID;
+        std::int32_t attnum = 0;
+        bool not_null = false;
+        bool has_default = false;
+        for (const auto& chunk : rows.value()) {
+            for (std::uint64_t i = 0; i < chunk.size() && !found; ++i) {
+                if (chunk.column_count() <= col::attdefspec || chunk.is_null(col::attname, i) ||
+                    (!chunk.is_null(col::attisdropped, i) && chunk.get_value<bool>(col::attisdropped, i))) {
+                    continue;
+                }
+                found = true;
+                attname.assign(chunk.get_value<std::string_view>(col::attname, i));
+                atttypid = chunk.is_null(col::atttypid, i)
+                               ? catalog::INVALID_OID
+                               : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(col::atttypid, i));
+                attnum = chunk.is_null(col::attnum, i) ? 0 : chunk.get_value<std::int32_t>(col::attnum, i);
+                not_null = !chunk.is_null(col::attnotnull, i) && chunk.get_value<bool>(col::attnotnull, i);
+                has_default = !chunk.is_null(col::atthasdefault, i) && chunk.get_value<bool>(col::atthasdefault, i);
+                if (!chunk.is_null(col::atttypspec, i)) {
+                    typspec.assign(chunk.get_value<std::string_view>(col::atttypspec, i));
+                }
+                if (!chunk.is_null(col::attdefspec, i)) {
+                    defspec.assign(chunk.get_value<std::string_view>(col::attdefspec, i));
+                }
+            }
+        }
+        if (!found) {
+            co_return core::error_t{core::error_code_t::other_error,
+                                    std::pmr::string{"DROP COLUMN: no live pg_attribute row for attoid " +
+                                                         std::to_string(attoid) + " — the column is not in the catalog",
+                                                     resource}};
+        }
+
+        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> specs(resource);
+        specs.push_back({pg_attr_oid, std::int64_t{0}, attoid});
+        specs.push_back({catalog::well_known_oid::pg_depend_table, std::int64_t{1}, attoid});
+        auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
+                                                    exec_ctx,
+                                                    std::move(specs));
+        auto deleted = co_await std::move(df);
+        if (deleted.has_error()) {
+            co_return deleted.error();
+        }
+        if (deleted.value().empty() || deleted.value().front() == 0) {
+            co_return core::error_t{core::error_code_t::other_error,
+                                    std::pmr::string{"DROP COLUMN: no pg_attribute row was deleted for attoid " +
+                                                         std::to_string(attoid) +
+                                                         " — the column is still live in the catalog",
+                                                     resource}};
+        }
+        if (ctx->txn.transaction_id != 0) {
+            ctx->pg_catalog_delete_tables.insert(pg_attr_oid);
+            ctx->pg_catalog_delete_tables.insert(catalog::well_known_oid::pg_depend_table);
+        }
+        if (!stored) {
+            co_return core::error_t::no_error();
+        }
+
+        // dropped_at_commit_id is placeholder-0, backfilled post-commit once COMMIT allocates it (see
+        // pg_catalog_swap.hpp); the tombstone's MVCC insert_id is still the executing txn_id.
+        auto tombstone = catalog::build_pg_attribute_row(resource,
+                                                         attoid,
+                                                         table_oid,
+                                                         attname,
+                                                         atttypid,
+                                                         attnum,
+                                                         not_null,
+                                                         has_default,
+                                                         /*is_dropped=*/true,
+                                                         typspec,
+                                                         defspec,
+                                                         /*added_at_commit_id=*/0,
+                                                         /*dropped_at_commit_id=*/0);
+        auto [_w, wf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                    exec_ctx,
+                                                    pg_attr_oid,
+                                                    std::move(tombstone));
+        auto appended = co_await std::move(wf);
+        if (appended.has_error()) {
+            co_return appended.error();
+        }
+        if (appended.value().count == 0) {
+            co_return core::error_t{
+                core::error_code_t::other_error,
+                std::pmr::string{"DROP COLUMN: tombstone append produced no rows for attoid " + std::to_string(attoid),
+                                 resource}};
+        }
+        ctx->pg_catalog_appends.push_back(std::move(appended.value()));
+
+        components::execution_context_t stamp_ctx{ctx->session,
+                                                  ctx->txn,
+                                                  ctx->execution_context.timezone_offset,
+                                                  table_oid};
+        auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                    &services::disk::manager_disk_t::stamp_column_dropped,
+                                                    stamp_ctx,
+                                                    table_oid,
+                                                    attoid);
+        if (auto stamped = co_await std::move(sf); stamped.contains_error()) {
+            co_return stamped;
+        }
+        ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
+            attoid,
+            components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at,
+            table_oid,
+            attname,
+            std::string{},
+            components::types::complex_logical_type{}});
+        co_return core::error_t::no_error();
+    }
+
+    actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<logical_plan::remote_object_t>>>
+    drop_closure(std::pmr::memory_resource* resource,
+                 pipeline::context_t* ctx,
+                 catalog::oid_t seed_classid,
+                 catalog::oid_t seed_objid,
+                 catalog::drop_behavior_t behavior,
+                 const qualified_name_t& target,
+                 char relkind,
+                 const core::columnname_t& column) {
+        using kind_t = logical_plan::remote_object_t::kind_t;
+        auto planned =
+            co_await plan_drop_of(resource, ctx, seed_classid, seed_objid, behavior, target, relkind, column);
+        if (planned.has_error()) {
+            co_return planned.error();
+        }
+        const auto& steps = planned.value().steps;
+        std::pmr::unordered_map<catalog::oid_t, bool> remote_namespaces(resource);
+        std::pmr::vector<logical_plan::remote_object_t> closure(resource);
+        const auto dropped_tables = dropped_relations_of(resource, steps);
+        for (const auto& step : steps) {
+            if (step.classid == catalog::well_known_oid::pg_class_table) {
+                auto relation = co_await namespace_and_kind(resource, ctx, step.objid);
+                if (relation.has_error()) {
+                    co_return relation.error();
+                }
+                if (relation.value().second != catalog::relkind::regular) {
+                    continue;
+                }
+                auto remote = co_await is_remote_namespace(resource, ctx, relation.value().first, remote_namespaces);
+                if (remote.has_error()) {
+                    co_return remote.error();
+                }
+                if (remote.value()) {
+                    closure.push_back({kind_t::table, step.objid, step.objid, {}});
+                }
+            } else if (step.classid == catalog::well_known_oid::pg_attribute_table) {
+                auto reached = co_await reached_column(resource, ctx, step.objid, dropped_tables, remote_namespaces);
+                if (reached.has_error()) {
+                    co_return reached.error();
+                }
+                if (reached.value().remote) {
+                    closure.push_back({kind_t::column, step.objid, reached.value().table, {}});
+                }
+            } else if (step.classid == catalog::well_known_oid::pg_namespace_table) {
+                auto remote = co_await is_remote_namespace(resource, ctx, step.objid, remote_namespaces);
+                if (remote.has_error()) {
+                    co_return remote.error();
+                }
+                if (!remote.value()) {
+                    continue;
+                }
+                auto named = co_await names_of_namespace(resource, ctx, step.objid);
+                if (named.has_error()) {
+                    co_return named.error();
+                }
+                closure.push_back({kind_t::schema, step.objid, catalog::INVALID_OID, std::move(named.value())});
+            }
+        }
+        co_return std::move(closure);
     }
 
     actor_zeta::unique_future<core::error_t> drop_function_rows(std::pmr::memory_resource* resource,

@@ -14,6 +14,7 @@
 #include <logical_plan/node_create_index.hpp>
 #include <logical_plan/node_create_macro.hpp>
 #include <logical_plan/node_create_matview.hpp>
+#include <logical_plan/node_create_schema.hpp>
 #include <logical_plan/node_create_sequence.hpp>
 #include <logical_plan/node_create_type.hpp>
 #include <logical_plan/node_create_view.hpp>
@@ -53,7 +54,7 @@ namespace components::planner {
 
             for (const auto& fk : ins->outgoing_fks()) {
                 auto fk_node =
-                    boost::intrusive_ptr(new logical_plan::node_fk_check_t(r, core::dbname_t{}, core::relname_t{}, fk));
+                    boost::intrusive_ptr(new logical_plan::node_fk_check_t(r, core::schema_t{}, core::relname_t{}, fk));
                 fk_node->append_child(cur);
                 cur = fk_node;
             }
@@ -62,7 +63,7 @@ namespace components::planner {
                 !ins->unique_groups().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                     r,
-                    core::dbname_t{},
+                    core::schema_t{},
                     core::relname_t{},
                     std::vector<std::string>(ins->not_null_cols()),
                     std::vector<std::pair<std::string, uint64_t>>(ins->array_size_reqs())));
@@ -84,7 +85,7 @@ namespace components::planner {
 
             for (const auto& fk : upd->outgoing_fks()) {
                 auto fk_node =
-                    boost::intrusive_ptr(new logical_plan::node_fk_check_t(r, core::dbname_t{}, core::relname_t{}, fk));
+                    boost::intrusive_ptr(new logical_plan::node_fk_check_t(r, core::schema_t{}, core::relname_t{}, fk));
                 fk_node->append_child(cur);
                 cur = fk_node;
             }
@@ -108,7 +109,7 @@ namespace components::planner {
                 !upd->array_size_reqs().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                     r,
-                    core::dbname_t{},
+                    core::schema_t{},
                     core::relname_t{},
                     std::vector<std::string>(upd->not_null_cols()),
                     std::vector<std::pair<std::string, uint64_t>>(upd->array_size_reqs())));
@@ -142,7 +143,7 @@ namespace components::planner {
             node_ptr cur = node;
             for (const auto& fk : del->referencing_fks()) {
                 auto cascade = boost::intrusive_ptr(
-                    new logical_plan::node_fk_cascade_t(r, core::dbname_t{}, core::relname_t{}, fk));
+                    new logical_plan::node_fk_cascade_t(r, core::schema_t{}, core::relname_t{}, fk));
                 cascade->append_child(cur);
                 cur = cascade;
             }
@@ -174,12 +175,43 @@ namespace components::planner {
 
         node_ptr rewrite_create_database(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* cd = static_cast<logical_plan::node_create_database_t*>(node.get());
-            const std::string ns_name(cd->target().database);
-            const catalog::oid_t ns_oid = oid_batch.allocate();
-
-            auto writes = catalog::build_create_namespace_writes(r, ns_name, ns_oid);
+            const catalog::oid_t database_oid = oid_batch.allocate();
+            auto writes = catalog::build_create_database_writes(r,
+                                                                cd->target().database.t,
+                                                                cd->target().connection.t,
+                                                                database_oid);
+            // A connection's database is created empty: its host registers the schemas its backend has.
+            if (cd->target().connection.t.empty()) {
+                for (const std::string_view schema : {"public", "information_schema"}) {
+                    for (auto& w : catalog::build_create_namespace_writes(r,
+                                                                          std::string{schema},
+                                                                          oid_batch.allocate(),
+                                                                          database_oid)) {
+                        writes.push_back(std::move(w));
+                    }
+                }
+            }
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
+            for (auto& w : writes) {
+                seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
+            }
+            return seq;
+        }
+
+        node_ptr rewrite_create_schema(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
+            auto* cs = static_cast<logical_plan::node_create_schema_t*>(node.get());
+            const catalog::oid_t ns_oid = oid_batch.allocate();
+
+            auto writes = catalog::build_create_namespace_writes(r, cs->target().schema.t, ns_oid, cs->database_oid());
+
+            auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
+            // A schema of a connection's database: the node stays first, for the connector's CREATE SCHEMA before
+            // the rows.
+            if (!cs->target().connection.t.empty()) {
+                cs->set_namespace_oid(ns_oid);
+                seq->append_child(node);
+            }
             for (auto& w : writes) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
@@ -192,7 +224,11 @@ namespace components::planner {
             auto* cc = static_cast<logical_plan::node_create_collection_t*>(node.get());
             const catalog::oid_t ns_oid = cc->namespace_oid();
 
-            const char rk = cc->column_definitions().empty() ? catalog::relkind::computed : catalog::relkind::regular;
+            // A table without columns is a computed one (its columns come with its rows), but a connection's table
+            // is the backend's as declared.
+            const char rk = cc->column_definitions().empty() && cc->target().connection.t.empty()
+                                ? catalog::relkind::computed
+                                : catalog::relkind::regular;
             const catalog::oid_t table_oid = oid_batch.peek();
             auto writes = catalog::build_create_table_writes(r,
                                                              std::string{},
@@ -454,9 +490,7 @@ namespace components::planner {
                 msg.append("CREATE INDEX ");
                 msg.append(ci->indexname().t);
                 msg.append(": table ");
-                msg.append(ci->target().database.t);
-                msg.append(".");
-                msg.append(ci->target().collection.t);
+                msg.append(ci->target().to_string());
                 msg.append(" does not exist");
                 return core::error_t{core::error_code_t::table_not_exists, std::move(msg)};
             }
@@ -465,9 +499,9 @@ namespace components::planner {
             if (ci->name_conflict_oid() != catalog::INVALID_OID) {
                 std::pmr::string msg{r};
                 msg.append("CREATE INDEX: relation ");
-                msg.append(ci->target().database.t);
-                msg.append(".");
-                msg.append(ci->indexname().t);
+                msg.append(
+                    qualified_name_t{ci->target().database, ci->target().schema, core::relname_t{ci->indexname().t}}
+                        .to_string());
                 msg.append(" already exists (oid ");
                 msg.append(std::to_string(static_cast<std::uint64_t>(ci->name_conflict_oid())));
                 msg.append("); no index was created");
@@ -506,9 +540,7 @@ namespace components::planner {
             if (index_oid == catalog::INVALID_OID) {
                 std::pmr::string msg{r};
                 msg.append("DROP INDEX: index ");
-                msg.append(di->target().database.t);
-                msg.append(".");
-                msg.append(di->target().collection.t);
+                msg.append(di->target().to_string());
                 msg.append(".");
                 msg.append(di->index_name().t);
                 msg.append(" does not exist");
@@ -535,8 +567,16 @@ namespace components::planner {
             catalog::oid_t seed_objid = d->table_oid();
             qualified_name_t target = d->target();
             char relkind = catalog::relkind::regular;
+            auto behavior = d->behavior();
             switch (d->kind()) {
                 case logical_plan::drop_target_kind::database:
+                    // DROP DATABASE takes everything in it, whatever plan names it (transform_database: SQL has no
+                    // RESTRICT for it).
+                    classid = catalog::well_known_oid::pg_database_table;
+                    seed_objid = d->database_oid();
+                    behavior = catalog::drop_behavior_t::cascade_;
+                    break;
+                case logical_plan::drop_target_kind::schema:
                     classid = catalog::well_known_oid::pg_namespace_table;
                     seed_objid = d->namespace_oid();
                     break;
@@ -567,13 +607,14 @@ namespace components::planner {
             return boost::intrusive_ptr(new logical_plan::node_dynamic_cascade_delete_t(r,
                                                                                         classid,
                                                                                         seed_objid,
-                                                                                        d->behavior(),
+                                                                                        behavior,
                                                                                         std::move(target),
                                                                                         relkind));
         }
 
-        // No OIDs are pre-allocated — add/drop resolve their attoid at execution time.
-        core::result_wrapper_t<node_ptr> rewrite_alter_table(std::pmr::memory_resource* r, node_ptr node) {
+        // An added column gets its attoid here, as a created table's columns do; a dropped one is found by name.
+        core::result_wrapper_t<node_ptr>
+        rewrite_alter_table(std::pmr::memory_resource* r, node_ptr node, catalog::oid_batch_t& oid_batch) {
             auto* alter = static_cast<logical_plan::node_alter_table_t*>(node.get());
             const auto table_oid = alter->table_oid();
             if (table_oid == catalog::INVALID_OID) {
@@ -581,12 +622,25 @@ namespace components::planner {
             }
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
+            // A connection's table as each step finds it: the earlier subcommands applied.
+            auto current = alter->remote_table();
             for (const auto& sub : alter->subcommands()) {
                 if (sub.kind == logical_plan::alter_table_kind::add_column) {
                     // The executor already typed the column and cast its DEFAULT, as for CREATE TABLE.
                     auto add = logical_plan::make_node_alter_column(r, logical_plan::alter_column_op::add);
                     add->set_table_oid(table_oid);
-                    add->set_column(sub.column);
+                    auto column = sub.column;
+                    column.set_attoid(static_cast<std::uint32_t>(oid_batch.allocate()));
+                    add->set_remote_table(current);
+                    if (current.is_remote()) {
+                        logical_plan::resolved_column_metadata_t added;
+                        added.attname = column.name();
+                        added.type = column.type();
+                        added.attoid = column.attoid();
+                        added.attnotnull = column.is_not_null();
+                        current.columns.push_back(std::move(added));
+                    }
+                    add->set_column(std::move(column));
                     seq->append_child(add);
                 } else if (sub.kind == logical_plan::alter_table_kind::rename_column) {
                     auto rename = logical_plan::make_node_alter_column(r, logical_plan::alter_column_op::rename);
@@ -604,6 +658,9 @@ namespace components::planner {
                         drop->set_behavior(sub.behavior);
                         drop->set_target(alter->target());
                         drop->set_relkind(alter->relkind());
+                        drop->set_remote_table(current);
+                        std::erase_if(current.columns,
+                                      [&sub](const auto& column) { return column.attname == sub.column_name; });
                     }
                     seq->append_child(drop);
                 } else if (sub.kind == logical_plan::alter_table_kind::drop_constraint) {
@@ -643,6 +700,8 @@ namespace components::planner {
                     return rewrite_create_table(r, node, oid_batch);
                 case node_type::create_database_t:
                     return rewrite_create_database(r, node, oid_batch);
+                case node_type::create_schema_t:
+                    return rewrite_create_schema(r, node, oid_batch);
                 case node_type::create_sequence_t:
                     return rewrite_create_sequence(r, node, oid_batch);
                 case node_type::create_view_t:
@@ -662,7 +721,7 @@ namespace components::planner {
                     }
                     return rewrite_drop(r, node);
                 case node_type::alter_table_t:
-                    return rewrite_alter_table(r, node);
+                    return rewrite_alter_table(r, node, oid_batch);
                 // See walk().
                 case node_type::catalog_resolve_t:
                 case node_type::allocate_oids_t:
@@ -732,6 +791,11 @@ namespace components::planner {
                 return need;
             }
             case nt::create_database_t:
+                // The database; a local one also its schema public and its information_schema.
+                return static_cast<const logical_plan::node_create_database_t*>(node)->target().connection.t.empty()
+                           ? 3
+                           : 1;
+            case nt::create_schema_t:
                 return 1;
             case nt::create_type_t: {
                 const auto* ct = static_cast<const logical_plan::node_create_type_t*>(node);
@@ -752,8 +816,16 @@ namespace components::planner {
                 return 1;
             case nt::create_constraint_t:
                 return 1;
+            case nt::alter_table_t: {
+                // ADD COLUMN: the new column's attoid.
+                const auto& subcommands = static_cast<const logical_plan::node_alter_table_t*>(node)->subcommands();
+                return static_cast<std::size_t>(
+                    std::count_if(subcommands.begin(), subcommands.end(), [](const auto& sub) {
+                        return sub.kind == logical_plan::alter_table_kind::add_column;
+                    }));
+            }
             default:
-                // DROP * / ALTER TABLE / DML / non-DDL — no pre-allocated OIDs.
+                // DROP * / DML / non-DDL — no pre-allocated OIDs.
                 return 0;
         }
     }

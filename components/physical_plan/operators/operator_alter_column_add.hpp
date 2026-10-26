@@ -12,7 +12,8 @@ namespace components::operators {
         operator_alter_column_add_t(std::pmr::memory_resource* resource,
                                     log_t log,
                                     components::catalog::oid_t table_oid,
-                                    components::table::column_definition_t column);
+                                    components::table::column_definition_t column,
+                                    bool stored);
 
         // Sourceless sink leaf driven via the bottom-up needs_async_finalize pass; push()/finalize() default to no-ops.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
@@ -22,6 +23,8 @@ namespace components::operators {
     private:
         components::catalog::oid_t table_oid_;
         components::table::column_definition_t column_;
+        // False for a connection's table: the column has no storage here, its pg_attribute row is all of it.
+        bool stored_;
     };
 
 } // namespace components::operators

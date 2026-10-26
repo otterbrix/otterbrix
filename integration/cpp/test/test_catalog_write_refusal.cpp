@@ -68,7 +68,7 @@ TEST_CASE("integration::cpp::test_catalog_write_refusal::create_table_fails_when
     {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE refusal;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA refusal;")->is_success());
         auto cur = test_helpers::exec(dispatcher, "CREATE TABLE refusal.t (id bigint);");
         REQUIRE(cur->is_success());
     }

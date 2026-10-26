@@ -14,6 +14,7 @@
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
+#include <components/logical_plan/effective_table_oid.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_group.hpp>
@@ -31,21 +32,16 @@ namespace components::planner::optimizer {
         using namespace components::expressions;
         using namespace components::logical_plan;
 
-        std::pair<core::dbname_t, core::relname_t> node_cfn(const node_ptr& n) {
+        qualified_name_t node_cfn(const node_ptr& n) {
             if (!n) {
-                return {core::dbname_t{}, core::relname_t{}};
+                return qualified_name_t{};
             }
             switch (n->type()) {
-                case node_type::match_t: {
-                    auto* m = static_cast<const node_match_t*>(n.get());
-                    return {m->target().database, m->target().collection};
-                }
-                case node_type::aggregate_t: {
-                    auto* a = static_cast<const node_aggregate_t*>(n.get());
-                    return {a->target().database, a->target().collection};
-                }
+                case node_type::match_t:
+                case node_type::aggregate_t:
+                    return n->target();
                 default:
-                    return {core::dbname_t{}, core::relname_t{}};
+                    return qualified_name_t{};
             }
         }
 
@@ -788,9 +784,9 @@ namespace components::planner::optimizer {
                             }
                         }
                         if (!pushable.empty()) {
-                            auto [m_db, m_rel] = node_cfn(match_child);
+                            auto m_name = node_cfn(match_child);
                             source_agg->append_child(make_node_match(resource,
-                                                                     qualified_name_t{m_db, m_rel},
+                                                                     m_name,
                                                                      rebuild_conjunction(resource, pushable)));
                             auto residual_expr = rebuild_conjunction(resource, residual);
                             if (!residual_expr) {
@@ -851,26 +847,26 @@ namespace components::planner::optimizer {
                     }
 
                     if (!left_bucket.empty() || !right_bucket.empty()) {
-                        auto [m_db, m_rel] = node_cfn(match_child);
+                        auto m_name = node_cfn(match_child);
                         if (!left_bucket.empty()) {
-                            auto [l_db, l_rel] = node_cfn(join->children()[0]);
-                            auto new_agg = make_node_aggregate(resource, qualified_name_t{l_db, l_rel});
+                            auto l_name = node_cfn(join->children()[0]);
+                            auto new_agg = make_node_aggregate(resource, l_name);
                             new_agg->append_child(join->children()[0]);
                             new_agg->append_child(make_node_match(resource,
-                                                                  qualified_name_t{m_db, m_rel},
+                                                                  m_name,
                                                                   rebuild_conjunction(resource, left_bucket)));
                             join->children()[0] = boost::static_pointer_cast<node_t>(new_agg);
                         }
                         if (!right_bucket.empty()) {
-                            auto [r_db, r_rel] = node_cfn(join->children()[1]);
+                            auto r_name = node_cfn(join->children()[1]);
                             // Each conjunct lands in exactly one bucket, so mutating keys in place is safe.
                             for (const auto& conj : right_bucket) {
                                 relocalize_keys(conj, left_width);
                             }
-                            auto new_agg = make_node_aggregate(resource, qualified_name_t{r_db, r_rel});
+                            auto new_agg = make_node_aggregate(resource, r_name);
                             new_agg->append_child(join->children()[1]);
                             new_agg->append_child(make_node_match(resource,
-                                                                  qualified_name_t{m_db, m_rel},
+                                                                  m_name,
                                                                   rebuild_conjunction(resource, right_bucket)));
                             join->children()[1] = boost::static_pointer_cast<node_t>(new_agg);
                         }
@@ -957,11 +953,11 @@ namespace components::planner::optimizer {
                     if (!pushable.empty()) {
                         auto filter_cols = collect_referenced_columns(rebuild_conjunction(resource, pushable));
                         for (auto& branch : source->children()) {
-                            auto [b_db, b_rel] = node_cfn(branch);
+                            auto b_name = node_cfn(branch);
                             // Prefer pushing below an identity projection so it rides the branch's disk scan.
                             node_select_t* branch_select = nullptr;
                             if (branch->type() == node_type::aggregate_t &&
-                                branch->table_oid() != components::catalog::INVALID_OID) {
+                                components::logical_plan::reads_owned_table(*branch)) {
                                 for (const auto& c : branch->children()) {
                                     if (c->type() == node_type::select_t) {
                                         branch_select = static_cast<node_select_t*>(c.get());
@@ -981,7 +977,7 @@ namespace components::planner::optimizer {
                                 branch_pushed.push_back(clone_expression(resource, conj));
                             }
                             auto pushed_match = make_node_match(resource,
-                                                                qualified_name_t{b_db, b_rel},
+                                                                b_name,
                                                                 rebuild_conjunction(resource, branch_pushed));
                             if (push_below_projection) {
                                 // Inherit the branch's table_oid so create_plan_match binds to that table.
@@ -989,7 +985,7 @@ namespace components::planner::optimizer {
                                 static_cast<node_aggregate_t*>(branch.get())->append_child(pushed_match);
                                 branch = pushdown_filter_impl(resource, branch);
                             } else {
-                                auto new_agg = make_node_aggregate(resource, qualified_name_t{b_db, b_rel});
+                                auto new_agg = make_node_aggregate(resource, b_name);
                                 new_agg->append_child(branch);
                                 new_agg->append_child(pushed_match);
                                 branch = pushdown_filter_impl(resource, boost::static_pointer_cast<node_t>(new_agg));
@@ -1052,7 +1048,7 @@ namespace components::planner::optimizer {
 
             auto source = agg->children()[0];
             // A recursive-CTE reference lowers to an empty-identity aggregate with no oid and is skipped.
-            if (source->type() != node_type::aggregate_t || source->table_oid() == components::catalog::INVALID_OID) {
+            if (source->type() != node_type::aggregate_t || !components::logical_plan::reads_owned_table(*source)) {
                 return node;
             }
             auto* body = static_cast<node_aggregate_t*>(source.get());
@@ -1108,7 +1104,7 @@ namespace components::planner::optimizer {
                 return node;
             }
 
-            auto [m_db, m_rel] = node_cfn(source);
+            auto m_name = node_cfn(source);
             auto pushed_expr = rebuild_conjunction(resource, pushable);
             if (body_match) {
                 // create_plan_aggregate builds one match_op, so merge rather than add a second match child.
@@ -1116,7 +1112,7 @@ namespace components::planner::optimizer {
                 existing.push_back(pushed_expr);
                 body_match->expressions()[0] = rebuild_conjunction(resource, existing);
             } else {
-                auto pushed_match = make_node_match(resource, qualified_name_t{m_db, m_rel}, pushed_expr);
+                auto pushed_match = make_node_match(resource, m_name, pushed_expr);
                 pushed_match->set_table_oid(source->table_oid());
                 body->append_child(pushed_match);
             }

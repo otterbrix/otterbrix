@@ -34,7 +34,7 @@
 //! let cfg = Config::new("./data");
 //! let db = Database::open(cfg).expect("open database");
 //!
-//! db.execute("CREATE DATABASE app;").unwrap();
+//! db.execute("CREATE SCHEMA app;").unwrap();
 //! db.execute("CREATE TABLE app.t();").unwrap();
 //!
 //! db.execute("INSERT INTO app.t (id, name) VALUES (1, 'alice');").unwrap();

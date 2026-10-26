@@ -36,7 +36,7 @@ TEST_CASE("integration::cpp::pushed_reduce_scan::lateral_correlated_aggregate_re
     auto* dispatcher = space.dispatcher();
 
     auto session = otterbrix::session_id_t();
-    dispatcher->execute_sql(session, "CREATE DATABASE s;");
+    dispatcher->execute_sql(session, "CREATE SCHEMA s;");
     dispatcher->execute_sql(session, "CREATE TABLE s.outer_t (id BIGINT, n BIGINT);");
     // >= 2 outer rows => >= 1 re-drive of the pushed_reduce_scan instance.
     dispatcher->execute_sql(session, "INSERT INTO s.outer_t (id, n) VALUES (1, 10), (2, 20);");

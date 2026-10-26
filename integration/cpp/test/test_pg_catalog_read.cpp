@@ -18,7 +18,7 @@ TEST_CASE("integration::cpp::pg_catalog_read::pg_class_lists_user_tables") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE readdb;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA readdb;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE readdb.alpha (id BIGINT, name STRING);")->is_success());
 
     {

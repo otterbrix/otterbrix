@@ -43,7 +43,7 @@ TEST_CASE("integration::cpp::multiple_pk::doubled_by_alter_is_refused_at_use_and
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE mpk;");
+    run_ok(d, "CREATE SCHEMA mpk;");
     run_ok(d, "CREATE TABLE mpk.t (a bigint, b bigint);");
     run_ok(d, "ALTER TABLE mpk.t ADD CONSTRAINT pk_a PRIMARY KEY (a);");
     run_ok(d, "ALTER TABLE mpk.t ADD CONSTRAINT pk_b PRIMARY KEY (b);");
@@ -79,7 +79,7 @@ TEST_CASE("integration::cpp::multiple_pk::doubled_inline_is_refused_at_use") {
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE mpk;");
+    run_ok(d, "CREATE SCHEMA mpk;");
     {
         // If a later change makes this declaration refuse the second PRIMARY KEY (the PostgreSQL
         // answer), this setup fails loudly and the case should move to that declaration error.

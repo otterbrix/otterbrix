@@ -3,6 +3,7 @@
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_create_collection.hpp>
 #include <components/logical_plan/node_create_index.hpp>
+#include <components/logical_plan/node_create_schema.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
@@ -28,6 +29,47 @@ namespace services::planner::impl {
         }
     } // namespace
 
+    namespace {
+        // A table or schema of a connection's database: the connector's CREATE first, then its catalog rows, one step
+        // after another; no storage. The oids the planner gave it are the ones its rows carry.
+        plan_result_t create_remote(const context_storage_t& context,
+                                    const components::compute::function_registry_t& function_registry,
+                                    const components::logical_plan::node_ptr& node,
+                                    const components::logical_plan::storage_parameters* params) {
+            using namespace components::logical_plan;
+            const auto& created = node->children().front();
+            VALUE_OR_RETURN(auto* connector, connector_for(context, remote_name_of(created->target())));
+            plan_result_t backend = components::operators::operator_ptr{};
+            if (created->type() == node_type::create_collection_t) {
+                const auto* cc = static_cast<const node_create_collection_t*>(created.get());
+                std::pmr::vector<components::planner::remote_column_t> columns(context.resource);
+                columns.reserve(cc->column_definitions().size());
+                for (const auto& column : cc->column_definitions()) {
+                    columns.push_back({column.attoid(), column.name(), column.type(), column.is_not_null()});
+                }
+                const components::planner::remote_table_t table{cc->table_oid(), remote_name_of(cc->target()), columns};
+                backend = storage_operator(context.resource,
+                                           cc->target().collection.t,
+                                           connector->make_create_table(context, table));
+            } else {
+                const auto* cs = static_cast<const node_create_schema_t*>(created.get());
+                backend = storage_operator(
+                    context.resource,
+                    cs->target().schema.t,
+                    connector->make_create_schema(context, {cs->namespace_oid(), remote_name_of(cs->target())}));
+            }
+            VALUE_OR_RETURN(auto first, std::move(backend));
+            auto steps = boost::intrusive_ptr(
+                new components::operators::operator_sequence_t(context.resource, context.log.clone()));
+            steps->append_step(std::move(first));
+            for (std::size_t i = 1; i < node->children().size(); ++i) {
+                VALUE_OR_RETURN(auto write, create_plan(context, function_registry, node->children()[i], {}, params));
+                steps->append_step(std::move(write));
+            }
+            return steps;
+        }
+    } // namespace
+
     plan_result_t create_plan_sequence(const context_storage_t& context,
                                        const components::compute::function_registry_t& function_registry,
                                        const components::logical_plan::node_ptr& node,
@@ -37,6 +79,10 @@ namespace services::planner::impl {
         // DDL create-table sequence: sequence_t(create_collection_t, catalog-write node_insert_t×N).
         if (!node->children().empty() && node->children().front()->type() == node_type::create_collection_t) {
             auto* cc = static_cast<node_create_collection_t*>(node->children().front().get());
+            // A table of a connection's database: the target, completed with the place, names the connection.
+            if (!cc->target().connection.t.empty()) {
+                return create_remote(context, function_registry, node, params);
+            }
             std::vector<components::operators::operator_create_collection_t::catalog_write_t> writes;
             writes.reserve(node->children().size() - 1);
             for (std::size_t i = 1; i < node->children().size(); ++i) {
@@ -52,10 +98,14 @@ namespace services::planner::impl {
                                                                         std::move(writes)));
         }
 
+        if (!node->children().empty() && node->children().front()->type() == node_type::create_schema_t) {
+            return create_remote(context, function_registry, node, params);
+        }
+
         // DDL create-index sequence: sequence_t(catalog-write node_insert_t × N, create_index_t) lowers to two
         // chained operators — metadata_op (pg_class/pg_index(indisvalid=false)/pg_depend writes) wired as
         // backfill_op's left child (registers the engine, scans + insert_rows, flips indisvalid) — so the
-        // executor walks metadata first via the same left_/right_ traversal the ALTER TABLE chain uses below.
+        // executor walks metadata first.
         if (!node->children().empty() && node->children().back()->type() == node_type::create_index_t) {
             auto* ci = static_cast<node_create_index_t*>(node->children().back().get());
             std::vector<components::operators::operator_create_index_metadata_t::catalog_write_t> writes;
@@ -102,77 +152,26 @@ namespace services::planner::impl {
                                                                                          std::move(deletes)));
         }
 
-        // ALTER TABLE: chain rewrite_alter_table's sequence_t(alter_column_t × N) as left children (head =
-        // innermost step) so the executor walks it via left_/right_ traversal — a sequence wrapper carries no
-        // steps of its own and would strand a multi-clause ALTER after the first async step. Computed
-        // (relkind='g') and op=drop clauses are excluded; they ride the generic path below.
-        auto is_chainable_alter = [](const node_ptr& child) {
-            if (child->type() != node_type::alter_column_t) {
-                return false;
+        // Every other sequence (ALTER TABLE's clauses, CREATE DATABASE / SEQUENCE / VIEW / MACRO / TYPE, INSERT into a
+        // computed table): its steps in the declared order, each a plan of its own. A computed-field register reads
+        // the INSERT before it (left_->written(), left_->output()), so that pair stays one step.
+        auto steps =
+            boost::intrusive_ptr(new components::operators::operator_sequence_t(context.resource, context.log.clone()));
+        for (const auto& child : node->children()) {
+            // A child that fails to lower refuses the whole statement: running past it would run a truncated DDL.
+            VALUE_OR_RETURN(auto op, create_plan(context, function_registry, child, {}, params));
+            if (op->type() == components::operators::operator_type::computed_field_register &&
+                !steps->steps().empty()) {
+                auto insert = steps->steps().back();
+                steps->drop_last_step();
+                op->set_children(std::move(insert), nullptr);
             }
-            const auto* ac = static_cast<const node_alter_column_t*>(child.get());
-            return !ac->computed() && (ac->op() == alter_column_op::add || ac->op() == alter_column_op::rename);
-        };
-        if (!node->children().empty()) {
-            if (is_chainable_alter(node->children().front())) {
-                bool all_alter = true;
-                for (const auto& child : node->children()) {
-                    if (!is_chainable_alter(child)) {
-                        all_alter = false;
-                        break;
-                    }
-                }
-                if (all_alter) {
-                    // children[0] (first user-written clause) must end up at the deepest nesting level — the
-                    // executor runs left children first, so walk forward, wrapping the chain built so far as
-                    // the new operator's left child. A reverse walk would put children[0] at the root instead,
-                    // running a multi-clause ALTER's clauses back to front — user-visible, since two ADD
-                    // COLUMNs decide their attnum order by who runs first.
-                    components::operators::operator_ptr head;
-                    for (const auto& child : node->children()) {
-                        // A child that fails to lower refuses the whole statement: chaining past it would run
-                        // a truncated ALTER.
-                        VALUE_OR_RETURN(auto op, create_plan(context, function_registry, child, {}, params));
-                        if (head) {
-                            // op wraps `head` (op runs after head's chain executes).
-                            op->set_children(head, nullptr);
-                        }
-                        head = op;
-                    }
-                    return head;
-                }
-            }
+            steps->append_step(std::move(op));
         }
-
-        // Generic case (CREATE DATABASE/SEQUENCE/VIEW/MACRO/TYPE, INSERT-into-relkind='g', etc.): chain
-        // children as left children so the executor walks each via left_/right_ traversal —
-        // operator_sequence_t carries no steps of its own. Iterate FORWARD (first child becomes deepest left,
-        // last becomes outer root) to preserve declared order: critical for INSERT-then-register, where
-        // register depends on insert having processed the chunk first.
-        if (!node->children().empty()) {
-            components::operators::operator_ptr head;
-            for (const auto& child : node->children()) {
-                VALUE_OR_RETURN(auto op, create_plan(context, function_registry, child, {}, params));
-                if (head) {
-                    // op consumes left_ as its data source for catalog-write chains (e.g. operator_insert reads
-                    // left_->output()), so clobbering left_ with the chain predecessor would drop the row
-                    // chunk — attach the predecessor to the free right_ slot instead (executor still runs
-                    // left → right → self). When left_ is already free (a childless leaf), keep the left-chain shape.
-                    if (op->left()) {
-                        op->set_children(op->left(), head);
-                    } else {
-                        op->set_children(head, nullptr);
-                    }
-                }
-                head = op;
-            }
-            return head;
+        if (steps->steps().size() == 1) {
+            return steps->steps().front();
         }
-
-        // Reached only when node has no children (all child-bearing shapes return
-        // above): emit the childless no-op sequence fallback.
-        return boost::intrusive_ptr(
-            new components::operators::operator_sequence_t(context.resource, context.log.clone()));
+        return steps;
     }
 
 } // namespace services::planner::impl

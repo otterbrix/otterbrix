@@ -45,7 +45,7 @@ TEST_CASE("integration::cpp::explain_host_plan::explain_delete_never_deletes") {
     auto config = test_helpers::make_test_config(integration_fixture_path("explain_host_plan/delete"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO m.t (id) VALUES (1),(2),(3);"));
     REQUIRE(count_rows(d) == 3);

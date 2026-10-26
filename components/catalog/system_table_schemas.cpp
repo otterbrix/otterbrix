@@ -30,6 +30,8 @@ namespace components::catalog {
             std::vector<column_definition_t> c;
             c.emplace_back("oid", oid_col(), /*not_null*/ true);
             c.emplace_back("datname", str_col(), /*not_null*/ true);
+            // The host's connection the database is a database of; empty for a database otterbrix stores.
+            c.emplace_back("datconnection", str_col(), /*not_null*/ true);
             return c;
         }
 
@@ -37,6 +39,7 @@ namespace components::catalog {
             std::vector<column_definition_t> c;
             c.emplace_back("oid", oid_col(), /*not_null*/ true);
             c.emplace_back("nspname", str_col(), /*not_null*/ true);
+            c.emplace_back("nspdatabase", oid_col(), /*not_null*/ true); // pg_database.oid of the owning database
             return c;
         }
 
@@ -160,6 +163,7 @@ namespace components::catalog {
             std::vector<column_definition_t> c;
             c.emplace_back("ev_class", oid_col(), /*not_null*/ true);
             c.emplace_back("refkind", str_col(), true);
+            c.emplace_back("connection", str_col(), false);
             c.emplace_back("dbname", str_col(), false);
             c.emplace_back("schema", str_col(), false);
             c.emplace_back("relname", str_col(), true);
@@ -258,6 +262,15 @@ namespace components::catalog {
         for (const auto& t : all_system_tables()) {
             if (t.relation_oid == relation_oid) {
                 return &t;
+            }
+        }
+        return nullptr;
+    }
+
+    const system_table_def_t* find_system_table_by_name(std::string_view name) {
+        for (const auto& def : all_system_tables()) {
+            if (def.name == name) {
+                return &def;
             }
         }
         return nullptr;

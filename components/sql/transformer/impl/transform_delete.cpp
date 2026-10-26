@@ -26,7 +26,7 @@ namespace components::sql::transform {
                 del_limit);
             // The target identity stays ON the node: enrich binds it to a resolved
             // entry by name and stamps table_oid() + table_metadata() from there.
-            set_target(*del, qn, target_slots::relation_with_schema);
+            set_target(*del, qn, target_slots::relation);
             if (node.returningList) {
                 name_collection_t rnames;
                 rnames.left_name = qn;
@@ -66,7 +66,7 @@ namespace components::sql::transform {
                                                   del_limit);
         // The target identity stays ON the node: enrich binds it to a resolved
         // entry by name and stamps table_oid() + table_metadata() from there.
-        set_target(*del, names.left_name, target_slots::relation_with_schema);
+        set_target(*del, names.left_name, target_slots::relation);
         // The USING source is a child sub-plan (the RIGHT side of the delete join);
         // its scans self-resolve by name, so no table_oid_from splice is needed.
         if (source_child) {

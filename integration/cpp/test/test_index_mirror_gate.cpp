@@ -29,7 +29,7 @@ TEST_CASE("integration::cpp::test_index_mirror_gate::table_without_indexes_pays_
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE m;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA m;")->is_success());
     REQUIRE(exec("CREATE TABLE m.plain (id bigint, v bigint);")->is_success());
 
     components::operators::reset_insert_index_mirror_sends();
@@ -68,7 +68,7 @@ TEST_CASE("integration::cpp::test_index_mirror_gate::indexed_table_still_mirrors
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE m;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA m;")->is_success());
     REQUIRE(exec("CREATE TABLE m.idx (id bigint, k bigint);")->is_success());
     REQUIRE(exec("CREATE TABLE m.twin (id bigint, k bigint);")->is_success());
     REQUIRE(exec("CREATE INDEX idx_k ON m.idx (k);")->is_success());
@@ -130,7 +130,7 @@ TEST_CASE("integration::cpp::test_index_mirror_gate::dropping_a_twin_index_leave
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE m;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA m;")->is_success());
     REQUIRE(exec("CREATE TABLE m.twin (id bigint, k bigint);")->is_success());
     REQUIRE(exec("CREATE INDEX twin_k ON m.twin (k);")->is_success());
     REQUIRE(exec("CREATE INDEX twin_k_h ON m.twin USING hash (k);")->is_success());

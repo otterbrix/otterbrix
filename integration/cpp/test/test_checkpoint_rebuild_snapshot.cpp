@@ -48,7 +48,7 @@ TEST_CASE("integration::cpp::checkpoint_rebuild_snapshot::a_commit_after_the_sta
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec_fresh("CREATE DATABASE sdb;")->is_success());
+    REQUIRE(exec_fresh("CREATE SCHEMA sdb;")->is_success());
     REQUIRE(exec_fresh("CREATE TABLE sdb.t (id bigint, k bigint);")->is_success());
     REQUIRE(exec_fresh("CREATE INDEX k_idx ON sdb.t (k);")->is_success());
     for (int64_t start = 1; start <= kRows; start += 500) {

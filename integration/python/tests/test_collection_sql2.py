@@ -12,7 +12,7 @@ _path = os.getcwd() + "/test_collection_sql2"
 if os.path.exists(_path):
     shutil.rmtree(_path)
 client = Client(_path)
-client.execute("CREATE DATABASE {};".format(database_name))
+client.execute("CREATE SCHEMA {};".format(database_name))
 client.execute("CREATE TABLE {}.{}();".format(database_name, collection_name))
 
 
@@ -25,7 +25,7 @@ def gen_id(num):
 
 @pytest.fixture()
 def col(request):
-    client.execute("CREATE DATABASE {};".format(database_name))
+    client.execute("CREATE SCHEMA {};".format(database_name))
     client.execute("CREATE TABLE {}.{}();".format(database_name, collection_name))
 
     # Insert 100 rows with various types

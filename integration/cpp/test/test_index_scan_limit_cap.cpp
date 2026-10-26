@@ -65,7 +65,7 @@ TEST_CASE("integration::cpp::index_scan_limit_cap::capped_answer_is_the_uncapped
 
     {
         auto s = otterbrix::session_id_t();
-        REQUIRE(exec(dispatcher, s, "CREATE DATABASE LimDb;")->is_success());
+        REQUIRE(exec(dispatcher, s, "CREATE SCHEMA LimDb;")->is_success());
     }
     {
         auto s = otterbrix::session_id_t();
@@ -140,7 +140,7 @@ TEST_CASE("integration::cpp::index_scan_limit_cap::a_cap_wider_than_the_match_re
 
     {
         auto s = otterbrix::session_id_t();
-        REQUIRE(exec(dispatcher, s, "CREATE DATABASE LimDb;")->is_success());
+        REQUIRE(exec(dispatcher, s, "CREATE SCHEMA LimDb;")->is_success());
     }
     {
         auto s = otterbrix::session_id_t();

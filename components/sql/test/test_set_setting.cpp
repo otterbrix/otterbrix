@@ -61,10 +61,11 @@ TEST_CASE("components::sql::set_setting::reset_and_set_to_default") {
     REQUIRE(set_text("RESET TIME ZONE;") == "$set_setting: timezone = DEFAULT");
     REQUIRE(set_text("SET timezone TO DEFAULT;") == "$set_setting: timezone = DEFAULT");
     REQUIRE(set_text("SET LOCAL timezone TO DEFAULT;") == "$set_setting local: timezone = DEFAULT");
-    REQUIRE(set_text("RESET ALL;") == "$set_setting: timezone = DEFAULT, autocommit = DEFAULT");
+    REQUIRE(set_text("RESET ALL;") == "$set_setting: timezone = DEFAULT, autocommit = DEFAULT, search_path = DEFAULT");
     REQUIRE(set_text("ALTER SYSTEM RESET timezone;") == "$set_setting system: timezone = DEFAULT");
     REQUIRE(set_text("ALTER SYSTEM SET timezone TO DEFAULT;") == "$set_setting system: timezone = DEFAULT");
-    REQUIRE(set_text("ALTER SYSTEM RESET ALL;") == "$set_setting system: timezone = DEFAULT, autocommit = DEFAULT");
+    REQUIRE(set_text("ALTER SYSTEM RESET ALL;") ==
+            "$set_setting system: timezone = DEFAULT, autocommit = DEFAULT, search_path = DEFAULT");
 }
 
 TEST_CASE("components::sql::set_setting::refusals") {

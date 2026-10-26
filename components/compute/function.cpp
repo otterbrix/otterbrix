@@ -373,7 +373,8 @@ namespace components::compute {
 
     function_registry_t::function_registry_t(std::pmr::memory_resource* resource)
         : resource_(resource)
-        , functions_(resource_) {}
+        , functions_(resource_)
+        , schemas_(resource_) {}
 
     core::result_wrapper_t<function_uid> function_registry_t::add_function(function_ptr function) {
         if (builtin_error_.contains_error()) {
@@ -418,19 +419,37 @@ namespace components::compute {
         return it->second.get();
     }
 
-    bool function_registry_t::remove_function(function_uid uid) { return functions_.erase(uid) > 0; }
+    bool function_registry_t::remove_function(function_uid uid) {
+        schemas_.erase(uid);
+        return functions_.erase(uid) > 0;
+    }
 
-    bool
-    function_registry_t::remove_function_by_signature(const std::string& name,
-                                                      const std::pmr::vector<types::complex_logical_type>& inputs) {
-        const auto uid = find_overload(name, inputs);
-        return uid != invalid_function_uid && functions_.erase(uid) == 1;
+    bool function_registry_t::remove_function_by_signature(const std::string& name,
+                                                           const std::pmr::vector<types::complex_logical_type>& inputs,
+                                                           std::uint32_t schema_oid) {
+        const auto uid = find_overload(name, inputs, schema_oid);
+        return uid != invalid_function_uid && remove_function(uid);
+    }
+
+    void function_registry_t::set_schema(function_uid uid, std::uint32_t schema_oid) { schemas_[uid] = schema_oid; }
+
+    std::uint32_t function_registry_t::schema_of(function_uid uid) const noexcept {
+        const auto it = schemas_.find(uid);
+        return it == schemas_.end() ? 0 : it->second;
+    }
+
+    bool function_registry_t::reaches(const function_scope_t& scope, function_uid uid) const noexcept {
+        if (is_builtin(uid)) {
+            return scope.builtins;
+        }
+        return scope.schema_oid != 0 && schema_of(uid) == scope.schema_oid;
     }
 
     function_uid function_registry_t::find_overload(std::string_view name,
-                                                    const std::pmr::vector<types::complex_logical_type>& inputs) const {
+                                                    const std::pmr::vector<types::complex_logical_type>& inputs,
+                                                    std::uint32_t schema_oid) const {
         for (const auto& [uid, func] : functions_) {
-            if (!func || func->name() != name) {
+            if (is_builtin(uid) || !func || func->name() != name || schema_of(uid) != schema_oid) {
                 continue;
             }
             for (const auto& sig : func->get_signatures()) {

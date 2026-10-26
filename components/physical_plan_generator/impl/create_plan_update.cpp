@@ -108,9 +108,7 @@ namespace services::planner::impl {
         // generation; if that refusal is ever lost again, lowering anyway builds a sink
         // with no table behind it — an UPDATE that changes nothing and reports SUCCESS.
         if (!context.has_table_oid(table_oid)) {
-            return unresolved_table_refusal(context.resource,
-                                            node_update->target().database.t,
-                                            node_update->target().collection.t);
+            return unresolved_table_refusal(context.resource, node_update->target());
         }
         if (!node_update->excluded_alias().empty()) {
             auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,

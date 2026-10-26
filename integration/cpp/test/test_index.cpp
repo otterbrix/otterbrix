@@ -13,6 +13,7 @@
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/physical_plan/operators/operator_sequence.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/tests/generaty.hpp>
@@ -38,7 +39,7 @@ using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
 using namespace components::types;
 
-static const core::dbname_t database_name{"testdatabase"};
+static const core::schema_t database_name{"testdatabase"};
 static const core::relname_t collection_name{"testcollection"};
 
 constexpr int kDocuments = 100;
@@ -74,7 +75,7 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
     do {                                                                                                               \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");                              \
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");                              \
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
@@ -485,7 +486,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_then_index_scan_same_session
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+        dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -583,7 +584,7 @@ TEST_CASE("integration::cpp::test_index::checkpoint_repopulate_persists_bitcask_
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -652,7 +653,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_rebuild_visible") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+        dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -714,7 +715,7 @@ TEST_CASE("integration::cpp::test_index::vacuum_keeps_committed_deletes_full_row
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+        dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -795,7 +796,7 @@ TEST_CASE("integration::cpp::test_index::create_index_backfill_over_vector_capac
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+        dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -860,6 +861,11 @@ namespace {
         std::size_t n = (op->type() == type) ? 1u : 0u;
         n += count_ops_of_type(op->left(), type);
         n += count_ops_of_type(op->right(), type);
+        if (op->type() == components::operators::operator_type::sequence) {
+            for (const auto& step : static_cast<const components::operators::operator_sequence_t&>(*op).steps()) {
+                n += count_ops_of_type(step, type);
+            }
+        }
         return n;
     }
 
@@ -939,7 +945,7 @@ TEST_CASE("integration::cpp::test_index::expression_elements_rejected") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE t;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA t;")->is_success());
     REQUIRE(exec("CREATE TABLE t.ix (x BIGINT, y TEXT);")->is_success());
     REQUIRE(exec("INSERT INTO t.ix (x, y) VALUES (1, 'a');")->is_success());
 

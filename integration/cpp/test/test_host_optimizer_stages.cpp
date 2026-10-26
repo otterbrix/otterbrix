@@ -80,7 +80,7 @@ TEST_CASE("integration::cpp::host_optimizer_stages::each_stage_sees_its_shape") 
     test_clear_directory(config);
     test_spaces space(config, components::planner::primitives_t{rules, {}});
     auto* dispatcher = space.dispatcher();
-    run_ok(dispatcher, "CREATE DATABASE sdb;");
+    run_ok(dispatcher, "CREATE SCHEMA sdb;");
     run_ok(dispatcher, "CREATE TABLE sdb.a (k BIGINT, v BIGINT);");
     run_ok(dispatcher, "CREATE TABLE sdb.b (k BIGINT, w BIGINT);");
     run_ok(dispatcher, "INSERT INTO sdb.a (k, v) VALUES (1, 10), (2, 20);");

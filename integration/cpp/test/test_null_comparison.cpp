@@ -69,7 +69,7 @@ TEST_CASE("integration::cpp::null_cmp::case_when_falls_through_on_null") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE nc;"));
+    REQUIRE(ok(d, "CREATE SCHEMA nc;"));
     seed(d, "nc.t"); // rows: x = 5, NULL, 1
 
     // SUM over a CASE that scores 1 when the WHEN matches. A NULL operand makes the WHEN UNKNOWN,
@@ -89,7 +89,7 @@ TEST_CASE("integration::cpp::null_cmp::having_drops_unknown_group") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE nc;"));
+    REQUIRE(ok(d, "CREATE SCHEMA nc;"));
     // group 1: all NULL (SUM NULL) ; group 2: sums to 8.
     REQUIRE(ok(d, "CREATE TABLE nc.g (k INT, x BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO nc.g (k, x) VALUES (1, NULL);"));
@@ -110,7 +110,7 @@ TEST_CASE("integration::cpp::null_cmp::check_constraint_passes_null") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE nc;"));
+    REQUIRE(ok(d, "CREATE SCHEMA nc;"));
     REQUIRE(ok(d, "CREATE TABLE nc.ck (id INT, x BIGINT);"));
     REQUIRE(ok(d, "ALTER TABLE nc.ck ADD CONSTRAINT ck_pos CHECK (x > 0);"));
 
@@ -127,7 +127,7 @@ TEST_CASE("integration::cpp::null_cmp::distinct_collapses_nulls") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE nc;"));
+    REQUIRE(ok(d, "CREATE SCHEMA nc;"));
     REQUIRE(ok(d, "CREATE TABLE nc.t (id INT, x BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO nc.t (id, x) VALUES (1, 5);"));
     REQUIRE(ok(d, "INSERT INTO nc.t (id, x) VALUES (2, NULL);"));

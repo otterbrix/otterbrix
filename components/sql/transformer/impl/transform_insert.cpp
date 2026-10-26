@@ -232,7 +232,7 @@ namespace components::sql::transform {
                 VALUE_OR_RETURN(auto limit, build_dml_limit(nullptr, plan));
                 conflict_update = logical_plan::make_node_update(resource_, match, limit, updates);
                 conflict_update->set_excluded_alias(names.right_alias);
-                set_target(*conflict_update, target, target_slots::relation_with_schema);
+                set_target(*conflict_update, target, target_slots::relation);
                 if (node.returningList) {
                     name_collection_t target_names;
                     target_names.left_name = target;
@@ -592,7 +592,7 @@ namespace components::sql::transform {
             ins_node->set_literal_digits(std::move(literal_digits));
             ins_node->set_deferred_cells(std::move(deferred_cells));
             ins_node->returning() = returning;
-            set_target(*ins_node, qn, target_slots::relation_with_schema);
+            set_target(*ins_node, qn, target_slots::relation);
             register_write_target(qn);
             return with_on_conflict(logical_plan::node_insert_ptr{ins_node});
         } else {
@@ -602,7 +602,7 @@ namespace components::sql::transform {
             res->append_child(std::move(source));
             res->key_translation() = key_translation;
             res->returning() = returning;
-            set_target(*res, qn, target_slots::relation_with_schema);
+            set_target(*res, qn, target_slots::relation);
             register_write_target(qn);
             return with_on_conflict(std::move(res));
         }

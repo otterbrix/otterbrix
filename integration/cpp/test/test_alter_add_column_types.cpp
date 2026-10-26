@@ -40,7 +40,7 @@ namespace {
 TEST_CASE("integration::cpp::alter_add_column_types::builtin_by_catalog_name") {
     test_spaces space(config_for("builtin"));
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE d;");
+    run_ok(d, "CREATE SCHEMA d;");
     run_ok(d, "CREATE TABLE d.created (c int8);");
     run_ok(d, "INSERT INTO d.created (c) VALUES (20);");
     auto created = run_ok(d, "SELECT c FROM d.created;");
@@ -65,7 +65,7 @@ TEST_CASE("integration::cpp::alter_add_column_types::user_type_on_the_search_pat
     test_spaces space(config_for("user_type"));
     auto* d = space.dispatcher();
     run_ok(d, "CREATE TYPE pair_t AS (x bigint, y bigint);");
-    run_ok(d, "CREATE DATABASE d;");
+    run_ok(d, "CREATE SCHEMA d;");
     run_ok(d, "CREATE TABLE d.created (p pair_t);");
     run_ok(d, "CREATE TABLE d.t (a bigint);");
     run_ok(d, "ALTER TABLE d.t ADD COLUMN p pair_t;");
@@ -76,7 +76,7 @@ TEST_CASE("integration::cpp::alter_add_column_types::user_type_on_the_search_pat
 TEST_CASE("integration::cpp::alter_add_column_types::default_is_cast_to_the_column_type") {
     test_spaces space(config_for("default"));
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE d;");
+    run_ok(d, "CREATE SCHEMA d;");
     run_ok(d, "CREATE TABLE d.t (a bigint);");
     run_ok(d, "ALTER TABLE d.t ADD COLUMN x double DEFAULT 1;");
     run_ok(d, "INSERT INTO d.t (a) VALUES (1);");
@@ -95,11 +95,12 @@ TEST_CASE("integration::cpp::alter_add_column_types::null_default_on_a_resolved_
     auto* d = space.dispatcher();
     run_ok(d, "CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');");
     run_ok(d, "CREATE TYPE pair_t AS (x bigint, y bigint);");
-    run_ok(d, "CREATE DATABASE d;");
+    run_ok(d, "CREATE SCHEMA d;");
 
     SECTION("CREATE TABLE") {
-        run_ok(d,
-               "CREATE TABLE d.t (a bigint, m mood DEFAULT NULL, p pair_t DEFAULT NULL, c public.int8 DEFAULT NULL);");
+        run_ok(
+            d,
+            "CREATE TABLE d.t (a bigint, m mood DEFAULT NULL, p pair_t DEFAULT NULL, c pg_catalog.int8 DEFAULT NULL);");
         run_ok(d, "INSERT INTO d.t (a) VALUES (1);");
         auto read = run_ok(d, "SELECT m, p, c FROM d.t;");
         REQUIRE(read->size() == 1);
@@ -117,7 +118,7 @@ TEST_CASE("integration::cpp::alter_add_column_types::null_default_on_a_resolved_
         run_ok(d, "CREATE TABLE d.t (a bigint);");
         run_ok(d, "ALTER TABLE d.t ADD COLUMN m mood DEFAULT NULL;");
         run_ok(d, "ALTER TABLE d.t ADD COLUMN p pair_t DEFAULT NULL;");
-        run_ok(d, "ALTER TABLE d.t ADD COLUMN c public.int8 DEFAULT NULL;");
+        run_ok(d, "ALTER TABLE d.t ADD COLUMN c pg_catalog.int8 DEFAULT NULL;");
         run_ok(d, "INSERT INTO d.t (a) VALUES (1);");
         auto read = run_ok(d, "SELECT m, p, c FROM d.t;");
         REQUIRE(read->size() == 1);
@@ -137,7 +138,7 @@ TEST_CASE("integration::cpp::alter_add_column_types::row_literal_default_for_com
     test_spaces space(config_for("row_implicit"));
     auto* d = space.dispatcher();
     run_ok(d, "CREATE TYPE pair_t AS (x int, y int);");
-    run_ok(d, "CREATE DATABASE d;");
+    run_ok(d, "CREATE SCHEMA d;");
     run_ok(d, "CREATE TABLE d.a (a bigint);");
     run_ok(d, "ALTER TABLE d.a ADD COLUMN p pair_t DEFAULT ROW(1,2);");
     run_ok(d, "INSERT INTO d.a (a) VALUES (1);");

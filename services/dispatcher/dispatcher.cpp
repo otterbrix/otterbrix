@@ -14,15 +14,18 @@
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_register_cast.hpp>
 #include <components/physical_plan/operators/operator_register_udf.hpp>
+#include <components/physical_plan/operators/operator_resolve_namespace.hpp>
 #include <components/physical_plan/operators/operator_unregister_udf.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/physical_plan_generator/impl/create_plan_register_cast.hpp>
 #include <components/physical_plan_generator/impl/create_plan_register_udf.hpp>
+#include <components/sql/transformer/utils.hpp>
 #include <core/executor.hpp>
 #include <core/tracy/tracy.hpp>
 
 #include <services/collection/context_storage.hpp>
 #include <services/disk/manager_disk.hpp>
+#include <services/dispatcher/validate_logical_plan.hpp>
 #include <services/index/manager_index.hpp>
 
 #include <algorithm>
@@ -151,6 +154,10 @@ namespace services::dispatcher {
                                                                             primitives);
             executor_addresses_.push_back(exec->address());
             executors_.push_back(std::move(exec));
+            if (executors_.back()->construction_error().contains_error()) {
+                construction_error_ = core::error_on(resource_ptr, executors_.back()->construction_error());
+                return;
+            }
         }
         trace(log_,
               "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses",
@@ -535,6 +542,12 @@ namespace services::dispatcher {
         }
         trace(log_, "dispatcher_t::register_udf session: {}, function name: {}", session.data(), function->name());
 
+        auto schema = co_await place_schema_of_(session);
+        if (schema.has_error()) {
+            co_return schema.error();
+        }
+        const auto schema_oid = schema.value();
+
         auto plan =
             boost::intrusive_ptr(new components::logical_plan::node_register_udf_t(resource(), std::move(function)));
 
@@ -547,7 +560,8 @@ namespace services::dispatcher {
             auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[i],
                                                                   &collection::executor::executor_t::register_udf,
                                                                   session,
-                                                                  plan->function()->get_copy(resource()));
+                                                                  plan->function()->get_copy(resource()),
+                                                                  schema_oid);
             if (needs_sched && executors_[i]) {
                 scheduler_->enqueue(executors_[i].get());
             }
@@ -586,7 +600,7 @@ namespace services::dispatcher {
         auto master_copy = plan->function()->get_copy(resource());
         const auto uid = executor_uids.front();
         services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
-        auto op = services::planner::impl::create_plan_register_udf(cstor, plan, std::move(executor_uids));
+        auto op = services::planner::impl::create_plan_register_udf(cstor, plan, std::move(executor_uids), schema_oid);
         if (auto op_error = co_await run_catalog_op_(session, std::move(op), "register_udf");
             op_error.contains_error()) {
             co_await unwind_udf_fanout_(session, std::move(registered));
@@ -597,6 +611,7 @@ namespace services::dispatcher {
             co_await unwind_udf_fanout_(session, std::move(registered));
             co_return added.error();
         }
+        function_registry_.set_schema(uid, schema_oid);
         co_return core::error_t::no_error();
     }
 
@@ -615,6 +630,7 @@ namespace services::dispatcher {
                                              index_address_,
                                              wal_address_};
         pctx.txn = components::table::transaction_data::committed();
+        pctx.place = place_of(session);
         op->prepare();
         co_await op->await_async_and_resume(&pctx);
         if (pctx.has_pending_disk_futures()) {
@@ -628,6 +644,32 @@ namespace services::dispatcher {
             co_return op->get_error();
         }
         co_return core::error_t::no_error();
+    }
+
+    manager_dispatcher_t::unique_future<core::result_wrapper_t<components::catalog::oid_t>>
+    manager_dispatcher_t::place_schema_of_(components::session::session_id_t session) {
+        components::logical_plan::catalog_resolves_t resolves;
+        resolves.place = place_of(session);
+        resolves.ensure(resource(), components::logical_plan::resolve_kind::namespace_)
+            .add(components::logical_plan::resolve_entry_t{});
+        auto op =
+            boost::intrusive_ptr(new components::operators::operator_resolve_namespace_t(resource(),
+                                                                                         log_.clone(),
+                                                                                         resolves.namespaces.get()));
+        if (auto failed = co_await run_catalog_op_(session, std::move(op), "place schema"); failed.contains_error()) {
+            co_return failed;
+        }
+        if (auto missing = check_namespace_exists(resource(), &resolves, qualified_name_t{});
+            missing.contains_error()) {
+            co_return missing;
+        }
+        if (!resolves.place.connection.empty()) {
+            std::pmr::string msg{"only tables can be created in a schema of connection \"", resource()};
+            msg.append(resolves.place.connection);
+            msg.append("\"");
+            co_return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+        }
+        co_return resolves.namespaces->entries().front().namespace_oid;
     }
 
     manager_dispatcher_t::unique_future<void> manager_dispatcher_t::unwind_udf_fanout_(
@@ -697,12 +739,18 @@ namespace services::dispatcher {
                                          components::catalog::drop_behavior_t behavior) {
         trace(log_, "dispatcher_t::unregister_udf: session {}, {}", session.data(), function_name);
 
-        // Catalog first: every executor holds a copy of the master, so the master answers for them, and
-        // nothing is dropped from any registry until the pg_proc purge below has succeeded.
-        const auto overload = function_registry_.find_overload(function_name, inputs);
-        const bool registered = overload != components::compute::invalid_function_uid;
-        const bool builtin = registered && components::compute::is_builtin(overload);
         // A builtin is required by the system, as in PostgreSQL, which refuses to drop one.
+        const auto named = function_registry_.find_functions(function_name);
+        const bool builtin = std::any_of(named.begin(), named.end(), [&](components::compute::function_uid uid) {
+            const auto* function = function_registry_.get_function(uid);
+            if (!components::compute::is_builtin(uid) || function == nullptr) {
+                return false;
+            }
+            const auto signatures = function->get_signatures();
+            return std::any_of(signatures.begin(), signatures.end(), [&inputs](const auto& signature) {
+                return signature.matches_inputs(inputs);
+            });
+        });
         if (builtin) {
             core::error_t refused{core::error_code_t::invalid_parameter,
                                   std::pmr::string{"unregister_udf: '" + function_name +
@@ -711,11 +759,21 @@ namespace services::dispatcher {
             error(log_, "dispatcher_t::unregister_udf: {}", refused.what);
             co_return refused;
         }
+        auto schema = co_await place_schema_of_(session);
+        if (schema.has_error()) {
+            co_return schema.error();
+        }
+        const auto schema_oid = schema.value();
+        // Catalog first: every executor holds a copy of the master, so the master answers for them, and
+        // nothing is dropped from any registry until the pg_proc purge below has succeeded.
+        const auto overload = function_registry_.find_overload(function_name, inputs, schema_oid);
+        const bool registered = overload != components::compute::invalid_function_uid;
         auto plan = boost::intrusive_ptr(
             new components::logical_plan::node_unregister_udf_t(resource(),
                                                                 core::function_name_t{std::move(function_name)},
                                                                 std::move(inputs),
-                                                                behavior));
+                                                                behavior,
+                                                                schema_oid));
 
         services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
         auto planned = services::planner::create_plan(cstor,
@@ -745,7 +803,8 @@ namespace services::dispatcher {
                 &collection::executor::executor_t::unregister_udf,
                 session,
                 core::function_name_t{plan->function_name()},
-                std::pmr::vector<components::types::complex_logical_type>(plan->inputs(), resource()));
+                std::pmr::vector<components::types::complex_logical_type>(plan->inputs(), resource()),
+                schema_oid);
             if (needs_sched && executors_[i]) {
                 scheduler_->enqueue(executors_[i].get());
             }
@@ -768,20 +827,13 @@ namespace services::dispatcher {
             components::logical_plan::execution_plan_t plan{resource,
                                                             std::move(leaf),
                                                             components::logical_plan::make_parameter_node(resource)};
-            components::logical_plan::resolve_entry_t namespace_entry;
-            namespace_entry.dbname = "public";
-            plan.catalog_resolves.ensure(resource, components::logical_plan::resolve_kind::namespace_)
-                .add(std::move(namespace_entry));
+            std::vector<qualified_name_t> written;
             for (const auto* type : {&source, &target}) {
-                if (type->type() != components::types::logical_type::UNKNOWN) {
-                    continue;
+                if (type->type() == components::types::logical_type::UNKNOWN) {
+                    written.push_back(components::sql::transform::type_reference_of(*type));
                 }
-                components::logical_plan::resolve_entry_t type_entry;
-                type_entry.dbname = "public";
-                type_entry.type_name = type->type_name();
-                plan.catalog_resolves.ensure(resource, components::logical_plan::resolve_kind::type)
-                    .add(std::move(type_entry));
             }
+            components::sql::transform::register_catalog_resolve_types(resource, &plan.catalog_resolves, written);
             return plan;
         }
     } // namespace
@@ -1051,6 +1103,10 @@ namespace services::dispatcher {
     manager_dispatcher_t::session_settings(components::session::session_id_t session) const {
         const auto own = session_settings_.find(session);
         return own == session_settings_.end() ? default_settings_ : own->second.effective(default_settings_);
+    }
+
+    components::catalog::place_t manager_dispatcher_t::place_of(components::session::session_id_t session) const {
+        return components::catalog::place_of(session_settings(session).search_path);
     }
 
     manager_dispatcher_t::settings_statement_t

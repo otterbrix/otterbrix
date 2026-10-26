@@ -10,7 +10,7 @@ namespace components::logical_plan {
     class node_fk_cascade_t final : public node_t {
     public:
         node_fk_cascade_t(std::pmr::memory_resource* resource,
-                          core::dbname_t dbname,
+                          core::schema_t schema,
                           core::relname_t relname,
                           catalog::fk_info_t fk);
 

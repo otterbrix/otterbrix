@@ -29,7 +29,7 @@ namespace {
         REQUIRE_FALSE(count.has_error());                                                                              \
         return count.value();                                                                                          \
     };                                                                                                                 \
-    REQUIRE(exec("CREATE DATABASE f;")->is_success());                                                                 \
+    REQUIRE(exec("CREATE SCHEMA f;")->is_success());                                                                   \
     REQUIRE(exec("CREATE TABLE f.parent (gone bigint, id bigint, alt bigint);")->is_success());                        \
     REQUIRE(exec("INSERT INTO f.parent (gone, id, alt) VALUES (0, 1, 100), (0, 2, 1);")->is_success());                \
     REQUIRE(exec("CREATE TABLE f.child (gone bigint, pid bigint, other bigint);")->is_success());                      \

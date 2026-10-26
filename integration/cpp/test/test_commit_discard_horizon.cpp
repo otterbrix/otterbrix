@@ -78,7 +78,7 @@ TEST_CASE("integration::cpp::commit_discard_horizon::an_orphaned_commit_id_stops
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE pin;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA pin;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE pin.t (id bigint, v bigint);")->is_success());
     seed(dispatcher, "pin.t");
     REQUIRE(exec(dispatcher, "CREATE INDEX pin_t_id ON pin.t (id);")->is_success());
@@ -126,7 +126,7 @@ TEST_CASE("integration::cpp::commit_discard_horizon::a_discarded_transactions_ro
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE ghost;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA ghost;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE ghost.t (id bigint, v bigint);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO ghost.t (id, v) VALUES (1, 1), (2, 2);")->is_success());
 
@@ -165,7 +165,7 @@ TEST_CASE("integration::cpp::commit_discard_horizon::a_refused_commit_leaves_its
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE undone;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA undone;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE undone.t (id bigint, v bigint);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO undone.t (id, v) VALUES (1, 1), (2, 2);")->is_success());
 

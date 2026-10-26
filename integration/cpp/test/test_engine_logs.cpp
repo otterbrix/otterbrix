@@ -63,8 +63,8 @@ TEST_CASE("integration::cpp::engine_logs::two_engines_write_to_their_own_logs") 
     {
         test_spaces a(config_a);
         test_spaces b(config_b);
-        REQUIRE(exec(a.dispatcher(), "CREATE DATABASE only_in_a;")->is_success());
-        REQUIRE(exec(b.dispatcher(), "CREATE DATABASE only_in_b;")->is_success());
+        REQUIRE(exec(a.dispatcher(), "CREATE SCHEMA only_in_a;")->is_success());
+        REQUIRE(exec(b.dispatcher(), "CREATE SCHEMA only_in_b;")->is_success());
     }
     const auto log_a = log_text(config_a.log.path);
     const auto log_b = log_text(config_b.log.path);

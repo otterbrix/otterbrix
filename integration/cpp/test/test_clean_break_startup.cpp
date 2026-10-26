@@ -172,15 +172,9 @@ TEST_CASE("integration::clean_break_startup::namespace_round_trip") {
         components::table::transaction_data _td_open(0, 0);
         _td_open.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t ctx{session_id_t{}, _td_open, {}};
-        auto [_, fut] = actor_zeta::otterbrix::send(fd2.manager->address(),
-                                                    &manager_disk_t::resolve_namespace,
-                                                    ctx,
-                                                    std::string("durable_ns"));
-        REQUIRE(test_helpers::wait_ready(fut, fd2.scheduler));
-        auto rr = std::move(fut).take_ready();
-        REQUIRE_FALSE(rr.has_error());
-        REQUIRE(rr.value().found);
-        REQUIRE(rr.value().oid == ns_oid);
+        auto rr = test_probe::probe_namespace(fd2, ctx, std::string("durable_ns"));
+        REQUIRE(rr.found);
+        REQUIRE(rr.oid == ns_oid);
     }
     std::filesystem::remove_all(dir);
 }
@@ -212,14 +206,7 @@ TEST_CASE("integration::clean_break_startup::table_round_trip_with_columns") {
         components::table::transaction_data _td_open(0, 0);
         _td_open.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t ctx{session_id_t{}, _td_open, {}};
-        auto [_, nfut] = actor_zeta::otterbrix::send(fd2.manager->address(),
-                                                     &manager_disk_t::resolve_namespace,
-                                                     ctx,
-                                                     std::string("ns"));
-        REQUIRE(test_helpers::wait_ready(nfut, fd2.scheduler));
-        auto rns_r = std::move(nfut).take_ready();
-        REQUIRE_FALSE(rns_r.has_error());
-        auto& rns = rns_r.value();
+        auto rns = test_probe::probe_namespace(fd2, ctx, std::string("ns"));
         REQUIRE(rns.found);
 
         auto rt = test_probe::probe_table(fd2, ctx, rns.oid, std::string("tbl"));
@@ -293,14 +280,8 @@ TEST_CASE("integration::clean_break_startup::resolve_after_restart") {
         components::table::transaction_data _td_open(0, 0);
         _td_open.snapshot_horizon = std::numeric_limits<uint64_t>::max();
         components::execution_context_t ctx{session_id_t{}, _td_open, {}};
-        auto [_, fut] = actor_zeta::otterbrix::send(fd2.manager->address(),
-                                                    &manager_disk_t::resolve_namespace,
-                                                    ctx,
-                                                    std::string("post_restart"));
-        REQUIRE(test_helpers::wait_ready(fut, fd2.scheduler));
-        auto rns = std::move(fut).take_ready();
-        REQUIRE_FALSE(rns.has_error());
-        REQUIRE(rns.value().found);
+        auto rns = test_probe::probe_namespace(fd2, ctx, std::string("post_restart"));
+        REQUIRE(rns.found);
     }
     std::filesystem::remove_all(dir);
 }

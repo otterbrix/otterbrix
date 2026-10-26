@@ -36,7 +36,7 @@ namespace {
     lp::node_aggregate_ptr make_named_aggregate(std::pmr::memory_resource* res) {
         return lp::make_node_aggregate(
             res,
-            qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}});
+            qualified_name_t{core::schema_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}});
     }
 
     // The sentinel scan never awaits, so this reads synchronously; SIZE_MAX means the root isn't that scan.
@@ -83,7 +83,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::no_from_select_keeps_the_
 
     // An empty relname is the no-FROM shape (`SELECT 1`); pinned so the refusal tests below can't over-reach here.
     auto agg = lp::make_node_aggregate(&h.arena,
-                                       qualified_name_t{core::dbname_t{std::string{}}, core::relname_t{std::string{}}});
+                                       qualified_name_t{core::schema_t{std::string{}}, core::relname_t{std::string{}}});
     auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::all(), nullptr);
 
     REQUIRE_FALSE(plan.has_error());
@@ -122,7 +122,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::aggregate_with_an_unlower
     auto agg = make_named_aggregate(&h.arena);
     agg->append_child(
         lp::make_node_match(&h.arena,
-                            qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
+                            qualified_name_t{core::schema_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
                             nullptr));
     auto plan = services::planner::create_plan(h.context, h.registry, agg, lp::limit_t::all(), nullptr);
 
@@ -152,11 +152,11 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_over_an_unresolved
 
     auto match =
         lp::make_node_match(&h.arena,
-                            qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
+                            qualified_name_t{core::schema_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
                             expr::make_compare_expression(&h.arena, expr::compare_type::all_true));
     auto limit = lp::make_node_limit(&h.arena, lp::limit_t::all());
     auto del = lp::make_node_delete(&h.arena, match, limit);
-    del->set_target(qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}});
+    del->set_target(qualified_name_t{core::schema_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}});
 
     auto plan = services::planner::create_plan(h.context, h.registry, del, lp::limit_t::all(), nullptr);
 
@@ -172,11 +172,11 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerabl
     // A refused match child, swallowed, would leave a childless DML sink that runs as a no-op reporting SUCCESS.
     auto match =
         lp::make_node_match(&h.arena,
-                            qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
+                            qualified_name_t{core::schema_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
                             nullptr);
     auto limit = lp::make_node_limit(&h.arena, lp::limit_t::all());
     auto del = lp::make_node_delete(&h.arena, match, limit);
-    del->set_target(qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}});
+    del->set_target(qualified_name_t{core::schema_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}});
 
     auto plan = services::planner::create_plan(h.context, h.registry, del, lp::limit_t::all(), nullptr);
 
@@ -191,7 +191,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerabl
     // node_type::drop_t has no arm in create_plan's dispatch; swallowed, it'd stand as the semi-join's missing side.
     auto match =
         lp::make_node_match(&h.arena,
-                            qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"t"}}},
+                            qualified_name_t{core::schema_t{std::string{"edb"}}, core::relname_t{std::string{"t"}}},
                             expr::make_compare_expression(&h.arena, expr::compare_type::all_true));
     auto limit = lp::make_node_limit(&h.arena, lp::limit_t::all());
     auto del = lp::make_node_delete(&h.arena, match, limit);
@@ -210,7 +210,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::update_over_an_unresolved
 
     auto match =
         lp::make_node_match(&h.arena,
-                            qualified_name_t{core::dbname_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
+                            qualified_name_t{core::schema_t{std::string{"edb"}}, core::relname_t{std::string{"ghost"}}},
                             expr::make_compare_expression(&h.arena, expr::compare_type::all_true));
     auto limit = lp::make_node_limit(&h.arena, lp::limit_t::all());
     std::pmr::vector<expr::expression_ptr> updates{&h.arena};

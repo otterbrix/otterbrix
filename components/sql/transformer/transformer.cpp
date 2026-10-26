@@ -100,34 +100,15 @@ namespace components::sql::transform {
                                                                           logical_plan::execution_plan_t* plan) {
         core::result_wrapper_t<logical_plan::node_ptr> log_node{nullptr};
         switch (node.type) {
-            case T_CreatedbStmt: {
-                auto& n = pg_cast<CreatedbStmt>(node);
-                const std::string dbname = construct(n.dbname);
-                auto created = transform_create_database(n);
-                if (created.has_error()) {
-                    log_node = created.error();
-                    break;
-                }
-                // Resolve the namespace name so a later patch can use the
-                // resolve node to detect duplicates through the pipeline.
-                register_namespace(dbname);
-                log_node = std::move(created.value());
+            case T_CreatedbStmt:
+                log_node = transform_create_database(pg_cast<CreatedbStmt>(node));
                 break;
-            }
-            case T_DropdbStmt: {
-                auto& n = pg_cast<DropdbStmt>(node);
-                const std::string dbname = construct(n.dbname);
-                auto dropped = transform_drop_database(n);
-                if (dropped.has_error()) {
-                    log_node = dropped.error();
-                    break;
-                }
-                auto drop_node = std::move(dropped.value());
-                drop_node->set_target(qualified_name_t{core::dbname_t{dbname}, core::relname_t{}});
-                register_namespace(dbname);
-                log_node = std::move(drop_node);
+            case T_DropdbStmt:
+                log_node = transform_drop_database(pg_cast<DropdbStmt>(node));
                 break;
-            }
+            case T_CreateSchemaStmt:
+                log_node = transform_create_schema(pg_cast<CreateSchemaStmt>(node));
+                break;
             case T_CreateStmt:
                 // Wrap is inside transform_create_table (mirrors DML pattern).
                 log_node = transform_create_table(pg_cast<CreateStmt>(node));

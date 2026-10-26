@@ -35,7 +35,7 @@ namespace {
 
     template<typename D>
     void seed(D* d) {
-        REQUIRE(ok(d, "CREATE DATABASE m;"));
+        REQUIRE(ok(d, "CREATE SCHEMA m;"));
         REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT, g BIGINT);"));
         REQUIRE(ok(d, "INSERT INTO m.t (id, g) VALUES (1,1),(2,1),(3,2);"));
         REQUIRE(ok(d, "CREATE TABLE m.e (id BIGINT);"));
@@ -73,7 +73,7 @@ TEST_CASE("integration::cpp::constant_aggregates::many_chunks") {
     auto config = test_helpers::make_test_config(integration_fixture_path("constant_aggregates/many_chunks"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.big (id BIGINT);"));
     auto seeded =
         test_helpers::seed_rows(d, "m.big", "id", 2500, [](unsigned i) { return "(" + std::to_string(i) + ")"; });

@@ -46,7 +46,7 @@ namespace {
     };
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(exec(d, "CREATE DATABASE bdb;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA bdb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE bdb.t (id bigint);")->is_success());
         for (std::size_t done = 0; done < kRows; done += 512) {
             const auto batch = static_cast<unsigned>(std::min<std::size_t>(512, kRows - done));

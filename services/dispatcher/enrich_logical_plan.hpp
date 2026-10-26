@@ -47,47 +47,18 @@ namespace services::catalog_resolve {
                                const components::logical_plan::node_t* root,
                                components::logical_plan::catalog_resolves_t* resolves);
 
-    bool has_unresolved_entries(const components::logical_plan::catalog_resolves_t& resolves);
-
-    std::pmr::vector<qualified_name_t> unresolved_tables(std::pmr::memory_resource* resource,
-                                                         const components::logical_plan::catalog_resolves_t& resolves);
-
-    // The host's answers, one per name of unresolved_tables and in its order: a storage binds its entry, its
-    // declared columns becoming the table's metadata (relkind 'f'), as the catalog's would for a local table.
-    void bind_storages(components::logical_plan::catalog_resolves_t& resolves,
-                       std::span<components::planner::table_storage_answer_t> answers);
-
-    // A view body name pinned to a relation the catalog no longer holds: the view is stale. Runs before the host.
+    // A view body name pinned to a relation the catalog no longer holds: the view is stale. Runs before any
+    // connector is asked for a storage.
     core::error_t refuse_stale_pins(std::pmr::memory_resource* resource,
                                     const components::logical_plan::catalog_resolves_t& resolves);
 
-    // After the host, one pass over the table names: a view body name the host resolved at CREATE VIEW and gave no
-    // storage now makes the view stale; a schema segment (database.schema.name) the catalog has no place for is
-    // refused — the uid form keeps its meaning database.name, and a storage table's whole name is the host's.
-    core::error_t refuse_unbound_names(std::pmr::memory_resource* resource,
-                                       const components::logical_plan::catalog_resolves_t& resolves);
-
-    // A REFERENCES target with a uid or schema segment is refused, not dropped.
-    core::error_t refuse_referenced_segments(std::pmr::memory_resource* resource,
-                                             const components::logical_plan::catalog_resolves_t& resolves);
-
-    // A statement target this catalog has no place for (a uid or schema segment, a type in a named database) is
-    // refused, IF [NOT] EXISTS or not: PostgreSQL 18 refuses a cross-database name before missing_ok.
-    core::error_t refuse_external_targets(std::pmr::memory_resource* resource,
-                                          const components::logical_plan::catalog_resolves_t& resolves);
+    // A REFERENCES target in another database than the table owning the key is refused.
+    core::error_t refuse_cross_database_references(std::pmr::memory_resource* resource,
+                                                   const components::logical_plan::catalog_resolves_t& resolves);
 
     core::error_t refuse_storage_write_in_savepoint(std::pmr::memory_resource* resource,
                                                     const components::logical_plan::catalog_resolves_t& resolves,
                                                     const components::logical_plan::node_t& write);
-
-    // search_dbnames is ordered by precedence over the type-name search path.
-    const components::logical_plan::resolved_type_metadata_t*
-    probe_type_in_path(const components::logical_plan::catalog_resolves_t& resolves,
-                       std::string_view name,
-                       std::span<const std::string> search_dbnames);
-
-    // Deduplicates entries when target_dbname is already "public" or "pg_catalog".
-    std::vector<std::string> build_type_search_path_str(std::string_view target_dbname);
 
 } // namespace services::catalog_resolve
 

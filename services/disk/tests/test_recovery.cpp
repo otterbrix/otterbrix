@@ -176,7 +176,10 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
         ns_oid = oids[0];
         REQUIRE(ns_oid != components::catalog::INVALID_OID);
         auto writes =
-            components::catalog::build_create_namespace_writes(&fx.resource, std::string("orphaned_ns"), ns_oid);
+            components::catalog::build_create_namespace_writes(&fx.resource,
+                                                               std::string("orphaned_ns"),
+                                                               ns_oid,
+                                                               components::catalog::well_known_oid::main_database);
         for (auto& w : writes)
             disk_test_helpers::append_ok(
                 fx.invoke(&manager_disk_t::append_pg_catalog_row, uncommitted_ctx, w.table_oid, std::move(w.row)));
@@ -188,9 +191,8 @@ TEST_CASE("test_recovery_orphaned_uncommitted_ddl") {
         REQUIRE_FALSE(fx.disk_boot.bootstrap_system_tables_sync().contains_error());
         REQUIRE_FALSE(fx.disk_boot.restore_oid_generator_sync().contains_error());
 
-        auto res = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("orphaned_ns"));
-        REQUIRE_FALSE(res.has_error());
-        REQUIRE_FALSE(res.value().found);
+        auto res = test_probe::probe_namespace(fx, fx.ctx(), std::string("orphaned_ns"));
+        REQUIRE_FALSE(res.found);
 
         INFO("restart creates new oid");
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});

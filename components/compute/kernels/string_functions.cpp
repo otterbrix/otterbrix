@@ -651,6 +651,48 @@ namespace {
         return fn;
     }
 
+    // The name the executor bound, copied into the output.
+    core::error_t vector_place_name(kernel_context&, const data_chunk_t& inputs, vector_t& output) {
+        const auto& names = inputs.data.front();
+        const auto* source = names.data<std::string_view>();
+        auto* heap = static_cast<string_vector_buffer_t*>(output.auxiliary().get());
+        auto* rows = output.data<std::string_view>();
+        for (uint64_t row = 0; row < inputs.size(); row++) {
+            if (names.is_null(row)) {
+                output.set_null(row, true);
+                continue;
+            }
+            const auto text = source[row];
+            auto* copy = reinterpret_cast<char*>(heap->empty_string(text.size()));
+            std::copy(text.begin(), text.end(), copy);
+            rows[row] = std::string_view{copy, text.size()};
+            output.set_null(row, false);
+        }
+        return core::error_t::no_error();
+    }
+
+    core::pmr::polymorphic_unique_ptr<vector_function> make_place_name_func(std::pmr::memory_resource* resource,
+                                                                            std::string_view name) {
+        function_doc doc{resource,
+                         "The session's current place",
+                         "current_database() / current_schema() -> text; NULL when the place is gone",
+                         {"place"},
+                         false};
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                      name,
+                                                                      arity::unary(),
+                                                                      doc,
+                                                                      /*available_kernel_slots=*/size_t{1},
+                                                                      volatility_t::stable);
+        kernel_signature_t sig(function_type_t::vector,
+                               {parameter_type::exact(logical_type::STRING_LITERAL)},
+                               {output_type::fixed(logical_type::STRING_LITERAL)});
+        vector_kernel k(std::move(sig), vector_place_name);
+        [[maybe_unused]] const auto added = fn->add_kernel(resource, std::move(k));
+        assert(!added.contains_error() && "string kernel must fit the declared slots and arity");
+        return fn;
+    }
+
     core::pmr::polymorphic_unique_ptr<vector_function> make_like_match_func(std::pmr::memory_resource* resource) {
         function_doc doc{resource,
                          "LIKE match",
@@ -713,5 +755,11 @@ namespace components::compute {
     }
 
     void register_internal_functions(function_registry_t& r) { r.add_builtin(make_like_match_func(r.resource())); }
+
+    // WARNING: uids must mirror the DEFAULT_FUNCTIONS entries current_database (18) and current_schema (19).
+    void register_place_functions(function_registry_t& r) {
+        r.add_builtin(make_place_name_func(r.resource(), current_database_name));
+        r.add_builtin(make_place_name_func(r.resource(), current_schema_name));
+    }
 
 } // namespace components::compute

@@ -17,7 +17,7 @@
 #include <set>
 #include <string>
 
-static const core::dbname_t database_name{"testdatabase"};
+static const core::schema_t database_name{"testdatabase"};
 static const core::relname_t collection_name{"testcollection"};
 
 TEST_CASE("integration::cpp::test_sql_features::is_null") {
@@ -30,7 +30,7 @@ TEST_CASE("integration::cpp::test_sql_features::is_null") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -150,7 +150,7 @@ TEST_CASE("integration::cpp::test_sql_features::in_list") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -230,7 +230,7 @@ TEST_CASE("integration::cpp::test_sql_features::between") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -310,7 +310,7 @@ TEST_CASE("integration::cpp::test_sql_features::like") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -438,7 +438,7 @@ TEST_CASE("integration::cpp::test_sql_features::like_disk_pushdown") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -510,7 +510,7 @@ TEST_CASE("integration::cpp::test_sql_features::like_non_string_operand_errors")
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE regexdb;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA regexdb;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -576,7 +576,7 @@ TEST_CASE("integration::cpp::test_sql_features::like_all_null_element_three_valu
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE regexdb;")->is_success());
+    REQUIRE(run("CREATE SCHEMA regexdb;")->is_success());
     REQUIRE(run("CREATE TABLE regexdb.t (id bigint, s text);")->is_success());
     REQUIRE(run("CREATE TABLE regexdb.d (id bigint, k bigint);")->is_success());
     REQUIRE(run("CREATE TABLE regexdb.pat (p text);")->is_success());
@@ -626,7 +626,7 @@ TEST_CASE("integration::cpp::test_sql_features::like_any_non_string_elements_nee
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE regexdb;")->is_success());
+    REQUIRE(run("CREATE SCHEMA regexdb;")->is_success());
     REQUIRE(run("CREATE TABLE regexdb.t (id bigint, s text);")->is_success());
     REQUIRE(run("INSERT INTO regexdb.t (id, s) VALUES (1, 'ab'), (12, 'abc'), (3, '12');")->is_success());
 
@@ -663,7 +663,7 @@ TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_error
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE regexdb;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA regexdb;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -681,7 +681,7 @@ TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_error
         auto session = otterbrix::session_id_t();
         auto plan = components::logical_plan::make_node_aggregate(
             resource,
-            qualified_name_t{core::dbname_t{"regexdb"}, core::relname_t{"t"}});
+            qualified_name_t{core::schema_t{"regexdb"}, core::relname_t{"t"}});
         auto expr = components::expressions::make_compare_expression(
             resource,
             components::expressions::compare_type::regex,
@@ -690,7 +690,7 @@ TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_error
         expr->set_regex_flags(core::parameter_id_t{1});
         plan->append_child(
             components::logical_plan::make_node_match(resource,
-                                                      qualified_name_t{core::dbname_t{"regexdb"}, core::relname_t{"t"}},
+                                                      qualified_name_t{core::schema_t{"regexdb"}, core::relname_t{"t"}},
                                                       std::move(expr)));
         auto params = components::logical_plan::make_parameter_node(resource);
         REQUIRE(params->add_parameter(components::vector::make_scalar(resource, "(a)\\1"),
@@ -711,7 +711,7 @@ TEST_CASE("integration::cpp::test_sql_features::regexp_replace_follows_postgresq
     auto config = test_helpers::make_test_config(integration_fixture_path("test_sql_features/regexp_replace"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::ok(dispatcher, "CREATE DATABASE rdb;"));
+    REQUIRE(test_helpers::ok(dispatcher, "CREATE SCHEMA rdb;"));
     REQUIRE(test_helpers::ok(dispatcher, "CREATE TABLE rdb.t (id bigint, s text);"));
     REQUIRE(test_helpers::ok(dispatcher, "INSERT INTO rdb.t (id, s) VALUES (1, 'foobarbaz'), (2, 'hello world');"));
 
@@ -779,7 +779,7 @@ TEST_CASE("integration::cpp::test_sql_features::regexp_like_n_flag_is_not_negati
     auto config = test_helpers::make_test_config(integration_fixture_path("test_sql_features/regexp_like_n_flag"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::ok(dispatcher, "CREATE DATABASE rdb;"));
+    REQUIRE(test_helpers::ok(dispatcher, "CREATE SCHEMA rdb;"));
     REQUIRE(test_helpers::ok(dispatcher, "CREATE TABLE rdb.t (id bigint, s text);"));
     REQUIRE(test_helpers::ok(dispatcher, "INSERT INTO rdb.t (id, s) VALUES (1, 'abc'), (2, 'xyz');"));
 
@@ -824,7 +824,7 @@ TEST_CASE("integration::cpp::test_sql_features::like_match_mode_is_not_callable_
     auto config = test_helpers::make_test_config(integration_fixture_path("test_sql_features/like_match_internal"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::ok(dispatcher, "CREATE DATABASE rdb;"));
+    REQUIRE(test_helpers::ok(dispatcher, "CREATE SCHEMA rdb;"));
     REQUIRE(test_helpers::ok(dispatcher, "CREATE TABLE rdb.t (id bigint, s text);"));
     REQUIRE(test_helpers::ok(dispatcher, "INSERT INTO rdb.t (id, s) VALUES (1, 'abc');"));
 
@@ -860,7 +860,7 @@ TEST_CASE("integration::cpp::test_sql_features::like_matches_non_utf8_bytes") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE regexdb;")->is_success());
+    REQUIRE(run("CREATE SCHEMA regexdb;")->is_success());
     REQUIRE(run("CREATE TABLE regexdb.t (id bigint, name text);")->is_success());
     const std::string latin1_value = "caf\xE9";
     REQUIRE(run("INSERT INTO regexdb.t (id, name) VALUES (1, '" + latin1_value + "');")->is_success());
@@ -897,7 +897,7 @@ TEST_CASE("integration::cpp::test_sql_features::distinct") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -960,7 +960,7 @@ TEST_CASE("integration::cpp::test_sql_features::distinct_on") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -1027,7 +1027,7 @@ TEST_CASE("integration::cpp::test_sql_features::count_distinct") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1104,7 +1104,7 @@ TEST_CASE("integration::cpp::test_sql_features::having") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1158,7 +1158,7 @@ TEST_CASE("integration::cpp::test_sql_features::having_first_class_node") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1312,7 +1312,7 @@ TEST_CASE("integration::cpp::test_sql_features::edge_cases") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1455,7 +1455,7 @@ TEST_CASE("integration::cpp::test_sql_features::coalesce") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1587,7 +1587,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1654,7 +1654,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_null_and_like") {
         return cur;
     };
 
-    run("CREATE DATABASE db;");
+    run("CREATE SCHEMA db;");
     run("CREATE TABLE db.t (id int, v int, s text);");
     run("INSERT INTO db.t (id, v, s) VALUES (1, 10, 'apple'), (2, NULL, 'banana');");
 
@@ -1709,7 +1709,7 @@ TEST_CASE("integration::cpp::test_sql_features::case_when_in_aggregate") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1889,7 +1889,7 @@ TEST_CASE("integration::cpp::test_sql_features::update_with_is_null") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1945,7 +1945,7 @@ TEST_CASE("integration::cpp::test_sql_features::datetime") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto session = otterbrix::session_id_t();
@@ -2364,7 +2364,7 @@ TEST_CASE("integration::cpp::test_sql_features::decimal_type") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2412,7 +2412,7 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2453,7 +2453,7 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
         auto* d2 = space2.dispatcher();
         {
             auto session = otterbrix::session_id_t();
-            d2->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            d2->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2491,7 +2491,7 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint") {
         auto* d3 = space3.dispatcher();
         {
             auto session = otterbrix::session_id_t();
-            d3->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            d3->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2523,7 +2523,7 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint_on_update") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2593,7 +2593,7 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint_on_update") {
         auto* d2 = space2.dispatcher();
         {
             auto session = otterbrix::session_id_t();
-            d2->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            d2->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2635,7 +2635,7 @@ TEST_CASE("integration::cpp::test_sql_features::check_constraint_invalid_expr") 
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2705,7 +2705,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_error_propagation") {
     {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            auto cur = dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
             REQUIRE(cur->is_success());
         }
         {
@@ -2778,7 +2778,7 @@ TEST_CASE("integration::cpp::test_sql_features::check_pred_cache") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2855,7 +2855,7 @@ TEST_CASE("integration::cpp::test_sql_features::fk_enforcement") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -2943,7 +2943,7 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cascade_restrict") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3011,7 +3011,7 @@ TEST_CASE("integration::cpp::test_sql_features::fk_match_full") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3079,7 +3079,7 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cascade_delete") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3151,7 +3151,7 @@ TEST_CASE("integration::cpp::test_sql_features::fk_set_null") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3222,7 +3222,7 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cascade_delete_rollback_resto
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3300,7 +3300,7 @@ TEST_CASE("integration::cpp::test_sql_features::fk_set_null_rollback_restores_fk
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3377,7 +3377,7 @@ TEST_CASE("integration::cpp::test_sql_features::fk_cross_logical_same_physical_k
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3444,7 +3444,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_basic_flow") {
     {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            auto cur = dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
             REQUIRE(cur->is_success());
         }
         {
@@ -3507,7 +3507,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_column") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3556,7 +3556,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_multi_statement_t
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3605,7 +3605,7 @@ TEST_CASE("integration::cpp::test_sql_features::explicit_txn_commit_visible") {
     {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            auto cur = dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
             REQUIRE(cur->is_success());
         }
         {
@@ -3652,7 +3652,7 @@ TEST_CASE("integration::cpp::test_sql_features::explicit_txn_rollback_invisible"
     {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            auto cur = dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
             REQUIRE(cur->is_success());
         }
         {
@@ -3694,7 +3694,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_inside_explicit_txn_transact
     INFO("setup");
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
     }
 
     INFO("BEGIN; CREATE TABLE t2; INSERT t2; SELECT t2 (self-write visible); COMMIT — one shared session");
@@ -3756,7 +3756,7 @@ TEST_CASE("integration::cpp::test_sql_features::alter_table_nonexistent_characte
     INFO("setup database only");
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+        auto cur = dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         REQUIRE(cur->is_success());
     }
 
@@ -3781,7 +3781,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_type_evolution_mu
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3827,7 +3827,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_re_add_after_drop
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3872,7 +3872,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_drop_then_readd_p
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -3950,28 +3950,31 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.t1 (id bigint, name string);")->is_success());
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.t2 (k bigint);")->is_success());
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.t3();")->is_success());
-        }
-        {
-            auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.t1 (id, name) VALUES (1, 'a'), (2, 'b');")
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.public.t1 (id bigint, name string);")
                         ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.t2 (k) VALUES (10);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.public.t2 (k bigint);")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.t3 (col_a) VALUES (42);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.public.t3();")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(
+                dispatcher->execute_sql(session, "INSERT INTO DropMe.public.t1 (id, name) VALUES (1, 'a'), (2, 'b');")
+                    ->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.public.t2 (k) VALUES (10);")->is_success());
+        }
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(
+                dispatcher->execute_sql(session, "INSERT INTO DropMe.public.t3 (col_a) VALUES (42);")->is_success());
         }
     }
 
@@ -3994,25 +3997,26 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
         // success plus zero rows proves storage and pg_attribute were fully dropped and rebuilt.
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.t1 (id bigint, name string);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.public.t1 (id bigint, name string);")
+                        ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.t2 (k bigint);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.public.t2 (k bigint);")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.t3();")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE DropMe.public.t3();")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "SELECT * FROM DropMe.t1;");
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM DropMe.public.t1;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 0);
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "SELECT * FROM DropMe.t2;");
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM DropMe.public.t2;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 0);
         }
@@ -4022,10 +4026,10 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.t3 (col_b) VALUES (7);")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.public.t3 (col_b) VALUES (7);")->is_success());
         }
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM DropMe.t3;");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM DropMe.public.t3;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         REQUIRE(has_column(*cur, "col_b"));
@@ -4036,12 +4040,12 @@ TEST_CASE("integration::cpp::test_sql_features::drop_database_cascade_cleanup") 
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.t1 (id, name) VALUES (100, 'fresh');")
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO DropMe.public.t1 (id, name) VALUES (100, 'fresh');")
                         ->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "SELECT * FROM DropMe.t1;");
+            auto cur = dispatcher->execute_sql(session, "SELECT * FROM DropMe.public.t1;");
             REQUIRE(cur->is_success());
             REQUIRE(cur->size() == 1);
         }
@@ -4059,7 +4063,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_join") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4111,7 +4115,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_join_static") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4162,7 +4166,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_union") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4209,7 +4213,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_subquery") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4246,7 +4250,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_groupby") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4286,7 +4290,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_orderby") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4334,7 +4338,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_vector") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4390,7 +4394,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_struct") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4447,7 +4451,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_array") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4502,7 +4506,7 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_mixed_complex") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4618,7 +4622,7 @@ TEST_CASE("integration::cpp::test_sql_features::comma_join") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4667,7 +4671,7 @@ TEST_CASE("integration::cpp::test_sql_features::create_view_e2e") {
     auto* dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
 
-    REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase")->is_success());
+    REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase")->is_success());
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t (col_a STRING, col_b BIGINT)")->is_success());
     REQUIRE(dispatcher
                 ->execute_sql(session,
@@ -4696,7 +4700,7 @@ TEST_CASE("integration::cpp::test_sql_features::create_matview_e2e") {
     auto* dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
 
-    REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase")->is_success());
+    REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase")->is_success());
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE TestDatabase.t (col_a STRING, col_b BIGINT)")->is_success());
     REQUIRE(dispatcher
                 ->execute_sql(session,
@@ -4751,7 +4755,7 @@ TEST_CASE("integration::cpp::test_sql_features::create_table_if_not_exists") {
     INFO("setup DB");
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
     }
 
     INFO("first CREATE TABLE creates it");
@@ -4785,7 +4789,7 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_indexed_insert_leaves_c
     {
         {
             auto session = otterbrix::session_id_t();
-            auto cur = dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            auto cur = dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
             REQUIRE(cur->is_success());
         }
         {
@@ -4878,7 +4882,7 @@ TEST_CASE("integration::cpp::test_sql_features::vacuum_after_alter_keeps_working
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -4958,7 +4962,7 @@ TEST_CASE("integration::cpp::test_sql_features::bare_commit_is_noop") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -5027,7 +5031,7 @@ TEST_CASE("integration::cpp::test_sql_features::rollback_after_delete_keeps_inde
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -5158,7 +5162,7 @@ TEST_CASE("integration::cpp::test_sql_features::ddl_failure_pre_pipeline_charact
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -5235,7 +5239,7 @@ TEST_CASE("integration::cpp::test_sql_features::indexed_insert_commit_visible_af
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -5316,6 +5320,15 @@ TEST_CASE("integration::cpp::test_sql_features::ddl statements return an empty c
         REQUIRE(cur->size() == 0);
     }
 
+    INFO("CREATE SCHEMA returns an empty cursor");
+    {
+        auto session = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(session, "CREATE SCHEMA DdlEmptyDb;");
+        REQUIRE(cur->is_success());
+        REQUIRE_FALSE(cur->is_error());
+        REQUIRE(cur->size() == 0);
+    }
+
     INFO("CREATE TYPE (composite) returns an empty cursor");
     {
         auto session = otterbrix::session_id_t();
@@ -5374,7 +5387,7 @@ TEST_CASE("integration::cpp::test_sql_features::values_leading_null_column_promo
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE NullFirstDb;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA NullFirstDb;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -5419,7 +5432,7 @@ TEST_CASE("integration::cpp::test_sql_features::constant_predicate_folding") {
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA db;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -5489,7 +5502,7 @@ TEST_CASE("integration::cpp::test_sql_features::column_vs_column") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.t (id bigint, x bigint, y bigint);")->is_success());
     REQUIRE(run("INSERT INTO db.t (id, x, y) VALUES "
                 "(1, 5, 5), (2, 3, 7), (3, 9, 2), (4, 4, 4), (5, 10, 20);")
@@ -5559,7 +5572,7 @@ TEST_CASE("integration::cpp::test_sql_features::expression_filter_pushdown") {
     auto seed = [](auto* d) {
         {
             auto s = otterbrix::session_id_t();
-            d->execute_sql(s, "CREATE DATABASE TestDatabase;");
+            d->execute_sql(s, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto s = otterbrix::session_id_t();
@@ -5653,7 +5666,7 @@ TEST_CASE("integration::cpp::test_sql_features::union_filter_pushdown") {
     auto seed = [](auto* d) {
         {
             auto s = otterbrix::session_id_t();
-            d->execute_sql(s, "CREATE DATABASE TestDatabase;");
+            d->execute_sql(s, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto s = otterbrix::session_id_t();
@@ -5780,7 +5793,7 @@ TEST_CASE("integration::cpp::test_sql_features::col_vs_col_disk_promotes_like_in
     auto seed = [](auto* d) {
         {
             auto s = otterbrix::session_id_t();
-            d->execute_sql(s, "CREATE DATABASE TestDatabase;");
+            d->execute_sql(s, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto s = otterbrix::session_id_t();

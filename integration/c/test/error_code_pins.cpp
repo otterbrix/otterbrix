@@ -8,3 +8,5 @@ static_assert(EC_IO_ERROR == static_cast<int32_t>(core::error_code_t::io_error))
 static_assert(EC_ACTIVE_SQL_TRANSACTION == static_cast<int32_t>(core::error_code_t::active_sql_transaction));
 static_assert(EC_DEPENDENT_OBJECTS_STILL_EXIST ==
               static_cast<int32_t>(core::error_code_t::dependent_objects_still_exist));
+static_assert(EC_SCHEMA_ALREADY_EXISTS == static_cast<int32_t>(core::error_code_t::schema_already_exists));
+static_assert(EC_SCHEMA_NOT_EXISTS == static_cast<int32_t>(core::error_code_t::schema_not_exists));

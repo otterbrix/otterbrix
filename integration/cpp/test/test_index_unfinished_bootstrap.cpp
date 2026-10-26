@@ -49,7 +49,7 @@ TEST_CASE("integration::cpp::index_unfinished_bootstrap::an_unopenable_index_is_
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(exec(d, "CREATE DATABASE b;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA b;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE b.t (id BIGINT, k BIGINT);")->is_success());
         REQUIRE(exec(d, "CREATE INDEX k_idx ON b.t USING hash (k);")->is_success());
         REQUIRE(exec(d, "INSERT INTO b.t (id, k) VALUES (1, 10), (2, 20), (3, 30);")->is_success());

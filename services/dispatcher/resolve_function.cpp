@@ -19,46 +19,6 @@ namespace services::dispatcher {
     using components::types::logical_type;
 
     namespace {
-        enum class function_scope : uint8_t
-        {
-            any,
-            builtins,
-            client,
-        };
-
-        core::result_wrapper_t<function_scope> scope_of(std::pmr::memory_resource* resource,
-                                                        const function_qualified_name_t& name) {
-            if (!name.schema.t.empty()) {
-                return components::sql::transform::refuse_function_segment(resource, name.to_string());
-            }
-            if (name.database.t.empty()) {
-                return function_scope::any;
-            }
-            if (name.database.t == "pg_catalog") {
-                return function_scope::builtins;
-            }
-            if (name.database.t == "public") {
-                return function_scope::client;
-            }
-            return core::error_t(core::error_code_t::unimplemented_yet,
-                                 std::pmr::string{"function '" + name.to_string() +
-                                                      "': a function created in a database cannot be called yet; "
-                                                      "pg_catalog and public hold the callable ones",
-                                                  resource});
-        }
-
-        bool in_scope(function_scope scope, components::compute::function_uid uid) {
-            switch (scope) {
-                case function_scope::any:
-                    return true;
-                case function_scope::builtins:
-                    return components::compute::is_builtin(uid);
-                case function_scope::client:
-                    return !components::compute::is_builtin(uid);
-            }
-            return false;
-        }
-
         bool is_null_argument(const complex_logical_type& type) noexcept { return type.type() == logical_type::NA; }
 
         struct total_cost_t {
@@ -287,8 +247,8 @@ namespace services::dispatcher {
                      const function_qualified_name_t& name,
                      const std::pmr::vector<complex_logical_type>& arguments,
                      components::compute::function_types_mask allowed_function_types,
+                     const components::compute::function_scope_t& scope,
                      std::span<const components::compute::function_pin_t> pins) {
-        VALUE_OR_RETURN(const auto scope, scope_of(resource, name));
         const std::string written = name.to_string();
 
         bool name_exists = false;
@@ -297,11 +257,12 @@ namespace services::dispatcher {
         std::optional<total_cost_t> best_cost;
 
         for (const auto uid : function_registry.find_functions(name.function.t)) {
-            if (!in_scope(scope, uid)) {
-                continue;
-            }
+            // A view read reaches the functions its CREATE bound, wherever the reader stands.
             const bool pinned_by_call =
                 std::any_of(pins.begin(), pins.end(), [uid](const auto& pin) { return pin.uid == uid; });
+            if (!pinned_by_call && !function_registry.reaches(scope, uid)) {
+                continue;
+            }
             if (components::compute::is_internal(uid) && !pinned_by_call) {
                 continue;
             }

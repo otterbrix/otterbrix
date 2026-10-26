@@ -52,7 +52,7 @@ namespace {
     void setup(otterbrix::wrapper_dispatcher_t* dispatcher) {
         {
             auto s = otterbrix::session_id_t();
-            dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto s = otterbrix::session_id_t();
@@ -223,7 +223,7 @@ TEST_CASE("integration::cte_pushdown::distinct_survives_full_push") {
     auto* dispatcher = space.dispatcher();
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE DD;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA DD;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -290,7 +290,7 @@ TEST_CASE("integration::cte_pushdown::recursive_untouched") {
     auto* dispatcher = space.dispatcher();
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE RC;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA RC;");
     }
     {
         auto s = otterbrix::session_id_t();

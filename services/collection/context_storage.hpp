@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/place.hpp>
 #include <components/catalog/session_catalog.hpp>
 #include <components/execution_context/graph_execution_context.hpp>
 #include <components/expressions/compare_expression.hpp>
@@ -14,6 +15,10 @@
 #include <unordered_map>
 #include <unordered_set>
 
+namespace components::planner {
+    class connector_t;
+} // namespace components::planner
+
 namespace services {
 
     struct commit_input_t {
@@ -25,6 +30,10 @@ namespace services {
         std::pmr::memory_resource* resource;
         log_t log;
         components::graph_execution_context execution_context;
+        // The statement's place; the resolve operators complete short names with it.
+        components::catalog::place_t place;
+        // The host's connector, owned by the executor: the operators of DDL in a remote database come from it.
+        components::planner::connector_t* connector{nullptr};
         // oid-only routing. Plan generators ask "do we know about this table?"
         // via the resolved table_oid stamped on the logical_plan node.
         // Wrapper / parser-window paths fall back to the empty set.

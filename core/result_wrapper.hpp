@@ -71,6 +71,8 @@ namespace core {
         thread_start_failed,           // pthread_create refused a manager's loop thread
         active_sql_transaction,        // PostgreSQL 25001: the statement cannot run inside a transaction block
         dependent_objects_still_exist, // PostgreSQL 2BP01: other objects or the database system need it
+        schema_already_exists,         // PostgreSQL 42P06
+        schema_not_exists,             // PostgreSQL 3F000
     };
 
     struct [[nodiscard]] error_t {

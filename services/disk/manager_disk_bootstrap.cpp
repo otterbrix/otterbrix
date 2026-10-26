@@ -41,7 +41,7 @@ namespace services::disk {
             std::string_view name;
         };
 
-        ns_seed_row_t builtin_database_row() { return {wk::main_database, "main"}; }
+        ns_seed_row_t builtin_database_row() { return {wk::main_database, wk::main_database_name}; }
 
         std::vector<ns_seed_row_t> builtin_namespace_rows() {
             return {
@@ -416,6 +416,7 @@ namespace services::disk {
                 auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto*) {
                     chunk.set_value(0, 0, db.oid);
                     chunk.set_value(1, 0, db.name);
+                    chunk.set_value(2, 0, std::string_view{});
                 });
                 seed_row(pg_database_oid, def->name, row);
                 RETURN_IF_ERROR(require_seeded(pg_database_oid, def->name, 1));
@@ -429,6 +430,7 @@ namespace services::disk {
                     auto row = make_row(resource(), def->columns, [&](data_chunk_t& chunk, auto*) {
                         chunk.set_value(0, 0, nrow.oid);
                         chunk.set_value(1, 0, nrow.name);
+                        chunk.set_value(2, 0, wk::main_database);
                     });
                     seed_row(pg_namespace_oid_tbl, def->name, row);
                     ++written;
@@ -724,6 +726,7 @@ namespace services::disk {
             if (cls_table.calculate_size() == 0) {
                 return std::size_t{0};
             }
+            const auto remote_namespaces = remote_namespace_oids_sync();
             core::pmr::otterbrix_resource scan_resource;
             // [oid, relnamespace, relkind]
             std::vector<components::table::storage_index_t> col_indices;
@@ -765,6 +768,9 @@ namespace services::disk {
                         continue;
                     }
                     const auto ns_oid = static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i));
+                    if (remote_namespaces.contains(ns_oid)) {
+                        continue;
+                    }
                     need_oids.emplace_back(oid, ns_oid);
                 }
             }
@@ -1155,6 +1161,67 @@ namespace services::disk {
         return result;
     }
 
+    std::pmr::unordered_set<components::catalog::oid_t> manager_disk_t::remote_namespace_oids_sync() const {
+        std::pmr::unordered_set<catalog::oid_t> found{resource_};
+        if (agents_.empty() || agents_[0] == nullptr) {
+            return found;
+        }
+        // Calls `visit` with the first two columns of every committed row of the catalog table `table_oid`.
+        const auto scan_pairs = [this](catalog::oid_t table_oid, int64_t first, int64_t second, const auto& visit) {
+            const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(table_oid);
+            if (entry == nullptr) {
+                return;
+            }
+            auto& table = const_cast<collection_storage_entry_t*>(entry)->table_storage.table();
+            if (table.calculate_size() == 0) {
+                return;
+            }
+            core::pmr::otterbrix_resource scan_resource;
+            std::vector<components::table::storage_index_t> col_indices;
+            col_indices.emplace_back(first);
+            col_indices.emplace_back(second);
+            components::table::table_scan_state scan_state(&scan_resource);
+            table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
+            auto chunk_types = read_types(table, col_indices, &scan_resource);
+            while (true) {
+                components::vector::data_chunk_t chunk(&scan_resource,
+                                                       chunk_types,
+                                                       components::vector::DEFAULT_VECTOR_CAPACITY);
+                table.scan(chunk, scan_state);
+                if (chunk.size() == 0) {
+                    break;
+                }
+                for (uint64_t i = 0; i < chunk.size(); ++i) {
+                    if (!chunk.is_null(0, i) && !chunk.is_null(1, i)) {
+                        visit(chunk, i);
+                    }
+                }
+            }
+        };
+        std::pmr::unordered_set<catalog::oid_t> remote_databases{resource_};
+        scan_pairs(pg_database_oid,
+                   static_cast<int64_t>(catalog::pg_database_col::oid),
+                   static_cast<int64_t>(catalog::pg_database_col::datconnection),
+                   [&remote_databases](const components::vector::data_chunk_t& chunk, uint64_t i) {
+                       if (!chunk.get_value<std::string_view>(1, i).empty()) {
+                           remote_databases.insert(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)));
+                       }
+                   });
+        if (remote_databases.empty()) {
+            return found;
+        }
+        scan_pairs(
+            pg_namespace_oid_tbl,
+            static_cast<int64_t>(catalog::pg_namespace_col::oid),
+            static_cast<int64_t>(catalog::pg_namespace_col::nspdatabase),
+            [&](const components::vector::data_chunk_t& chunk, uint64_t i) {
+                if (remote_databases.contains(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(1, i)))) {
+                    found.insert(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i)));
+                }
+            });
+        return found;
+    }
+
     std::pmr::vector<components::catalog::oid_t> manager_disk_t::scan_live_table_oids_sync() const {
         std::pmr::vector<components::catalog::oid_t> live{resource_};
         if (agents_.empty() || agents_[0] == nullptr) {
@@ -1168,10 +1235,13 @@ namespace services::disk {
         if (table.column_count() < 4 || table.calculate_size() == 0) {
             return live;
         }
+        const auto remote_namespaces = remote_namespace_oids_sync();
         core::pmr::otterbrix_resource scan_resource;
+        // [oid, relkind, relnamespace]
         std::vector<components::table::storage_index_t> col_indices;
         col_indices.emplace_back(static_cast<int64_t>(0));
         col_indices.emplace_back(static_cast<int64_t>(3));
+        col_indices.emplace_back(static_cast<int64_t>(2));
         components::table::table_scan_state scan_state(&scan_resource);
         table.initialize_scan(scan_state, col_indices, components::table::transaction_data::committed());
         auto chunk_types = read_types(table, col_indices, &scan_resource);
@@ -1193,6 +1263,9 @@ namespace services::disk {
                     continue;
                 const char k = kind.front();
                 if (k != catalog::relkind::regular && k != catalog::relkind::materialized_view)
+                    continue;
+                if (!chunk.is_null(2, i) &&
+                    remote_namespaces.contains(static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(2, i))))
                     continue;
                 live.push_back(seen);
             }

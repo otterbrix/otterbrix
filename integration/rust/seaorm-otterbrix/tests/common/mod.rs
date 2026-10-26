@@ -19,7 +19,7 @@ pub fn open_test_db() -> Database {
 
 pub async fn open_test_proxy() -> DatabaseConnection {
     let db = open_test_db();
-    db.execute("CREATE DATABASE app;").expect("create database");
+    db.execute("CREATE SCHEMA app;").expect("create database");
     db.execute("CREATE TABLE app.t();")
         .expect("create collection");
 

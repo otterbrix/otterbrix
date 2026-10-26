@@ -38,7 +38,7 @@ using id_par = core::parameter_id_t;
 
 namespace {
 
-    const core::dbname_t database{"hb"};
+    const core::schema_t database{"hb"};
 
     configuration::config config_for(const std::string& leaf) {
         auto config = make_test_config(integration_fixture_path("test_hand_built_constraints/" + leaf));
@@ -169,7 +169,7 @@ namespace {
     }
 
     void seed_parent_and_child(otterbrix::wrapper_dispatcher_t* d, const std::string& on_delete) {
-        run_ok(d, "CREATE DATABASE hb;");
+        run_ok(d, "CREATE SCHEMA hb;");
         run_ok(d, "CREATE TABLE hb.p (id bigint, code bigint);");
         run_ok(d, "CREATE TABLE hb.c (id bigint, code bigint);");
         run_ok(d, "ALTER TABLE hb.p ADD CONSTRAINT p_pk PRIMARY KEY (id);");
@@ -184,7 +184,7 @@ TEST_CASE("integration::cpp::hand_built_constraints::insert_honours_check") {
     auto config = config_for("insert_check");
     test_spaces space(config);
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE hb;");
+    run_ok(d, "CREATE SCHEMA hb;");
     run_ok(d, "CREATE TABLE hb.t (id bigint, code bigint);");
     run_ok(d, "ALTER TABLE hb.t ADD CONSTRAINT id_positive CHECK (id > 0);");
 
@@ -202,7 +202,7 @@ TEST_CASE("integration::cpp::hand_built_constraints::update_honours_check") {
     auto config = config_for("update_check");
     test_spaces space(config);
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE hb;");
+    run_ok(d, "CREATE SCHEMA hb;");
     run_ok(d, "CREATE TABLE hb.t (id bigint, code bigint);");
     run_ok(d, "ALTER TABLE hb.t ADD CONSTRAINT code_positive CHECK (code > 0);");
     run_ok(d, "INSERT INTO hb.t (id, code) VALUES (1, 10);");
@@ -217,7 +217,7 @@ TEST_CASE("integration::cpp::hand_built_constraints::insert_honours_unique") {
     auto config = config_for("insert_unique");
     test_spaces space(config);
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE hb;");
+    run_ok(d, "CREATE SCHEMA hb;");
     run_ok(d, "CREATE TABLE hb.t (id bigint, code bigint);");
     run_ok(d, "ALTER TABLE hb.t ADD CONSTRAINT uq_code UNIQUE (code);");
     run_ok(d, "INSERT INTO hb.t (id, code) VALUES (1, 10);");
@@ -230,7 +230,7 @@ TEST_CASE("integration::cpp::hand_built_constraints::update_honours_unique") {
     auto config = config_for("update_unique");
     test_spaces space(config);
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE hb;");
+    run_ok(d, "CREATE SCHEMA hb;");
     run_ok(d, "CREATE TABLE hb.t (id bigint, code bigint);");
     run_ok(d, "ALTER TABLE hb.t ADD CONSTRAINT uq_code UNIQUE (code);");
     run_ok(d, "INSERT INTO hb.t (id, code) VALUES (1, 10), (2, 20);");
@@ -243,7 +243,7 @@ TEST_CASE("integration::cpp::hand_built_constraints::insert_honours_primary_key"
     auto config = config_for("insert_primary_key");
     test_spaces space(config);
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE hb;");
+    run_ok(d, "CREATE SCHEMA hb;");
     run_ok(d, "CREATE TABLE hb.t (id bigint, code bigint);");
     run_ok(d, "ALTER TABLE hb.t ADD CONSTRAINT t_pk PRIMARY KEY (id);");
     run_ok(d, "INSERT INTO hb.t (id, code) VALUES (1, 10);");
@@ -368,7 +368,7 @@ TEST_CASE("integration::cpp::hand_built_constraints::sql_registers_one_constrain
         CHECK_FALSE(entry.names_only);
         REQUIRE(resolves.tables != nullptr);
         REQUIRE(entry.target < resolves.tables->entries().size());
-        CHECK(resolves.tables->entries()[entry.target].dbname == "hb");
+        CHECK(resolves.tables->entries()[entry.target].schema == "hb");
         CHECK(resolves.tables->entries()[entry.target].relname == "t");
     }
 }

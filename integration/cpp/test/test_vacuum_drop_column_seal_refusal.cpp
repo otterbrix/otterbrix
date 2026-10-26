@@ -25,7 +25,7 @@ TEST_CASE("integration::cpp::vacuum_drop_column_seal_refusal::a_refused_seal_is_
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE cdc;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA cdc;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE cdc.docs();")->is_success());
     REQUIRE(exec(d, "INSERT INTO cdc.docs (id, n) VALUES (1, 42);")->is_success());
     REQUIRE(exec(d, "ALTER TABLE cdc.docs DROP COLUMN n;")->is_success());

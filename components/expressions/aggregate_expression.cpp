@@ -70,6 +70,12 @@ namespace components::expressions {
         call()->set_pins(std::move(pins));
     }
 
+    void aggregate_expression_t::set_scope(const compute::function_scope_t& scope) noexcept {
+        call()->set_scope(scope);
+    }
+
+    const compute::function_scope_t& aggregate_expression_t::scope() const noexcept { return call()->scope(); }
+
     const std::pmr::vector<compute::function_pin_t>& aggregate_expression_t::pins() const noexcept {
         return call()->pins();
     }

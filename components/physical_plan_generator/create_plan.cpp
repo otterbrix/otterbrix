@@ -1,5 +1,7 @@
 #include "create_plan.hpp"
 
+#include <components/physical_plan/operators/operator_sequence.hpp>
+
 #include <cassert>
 #include <cstdlib>
 
@@ -57,14 +59,9 @@ namespace services::planner {
         return core::error_t{core::error_code_t::create_physical_plan_error, std::pmr::string{what, resource}};
     }
 
-    core::error_t
-    unresolved_table_refusal(std::pmr::memory_resource* resource, std::string_view dbname, std::string_view relname) {
+    core::error_t unresolved_table_refusal(std::pmr::memory_resource* resource, const qualified_name_t& name) {
         std::pmr::string what{"relation \"", resource};
-        if (!dbname.empty()) {
-            what += dbname;
-            what += '.';
-        }
-        what += relname;
+        what += name.to_string();
         what += "\" has no resolved table in this plan";
         return plan_refusal(resource, what);
     }
@@ -77,6 +74,49 @@ namespace services::planner {
         what += relname;
         what += "\" built no operator";
         return plan_refusal(resource, what);
+    }
+
+    core::result_wrapper_t<components::planner::connector_t*>
+    connector_for(const context_storage_t& context, const components::planner::remote_name_t& name) {
+        if (context.connector != nullptr) {
+            return context.connector;
+        }
+        const qualified_name_t written{core::connection_name_t{std::string{name.connection}},
+                                       core::dbname_t{std::string{name.database}},
+                                       core::schema_t{std::string{name.schema}},
+                                       core::relname_t{std::string{name.table}}};
+        std::pmr::string what{name.table.empty() ? "schema \"" : "table \"", context.resource};
+        what += written.to_string();
+        what += "\" is of connection \"";
+        what += name.connection;
+        what += "\", and the host gave no connector";
+        return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
+    }
+
+    plan_result_t connector_then_catalog(const context_storage_t& context,
+                                         plan_result_t backend,
+                                         components::operators::operator_ptr catalog) {
+        VALUE_OR_RETURN(auto first, std::move(backend));
+        auto steps =
+            boost::intrusive_ptr(new components::operators::operator_sequence_t(context.resource, context.log.clone()));
+        steps->append_step(std::move(first));
+        steps->append_step(std::move(catalog));
+        return steps;
+    }
+
+    components::planner::remote_name_t remote_name_of(const qualified_name_t& table) {
+        return {table.connection.t, table.database.t, table.schema.t, table.collection.t};
+    }
+
+    components::planner::remote_table_t
+    remote_table_of(const components::logical_plan::resolved_table_metadata_t& table,
+                    std::pmr::vector<components::planner::remote_column_t>& columns) {
+        columns.clear();
+        columns.reserve(table.columns.size());
+        for (const auto& column : table.columns) {
+            columns.push_back({column.attoid, column.attname, column.type, column.attnotnull});
+        }
+        return {table.table_oid, {table.connection, table.database, table.schema, table.name}, columns};
     }
 
     plan_result_t create_plan(const context_storage_t& context,

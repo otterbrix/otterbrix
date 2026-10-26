@@ -197,7 +197,7 @@ impl Database {
     /// use otterbrix::{Config, Database};
     /// let cfg = Config::new("./data");
     /// let db = Database::open(cfg).expect("open database");
-    /// db.execute("CREATE DATABASE app;").unwrap();
+    /// db.execute("CREATE SCHEMA app;").unwrap();
     /// ```
     pub fn open(config: Config) -> Result<Self> {
         let log_path = path_to_str(&config.log_path)?;
@@ -259,7 +259,7 @@ impl Database {
     /// ```no_run
     /// use otterbrix::{Config, Database, SqlParam, SqlParamValue};
     /// # let db = Database::open(Config::new("./data")).unwrap();
-    /// # db.execute("CREATE DATABASE app;").unwrap();
+    /// # db.execute("CREATE SCHEMA app;").unwrap();
     /// # db.execute("CREATE TABLE app.t();").unwrap();
     /// let params = [
     ///     SqlParam { index: 1, value: SqlParamValue::Int64(7) },

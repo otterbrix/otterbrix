@@ -813,9 +813,9 @@ namespace components::sql::transform {
         if (target.type() != types::logical_type::UNKNOWN) {
             return;
         }
-        const std::string& name = target.type_name();
+        auto name = type_reference_of(target);
         if (std::find(cast_type_names_.begin(), cast_type_names_.end(), name) == cast_type_names_.end()) {
-            cast_type_names_.push_back(name);
+            cast_type_names_.push_back(std::move(name));
         }
     }
 

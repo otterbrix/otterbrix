@@ -47,7 +47,7 @@ TEST_CASE("integration::cpp::computed_drop::simple_field_is_hidden") {
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE cdc;");
+    run_ok(d, "CREATE SCHEMA cdc;");
     run_ok(d, "CREATE TABLE cdc.docs();");
     run_ok(d, "INSERT INTO cdc.docs (id, n) VALUES (1, 42);");
     run_ok(d, "ALTER TABLE cdc.docs DROP COLUMN n;");
@@ -67,7 +67,7 @@ TEST_CASE("integration::cpp::computed_drop::complex_typed_field_is_hidden") {
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE cdc;");
+    run_ok(d, "CREATE SCHEMA cdc;");
     run_ok(d, "CREATE TABLE cdc.docs();");
     run_ok(d, "INSERT INTO cdc.docs (id, price) VALUES (1, 12345678901234567890123456789);");
 
@@ -94,7 +94,7 @@ TEST_CASE("integration::cpp::computed_drop::rename_on_computed_table_refused_lou
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE cdc;");
+    run_ok(d, "CREATE SCHEMA cdc;");
     run_ok(d, "CREATE TABLE cdc.docs();");
     run_ok(d, "INSERT INTO cdc.docs (id, n) VALUES (1, 42);");
 
@@ -122,7 +122,7 @@ TEST_CASE("integration::cpp::computed_drop::every_variant_of_the_field_is_hidden
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE cdc;");
+    run_ok(d, "CREATE SCHEMA cdc;");
     run_ok(d, "CREATE TABLE cdc.docs();");
     run_ok(d, "INSERT INTO cdc.docs (id, x) VALUES (1, 7);");
     {

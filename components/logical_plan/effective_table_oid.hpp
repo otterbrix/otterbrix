@@ -16,4 +16,8 @@ namespace components::logical_plan {
     // so every side with a backing relation gets a live count.
     catalog::oid_t effective_table_oid(const node_ptr& node);
 
+    // A node over one table otterbrix stores: what a pushdown to the disk agent may read. A connection's table has
+    // an oid too, but its rows come from its connector's storage.
+    bool reads_owned_table(const node_t& node);
+
 } // namespace components::logical_plan

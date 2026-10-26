@@ -8,7 +8,7 @@ public class Tests
     public void StringsComeBackFromTheEngine() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("StringsComeBackFromTheEngine");
         {
-            using CursorWrapper cursor = otterbrix.Execute("CREATE DATABASE db;");
+            using CursorWrapper cursor = otterbrix.Execute("CREATE SCHEMA db;");
             Assert.IsTrue(cursor.IsSuccess());
         }
         {
@@ -56,7 +56,7 @@ public class Tests
     [Test]
     public void RollbackUndoesTheInsertItsBeginOpened() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("RollbackUndoesTheInsertItsBeginOpened");
-        foreach (string statement in new[] { "CREATE DATABASE s;",
+        foreach (string statement in new[] { "CREATE SCHEMA s;",
                                              "CREATE TABLE s.t (a BIGINT);",
                                              "BEGIN;",
                                              "INSERT INTO s.t (a) VALUES (1);",
@@ -148,7 +148,7 @@ public class Tests
     public void WritesReportAffectedRows() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("WritesReportAffectedRows");
         {
-            using CursorWrapper cursor = otterbrix.Execute("CREATE DATABASE db;");
+            using CursorWrapper cursor = otterbrix.Execute("CREATE SCHEMA db;");
             Assert.IsTrue(cursor.IsSuccess());
             Assert.That(cursor.AffectedRows(), Is.Null);
         }
@@ -185,7 +185,7 @@ public class Tests
     public void CreateTableReportsItsOid() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("CreateTableReportsItsOid");
         {
-            using CursorWrapper cursor = otterbrix.Execute("CREATE DATABASE db;");
+            using CursorWrapper cursor = otterbrix.Execute("CREATE SCHEMA db;");
             Assert.IsTrue(cursor.IsSuccess());
             Assert.That(cursor.CreatedOid(), Is.Null);
         }
@@ -210,7 +210,7 @@ public class Tests
     public void Base() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("Base");
         {
-            using (CursorWrapper created = otterbrix.Execute("CREATE DATABASE testdatabase;")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.Execute("CREATE SCHEMA testdatabase;")) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.Execute("CREATE TABLE testdatabase.testcollection();")) Assert.IsTrue(created.IsSuccess());
         }
         {
@@ -338,7 +338,7 @@ public class Tests
     public void GroupBy() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("GroupBy");
         {
-            using (CursorWrapper created = otterbrix.Execute("CREATE DATABASE testdatabase;")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.Execute("CREATE SCHEMA testdatabase;")) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.Execute("CREATE TABLE testdatabase.testcollection();")) Assert.IsTrue(created.IsSuccess());
         }
         {
@@ -404,7 +404,7 @@ public class Tests
     public void InvalidQueries() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("InvalidQueries");
         {
-            using CursorWrapper database = otterbrix.Execute("CREATE DATABASE testdatabase;");
+            using CursorWrapper database = otterbrix.Execute("CREATE SCHEMA testdatabase;");
             Assert.IsTrue(database.IsSuccess());
             using CursorWrapper collection = otterbrix.Execute("CREATE TABLE testdatabase.testcollection();");
             Assert.IsTrue(collection.IsSuccess());
@@ -413,7 +413,7 @@ public class Tests
             using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM OtherDatabase.OtherCollection;");
             Assert.IsFalse(cursor.IsSuccess());
             Assert.IsTrue(cursor.IsError());
-            Assert.That(cursor.GetError().type, Is.EqualTo(ErrorCode.DatabaseNotExists));
+            Assert.That(cursor.GetError().type, Is.EqualTo(ErrorCode.TableNotExists));
         }
         {
             using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM testdatabase.OtherCollection;");
@@ -440,7 +440,7 @@ public class Tests
 
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("TestJoin");
         {
-            using (CursorWrapper created = otterbrix.Execute("CREATE DATABASE " + databaseName + ";")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.Execute("CREATE SCHEMA " + databaseName + ";")) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.Execute("CREATE TABLE " + databaseName + "." + collectionName1 + "();")) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.Execute("CREATE TABLE " + databaseName + "." + collectionName2 + "();")) Assert.IsTrue(created.IsSuccess());
         }

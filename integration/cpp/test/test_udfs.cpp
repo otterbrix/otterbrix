@@ -8,7 +8,7 @@
 #include <components/tests/generaty.hpp>
 #include <core/operations_helper.hpp>
 
-static const core::dbname_t database_name{"testdatabase"};
+static const core::schema_t database_name{"testdatabase"};
 static const core::relname_t collection_name{"testcollection"};
 
 using namespace components;
@@ -207,7 +207,7 @@ TEST_CASE("integration::cpp::test_udfs") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -538,7 +538,7 @@ TEST_CASE("integration::cpp::test_udfs::a_udf_compare_in_where_is_pushed_into_th
     auto* dispatcher = space.dispatcher();
 
     auto exec = [&](const std::string& sql) { return dispatcher->execute_sql(otterbrix::session_id_t(), sql); };
-    REQUIRE(exec("CREATE DATABASE udfpush;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA udfpush;")->is_success());
     REQUIRE(exec("CREATE TABLE udfpush.t (count BIGINT);")->is_success());
     {
         std::string values;
@@ -582,7 +582,7 @@ TEST_CASE("integration::cpp::test_udfs::a_udf_in_a_pushable_aggregate_is_pushed_
     auto* dispatcher = space.dispatcher();
 
     auto exec = [&](const std::string& sql) { return dispatcher->execute_sql(otterbrix::session_id_t(), sql); };
-    REQUIRE(exec("CREATE DATABASE udfagg;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA udfagg;")->is_success());
     REQUIRE(exec("CREATE TABLE udfagg.t (g BIGINT, v BIGINT);")->is_success());
     {
         std::string values;
@@ -648,7 +648,7 @@ TEST_CASE("integration::cpp::test_udfs::udf_join_key_is_hashed_only_when_immutab
     auto* dispatcher = space.dispatcher();
 
     auto exec = [&](const std::string& sql) { return dispatcher->execute_sql(otterbrix::session_id_t(), sql); };
-    REQUIRE(exec("CREATE DATABASE udfjoin;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA udfjoin;")->is_success());
     REQUIRE(exec("CREATE TABLE udfjoin.f (a BIGINT, v BIGINT);")->is_success());
     REQUIRE(exec("CREATE TABLE udfjoin.d (id BIGINT, n BIGINT);")->is_success());
     REQUIRE(exec("INSERT INTO udfjoin.f (a, v) VALUES (11, 1), (12, 2), (23, 3), (5, 4);")->is_success());

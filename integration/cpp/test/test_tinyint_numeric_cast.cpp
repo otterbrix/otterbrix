@@ -15,7 +15,7 @@ TEST_CASE("integration::cpp::test_tinyint_numeric_cast::a_tinyint_column_lands_i
 
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE tn;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA tn;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE tn.src (id BIGINT, a TINYINT);")->is_success());
     REQUIRE(exec(d, "CREATE TABLE tn.dst (id BIGINT, n NUMERIC(10,2));")->is_success());
 
@@ -66,7 +66,7 @@ TEST_CASE("integration::cpp::test_tinyint_numeric_cast::a_utinyint_column_lands_
 
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE tn;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA tn;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE tn.src (id BIGINT, a UTINYINT);")->is_success());
     REQUIRE(exec(d, "CREATE TABLE tn.dst (id BIGINT, n NUMERIC(10,2));")->is_success());
 

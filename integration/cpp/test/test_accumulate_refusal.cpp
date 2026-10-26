@@ -32,7 +32,7 @@ TEST_CASE("integration::cpp::accumulate_refusal::a_successful_dml_statement_has_
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE AccDb;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA AccDb;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE AccDb.t (id bigint, val bigint);")->is_success());
 
     {
@@ -72,7 +72,7 @@ TEST_CASE("integration::cpp::accumulate_refusal::an_explicit_transaction_publish
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE AccDb;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA AccDb;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE AccDb.t (id bigint, val bigint);")->is_success());
 
     // No implicit commit follows a statement here, so a refused park would leave COMMIT nothing to publish.
@@ -95,7 +95,7 @@ TEST_CASE("integration::cpp::accumulate_refusal::a_successful_ddl_statement_has_
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE AccDb;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA AccDb;")->is_success());
 
     // The DDL tail ships pg_class/pg_attribute/pg_depend rows and the created oid through the same door.
     {

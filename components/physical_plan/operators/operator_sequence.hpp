@@ -4,15 +4,19 @@
 
 namespace components::operators {
 
-    // The ONLY operator_sequence_t ever constructed is the childless, no-op
-    // fallback at the tail of create_plan_sequence (real DDL/DML sequences are
-    // flattened into left_/right_ chains there) — so it is always a no-op leaf
-    // with nothing to drive. It is a trivial SINK: a sourceless sink root with no
-    // left child, which execute_pipeline drives through a no-op finalize (no
-    // needs_async_finalize).
+    // A DDL statement's steps, one after another: the executor runs each step as a plan of its own, in order, and
+    // stops at the first that fails; the sequence itself does nothing. The steps are not its children, so a statement
+    // of thousands of steps is a flat list, never a chain that deep.
     class operator_sequence_t final : public read_write_operator_t {
     public:
         operator_sequence_t(std::pmr::memory_resource* resource, log_t log);
+
+        void append_step(operator_ptr step) { steps_.push_back(std::move(step)); }
+        void drop_last_step() { steps_.pop_back(); }
+        const std::pmr::vector<operator_ptr>& steps() const noexcept { return steps_; }
+
+    private:
+        std::pmr::vector<operator_ptr> steps_;
     };
 
 } // namespace components::operators

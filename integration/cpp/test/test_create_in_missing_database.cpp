@@ -1,5 +1,5 @@
-// A CREATE into a database that does not exist is refused and writes nothing: no pg_class row without a namespace
-// is left behind to collide with the same name in another database.
+// A CREATE into a schema that does not exist is refused and writes nothing: no pg_class row without a namespace
+// is left behind to collide with the same name in another schema.
 
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
@@ -43,8 +43,8 @@ namespace {
         auto cursor = db.run(sql);
         INFO(sql << " -> " << (cursor->is_error() ? std::string{cursor->get_error().what} : std::string{"ok"}));
         CHECK(cursor->is_error());
-        CHECK(cursor->get_error().type == core::error_code_t::database_not_exists);
-        CHECK(std::string{cursor->get_error().what} == "database \"nodb\" does not exist");
+        CHECK(cursor->get_error().type == core::error_code_t::schema_not_exists);
+        CHECK(std::string{cursor->get_error().what} == "schema \"nodb\" does not exist");
     }
 
     const char* orphans = "SELECT relname FROM pg_catalog.pg_class WHERE relnamespace = 0;";
@@ -62,7 +62,7 @@ TEST_CASE("integration::cpp::create_in_missing_database::a_table_is_refused_and_
     CHECK(db.rows(orphans) == 0);
     CHECK(db.rows("SELECT relname FROM pg_catalog.pg_class WHERE relname = 't';") == 0);
 
-    db.ok("CREATE DATABASE otherdb;");
+    db.ok("CREATE SCHEMA otherdb;");
     db.ok("CREATE TABLE otherdb.t (id INT);");
     db.ok("INSERT INTO otherdb.t (id) VALUES (1);");
     CHECK(db.rows("SELECT id FROM otherdb.t;") == 1);

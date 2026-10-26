@@ -89,7 +89,7 @@ TEST_CASE("integration::cpp::star_join_e2e::rows_correct") {
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
 
-    dispatcher->execute_sql(session, "CREATE DATABASE " + db + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + db + ";");
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
     auto create = [&](const std::string& t) { REQUIRE(run("CREATE TABLE " + db + "." + t + "();")->is_success()); };
 
@@ -347,7 +347,7 @@ TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
     auto session = otterbrix::session_id_t();
 
     const std::string edb = "eageraggdb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + edb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + edb + ";");
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
     REQUIRE(run("CREATE TABLE " + edb + ".a ();")->is_success());
     REQUIRE(run("CREATE TABLE " + edb + ".b ();")->is_success());
@@ -437,7 +437,7 @@ TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_sa
     auto session = otterbrix::session_id_t();
 
     const std::string edb = "eageraggdupdb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + edb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + edb + ";");
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
     REQUIRE(run("CREATE TABLE " + edb + ".a ();")->is_success());
     REQUIRE(run("CREATE TABLE " + edb + ".b ();")->is_success());
@@ -514,7 +514,7 @@ namespace {
         auto dispatcher = space.dispatcher();
         auto run = [&](const std::string& sql) { return dispatcher->execute_sql(otterbrix::session_id_t(), sql); };
 
-        REQUIRE(run("CREATE DATABASE m;")->is_success());
+        REQUIRE(run("CREATE SCHEMA m;")->is_success());
         REQUIRE(run("CREATE TABLE m.d1 (id BIGINT, n BIGINT, small INT);")->is_success());
         REQUIRE(run("CREATE TABLE m.d2 (id BIGINT, n BIGINT);")->is_success());
         REQUIRE(run("CREATE TABLE m.f (a BIGINT, b BIGINT, v BIGINT);")->is_success());
@@ -598,7 +598,7 @@ TEST_CASE("integration::cpp::star_join_e2e::remap_select_jsonb_extract") {
     test_spaces space(config);
     auto dispatcher = space.dispatcher();
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(otterbrix::session_id_t(), sql); };
-    REQUIRE(run("CREATE DATABASE m;")->is_success());
+    REQUIRE(run("CREATE SCHEMA m;")->is_success());
     REQUIRE(run("CREATE TABLE m.d1 ();")->is_success());
     REQUIRE(run("CREATE TABLE m.d2 (id BIGINT, n BIGINT);")->is_success());
     REQUIRE(run("CREATE TABLE m.f (a BIGINT, b BIGINT, v BIGINT);")->is_success());

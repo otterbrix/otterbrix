@@ -8,6 +8,7 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>
 #include <components/expressions/function_expression.hpp>
+#include <components/logical_plan/for_each_plan_call.hpp>
 #include <components/physical_plan/operators/catalog_util.hpp>
 #include <components/planner/view_expansion.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
@@ -40,70 +41,6 @@ namespace services::collection {
                     return d.refclassid == refclassid && d.refobjid == refobjid;
                 })) {
                 out.push_back({refclassid, refobjid});
-            }
-        }
-
-        // Every function call of the tree; an aggregate's call is the function expression under it.
-        template<typename Visit>
-        void for_each_call(const expressions::expression_ptr& expr, Visit& visit);
-
-        template<typename Visit>
-        void for_each_call(const expressions::param_storage& param, Visit& visit) {
-            if (expressions::is_expr(param)) {
-                for_each_call(expressions::as_expr(param), visit);
-            }
-        }
-
-        template<typename Visit>
-        void for_each_call(const expressions::expression_ptr& expr, Visit& visit) {
-            if (!expr) {
-                return;
-            }
-            switch (expr->group()) {
-                case expressions::expression_group::function: {
-                    auto* f = static_cast<expressions::function_expression_t*>(expr.get());
-                    visit(*f);
-                    for (const auto& a : f->args()) {
-                        for_each_call(a, visit);
-                    }
-                    break;
-                }
-                case expressions::expression_group::aggregate:
-                    for_each_call(static_cast<const expressions::aggregate_expression_t*>(expr.get())->child(), visit);
-                    break;
-                case expressions::expression_group::scalar: {
-                    for (const auto& p : static_cast<const expressions::scalar_expression_t*>(expr.get())->params()) {
-                        for_each_call(p, visit);
-                    }
-                    break;
-                }
-                case expressions::expression_group::compare: {
-                    const auto* c = static_cast<const expressions::compare_expression_t*>(expr.get());
-                    for_each_call(c->left(), visit);
-                    for_each_call(c->right(), visit);
-                    for (const auto& child : c->children()) {
-                        for_each_call(child, visit);
-                    }
-                    break;
-                }
-                case expressions::expression_group::cast:
-                    for_each_call(static_cast<const expressions::cast_expression_t*>(expr.get())->child(), visit);
-                    break;
-                default:
-                    break;
-            }
-        }
-
-        template<typename Visit>
-        void for_each_call(const node_t* node, Visit& visit) {
-            if (!node) {
-                return;
-            }
-            for (const auto& e : node->expressions()) {
-                for_each_call(e, visit);
-            }
-            for (const auto& c : node->children()) {
-                for_each_call(c.get(), visit);
             }
         }
 
@@ -241,17 +178,20 @@ namespace services::collection {
     std::pmr::vector<components::compute::function_pin_t> view_body_user_functions(std::pmr::memory_resource* resource,
                                                                                    const node_t* body) {
         std::pmr::vector<components::compute::function_pin_t> out{resource};
-        auto visit = [&out](const expressions::function_expression_t& call) {
-            const components::compute::function_pin_t use = call.pin();
-            const bool user_defined =
-                use.uid != components::compute::invalid_function_uid && !components::compute::is_builtin(use.uid);
-            if (user_defined && std::none_of(out.begin(), out.end(), [&use](const auto& seen) {
-                    return seen.uid == use.uid && seen.signature == use.signature;
-                })) {
-                out.push_back(use);
+        // A table function is no call a view body pins.
+        auto visit = [&out](const auto& call, const auto&, bool) {
+            if constexpr (std::is_same_v<std::decay_t<decltype(call)>, expressions::function_expression_t>) {
+                const components::compute::function_pin_t use = call.pin();
+                const bool user_defined =
+                    use.uid != components::compute::invalid_function_uid && !components::compute::is_builtin(use.uid);
+                if (user_defined && std::none_of(out.begin(), out.end(), [&use](const auto& seen) {
+                        return seen.uid == use.uid && seen.signature == use.signature;
+                    })) {
+                    out.push_back(use);
+                }
             }
         };
-        for_each_call(body, visit);
+        components::logical_plan::for_each_plan_call(body, visit);
         return out;
     }
 
@@ -379,18 +319,20 @@ namespace services::collection {
         if (pins.empty()) {
             return core::error_t::no_error();
         }
-        auto stamp = [&pins, resource](expressions::function_expression_t& call) {
-            std::pmr::vector<components::compute::function_pin_t> own{resource};
-            for (const auto& pin : pins) {
-                if (pin.name == call.name()) {
-                    own.push_back(pin.pin);
+        auto stamp = [&pins, resource](auto& call, const auto&, bool) {
+            if constexpr (std::is_same_v<std::decay_t<decltype(call)>, expressions::function_expression_t>) {
+                std::pmr::vector<components::compute::function_pin_t> own{resource};
+                for (const auto& pin : pins) {
+                    if (pin.name == call.name()) {
+                        own.push_back(pin.pin);
+                    }
+                }
+                if (!own.empty()) {
+                    call.set_pins(std::move(own));
                 }
             }
-            if (!own.empty()) {
-                call.set_pins(std::move(own));
-            }
         };
-        for_each_call(body, stamp);
+        components::logical_plan::for_each_plan_call(body, stamp);
         return core::error_t::no_error();
     }
 
@@ -437,12 +379,11 @@ namespace services::collection {
             for (std::size_t i = 0; i < own_tables && i < entries.size(); ++i) {
                 const auto& entry = entries[i];
                 catalog::view_binding_t binding;
-                binding.dbname = entry.dbname;
+                binding.connection = core::connection_name_t{entry.connection};
+                binding.dbname = core::dbname_t{entry.database};
                 binding.schema = entry.schema;
                 binding.relname = entry.relname;
-                if (entry.storage) {
-                    binding.refkind = catalog::view_refkind::host_name;
-                } else if (entry.table_md.has_value() && entry.table_md->table_oid != view.replaced_oid()) {
+                if (entry.table_md.has_value() && entry.table_md->table_oid != view.replaced_oid()) {
                     // The view OR REPLACE names is a lookup of the statement, not of the body.
                     binding.refkind = catalog::view_refkind::relation;
                     binding.refobjid = entry.table_md->table_oid;

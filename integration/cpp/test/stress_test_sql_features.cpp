@@ -23,11 +23,11 @@ TEST_CASE("integration::cpp::test_sql_features::dynamic_schema_stress_1000_rando
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    INFO("setup: CREATE DATABASE + empty CREATE TABLE => relkind='g'");
+    INFO("setup: CREATE SCHEMA + empty CREATE TABLE => relkind='g'");
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();

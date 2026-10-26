@@ -42,7 +42,7 @@ fn open_with_explicit_log_level() {
         .main_path(format!("{base}/main"))
         .build();
     let db = Database::open(config).expect("open with explicit log level");
-    db.execute("CREATE DATABASE leveldb;").unwrap();
+    db.execute("CREATE SCHEMA leveldb;").unwrap();
     db.execute("CREATE TABLE leveldb.t (n integer);").unwrap();
 }
 
@@ -67,5 +67,5 @@ fn a_second_open_of_the_same_directory_is_refused() {
     }
     drop(first);
     let reopened = Database::open(Config::new(&dir)).expect("open after the first engine is gone");
-    reopened.execute("CREATE DATABASE relocked;").unwrap();
+    reopened.execute("CREATE SCHEMA relocked;").unwrap();
 }

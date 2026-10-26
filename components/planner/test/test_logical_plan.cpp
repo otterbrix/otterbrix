@@ -31,7 +31,9 @@ constexpr auto collection_name = "collection";
 
 TEST_CASE("components::planner::create_database") {
     auto resource = core::pmr::otterbrix_resource();
-    auto plan = make_node_create_database(&resource, core::dbname_t{std::string{database_name}});
+    auto plan = make_node_create_database(
+        &resource,
+        qualified_name_t{core::dbname_t{std::string{database_name}}, core::schema_t{}, core::relname_t{}});
     components::planner::planner_t planner;
     auto node = planner.create_plan(&resource, plan);
     REQUIRE(node->to_string() == R"_($create_database: database)_");
@@ -68,7 +70,7 @@ TEST_CASE("components::planner::drop_collection") {
 TEST_CASE("components::planner::match") {
     auto resource = core::pmr::otterbrix_resource();
     auto node_match = make_node_match(&resource,
-                                      qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                                      qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                                       make_compare_expression(&resource,
                                                               compare_type::eq,
                                                               key(&resource, "key", side_t::left),
@@ -132,11 +134,11 @@ TEST_CASE("components::planner::aggregate") {
     auto resource = core::pmr::otterbrix_resource();
     auto aggregate =
         make_node_aggregate(&resource,
-                            qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+                            qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
 
     aggregate->append_child(
         make_node_match(&resource,
-                        qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                         make_compare_expression(&resource,
                                                 compare_type::eq,
                                                 key(&resource, "key", side_t::left),
@@ -177,7 +179,7 @@ TEST_CASE("components::planner::aggregate_having") {
     auto resource = core::pmr::otterbrix_resource();
     auto aggregate =
         make_node_aggregate(&resource,
-                            qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+                            qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
 
     // $group: GROUP BY k + hidden SUM(x) aggregate exposed as "sum_x"
     {
@@ -363,7 +365,7 @@ TEST_CASE("components::planner::row_cap_t") {
 TEST_CASE("components::planner::delete") {
     auto resource = core::pmr::otterbrix_resource();
     auto match = make_node_match(&resource,
-                                 qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                                 qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                                  make_compare_expression(&resource,
                                                          compare_type::eq,
                                                          key(&resource, "key", side_t::left),
@@ -386,7 +388,7 @@ TEST_CASE("components::planner::delete") {
 TEST_CASE("components::planner::update") {
     auto resource = core::pmr::otterbrix_resource();
     auto match = make_node_match(&resource,
-                                 qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                                 qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                                  make_compare_expression(&resource,
                                                          compare_type::eq,
                                                          key(&resource, "key", side_t::left),
@@ -419,7 +421,7 @@ TEST_CASE("components::planner::node_drop_hash_folds_names_and_flags") {
     auto resource = core::pmr::otterbrix_resource();
     auto base = [&]() {
         auto n = make_node_drop(&resource, drop_target_kind::collection);
-        n->set_target(qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
+        n->set_target(qualified_name_t{core::schema_t{"db"}, core::relname_t{"t"}});
         return n;
     };
 
@@ -427,12 +429,12 @@ TEST_CASE("components::planner::node_drop_hash_folds_names_and_flags") {
 
     SECTION("a different relname hashes differently") {
         auto b = base();
-        b->set_target(qualified_name_t{core::dbname_t{"db"}, core::relname_t{"u"}});
+        b->set_target(qualified_name_t{core::schema_t{"db"}, core::relname_t{"u"}});
         REQUIRE(a->hash() != b->hash());
     }
     SECTION("a different dbname hashes differently") {
         auto b = base();
-        b->set_target(qualified_name_t{core::dbname_t{"other"}, core::relname_t{"t"}});
+        b->set_target(qualified_name_t{core::schema_t{"other"}, core::relname_t{"t"}});
         REQUIRE(a->hash() != b->hash());
     }
     SECTION("RESTRICT hashes differently from CASCADE") {
@@ -448,10 +450,10 @@ TEST_CASE("components::planner::node_drop_hash_folds_names_and_flags") {
     }
     SECTION("a different index name hashes differently") {
         auto i1 = make_node_drop(&resource, drop_target_kind::index);
-        i1->set_target(qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
+        i1->set_target(qualified_name_t{core::schema_t{"db"}, core::relname_t{"t"}});
         i1->set_index_name(core::indexname_t{"idx1"});
         auto i2 = make_node_drop(&resource, drop_target_kind::index);
-        i2->set_target(qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
+        i2->set_target(qualified_name_t{core::schema_t{"db"}, core::relname_t{"t"}});
         i2->set_index_name(core::indexname_t{"idx2"});
         REQUIRE(i1->hash() != i2->hash());
     }

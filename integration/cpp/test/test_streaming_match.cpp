@@ -27,7 +27,7 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_streams_and_lands") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE MatchDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA MatchDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE MatchDb.t (id bigint, name text);")->is_success());
 
     {
@@ -70,7 +70,7 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_with_limit_caps_across
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE MatchDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA MatchDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE MatchDb.t (id bigint, name text);")->is_success());
 
     {
@@ -104,7 +104,7 @@ TEST_CASE("integration::cpp::streaming_match::like_filter_with_limit_caps_across
 
 namespace {
     void setup_match_over_sink_db(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE SinkDb;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA SinkDb;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE SinkDb.emp (id bigint, dept_id bigint, name text);")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE SinkDb.dept (id bigint, name text);")->is_success());
         REQUIRE(exec(dispatcher,
@@ -187,7 +187,7 @@ TEST_CASE("integration::cpp::streaming_match::delete_using_large_build_side_does
     test_clear_directory(config);
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(exec(dispatcher, "CREATE DATABASE BigDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA BigDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE BigDb.target (id bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE BigDb.using_tbl (k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO BigDb.target (id, k) VALUES (0,0), (1,1), (2,2);")->is_success());
@@ -253,7 +253,7 @@ TEST_CASE("integration::cpp::streaming_match::like_all_null_element_disk_three_v
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE MatchDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA MatchDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE MatchDb.t (id bigint, s text);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE MatchDb.pat (p text);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO MatchDb.t (id, s) VALUES (1, 'ab'), (2, 'abc'), (3, 'zz');")->is_success());
@@ -292,7 +292,7 @@ TEST_CASE("integration::cpp::streaming_match::late_mat_gather_selective_disk_val
     constexpr unsigned kGatherRows = 4000;
     const std::string wide_pad(120, 'x');
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE GatherDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA GatherDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE GatherDb.t (id bigint, s text);")->is_success());
     {
         std::stringstream q;

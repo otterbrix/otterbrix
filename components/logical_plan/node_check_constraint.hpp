@@ -17,7 +17,7 @@ namespace components::logical_plan {
     class node_check_constraint_t final : public node_t {
     public:
         explicit node_check_constraint_t(std::pmr::memory_resource* resource,
-                                         core::dbname_t dbname,
+                                         core::schema_t schema,
                                          core::relname_t relname,
                                          std::vector<std::string> not_null_columns,
                                          std::vector<std::pair<std::string, uint64_t>> array_size_reqs = {});

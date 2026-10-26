@@ -57,7 +57,7 @@ TEST_CASE("integration::cpp::test_s3_commit_scaling::single_row_delete_vs_table_
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE s3;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA s3;")->is_success());
     REQUIRE(exec("CREATE TABLE s3.small (id bigint, v bigint);")->is_success());
     REQUIRE(exec("CREATE TABLE s3.big (id bigint, v bigint);")->is_success());
     fill(d, "small", 10000);

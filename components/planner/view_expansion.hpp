@@ -87,16 +87,14 @@ namespace components::planner {
         logical_plan::node_ptr reference;
     };
 
+    // The matview is the one the REFRESH found: its write target is read again by its oid.
     core::result_wrapper_t<refresh_matview_plan_t>
-    refresh_matview_plan(std::pmr::memory_resource* resource,
-                         const logical_plan::resolved_table_metadata_t& matview,
-                         const core::dbname_t& dbname);
+    refresh_matview_plan(std::pmr::memory_resource* resource, const logical_plan::resolved_table_metadata_t& matview);
 
-    // REFRESH MATERIALIZED VIEW empties the matview first (PostgreSQL 18 matview.c): DELETE FROM dbname.matview,
+    // REFRESH MATERIALIZED VIEW empties the matview first (PostgreSQL 18 matview.c): DELETE FROM the matview,
     // every row, no limit.
     logical_plan::execution_plan_t refresh_matview_delete_plan(std::pmr::memory_resource* resource,
-                                                               const logical_plan::resolved_table_metadata_t& matview,
-                                                               const core::dbname_t& dbname);
+                                                               const logical_plan::resolved_table_metadata_t& matview);
 
     // A true cycle should be impossible, but this is the loud stop instead of an endless resolve loop.
     inline constexpr std::size_t max_view_expansion_depth = 16;

@@ -77,6 +77,7 @@ namespace {
                                 function_qualified_name_t{core::function_name_t{std::string{name}}},
                                 arguments,
                                 any_kind(),
+                                components::compute::function_scope_t{},
                                 {});
     }
 
@@ -170,6 +171,7 @@ TEST_CASE("dispatcher::resolve_function: the function decides its own return typ
                                  function_qualified_name_t{core::function_name_t{"count"}},
                                  none,
                                  any_kind(),
+                                 components::compute::function_scope_t{},
                                  {});
     REQUIRE_FALSE(star.has_error());
     REQUIRE(star.value().result.type() == logical_type::UBIGINT);
@@ -204,6 +206,7 @@ TEST_CASE("dispatcher::resolve_function: a family entry keeps the argument's par
                                      function_qualified_name_t{core::function_name_t{"sum"}},
                                      arguments,
                                      any_kind(),
+                                     components::compute::function_scope_t{},
                                      {});
     REQUIRE_FALSE(resolved.has_error());
     REQUIRE_FALSE(resolved.value().arguments[0].cast);
@@ -227,6 +230,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                          function_qualified_name_t{core::function_name_t{"sum"}},
                                          integer,
                                          scalar_only,
+                                         components::compute::function_scope_t{},
                                          {});
     REQUIRE(sum_in_where.has_error());
     REQUIRE(sum_in_where.error().type == core::error_code_t::incorrect_function_argument);
@@ -237,6 +241,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                                 function_qualified_name_t{core::function_name_t{"length"}},
                                                 text,
                                                 aggregate_only,
+                                                components::compute::function_scope_t{},
                                                 {});
     REQUIRE(length_in_aggregate.has_error());
 
@@ -247,6 +252,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                    function_qualified_name_t{core::function_name_t{"sum"}},
                                    integer,
                                    aggregate_only,
+                                   components::compute::function_scope_t{},
                                    {})
                       .has_error());
     REQUIRE_FALSE(resolve_function(resource(),
@@ -255,6 +261,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                    function_qualified_name_t{core::function_name_t{"length"}},
                                    text,
                                    scalar_only,
+                                   components::compute::function_scope_t{},
                                    {})
                       .has_error());
 }
@@ -283,6 +290,7 @@ TEST_CASE("dispatcher::resolve_function: abs resolves per argument type") {
                                    function_qualified_name_t{core::function_name_t{"abs"}},
                                    decimal_arg,
                                    any_kind(),
+                                   components::compute::function_scope_t{},
                                    {});
     REQUIRE_FALSE(scaled.has_error());
     REQUIRE_FALSE(scaled.value().arguments[0].cast);
@@ -345,6 +353,7 @@ TEST_CASE("dispatcher::resolve_function: an internal builtin resolves only for a
                                    function_qualified_name_t{core::function_name_t{"like_match"}},
                                    arguments,
                                    any_kind(),
+                                   components::compute::function_scope_t{},
                                    std::span<const components::compute::function_pin_t>{&pin, 1});
     INFO((pinned.has_error() ? std::string{pinned.error().what} : std::string{}));
     REQUIRE_FALSE(pinned.has_error());

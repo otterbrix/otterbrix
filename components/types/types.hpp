@@ -689,14 +689,21 @@ namespace components::types {
 
     class unknown_logical_type_extension : public logical_type_extension {
     public:
-        explicit unknown_logical_type_extension(std::string type_name);
+        explicit unknown_logical_type_extension(std::string type_name,
+                                                std::string database = {},
+                                                std::string schema = {});
 
         const std::string& type_name() const;
+        // The database and schema the type was written with; empty when it was not.
+        const std::string& type_database() const;
+        const std::string& type_schema() const;
 
         bool operator==(const unknown_logical_type_extension& rhs) const;
 
     private:
         std::string type_name_;
+        std::string database_;
+        std::string schema_;
     };
 
     template<typename T>

@@ -102,7 +102,7 @@ TEST_CASE("components::sql::functions") {
         auto select = linitial(parse_ok(&arena_resource, "SELECT u.d.s.some_udf(text) FROM some_table;"));
         auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
         REQUIRE(result.has_error());
-        CHECK(result.error().type == core::error_code_t::invalid_parameter);
+        CHECK(result.error().type == core::error_code_t::sql_parse_error);
         CHECK(std::string{result.error().what}.find("u.d.s.some_udf") != std::string::npos);
     }
 

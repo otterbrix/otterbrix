@@ -35,6 +35,9 @@ namespace components::expressions {
         // A view read: the call resolves among these alone, not among every function of its name.
         void set_pins(std::pmr::vector<compute::function_pin_t> pins);
         const std::pmr::vector<compute::function_pin_t>& pins() const noexcept;
+        // The functions the call may reach, set by the executor from the catalog (function_scope_t).
+        void set_scope(const compute::function_scope_t& scope) noexcept { scope_ = scope; }
+        const compute::function_scope_t& scope() const noexcept { return scope_; }
 
         void set_key(const key_t& key);
 
@@ -57,6 +60,7 @@ namespace components::expressions {
         compute::function_pin_t pin_;
         compute::function_ptr function_{compute::no_function()};
         std::pmr::vector<compute::function_pin_t> pins_;
+        compute::function_scope_t scope_;
 
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;

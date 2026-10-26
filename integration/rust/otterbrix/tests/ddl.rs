@@ -8,14 +8,14 @@ mod common;
 #[test]
 fn create_database_returns_cursor() {
     let db = common::open_test_db();
-    let cursor = db.execute("CREATE DATABASE mydb;").unwrap();
+    let cursor = db.execute("CREATE SCHEMA mydb;").unwrap();
     assert_eq!(cursor.size(), 0);
 }
 
 #[test]
 fn create_collection_returns_cursor() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE mydb;").unwrap();
+    db.execute("CREATE SCHEMA mydb;").unwrap();
     let cursor = db.execute("CREATE TABLE mydb.users();").unwrap();
     assert_eq!(cursor.size(), 0);
 }
@@ -23,7 +23,7 @@ fn create_collection_returns_cursor() {
 #[test]
 fn create_table_via_sql() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE testdb;").unwrap();
+    db.execute("CREATE SCHEMA testdb;").unwrap();
     db.execute("CREATE TABLE testdb.items (name string, price bigint);")
         .unwrap();
 }
@@ -32,15 +32,15 @@ fn create_table_via_sql() {
 fn drop_collection_then_database() {
     let db = common::open_test_db();
     db.execute("CREATE DATABASE dropme;").unwrap();
-    db.execute("CREATE TABLE dropme.t();").unwrap();
-    db.execute("DROP TABLE dropme.t;").unwrap();
+    db.execute("CREATE TABLE dropme.public.t();").unwrap();
+    db.execute("DROP TABLE dropme.public.t;").unwrap();
     db.execute("DROP DATABASE dropme;").unwrap();
 }
 
 #[test]
 fn cursor_reports_integer_logical_type() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE typedb;").unwrap();
+    db.execute("CREATE SCHEMA typedb;").unwrap();
     db.execute("CREATE TABLE typedb.nums (n integer);").unwrap();
     db.execute("INSERT INTO typedb.nums (n) VALUES (42);")
         .unwrap();
@@ -52,7 +52,7 @@ fn cursor_reports_integer_logical_type() {
 #[test]
 fn cursor_reports_logical_type_for_basic_types() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE typedb;").unwrap();
+    db.execute("CREATE SCHEMA typedb;").unwrap();
     db.execute(
         "CREATE TABLE typedb.mix (i integer, big bigint, flag boolean, val double, label string);",
     )

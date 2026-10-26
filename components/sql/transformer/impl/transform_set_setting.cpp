@@ -38,6 +38,11 @@ namespace components::sql::transform {
             if (!node.args || node.args->lst.empty()) {
                 return refused("a value");
             }
+            if (setting.id == catalog::setting_id::search_path && node.args->lst.size() > 1) {
+                return core::error_t(
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"search_path takes one place: [[connection.]database.]schema", resource});
+            }
             auto* first_arg = pg_ptr_cast<Node>(node.args->lst.front().data);
             if (nodeTag(first_arg) != T_A_Const) {
                 return refused("a constant");

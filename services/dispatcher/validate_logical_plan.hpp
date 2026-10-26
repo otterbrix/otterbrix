@@ -19,10 +19,6 @@
 #include <unordered_map>
 #include <vector>
 
-namespace components::catalog {
-    class table_id;
-}
-
 namespace components::casts {
     class cast_registry_t;
 }
@@ -48,23 +44,34 @@ namespace services::dispatcher {
     using validation::type_path_t;
     using validation::type_paths;
 
-    // Existence checks — return no_error() on success, an error on failure.
+    // Existence checks — return no_error() on success, an error on failure: database_not_exists,
+    // schema_not_exists or table_not_exists for the first slot of the name the catalog does not hold.
+    // The database of `name` (its connection and database slots).
+    [[nodiscard]] core::error_t check_database_exists(std::pmr::memory_resource* resource,
+                                                      const catalog_resolves_t* resolves,
+                                                      const qualified_name_t& name);
     [[nodiscard]] core::error_t check_namespace_exists(std::pmr::memory_resource* resource,
                                                        const catalog_resolves_t* resolves,
-                                                       const components::catalog::table_id& id);
+                                                       const qualified_name_t& name);
+    // A written [connection.][database.]schema above a relation the resolve did not find: the missing level, else
+    // no_error (the relation itself is the caller's to report). check_read_levels names only a missing database of a
+    // connection: a read of a missing local database or schema answers "relation ... does not exist".
+    [[nodiscard]] core::error_t check_relation_levels(std::pmr::memory_resource* resource,
+                                                      const catalog_resolves_t* resolves,
+                                                      const qualified_name_t& name);
+    [[nodiscard]] core::error_t check_read_levels(std::pmr::memory_resource* resource,
+                                                  const catalog_resolves_t* resolves,
+                                                  const qualified_name_t& name);
     [[nodiscard]] core::error_t check_collection_exists(std::pmr::memory_resource* resource,
                                                         const catalog_resolves_t* resolves,
-                                                        const components::catalog::table_id& id);
+                                                        const qualified_name_t& name);
     [[nodiscard]] core::error_t
     check_column_names_unique(std::pmr::memory_resource* resource,
                               const std::vector<components::table::column_definition_t>& columns);
-    // Probe `alias` against the plan's resolved type entries for each dbname in
-    // `search_dbnames` in order. Returns no_error() on first hit. If
-    // `search_dbnames` is empty, falls back to {"public", "pg_catalog"}.
+    // A built-in (bare or pg_catalog) or a user type the resolve found as written.
     [[nodiscard]] core::error_t check_type_exists(std::pmr::memory_resource* resource,
-                                                  const catalog_resolves_t* resolves,
-                                                  const std::string& alias,
-                                                  std::span<const std::string> search_dbnames = {});
+                                                  const components::logical_plan::catalog_resolves_t* resolves,
+                                                  const qualified_name_t& written);
 
     // Validate plan node types against the plan's resolved catalog entries.
     [[nodiscard]] core::error_t validate_types(std::pmr::memory_resource* resource,

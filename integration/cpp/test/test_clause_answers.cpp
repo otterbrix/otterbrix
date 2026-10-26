@@ -33,7 +33,7 @@ using namespace test_helpers;
 namespace {
 
     void seed(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE cl;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA cl;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE cl.t (g bigint, v bigint);")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE cl.u (g bigint, name text);")->is_success());
         REQUIRE(exec(dispatcher, "INSERT INTO cl.t (g, v) VALUES (1, 10), (1, 20), (2, 30), (2, 50), (2, 40), (3, 5);")
@@ -85,7 +85,7 @@ namespace {
     using names = std::vector<std::string>;
 
     void seed_ob(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE ob;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA ob;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE ob.c (id bigint, name text);")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE ob.o (cid bigint, name text);")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE ob.t (a bigint, b bigint);")->is_success());
@@ -847,7 +847,7 @@ TEST_CASE("integration::cpp::clause_answers::a_hand_built_plan_names_a_parameter
     auto* dispatcher = space.dispatcher();
     auto* resource = dispatcher->resource();
     seed_ob(dispatcher);
-    const qualified_name_t table{core::dbname_t{"ob"}, core::relname_t{"t"}};
+    const qualified_name_t table{core::schema_t{"ob"}, core::relname_t{"t"}};
     auto grouped_by_a = [&](expressions::scalar_expression_ptr key) {
         auto group = logical_plan::make_node_group(resource);
         group->append_expression(std::move(key));

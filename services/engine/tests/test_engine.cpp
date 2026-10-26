@@ -120,7 +120,7 @@ TEST_CASE("services::engine::factory::rows_survive_a_reopen_without_a_wrapper") 
     {
         host_t host(root);
         REQUIRE_FALSE(host.open().contains_error());
-        REQUIRE(host.execute("CREATE DATABASE e;")->is_success());
+        REQUIRE(host.execute("CREATE SCHEMA e;")->is_success());
         REQUIRE(host.execute("CREATE TABLE e.t (id BIGINT);")->is_success());
         REQUIRE(host.execute("INSERT INTO e.t (id) VALUES (1), (2), (3);")->is_success());
     }
@@ -167,7 +167,7 @@ TEST_CASE("services::engine::pump::an_idle_engine_burns_no_cpu") {
     host_t host(root);
     host.config.execution.pump.idle = kNeverWakesByItself;
     REQUIRE_FALSE(host.open().contains_error());
-    REQUIRE(host.execute("CREATE DATABASE idle;")->is_success());
+    REQUIRE(host.execute("CREATE SCHEMA idle;")->is_success());
     REQUIRE(every_loop_waits_idle());
 
     const auto wakeups_before = services::dev_pump_wakeups();
@@ -184,7 +184,7 @@ TEST_CASE("services::engine::pump::a_query_to_an_idle_engine_does_not_wait_for_t
     host_t host(root);
     host.config.execution.pump.idle = kNeverWakesByItself;
     REQUIRE_FALSE(host.open().contains_error());
-    REQUIRE(host.execute("CREATE DATABASE lat;")->is_success());
+    REQUIRE(host.execute("CREATE SCHEMA lat;")->is_success());
     REQUIRE(host.execute("CREATE TABLE lat.t (id BIGINT);")->is_success());
     REQUIRE(host.execute("INSERT INTO lat.t (id) VALUES (1), (2);")->is_success());
     REQUIRE(every_loop_waits_idle());
@@ -386,7 +386,7 @@ TEST_CASE("services::engine::host::a_missing_idle_or_shared_pool_is_refused") {
     CHECK(refused({host.general.get(), host.general.get(), host.disk.get()}));
     CHECK(refused({host.general.get(), host.exec.get(), host.general.get()}));
     REQUIRE_FALSE(host.open().contains_error());
-    REQUIRE(host.execute("CREATE DATABASE pools;")->is_success());
+    REQUIRE(host.execute("CREATE SCHEMA pools;")->is_success());
 }
 
 TEST_CASE("services::engine::factory::an_unreadable_oid_reservation_is_refused_as_an_error") {
@@ -394,7 +394,7 @@ TEST_CASE("services::engine::factory::an_unreadable_oid_reservation_is_refused_a
     {
         host_t host(root);
         REQUIRE_FALSE(host.open().contains_error());
-        REQUIRE(host.execute("CREATE DATABASE r;")->is_success());
+        REQUIRE(host.execute("CREATE SCHEMA r;")->is_success());
         REQUIRE(host.execute("CREATE TABLE r.t (id BIGINT);")->is_success());
     }
     host_t host(root);
@@ -464,7 +464,7 @@ TEST_CASE("services::engine::host::an_unusable_temporary_directory_is_refused_at
         {
             host_t host(root / "reopen");
             REQUIRE_FALSE(host.open().contains_error());
-            REQUIRE(host.execute("CREATE DATABASE tmp;")->is_success());
+            REQUIRE(host.execute("CREATE SCHEMA tmp;")->is_success());
             REQUIRE(host.execute("CREATE TABLE tmp.t (id BIGINT);")->is_success());
         }
         host_t host(root / "reopen");

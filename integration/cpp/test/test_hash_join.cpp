@@ -189,7 +189,7 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
 
-    dispatcher->execute_sql(session, "CREATE DATABASE " + db + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + db + ";");
 
     auto create = [&](const std::string& t) {
         REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + db + "." + t + "();")->is_success());
@@ -262,7 +262,7 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
     auto session = otterbrix::session_id_t();
 
     const std::string mdb = "mbchunkdb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + mdb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + mdb + ";");
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + mdb + ".mbl();")->is_success());
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + mdb + ".mbr();")->is_success());
 
@@ -416,7 +416,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
     auto session = otterbrix::session_id_t();
 
     const std::string sdb = "buildsidedb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + sdb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + sdb + ";");
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + sdb + ".small();")->is_success());
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + sdb + ".large();")->is_success());
 
@@ -508,7 +508,7 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
     auto session = otterbrix::session_id_t();
 
     const std::string wdb = "multiwaydb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + wdb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + wdb + ";");
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
 
     REQUIRE(run("CREATE TABLE " + wdb + ".lo();")->is_success()); // lineorder-shaped fact
@@ -646,7 +646,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
     auto session = otterbrix::session_id_t();
 
     const std::string sdb = "synbuilddb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + sdb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + sdb + ";");
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
     REQUIRE(run("CREATE TABLE " + sdb + ".filt ();")->is_success()); // (k, x)
     REQUIRE(run("CREATE TABLE " + sdb + ".pln ();")->is_success());  // (k, y)
@@ -724,7 +724,7 @@ TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrap
     auto session = otterbrix::session_id_t();
 
     const std::string wdb = "wrapcountdb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + wdb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + wdb + ";");
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
     REQUIRE(run("CREATE TABLE " + wdb + ".big ();")->is_success());  // (k, x)
     REQUIRE(run("CREATE TABLE " + wdb + ".tiny ();")->is_success()); // (k, y)

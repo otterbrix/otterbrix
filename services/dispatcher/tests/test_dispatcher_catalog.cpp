@@ -39,7 +39,7 @@ using namespace components::catalog;
 using namespace components::cursor;
 using namespace components::types;
 
-// Catalog assertions go through manager_disk_t::resolve_namespace and test_probe; there is no
+// Catalog assertions go through test_probe; there is no
 // in-memory snapshot to read.
 
 namespace {
@@ -138,17 +138,12 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         return result;
     }
 
-    resolve_namespace_result_t resolve_namespace(const std::string& name) {
+    test_probe::probe_namespace_result_t resolve_namespace(const std::string& name) {
         components::execution_context_t ctx{components::session::session_id_t{},
                                             components::table::transaction_data::committed(),
                                             {}};
-        auto [_, fut] =
-            actor_zeta::otterbrix::send(manager_disk_->address(), &manager_disk_t::resolve_namespace, ctx, name);
-        REQUIRE(test_helpers::wait_ready(fut, scheduler_));
-        // A failed read isn't {found=false}; no case here expects one, avoiding that conflation.
-        auto r = std::move(fut).take_ready();
-        REQUIRE_FALSE(r.has_error());
-        return std::move(r.value());
+        auto adapter = probe_fx();
+        return test_probe::probe_namespace(adapter, ctx, name);
     }
 
     test_probe::probe_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
@@ -194,7 +189,7 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     test_dispatcher test(mr.get(), catalog_dir("disk_schemeful"));
 
-    test.execute_sql("CREATE DATABASE test;");
+    test.execute_sql("CREATE SCHEMA test;");
     (void) test.take_result();
 
     test.execute_sql("CREATE TABLE test.test(fld1 int, fld2 string);");
@@ -239,7 +234,7 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
             }
         }
 
-        test.execute_sql("DROP DATABASE test;");
+        test.execute_sql("DROP SCHEMA test CASCADE;");
         {
             auto cur = test.take_result();
             REQUIRE(cur->is_success());
@@ -249,7 +244,7 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
     }
 
     SECTION("drop_database") {
-        test.execute_sql("DROP DATABASE test;");
+        test.execute_sql("DROP SCHEMA test CASCADE;");
         {
             auto cur = test.take_result();
             REQUIRE(cur->is_success());
@@ -263,7 +258,7 @@ TEST_CASE("services::dispatcher::computed_operations") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     test_dispatcher test(mr.get(), catalog_dir("disk_computed"));
 
-    test.execute_sql("CREATE DATABASE test;");
+    test.execute_sql("CREATE SCHEMA test;");
     (void) test.take_result();
 
     test.execute_sql("CREATE TABLE test.test();");
@@ -364,7 +359,7 @@ namespace {
     };
 
     planted_table_t create_two_column_table(test_dispatcher& test) {
-        test.execute_sql("CREATE DATABASE conkey_db;");
+        test.execute_sql("CREATE SCHEMA conkey_db;");
         REQUIRE(test.take_result()->is_success());
         test.execute_sql("CREATE TABLE conkey_db.t (id bigint, code bigint);");
         REQUIRE(test.take_result()->is_success());
@@ -489,7 +484,7 @@ TEST_CASE("services::dispatcher::null_source_column::insert_select_names_the_typ
         return test.take_result();
     };
 
-    REQUIRE(run("CREATE DATABASE nsc;")->is_success());
+    REQUIRE(run("CREATE SCHEMA nsc;")->is_success());
     REQUIRE(run("CREATE TABLE nsc.src();")->is_success());
     REQUIRE(run("INSERT INTO nsc.src (a, b) VALUES (1, 2);")->is_success());
 

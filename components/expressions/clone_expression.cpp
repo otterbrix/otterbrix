@@ -72,6 +72,7 @@ namespace components::expressions {
                 dst->set_pin(src->pin());
                 dst->set_function(copy_function(resource, src->function()));
                 dst->set_pins({src->pins().begin(), src->pins().end(), resource});
+                dst->set_scope(src->scope());
                 dst->set_distinct(src->is_distinct());
                 dst->set_mergeable(src->is_mergeable());
                 for (const auto& param : src->params()) {
@@ -104,6 +105,7 @@ namespace components::expressions {
                 dst->set_pin(src->pin());
                 dst->set_function(copy_function(resource, src->function()));
                 dst->set_pins({src->pins().begin(), src->pins().end(), resource});
+                dst->set_scope(src->scope());
                 dst->set_volatility(src->volatility());
                 copy = std::move(dst);
                 break;

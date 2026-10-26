@@ -58,7 +58,7 @@ TEST_CASE("integration::cpp::test_type_spec_write_gate::decimal_outside_the_wind
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
 
         INFO("width 0 holds no digit");
         CHECK(exec(d, "CREATE TABLE w.zero_width (c NUMERIC(0,0));")->is_error());
@@ -96,7 +96,7 @@ TEST_CASE("integration::cpp::test_type_spec_write_gate::legal_decimal_boundaries
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
 
         // Width 19..38 is a 128-bit scaled integer; without an int128 arm in
         // column_segment_t::scan/scan_partial, the checkpoint's compaction scan throws and kills the process.
@@ -161,7 +161,7 @@ TEST_CASE("integration::cpp::test_type_spec_write_gate::nesting_past_the_format_
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
 
         // An unrefused chain would be persisted by a checkpoint but refused by a load no statement can retry.
         for (unsigned n = 0; n < 90; ++n) {

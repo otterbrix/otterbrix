@@ -9,6 +9,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/logical_plan/effective_table_oid.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 
@@ -78,7 +79,7 @@ namespace components::planner::optimizer {
             }
             // Must target ONE resolved owned table. enrich stamps table_oid()
             // before optimize() runs; INVALID_OID => not a single owned table.
-            if (node->table_oid() == components::catalog::INVALID_OID) {
+            if (!lp::reads_owned_table(*node)) {
                 return;
             }
             // Skip (a): any shape-breaking child means it is not one owned table.

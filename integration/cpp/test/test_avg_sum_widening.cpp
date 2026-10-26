@@ -134,7 +134,7 @@ namespace {
 
     template<typename D>
     void seed(D* d) {
-        REQUIRE(ok(d, "CREATE DATABASE m;"));
+        REQUIRE(ok(d, "CREATE SCHEMA m;"));
         REQUIRE(ok(d, "CREATE TABLE m.t (g BIGINT, b BIGINT, i INT, s SMALLINT, y TINYINT, r REAL, f DOUBLE);"));
         REQUIRE(ok(d,
                    "INSERT INTO m.t (g, b, i, s, y, r, f) VALUES "
@@ -162,7 +162,7 @@ TEST_CASE("integration::cpp::avg_sum_widening::avg_of_128_bit_integers") {
     auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/wide_integers"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.w (h HUGEINT, u UHUGEINT);"));
     REQUIRE(ok(d, "INSERT INTO m.w (h, u) VALUES (1, 1);"));
     REQUIRE(ok(d, "INSERT INTO m.w (h, u) VALUES (2, 170141183460469231731687303715884105728);"));
@@ -190,7 +190,7 @@ TEST_CASE("integration::cpp::avg_sum_widening::small_int_total") {
     auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/small_int"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.s (v SMALLINT, w INT);"));
     // 1500 rows: the fold crosses chunk boundaries.
     auto seeded =
@@ -208,7 +208,7 @@ TEST_CASE("integration::cpp::avg_sum_widening::bigint_sum_overflow_is_an_error")
     auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/overflow"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (g BIGINT, b BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO m.t (g, b) VALUES (1, 9223372036854775807), (1, 1), (2, 5);"));
 
@@ -230,7 +230,7 @@ TEST_CASE("integration::cpp::avg_sum_widening::decimal") {
     auto config = test_helpers::make_test_config(integration_fixture_path("avg_sum_widening/decimal"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (g BIGINT, x DECIMAL(10,2));"));
     REQUIRE(ok(d, "INSERT INTO m.t (g, x) VALUES (1, 1.00), (1, 2.00), (1, 2.00), (2, -1.25), (2, -2.50);"));
 

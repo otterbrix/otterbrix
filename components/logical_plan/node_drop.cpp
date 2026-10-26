@@ -18,13 +18,18 @@ namespace components::logical_plan {
         // (enrich hasn't stamped them yet), so `DROP TABLE a` vs `DROP TABLE b` would otherwise hash identically.
         hash_t hash_value{0};
         boost::hash_combine(hash_value, static_cast<uint8_t>(kind_));
+        boost::hash_combine(hash_value, target_.connection.t);
         boost::hash_combine(hash_value, target_.database.t);
+        boost::hash_combine(hash_value, target_.schema.t);
         boost::hash_combine(hash_value, target_.collection.t);
         boost::hash_combine(hash_value, index_name_.t);
         boost::hash_combine(hash_value, static_cast<uint8_t>(behavior_));
         boost::hash_combine(hash_value, if_exists_);
         switch (kind_) {
             case drop_target_kind::database:
+                boost::hash_combine(hash_value, static_cast<hash_t>(database_oid_));
+                break;
+            case drop_target_kind::schema:
                 boost::hash_combine(hash_value, static_cast<hash_t>(namespace_oid_));
                 break;
             case drop_target_kind::collection:
@@ -53,7 +58,10 @@ namespace components::logical_plan {
         std::stringstream stream;
         switch (kind_) {
             case drop_target_kind::database:
-                stream << "$drop_database: <oid:" << static_cast<std::uint64_t>(namespace_oid_) << ">";
+                stream << "$drop_database: <oid:" << static_cast<std::uint64_t>(database_oid_) << ">";
+                break;
+            case drop_target_kind::schema:
+                stream << "$drop_schema: <oid:" << static_cast<std::uint64_t>(namespace_oid_) << ">";
                 break;
             case drop_target_kind::collection:
                 stream << "$drop_collection: <oid:" << static_cast<std::uint64_t>(table_oid()) << ">";

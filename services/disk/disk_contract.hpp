@@ -70,16 +70,12 @@ namespace services::disk {
                                                            std::pmr::vector<components::catalog::oid_t> table_oids,
                                                            uint64_t compact_watermark);
 
-        actor_zeta::unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
-        resolve_namespace(execution_context_t ctx, std::string name);
         actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
         resolve_function_by_name(execution_context_t ctx, std::string name);
         actor_zeta::unique_future<core::result_wrapper_t<components::catalog::oid_t>>
         find_cast_oid(execution_context_t ctx,
                       components::catalog::oid_t source_oid,
                       components::catalog::oid_t target_oid);
-        actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>>
-        list_namespaces(execution_context_t ctx);
 
         actor_zeta::unique_future<std::vector<components::catalog::oid_t>> allocate_oids_batch(std::size_t count);
 
@@ -293,10 +289,8 @@ namespace services::disk {
                                                             &disk_contract::storage_publish_deletes,
                                                             &disk_contract::storage_revert_appends,
                                                             &disk_contract::storage_revert_deletes,
-                                                            &disk_contract::resolve_namespace,
                                                             &disk_contract::resolve_function_by_name,
                                                             &disk_contract::find_cast_oid,
-                                                            &disk_contract::list_namespaces,
                                                             &disk_contract::allocate_oids_batch,
                                                             &disk_contract::append_pg_catalog_row,
                                                             &disk_contract::delete_pg_catalog_rows,

@@ -10,7 +10,7 @@
 
 #include <map>
 
-static const core::dbname_t database_name{"testdatabase"};
+static const core::schema_t database_name{"testdatabase"};
 static const core::relname_t collection_name{"testcollection"};
 
 using namespace components;
@@ -35,7 +35,7 @@ TEST_CASE("integration::cpp::test_arithmetic") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -680,7 +680,7 @@ TEST_CASE("integration::cpp::test_arithmetic::join") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -766,7 +766,7 @@ TEST_CASE("integration::cpp::test_arithmetic::having") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -844,7 +844,7 @@ TEST_CASE("integration::cpp::test_arithmetic::case_when") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -950,7 +950,7 @@ TEST_CASE("integration::cpp::test_arithmetic::edge_cases") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1016,7 +1016,7 @@ TEST_CASE("integration::cpp::test_arithmetic::interleaved_group_by") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1115,7 +1115,7 @@ TEST_CASE("integration::cpp::test_optimizer_constant_folding") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1294,7 +1294,7 @@ TEST_CASE("integration::cpp::test_arithmetic::datetime") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1912,7 +1912,7 @@ TEST_CASE("integration::cpp::test_arithmetic::update_bitshift_non_integer_reject
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -1969,7 +1969,7 @@ TEST_CASE("integration::cpp::test_arithmetic::constant_division_by_zero_is_an_er
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE z;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA z;")->is_success());
     REQUIRE(exec("CREATE TABLE z.t (id BIGINT, x BIGINT);")->is_success());
     REQUIRE(exec("INSERT INTO z.t (id, x) VALUES (1, 9);")->is_success());
 
@@ -2005,7 +2005,7 @@ TEST_CASE("integration::cpp::test_arithmetic::constant_folding_still_folds") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE z;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA z;")->is_success());
     REQUIRE(exec("CREATE TABLE z.t (id BIGINT, x BIGINT, d DATE);")->is_success());
 
     REQUIRE(exec("INSERT INTO z.t (id, x) VALUES (1, 2 + 3);")->is_success());
@@ -2062,7 +2062,7 @@ TEST_CASE("integration::cpp::test_arithmetic::constant_folding_on_vectors_matche
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE z;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA z;")->is_success());
     REQUIRE(exec("CREATE TABLE z.t (id BIGINT, s TEXT, d DOUBLE);")->is_success());
     REQUIRE(exec("INSERT INTO z.t (id, s, d) VALUES (1, 'abc', 7.5), (2, 'abd', 1.0);")->is_success());
 

@@ -10,6 +10,7 @@ set(${PROJECT_NAME}_SOURCES
 
     # collection
         collection/executor.cpp
+
         collection/view_definition.cpp
         collection/explain/explain_plan.cpp
         collection/explain/renderer_postgres.cpp

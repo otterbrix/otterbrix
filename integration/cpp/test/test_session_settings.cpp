@@ -65,7 +65,7 @@ namespace {
     }
 
     void seed(connection_t& session) {
-        require_ok(session, "CREATE DATABASE m;");
+        require_ok(session, "CREATE SCHEMA m;");
         require_ok(session, "CREATE TABLE m.t (id BIGINT, tstz TIMESTAMPTZ);");
         require_ok(session,
                    "INSERT INTO m.t (id, tstz) VALUES (1, '2024-01-01 07:00:00+00'), (2, '2024-01-01 10:00:00+00');");

@@ -37,7 +37,7 @@ namespace {
     void seed(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& del_action) {
         {
             auto s = otterbrix::session_id_t();
-            REQUIRE(run(dispatcher, s, "CREATE DATABASE FkDb;")->is_success());
+            REQUIRE(run(dispatcher, s, "CREATE SCHEMA FkDb;")->is_success());
         }
         {
             auto s = otterbrix::session_id_t();

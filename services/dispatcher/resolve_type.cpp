@@ -7,6 +7,7 @@
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/sql/transformer/utils.hpp>
 
 namespace services::dispatcher {
 
@@ -34,10 +35,7 @@ namespace services::dispatcher {
         if (!resolves) {
             return components::catalog::INVALID_OID;
         }
-        const auto* md = resolves->type_md("public", std::string_view(ct.type_name()));
-        if (!md) {
-            md = resolves->type_md("pg_catalog", std::string_view(ct.type_name()));
-        }
+        const auto* md = resolves->type_md(components::sql::transform::type_reference_of(ct));
         if (!md)
             return components::catalog::INVALID_OID;
         const std::string alias = ct.has_alias() ? ct.alias() : std::string{};

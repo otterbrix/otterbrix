@@ -159,7 +159,7 @@ namespace {
         explicit matrix_t(otterbrix::wrapper_dispatcher_t* dispatcher)
             : dispatcher_(dispatcher) {
             const char* schema[] = {
-                "CREATE DATABASE ddb;",
+                "CREATE SCHEMA ddb;",
                 "CREATE TABLE ddb.orders (id BIGINT, name TEXT, amount BIGINT, tags BIGINT[]);",
                 "CREATE TABLE ddb.customers (cid BIGINT, cname TEXT);",
                 "INSERT INTO ddb.orders (id, name, amount) VALUES (1, 'alice', 10);",

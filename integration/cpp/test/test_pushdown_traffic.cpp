@@ -33,7 +33,7 @@ TEST_CASE("integration::cpp::pushdown_traffic::scalar_ships_one_row") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TrafficDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TrafficDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TrafficDb.t (id bigint, g bigint, v bigint);")->is_success());
     seed(dispatcher, "TrafficDb.t");
 
@@ -60,7 +60,7 @@ TEST_CASE("integration::cpp::pushdown_traffic::grouped_ships_one_row_per_group")
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TrafficDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TrafficDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TrafficDb.t (id bigint, g bigint, v bigint);")->is_success());
     seed(dispatcher, "TrafficDb.t");
 

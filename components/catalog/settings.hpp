@@ -14,7 +14,8 @@ namespace components::catalog {
     enum class setting_id : uint8_t
     {
         timezone,
-        autocommit
+        autocommit,
+        search_path
     };
 
     // Where a value goes: SET to its session, SET LOCAL to its session until the transaction ends, ALTER SYSTEM to

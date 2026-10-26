@@ -17,7 +17,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::unique_existing_row") {
 
     INFO("setup: users(id) with a UNIQUE constraint on id");
     {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.users (id bigint, name text);")->is_success());
         REQUIRE(
             exec(dispatcher, "ALTER TABLE TestDatabase.users ADD CONSTRAINT uq_users_id UNIQUE (id);")->is_success());
@@ -46,7 +46,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_existing_ro
 
     INFO("setup: parts(id) with a PRIMARY KEY on id");
     {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.parts (id bigint, label text);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.parts ADD CONSTRAINT pk_parts_id PRIMARY KEY (id);")
                     ->is_success());
@@ -74,7 +74,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::within_batch_duplicate"
 
     INFO("setup: accounts(id) UNIQUE, no rows yet");
     {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.accounts (id bigint, owner text);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.accounts ADD CONSTRAINT uq_accounts_id UNIQUE (id);")
                     ->is_success());
@@ -101,7 +101,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_creates_duplicat
 
     INFO("setup: seats(id) UNIQUE with rows 1 and 2");
     {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.seats (id bigint, row_no bigint);")->is_success());
         REQUIRE(
             exec(dispatcher, "ALTER TABLE TestDatabase.seats ADD CONSTRAINT uq_seats_id UNIQUE (id);")->is_success());
@@ -130,7 +130,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_duplicat
 
     INFO("setup: tickets(code) UNIQUE with DEFAULT 5");
     {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(
             exec(dispatcher, "CREATE TABLE TestDatabase.tickets (id bigint, code bigint DEFAULT 5);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.tickets ADD CONSTRAINT uq_tickets_code UNIQUE (code);")
@@ -177,7 +177,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::default_column_within_b
 
     INFO("setup: badges(code) UNIQUE with DEFAULT 5, no rows yet");
     {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.badges (id bigint, code bigint DEFAULT 5);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.badges ADD CONSTRAINT uq_badges_code UNIQUE (code);")
                     ->is_success());
@@ -198,7 +198,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::primary_key_rejects_nul
 
     INFO("setup: parts(id) with a PRIMARY KEY on id");
     {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.parts (id bigint, label text);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.parts ADD CONSTRAINT pk_parts_id PRIMARY KEY (id);")
                     ->is_success());
@@ -254,7 +254,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::multi_chunk_straddle_ac
 
     INFO("setup: big(id) UNIQUE, empty");
     {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.big (id bigint, name text);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.big ADD CONSTRAINT uq_big_id UNIQUE (id);")->is_success());
     }
@@ -301,7 +301,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::update_off_key_skips_ex
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.t (id bigint, payload bigint);")->is_success());
     REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.t ADD CONSTRAINT t_pk PRIMARY KEY (id);")->is_success());
 
@@ -345,7 +345,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::declared_key_never_admi
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.badges (id bigint, code bigint, kind bigint);")->is_success());
     REQUIRE(
         exec(dispatcher, "ALTER TABLE TestDatabase.badges ADD CONSTRAINT uq_badges_code UNIQUE (code);")->is_success());
@@ -391,7 +391,7 @@ TEST_CASE("integration::cpp::test_unique_constraint_e2e::every_dml_shape_exposes
         integration_fixture_path("test_unique_constraint_e2e/every_dml_shape_exposes_the_key_columns"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
 
     INFO("composite key, UPDATE that SETs only its first column");
     {

@@ -217,7 +217,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
+            dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -228,7 +228,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
             }
             test_create_collection(dispatcher,
                                    session,
-                                   core::dbname_t{database_name},
+                                   core::schema_t{database_name},
                                    core::relname_t{collection_name},
                                    columns);
         }
@@ -238,7 +238,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
     {
         auto chunk = gen_data_chunk(N, dispatcher->resource());
         auto ins = components::sql::transform::name_catalog_target(
-            core::dbname_t{database_name},
+            core::schema_t{database_name},
             core::relname_t{collection_name},
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
@@ -345,7 +345,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
+            dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -356,7 +356,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
             }
             test_create_collection(dispatcher,
                                    session,
-                                   core::dbname_t{database_name},
+                                   core::schema_t{database_name},
                                    core::relname_t{collection_name},
                                    columns);
         }
@@ -367,7 +367,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         for (int batch = 0; batch < 2; batch++) {
             auto chunk = gen_data_chunk(N, dispatcher->resource());
             auto ins = components::sql::transform::name_catalog_target(
-                core::dbname_t{database_name},
+                core::schema_t{database_name},
                 core::relname_t{collection_name},
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
@@ -548,7 +548,7 @@ TEST_CASE("integration::cpp::test_batch_join") {
     INFO("initialization");
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE " + std::string(database_name) + ";");
+        dispatcher->execute_sql(session, "CREATE SCHEMA " + std::string(database_name) + ";");
         dispatcher->execute_sql(session,
                                 "CREATE TABLE " + std::string(database_name) + "." + std::string(join_left_name) +
                                     "();");
@@ -700,7 +700,7 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
+            dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -711,7 +711,7 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
             }
             test_create_collection(dispatcher,
                                    session,
-                                   core::dbname_t{database_name},
+                                   core::schema_t{database_name},
                                    core::relname_t{collection_name},
                                    columns);
         }
@@ -721,7 +721,7 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
     {
         auto chunk = gen_data_chunk(1, dispatcher->resource());
         auto ins = components::sql::transform::name_catalog_target(
-            core::dbname_t{database_name},
+            core::schema_t{database_name},
             core::relname_t{collection_name},
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
@@ -808,11 +808,11 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
+        dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + database_name + ";");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{database_name}, core::relname_t{collection_name});
+        test_create_collection(dispatcher, session, core::schema_t{database_name}, core::relname_t{collection_name});
     }
     {
         auto session = otterbrix::session_id_t();

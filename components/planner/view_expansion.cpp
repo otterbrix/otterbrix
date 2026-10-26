@@ -219,7 +219,7 @@ namespace components::planner {
     namespace {
         std::string written_name(const logical_plan::resolve_entry_t& entry) {
             std::string out;
-            for (const auto* part : {&entry.uid, &entry.dbname, &entry.schema}) {
+            for (const auto* part : {&entry.connection, &entry.database, &entry.schema}) {
                 if (!part->empty()) {
                     out += *part;
                     out += '.';
@@ -279,9 +279,9 @@ namespace components::planner {
         for (auto& entry : body_resolves.tables->entries()) {
             const auto binding =
                 std::find_if(view.view_bindings.begin(), view.view_bindings.end(), [&entry](const auto& b) {
-                    return (b.refkind == components::catalog::view_refkind::relation ||
-                            b.refkind == components::catalog::view_refkind::host_name) &&
-                           b.dbname.t == entry.dbname && b.schema.t == entry.schema && b.relname.t == entry.relname;
+                    return b.refkind == components::catalog::view_refkind::relation &&
+                           b.connection.t == entry.connection && b.dbname.t == entry.database &&
+                           b.schema.t == entry.schema && b.relname.t == entry.relname;
                 });
             if (binding == view.view_bindings.end()) {
                 return view_stale_error(resource,
@@ -289,12 +289,8 @@ namespace components::planner {
                                         "its body names \"" + written_name(entry) +
                                             "\", which was not bound when the view was created");
             }
-            if (binding->refkind == components::catalog::view_refkind::relation) {
-                entry.pin.kind = logical_plan::view_pin_t::kind_t::relation;
-                entry.pin.oid = binding->refobjid;
-            } else {
-                entry.pin.kind = logical_plan::view_pin_t::kind_t::storage;
-            }
+            entry.pin.kind = logical_plan::view_pin_t::kind_t::relation;
+            entry.pin.oid = binding->refobjid;
             entry.pin.view = core::viewname_t{view.name};
         }
         return core::error_t::no_error();
@@ -327,21 +323,13 @@ namespace components::planner {
                     existing.table_md.has_value() && existing.table_md->table_oid != pin.oid;
                 const bool pinned_elsewhere = existing.pin.kind == pin_kind::relation && existing.pin.oid != pin.oid;
                 if (pin.kind == pin_kind::relation) {
-                    if (existing.pin.kind == pin_kind::storage || resolved_elsewhere || pinned_elsewhere) {
+                    if (resolved_elsewhere || pinned_elsewhere) {
                         return view_stale_error(resource,
                                                 pin.view.t,
                                                 "\"" + written +
                                                     "\" in this statement no longer names the relation it was bound "
                                                     "to (oid " +
                                                     std::to_string(pin.oid) + ")");
-                    }
-                    existing.pin = pin;
-                } else if (pin.kind == pin_kind::storage) {
-                    if (existing.table_md.has_value() || existing.pin.kind == pin_kind::relation) {
-                        return view_stale_error(resource,
-                                                pin.view.t,
-                                                "\"" + written +
-                                                    "\" was resolved by the host and now names a catalog relation");
                     }
                     existing.pin = pin;
                 }
@@ -369,10 +357,29 @@ namespace components::planner {
         return wrapper;
     }
 
+    namespace {
+        // The matview the REFRESH found, by the name the catalog has for it.
+        qualified_name_t matview_name_of(const logical_plan::resolved_table_metadata_t& matview) {
+            return qualified_name_t{core::dbname_t{matview.database},
+                                    core::schema_t{matview.schema},
+                                    core::relname_t{matview.name}};
+        }
+
+        // Read again by its oid, never looked up by name.
+        void register_matview(std::pmr::memory_resource* resource,
+                              logical_plan::catalog_resolves_t& resolves,
+                              const logical_plan::resolved_table_metadata_t& matview) {
+            logical_plan::resolve_entry_t entry;
+            entry.database = matview.database;
+            entry.schema = matview.schema;
+            entry.relname = matview.name;
+            entry.relation_oid = matview.table_oid;
+            resolves.ensure(resource, logical_plan::resolve_kind::table).add(std::move(entry));
+        }
+    } // namespace
+
     core::result_wrapper_t<refresh_matview_plan_t>
-    refresh_matview_plan(std::pmr::memory_resource* resource,
-                         const logical_plan::resolved_table_metadata_t& matview,
-                         const core::dbname_t& dbname) {
+    refresh_matview_plan(std::pmr::memory_resource* resource, const logical_plan::resolved_table_metadata_t& matview) {
         auto bound = bind_view_body(resource, matview);
         if (bound.has_error()) {
             return bound.error();
@@ -381,7 +388,7 @@ namespace components::planner {
 
         auto reference = logical_plan::make_node_aggregate(resource, qualified_name_t{});
         RETURN_IF_ERROR(splice_view_body(reference.get(), project_view_body(resource, std::move(body.plan), matview)));
-        const qualified_name_t target{dbname, core::relname_t{matview.name}};
+        const auto target = matview_name_of(matview);
         auto insert = logical_plan::make_node_insert(resource);
         insert->set_target(target);
         insert->append_child(reference);
@@ -390,27 +397,23 @@ namespace components::planner {
                                             insert,
                                             body.params ? body.params : logical_plan::make_parameter_node(resource)};
         plan.catalog_resolves = std::move(body.resolves);
-        sql::transform::register_catalog_resolve_write_target(resource, &plan.catalog_resolves, target);
+        register_matview(resource, plan.catalog_resolves, matview);
         return refresh_matview_plan_t{std::move(plan), std::move(reference)};
     }
 
     logical_plan::execution_plan_t refresh_matview_delete_plan(std::pmr::memory_resource* resource,
-                                                               const logical_plan::resolved_table_metadata_t& matview,
-                                                               const core::dbname_t& dbname) {
-        const core::relname_t relname{matview.name};
-        const qualified_name_t target{dbname, relname};
-        auto del = sql::transform::name_catalog_target(
-            dbname,
-            relname,
-            logical_plan::make_node_delete(
+                                                               const logical_plan::resolved_table_metadata_t& matview) {
+        const auto target = matview_name_of(matview);
+        auto del = logical_plan::make_node_delete(
+            resource,
+            logical_plan::make_node_match(
                 resource,
-                logical_plan::make_node_match(
-                    resource,
-                    target,
-                    expressions::make_compare_expression(resource, expressions::compare_type::all_true)),
-                logical_plan::make_node_limit(resource, logical_plan::limit_t::all())));
+                target,
+                expressions::make_compare_expression(resource, expressions::compare_type::all_true)),
+            logical_plan::make_node_limit(resource, logical_plan::limit_t::all()));
+        del->set_target(target);
         logical_plan::execution_plan_t plan{resource, std::move(del), logical_plan::make_parameter_node(resource)};
-        sql::transform::register_catalog_resolve_write_target(resource, &plan.catalog_resolves, target);
+        register_matview(resource, plan.catalog_resolves, matview);
         return plan;
     }
 

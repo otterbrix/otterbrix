@@ -49,7 +49,7 @@ TEST_CASE("integration::cpp::statement_shape::multi_statement_is_refused_whole")
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE shapedb;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA shapedb;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();

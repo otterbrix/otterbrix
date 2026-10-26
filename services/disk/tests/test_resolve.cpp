@@ -106,22 +106,6 @@ namespace {
     };
 } // namespace
 
-TEST_CASE("services::disk::resolve::namespace_finds_bootstrap") {
-    fixture fx;
-    auto rr = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("public"));
-    REQUIRE_FALSE(rr.has_error());
-    auto& r = rr.value();
-    REQUIRE(r.found);
-    REQUIRE(r.oid == well_known_oid::public_namespace);
-}
-
-TEST_CASE("services::disk::resolve::namespace_misses_unknown") {
-    fixture fx;
-    auto rr = fx.invoke_async(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("does_not_exist"));
-    REQUIRE_FALSE(rr.has_error());
-    REQUIRE_FALSE(rr.value().found);
-}
-
 TEST_CASE("services::disk::resolve::table_finds_after_create") {
     fixture fx;
     std::vector<components::table::column_definition_t> cols;

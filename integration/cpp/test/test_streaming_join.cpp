@@ -48,7 +48,7 @@ TEST_CASE("integration::cpp::streaming_join::nested_loop_streams_and_is_correct"
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE SJ;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA SJ;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE SJ.l();")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE SJ.r();")->is_success());
 
@@ -104,7 +104,7 @@ TEST_CASE("integration::cpp::streaming_join::left_join_null_padding_content") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE SJ2;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA SJ2;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE SJ2.l();")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE SJ2.r();")->is_success());
 
@@ -147,7 +147,7 @@ TEST_CASE("integration::cpp::streaming_join::cross_join_materialized") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE SJ3;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA SJ3;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE SJ3.a();")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE SJ3.b();")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO SJ3.a (x) VALUES (1), (2), (3);")->is_success());
@@ -165,7 +165,7 @@ TEST_CASE("integration::cpp::streaming_join::cross_join_streams_multibatch") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE SJ5;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA SJ5;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE SJ5.a();")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE SJ5.b();")->is_success());
 
@@ -233,7 +233,7 @@ TEST_CASE("integration::cpp::streaming_join::union_distinct_sinks") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE SJ4;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA SJ4;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE SJ4.t();")->is_success());
 
     // Multi-batch seed: id [0, kN); grp = id % 4 (a handful of distinct values).

@@ -43,7 +43,7 @@ where
 pub async fn create_app_db(conn: &mut OtterbrixConnection) {
     use sqlx::Executor;
 
-    conn.execute(sqlx::query::<Otterbrix>("CREATE DATABASE app;"))
+    conn.execute(sqlx::query::<Otterbrix>("CREATE SCHEMA app;"))
         .await
         .expect("create database");
 }

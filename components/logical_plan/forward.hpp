@@ -10,6 +10,7 @@ namespace components::logical_plan {
         alias_t,
         create_collection_t,
         create_database_t,
+        create_schema_t,
         create_index_t,
         create_type_t,
         data_t,

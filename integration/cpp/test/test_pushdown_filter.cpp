@@ -53,7 +53,7 @@ using namespace components::expressions;
 using key = components::expressions::key_t;
 using id_par = core::parameter_id_t;
 
-static const core::dbname_t db{"db"};
+static const core::schema_t db{"db"};
 static const core::relname_t rel{"t"};
 
 // data node with all BIGINT columns

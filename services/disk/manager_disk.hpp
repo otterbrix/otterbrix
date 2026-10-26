@@ -297,9 +297,6 @@ namespace services::disk {
             return components::catalog::well_known_oid::main_database;
         }
 
-        unique_future<core::result_wrapper_t<resolve_namespace_result_t>> resolve_namespace(execution_context_t ctx,
-                                                                                            std::string name);
-
         unique_future<core::result_wrapper_t<std::pmr::vector<resolve_function_result_t>>>
         resolve_function_by_name(execution_context_t ctx, std::string name);
 
@@ -308,8 +305,6 @@ namespace services::disk {
         find_cast_oid(execution_context_t ctx,
                       components::catalog::oid_t source_oid,
                       components::catalog::oid_t target_oid);
-
-        unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>> list_namespaces(execution_context_t ctx);
 
         unique_future<std::vector<components::catalog::oid_t>> allocate_oids_batch(std::size_t count);
 
@@ -524,10 +519,8 @@ namespace services::disk {
                                                        &manager_disk_t::storage_publish_deletes,
                                                        &manager_disk_t::storage_revert_appends,
                                                        &manager_disk_t::storage_revert_deletes,
-                                                       &manager_disk_t::resolve_namespace,
                                                        &manager_disk_t::resolve_function_by_name,
                                                        &manager_disk_t::find_cast_oid,
-                                                       &manager_disk_t::list_namespaces,
                                                        &manager_disk_t::allocate_oids_batch,
                                                        &manager_disk_t::append_pg_catalog_row,
                                                        &manager_disk_t::delete_pg_catalog_rows,
@@ -656,6 +649,10 @@ namespace services::disk {
         [[nodiscard]] std::unordered_map<components::catalog::oid_t,
                                          std::vector<components::table::column_definition_t>>
         collect_catalog_columns_sync(const std::unordered_set<components::catalog::oid_t>& wanted) const;
+
+        // The schemas of the databases a host's connection serves (pg_database.datconnection set): their tables keep
+        // their rows on the backend, never in a storage here.
+        [[nodiscard]] std::pmr::unordered_set<components::catalog::oid_t> remote_namespace_oids_sync() const;
 
         // Abort mirror of storage_dropped_committed: erases the dropped_storages_ entries txn_id made for `oids`
         // (all of its drops on ABORT, the ones after the savepoint on ROLLBACK TO).

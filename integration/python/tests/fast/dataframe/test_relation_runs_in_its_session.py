@@ -40,7 +40,7 @@ from otterbrix import TransactionStatus
 
 conn = otterbrix.connect(sys.argv[1])
 try:
-    conn.execute("CREATE DATABASE tmp;")
+    conn.execute("CREATE SCHEMA tmp;")
 except RuntimeError as e:
     assert "already exists" in str(e), e
 conn.execute("CREATE TABLE tmp.t%d_0 ();" % os.getpid())

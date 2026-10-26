@@ -10,7 +10,8 @@ namespace services::planner::impl {
     components::operators::operator_ptr
     create_plan_register_udf(const context_storage_t& context,
                              const components::logical_plan::node_ptr& node,
-                             components::operators::operator_register_udf_t::executor_uids_t executor_uids) {
+                             components::operators::operator_register_udf_t::executor_uids_t executor_uids,
+                             components::catalog::oid_t schema_oid) {
         auto* n = static_cast<components::logical_plan::node_register_udf_t*>(node.get());
         const auto* fn = n->function();
         // The node retains ownership of the canonical payload; the operator gets
@@ -21,7 +22,8 @@ namespace services::planner::impl {
         return boost::intrusive_ptr(new components::operators::operator_register_udf_t(context.resource,
                                                                                        context.log.clone(),
                                                                                        std::move(fn_copy),
-                                                                                       std::move(executor_uids)));
+                                                                                       std::move(executor_uids),
+                                                                                       schema_oid));
     }
 
 } // namespace services::planner::impl

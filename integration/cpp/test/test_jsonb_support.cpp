@@ -24,7 +24,7 @@ namespace {
 
     // Four rows over a computing table, deliberately ragged so per-row-absent keys are covered.
     void seed(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE jp.t ();")->is_success());
         REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b, a.c, x) VALUES (1, 10, 20, 'p'), (2, 30, 40, 'q');")->is_success());
         REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b, a.c) VALUES (3, 50, 60);")->is_success());
@@ -311,7 +311,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::regular_table") {
     auto config = make_test_config(fixture_dir("regular"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.r (id BIGINT, v BIGINT, s TEXT);")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.r (id, v, s) VALUES (1, 10, 'p'), (2, 30, 'q');")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.r (id) VALUES (3);")->is_success());
@@ -331,7 +331,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::two_table_join") {
     auto config = make_test_config(fixture_dir("join"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.l ();")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.m ();")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.l (k, lv, d.e) VALUES (1, 100, 111), (2, 200, 222);")->is_success());
@@ -465,7 +465,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::compare_two_navigations") {
     auto config = make_test_config(fixture_dir("nav_cmp"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.t ();")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b, a.c) VALUES (1, 10, 20), (2, 30, 30), (3, 99, 99);")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.t (id, a.c) VALUES (4, 70);")->is_success());
@@ -570,7 +570,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::table_valued_op_rejected_under_
     auto config = make_test_config(fixture_dir("gb_reject"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.gb ();")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.gb (g, a.b, x) VALUES (1, 1, 9), (1, 2, 90);")->is_success());
 
@@ -590,7 +590,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::sql_json_standard_absent") {
     auto config = make_test_config(fixture_dir("std"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.r (id BIGINT, s TEXT);")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.r (id, s) VALUES (1, '{\"a\":1}');")->is_success());
 
@@ -666,7 +666,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::deep_path_insert_keeps_all_segm
     auto config = make_test_config(fixture_dir("depth"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.d ();")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.d (id, a.b.c) VALUES (1, 111);")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.d (id, p.q.r.s.t) VALUES (2, 222);")->is_success());
@@ -690,7 +690,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::subscript_insert_target") {
     auto config = make_test_config(fixture_dir("subscript"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.d ();")->is_success());
 
     REQUIRE(exec(d, "INSERT INTO jp.d (id, arr[0], arr[1]) VALUES (1, 7, 8);")->is_success());
@@ -709,7 +709,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::insert_null_into_new_column_is_
     auto config = make_test_config(fixture_dir("null_insert"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.t ();")->is_success());
 
     auto nulled = exec(d, "INSERT INTO jp.t (a.b, x) VALUES (NULL, 'z');");
@@ -744,7 +744,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::delete_key_array_form") {
     auto config = make_test_config(fixture_dir("del_arr"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.t ();")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.t (id, a.b, a.c, x, y) VALUES (1, 10, 20, 'p', 'q');")->is_success());
 
@@ -782,7 +782,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::flattened_name_and_nested_path_
     auto config = make_test_config(fixture_dir("sep"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.s ();")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.s (id, a.b) VALUES (1, 10);")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.s (id, \"a/b\") VALUES (2, 20);")->is_success());
@@ -896,7 +896,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::expand_inside_join_is_side_awar
     auto config = make_test_config(fixture_dir("join_expand"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.l ();")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.m ();")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.l (k, lv, d.e, d.f) VALUES (1, 100, 111, 112), (2, 200, 222, 223);")->is_success());
@@ -917,7 +917,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::expand_in_join_with_unique_subt
     auto config = make_test_config(fixture_dir("join_expand_ok"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.l ();")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.m ();")->is_success());
     REQUIRE(exec(d, "INSERT INTO jp.l (k, lv) VALUES (1, 100), (2, 200);")->is_success());
@@ -931,7 +931,7 @@ TEST_CASE("integration::cpp::test_jsonb_support::bug_three_table_join_takes_left
     auto config = make_test_config(fixture_dir("join3"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE jp;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA jp;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.l ();")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.m ();")->is_success());
     REQUIRE(exec(d, "CREATE TABLE jp.n ();")->is_success());

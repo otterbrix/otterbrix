@@ -48,7 +48,7 @@ namespace {
     }
 
     void seed_t(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(ok(d, "CREATE DATABASE k;"));
+        REQUIRE(ok(d, "CREATE SCHEMA k;"));
         REQUIRE(ok(d, "CREATE TABLE k.t (a INT);"));
         REQUIRE(ok(d, "INSERT INTO k.t (a) VALUES (1), (2), (3);"));
     }
@@ -125,7 +125,7 @@ TEST_CASE("integration::cpp::kernel_type_reachability::timetz_answers_through_co
     auto config = make_test_config(integration_fixture_path("test_kernel_type_reachability/timetz"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE k;"));
+    REQUIRE(ok(d, "CREATE SCHEMA k;"));
     REQUIRE(ok(d, "CREATE TABLE k.z (t TIMETZ);"));
     REQUIRE(ok(d, "INSERT INTO k.z (t) VALUES ('12:34:56+03'), ('01:02:03-05'), ('10:00:00+05'), ('09:00:00-02');"));
     REQUIRE(ok(d, "CREATE TABLE k.s (t TIMETZ);"));
@@ -148,7 +148,7 @@ TEST_CASE("integration::cpp::kernel_type_reachability::index_on_struct_or_list_i
     auto config = make_test_config(integration_fixture_path("test_kernel_type_reachability/index"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE k;"));
+    REQUIRE(ok(d, "CREATE SCHEMA k;"));
     REQUIRE(ok(d, "CREATE TYPE pair_t AS (x INT, y INT);"));
     REQUIRE(ok(d, "CREATE TABLE k.s (id INT, p pair_t);"));
     REQUIRE(ok(d, "INSERT INTO k.s (id, p) VALUES (1, ROW(1,2)), (2, ROW(3,4));"));
@@ -196,7 +196,7 @@ TEST_CASE("integration::cpp::kernel_type_reachability::struct_and_list_keys_reac
     auto config = make_test_config(integration_fixture_path("test_kernel_type_reachability/nested"));
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE k;"));
+    REQUIRE(ok(d, "CREATE SCHEMA k;"));
     REQUIRE(ok(d, "CREATE TYPE pair_t AS (x INT, y INT);"));
     REQUIRE(ok(d, "CREATE TYPE inner_t AS (q INT[]);"));
     REQUIRE(ok(d, "CREATE TABLE k.s (id INT, p pair_t);"));

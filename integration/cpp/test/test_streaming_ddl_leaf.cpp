@@ -39,7 +39,7 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::create_table_streams_and_lands"
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE D;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA D;")->is_success());
 
     // CREATE TABLE -> operator_create_collection_t.
     exec_streamed(dispatcher, "CREATE TABLE D.t (id bigint, name text);");
@@ -58,7 +58,7 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::alter_column_add_drop_rename_st
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE D;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA D;")->is_success());
     exec_streamed(dispatcher, "CREATE TABLE D.t (id bigint, name text);");
 
     // ALTER ADD -> operator_alter_column_add_t.
@@ -82,7 +82,7 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::multi_clause_alter_streams") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE D;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA D;")->is_success());
     exec_streamed(dispatcher, "CREATE TABLE D.t (id bigint, name text);");
 
     // A 2-clause ALTER lowers to an all-sink chain (alter_column_add at the bottom, a second
@@ -104,7 +104,7 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::create_index_chain_streams") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE D;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA D;")->is_success());
     exec_streamed(dispatcher, "CREATE TABLE D.t (id bigint, count bigint);");
     REQUIRE(exec(dispatcher, "INSERT INTO D.t (id, count) VALUES (1, 10), (2, 20), (3, 30);")->is_success());
 
@@ -132,7 +132,7 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::drop_index_streams") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE D;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA D;")->is_success());
     exec_streamed(dispatcher, "CREATE TABLE D.t (id bigint, name text);");
     // Plain exec, not exec_streamed: its own streaming assertion lives in
     // create_index_chain_streams; this just sets up the DROP.
@@ -172,7 +172,7 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::vacuum_and_checkpoint_stream") 
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE D;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA D;")->is_success());
     exec_streamed(dispatcher, "CREATE TABLE D.t (id bigint);");
     REQUIRE(exec(dispatcher, "INSERT INTO D.t (id) VALUES (1), (2), (3);")->is_success());
 
@@ -194,7 +194,7 @@ TEST_CASE("integration::cpp::streaming_ddl_leaf::explicit_begin_commit_roundtrip
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE D;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA D;")->is_success());
     exec_streamed(dispatcher, "CREATE TABLE D.t (id bigint);");
 
     // BEGIN -> operator_begin_transaction_t; COMMIT stays on its own dedicated drive, not

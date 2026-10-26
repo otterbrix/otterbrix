@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <core/result_wrapper.hpp>
@@ -16,10 +17,12 @@ namespace components::operators {
         // One non-invalid, mutually-equal uid per executor on success; empty when there are none.
         using executor_uids_t = std::pmr::vector<components::compute::function_uid>;
 
+        // `schema_oid`: the schema of the registering session's place, where the pg_proc rows go.
         operator_register_udf_t(std::pmr::memory_resource* resource,
                                 log_t log,
                                 components::compute::function_ptr function,
-                                executor_uids_t executor_uids);
+                                executor_uids_t executor_uids,
+                                components::catalog::oid_t schema_oid);
 
         // Sourceless SINK leaf: all work runs in the single await_async_and_resume the dispatcher drives directly.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
@@ -27,6 +30,7 @@ namespace components::operators {
     private:
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
+        components::catalog::oid_t schema_oid_;
         components::compute::function_ptr function_;
         executor_uids_t executor_uids_;
     };

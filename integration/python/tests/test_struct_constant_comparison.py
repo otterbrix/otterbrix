@@ -160,7 +160,7 @@ import otterbrix
 
 conn = otterbrix.connect(sys.argv[1])
 for statement in (
-    "CREATE DATABASE d;",
+    "CREATE SCHEMA d;",
     "CREATE TYPE pair_t AS (x bigint, y bigint);",
     "CREATE TABLE d.t (id INTEGER, p pair_t, p2 pair_t);",
     "INSERT INTO d.t (id, p, p2) VALUES (1, ROW(1,NULL), ROW(1,NULL)), (2, ROW(1,2), ROW(1,NULL));",

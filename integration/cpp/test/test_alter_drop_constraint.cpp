@@ -39,7 +39,7 @@ TEST_CASE("integration::cpp::alter_drop_constraint::double_pk_repair", "[dropcon
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE adc;");
+    run_ok(d, "CREATE SCHEMA adc;");
     run_ok(d, "CREATE TABLE adc.t (a bigint, b bigint);");
     run_ok(d, "ALTER TABLE adc.t ADD CONSTRAINT pk_a PRIMARY KEY (a);");
     run_ok(d, "ALTER TABLE adc.t ADD CONSTRAINT pk_b PRIMARY KEY (b);");
@@ -66,7 +66,7 @@ TEST_CASE("integration::cpp::alter_drop_constraint::fk_drop_releases_parent", "[
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE adc;");
+    run_ok(d, "CREATE SCHEMA adc;");
     run_ok(d, "CREATE TABLE adc.parent (id bigint, name text);");
     run_ok(d, "CREATE TABLE adc.child (id bigint, pid bigint);");
     run_ok(d, "ALTER TABLE adc.parent ADD CONSTRAINT parent_pk PRIMARY KEY (id);");
@@ -92,7 +92,7 @@ TEST_CASE("integration::cpp::alter_drop_constraint::check_drop_stops_enforcement
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE adc;");
+    run_ok(d, "CREATE SCHEMA adc;");
     run_ok(d, "CREATE TABLE adc.t (a bigint);");
     run_ok(d, "ALTER TABLE adc.t ADD CONSTRAINT a_positive CHECK (a > 0);");
     {
@@ -113,7 +113,7 @@ TEST_CASE("integration::cpp::alter_drop_constraint::missing_name_refuses_if_exis
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE adc;");
+    run_ok(d, "CREATE SCHEMA adc;");
     run_ok(d, "CREATE TABLE adc.t (a bigint);");
     run_ok(d, "ALTER TABLE adc.t ADD CONSTRAINT a_positive CHECK (a > 0);");
 

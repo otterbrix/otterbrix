@@ -15,10 +15,9 @@ namespace components::operators {
     // operator_resolve_type_t.
     //
     // Leaf operator that resolves EVERY entry on a kind()==type resolve node. Per
-    // entry it turns the entry's dbname into a namespace_oid (well-known constants
-    // for "public" / "pg_catalog", otherwise a pg_namespace scan), scans pg_type by
-    // (typname, typnamespace), and stamps type_oid + type_md (the decoded
-    // complex_logical_type) back into that entry.
+    // entry it finds the schema as a relation name finds it (a bare name: pg_catalog,
+    // then the session's place), scans pg_type by (typname, typnamespace), and stamps
+    // type_oid + type_md (the decoded complex_logical_type) back into that entry.
     //
     // Output: a 0-row chunk — this is a SINK whose product is the entry stamps,
     // which validate / enrich / resolve_type.cpp read straight off the node.

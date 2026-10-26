@@ -1,6 +1,7 @@
 #pragma once
 
 #include "node.hpp"
+#include "node_catalog_resolve.hpp"
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/results/ddl_result.hpp>
@@ -65,6 +66,11 @@ namespace components::logical_plan {
         bool if_exists() const noexcept { return if_exists_; }
         void set_if_exists(bool v) noexcept { if_exists_ = v; }
 
+        // A table of a connection's database, stamped by the executor from the resolved table: its full name; empty
+        // for a table otterbrix stores.
+        const resolved_table_metadata_t& remote_table() const noexcept { return remote_table_; }
+        void set_remote_table(resolved_table_metadata_t table) { remote_table_ = std::move(table); }
+
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -72,6 +78,7 @@ namespace components::logical_plan {
         std::vector<alter_table_subcommand_t> subcommands_;
         char relkind_{components::catalog::relkind::regular};
         bool if_exists_{false};
+        resolved_table_metadata_t remote_table_;
     };
 
     using node_alter_table_ptr = boost::intrusive_ptr<node_alter_table_t>;

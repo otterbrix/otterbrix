@@ -24,6 +24,7 @@
 
 #include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/place.hpp>
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/catalog/session_catalog.hpp>
 #include <components/catalog/session_settings.hpp>
@@ -190,6 +191,11 @@ namespace services::dispatcher {
                                                      components::operators::operator_ptr op,
                                                      std::string_view what);
 
+        // The schema of the session's place, where a user function is registered and unregistered; refused when the
+        // place is gone or is in a connection's database.
+        unique_future<core::result_wrapper_t<components::catalog::oid_t>>
+        place_schema_of_(components::session::session_id_t session);
+
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
         core::result_wrapper_t<components::table::transaction_t*>
@@ -314,6 +320,7 @@ namespace services::dispatcher {
             session_settings_{resource_};
 
         components::catalog::session_catalog_t session_settings(components::session::session_id_t session) const;
+        components::catalog::place_t place_of(components::session::session_id_t session) const;
 
         // Fire-and-forget GC list for broadcast/register sends, drained via poll_pending().
         std::pmr::vector<actor_zeta::unique_future<void>> pending_void_;

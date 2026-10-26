@@ -44,7 +44,7 @@ TEST_CASE("integration::cpp::create_table_with_options::storage_keeps_its_own_me
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE opt;");
+    run_ok(d, "CREATE SCHEMA opt;");
 
     auto cur = exec(d, "CREATE TABLE opt.t (id bigint) WITH (storage = 'memory');");
     REQUIRE_FALSE(cur->is_success());
@@ -57,7 +57,7 @@ TEST_CASE("integration::cpp::create_table_with_options::unknown_option_is_refuse
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE opt;");
+    run_ok(d, "CREATE SCHEMA opt;");
 
     auto cur = exec(d, "CREATE TABLE opt.t (id bigint) WITH (fillfactor = 70);");
     REQUIRE_FALSE(cur->is_success());
@@ -75,7 +75,7 @@ TEST_CASE("integration::cpp::create_table_with_options::a_typo_of_storage_is_ref
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE opt;");
+    run_ok(d, "CREATE SCHEMA opt;");
 
     auto cur = exec(d, "CREATE TABLE opt.t (id bigint) WITH (storag = 'memory');");
     REQUIRE_FALSE(cur->is_success());
@@ -92,7 +92,7 @@ TEST_CASE("integration::cpp::create_table_with_options::storage_wins_from_any_po
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE opt;");
+    run_ok(d, "CREATE SCHEMA opt;");
 
     auto cur = exec(d, "CREATE TABLE opt.t (id bigint) WITH (fillfactor = 70, storage = 'memory');");
     REQUIRE_FALSE(cur->is_success());
@@ -105,7 +105,7 @@ TEST_CASE("integration::cpp::create_table_with_options::no_options_still_creates
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    run_ok(d, "CREATE DATABASE opt;");
+    run_ok(d, "CREATE SCHEMA opt;");
     run_ok(d, "CREATE TABLE opt.t (id bigint);");
     run_ok(d, "INSERT INTO opt.t (id) VALUES (1);");
     CHECK(run_ok(d, "SELECT id FROM opt.t;")->size() == 1);

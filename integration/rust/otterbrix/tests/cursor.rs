@@ -3,7 +3,7 @@ mod common;
 #[test]
 fn has_next_is_true_when_select_returns_rows() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
     db.execute("INSERT INTO db.t (x) VALUES (1), (2), (3);")
         .unwrap();
@@ -19,7 +19,7 @@ fn has_next_is_true_when_select_returns_rows() {
 #[test]
 fn a_write_reports_affected_rows_and_no_result_rows() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE wdb;").unwrap();
+    db.execute("CREATE SCHEMA wdb;").unwrap();
     db.execute("CREATE TABLE wdb.t (x bigint);").unwrap();
 
     let inserted = db
@@ -39,7 +39,7 @@ fn a_write_reports_affected_rows_and_no_result_rows() {
 #[test]
 fn create_table_reports_its_oid() {
     let db = common::open_test_db();
-    let database = db.execute("CREATE DATABASE odb;").unwrap();
+    let database = db.execute("CREATE SCHEMA odb;").unwrap();
     assert_eq!(database.created_oid(), None);
 
     let created = db
@@ -59,7 +59,7 @@ fn create_table_reports_its_oid() {
 #[test]
 fn column_logical_type_returns_none_for_negative_index() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE typedb;").unwrap();
+    db.execute("CREATE SCHEMA typedb;").unwrap();
     db.execute("CREATE TABLE typedb.t (n integer);").unwrap();
     db.execute("INSERT INTO typedb.t (n) VALUES (1);").unwrap();
     let cur = db.execute("SELECT n FROM typedb.t;").unwrap();
@@ -69,7 +69,7 @@ fn column_logical_type_returns_none_for_negative_index() {
 #[test]
 fn column_logical_type_returns_none_for_out_of_bounds_index() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE typedb;").unwrap();
+    db.execute("CREATE SCHEMA typedb;").unwrap();
     db.execute("CREATE TABLE typedb.t (n integer);").unwrap();
     db.execute("INSERT INTO typedb.t (n) VALUES (1);").unwrap();
     let cur = db.execute("SELECT n FROM typedb.t;").unwrap();
@@ -80,7 +80,7 @@ fn column_logical_type_returns_none_for_out_of_bounds_index() {
 #[test]
 fn column_name_returns_none_for_out_of_bounds_index() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE namedb;").unwrap();
+    db.execute("CREATE SCHEMA namedb;").unwrap();
     db.execute("CREATE TABLE namedb.t (n integer);").unwrap();
     db.execute("INSERT INTO namedb.t (n) VALUES (1);").unwrap();
     let cur = db.execute("SELECT n FROM namedb.t;").unwrap();
@@ -106,7 +106,7 @@ fn transaction_status_reports_where_the_session_stands() {
 #[test]
 fn a_rollback_undoes_the_insert_its_begin_opened() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE s;").unwrap();
+    db.execute("CREATE SCHEMA s;").unwrap();
     db.execute("CREATE TABLE s.t (a BIGINT);").unwrap();
     db.execute("BEGIN;").unwrap();
     db.execute("INSERT INTO s.t (a) VALUES (1);").unwrap();

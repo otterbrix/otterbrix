@@ -6,6 +6,7 @@
 #include <components/base/identifier_types.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/fk_info.hpp>
+#include <components/catalog/place.hpp>
 #include <components/catalog/unique_key.hpp>
 #include <components/catalog/view_binding.hpp>
 #include <components/types/types.hpp>
@@ -47,7 +48,13 @@ namespace components::logical_plan {
         std::string view_sql;
         // relkind 'v': pg_rewrite_ref rows.
         std::vector<view_binding_t> view_bindings;
-        // relkind 'f': the table's external storage for this statement, owned by its resolve entry.
+        // The schema the table is in: [connection.]database.schema. A connection's table (its database's
+        // pg_database.datconnection is set) keeps its rows on the backend.
+        std::string connection;
+        std::string database;
+        std::string schema;
+        bool is_remote() const noexcept { return !connection.empty(); }
+        // A connection's table: the storage the connector made for this statement, owned by a resolve entry.
         table_storage_t* storage{nullptr};
     };
 
@@ -78,14 +85,12 @@ namespace components::logical_plan {
         referencing
     };
 
-    // What CREATE VIEW bound a view body name to: a relation, read by its pg_class oid and never looked up by name,
-    // or a name the host resolved to an external storage, which the catalog never answers.
+    // What CREATE VIEW bound a view body name to: a relation, read by its pg_class oid and never looked up by name.
     struct view_pin_t {
         enum class kind_t : std::uint8_t
         {
             none,
-            relation,
-            storage
+            relation
         };
         kind_t kind{kind_t::none};
         // kind == relation.
@@ -98,27 +103,28 @@ namespace components::logical_plan {
     struct resolve_entry_t {
         static constexpr std::size_t no_target = static_cast<std::size_t>(-1);
 
-        std::string dbname;
+        // [connection.][database.][schema.]relname as written. An empty database is the database (and connection)
+        // of the session's place; an empty schema of a relation or type is main.pg_catalog and then the place's
+        // schema, of a namespace the place's schema. Three parts name a local database, four a connection's.
+        std::string connection;
+        std::string database;
+        std::string schema;
         std::string relname;
         std::string type_name;
-        // Table entries: the uid and schema slots of uid.database.schema.name, as written, so the host gets the whole
-        // name. The catalog looks a table up by database.name only: a schema slot is refused once the database is
-        // known to exist, except in the uid form, which keeps its meaning database.name.
-        std::string uid;
-        std::string schema;
         components::catalog::oid_t relation_oid{components::catalog::INVALID_OID};
         resolve_direction direction{resolve_direction::outgoing};
         // Constraint entries only: indexes the TABLE node's entries_ for the table it constrains.
         std::size_t target{no_target};
         // Table entries of an unqualified REFERENCES target: indexes the TABLE node's entries_ for the table that
-        // owns the key — the target is looked up in the database that table was found in.
+        // owns the key — the target is looked up in the schema that table was found in.
         std::size_t namespace_of{no_target};
         // Constraint entries only: gathers (conname, oid) without enforcement decode, so DROP
         // CONSTRAINT can repair an invalid catalog state (e.g. doubled PRIMARY KEY) instead of refusing it.
         bool names_only{false};
         // A view body name: what CREATE VIEW bound it to. Not part of the request identity.
         view_pin_t pin;
-        // The external storage the host's decide gave this name for the statement; its table_md is relkind 'f'.
+        // A connection's table's storage for the statement, made by the connector; owned by the first entry of the
+        // oid.
         table_storage_ptr storage{nullptr, core::pmr::polymorphic_deleter_t{nullptr, 0, 0}};
 
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
@@ -154,10 +160,7 @@ namespace components::logical_plan {
 
         // Appends `entry` unless an equivalent request is already present
         std::size_t add(resolve_entry_t entry);
-        std::size_t find(std::string_view uid,
-                         std::string_view dbname,
-                         std::string_view schema,
-                         std::string_view name) const noexcept;
+        std::size_t find(const qualified_name_t& written) const noexcept;
 
     private:
         hash_t hash_impl() const override;
@@ -171,10 +174,10 @@ namespace components::logical_plan {
 
     node_catalog_resolve_ptr make_node_catalog_resolve(std::pmr::memory_resource* resource, resolve_kind kind);
 
-    // A write target spelled with a slot the catalog has no place for (uid or schema)
-    struct external_target_t {
-        qualified_name_t written;
-        node_type type;
+    // A REFERENCES target and the table that owns the key, as written.
+    struct referenced_table_t {
+        qualified_name_t owner;
+        qualified_name_t target;
     };
 
     struct catalog_resolves_t {
@@ -183,27 +186,30 @@ namespace components::logical_plan {
         node_catalog_resolve_ptr tables;
         node_catalog_resolve_ptr types;
         node_catalog_resolve_ptr constraints;
-        std::vector<external_target_t> external_targets;
-        // Every REFERENCES target as written: a uid or schema segment on one is refused.
-        std::vector<qualified_name_t> referenced_tables;
+        // Every REFERENCES target with its owner: one in another database is refused.
+        std::vector<referenced_table_t> referenced_tables;
+        // The session's place the statement completes short names with; set by the executor before resolve.
+        components::catalog::place_t place;
 
         // Creates the slot for `kind` empty on first use; non-const so the transformer can register entries.
         node_catalog_resolve_t& ensure(std::pmr::memory_resource* resource, resolve_kind kind);
 
         [[nodiscard]] bool empty() const noexcept;
 
-        // Entry naming this target, or nullptr; an empty name never matches, so nothing is bound.
-        [[nodiscard]] const resolve_entry_t* namespace_entry(std::string_view dbname) const noexcept;
+        // Entry naming this target, or nullptr; an empty name never matches, so nothing is bound. A database is
+        // named by its connection (empty: a local database) and its name.
+        [[nodiscard]] const resolve_entry_t* database_entry(std::string_view connection,
+                                                            std::string_view database) const noexcept;
+        [[nodiscard]] const resolve_entry_t* namespace_entry(const qualified_name_t& written) const noexcept;
         [[nodiscard]] const resolve_entry_t* table_entry(const qualified_name_t& written) const noexcept;
-        [[nodiscard]] const resolve_entry_t* type_entry(std::string_view dbname,
-                                                        std::string_view type_name) const noexcept;
+        [[nodiscard]] const resolve_entry_t* type_entry(const qualified_name_t& written) const noexcept;
 
-        [[nodiscard]] components::catalog::oid_t namespace_oid(std::string_view dbname) const noexcept;
-        [[nodiscard]] const resolved_table_metadata_t* table_md(std::string_view dbname,
-                                                                std::string_view relname) const noexcept;
+        [[nodiscard]] components::catalog::oid_t database_oid(std::string_view connection,
+                                                              std::string_view database) const noexcept;
+        [[nodiscard]] components::catalog::oid_t namespace_oid(const qualified_name_t& written) const noexcept;
+        [[nodiscard]] const resolved_table_metadata_t* table_md(const qualified_name_t& written) const noexcept;
         [[nodiscard]] const resolved_table_metadata_t* table_md(components::catalog::oid_t table_oid) const noexcept;
-        [[nodiscard]] const resolved_type_metadata_t* type_md(std::string_view dbname,
-                                                              std::string_view type_name) const noexcept;
+        [[nodiscard]] const resolved_type_metadata_t* type_md(const qualified_name_t& written) const noexcept;
         // Constraint entry for `table_oid` in `direction`, or nullptr, reached through `target` rather
         // than a duplicated oid; names_only entries are skipped since they would enforce nothing.
         [[nodiscard]] const resolve_entry_t* constraints_for(components::catalog::oid_t table_oid,

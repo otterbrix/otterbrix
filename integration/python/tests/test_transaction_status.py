@@ -43,7 +43,7 @@ def test_a_cursor_reports_where_its_session_stands(tmp_path):
 def test_a_connection_is_one_session(tmp_path):
     connection = otterbrix.connect(str(tmp_path / "one_session_connection_db"))
     try:
-        connection.execute("CREATE DATABASE s;")
+        connection.execute("CREATE SCHEMA s;")
         connection.execute("CREATE TABLE s.t (a BIGINT);")
         connection.execute("BEGIN;")
         connection.execute("INSERT INTO s.t (a) VALUES (1);")
@@ -67,7 +67,7 @@ def test_a_connection_is_one_session(tmp_path):
 
 def test_a_client_is_one_session(tmp_path):
     client = Client(str(tmp_path / "one_session_client_db"))
-    assert client.execute("CREATE DATABASE s;").is_success()
+    assert client.execute("CREATE SCHEMA s;").is_success()
     assert client.execute("CREATE TABLE s.t (a BIGINT);").is_success()
     assert client.execute("BEGIN;").is_success()
     assert client.execute("INSERT INTO s.t (a) VALUES (1);").is_success()

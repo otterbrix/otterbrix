@@ -30,14 +30,16 @@ namespace components::operators {
                                                                qualified_name_t relation,
                                                                char relkind,
                                                                catalog::oid_t attoid,
-                                                               catalog::drop_behavior_t behavior)
+                                                               catalog::drop_behavior_t behavior,
+                                                               bool stored)
         : read_write_operator_t(resource, std::move(log), operator_type::alter_column_drop)
         , table_oid_(table_oid)
         , column_name_(std::move(column_name))
         , relation_(std::move(relation))
         , relkind_(relkind)
         , attoid_(attoid)
-        , behavior_(behavior) {}
+        , behavior_(behavior)
+        , stored_(stored) {}
 
     actor_zeta::unique_future<void> operator_alter_column_drop_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
@@ -71,10 +73,6 @@ namespace components::operators {
         auto& attr_batches = attr_batches_r.value();
 
         catalog::oid_t attoid = catalog::INVALID_OID;
-        std::int32_t attnum = 0;
-        catalog::oid_t atttypid = catalog::INVALID_OID;
-        bool att_not_null = false, att_has_default = false;
-        std::string att_typspec, att_defspec;
         for (auto& chunk : attr_batches) {
             if (chunk.column_count() < 10)
                 continue;
@@ -93,15 +91,6 @@ namespace components::operators {
                 if (attoid_ != catalog::INVALID_OID && row_attoid != attoid_)
                     continue;
                 attoid = row_attoid;
-                atttypid = chunk.is_null(3, i) ? catalog::INVALID_OID
-                                               : static_cast<catalog::oid_t>(chunk.get_value<std::uint32_t>(3, i));
-                attnum = chunk.is_null(4, i) ? 0 : chunk.get_value<std::int32_t>(4, i);
-                att_not_null = chunk.is_null(5, i) ? false : chunk.get_value<bool>(5, i);
-                att_has_default = chunk.is_null(6, i) ? false : chunk.get_value<bool>(6, i);
-                if (!chunk.is_null(8, i))
-                    att_typspec = std::string(chunk.get_value<std::string_view>(8, i));
-                if (!chunk.is_null(9, i))
-                    att_defspec = std::string(chunk.get_value<std::string_view>(9, i));
                 found = true;
                 break;
             }
@@ -280,91 +269,12 @@ namespace components::operators {
             co_return;
         }
 
-        std::pmr::vector<services::disk::pg_catalog_delete_spec_t> attr_specs(resource_);
-        attr_specs.push_back({pg_attr_oid, std::int64_t{0}, attoid});
-        auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                    &services::disk::manager_disk_t::delete_pg_catalog_rows_many,
-                                                    exec_ctx,
-                                                    std::move(attr_specs));
-        auto attr_deleted_r = co_await std::move(df);
-        if (attr_deleted_r.has_error()) {
-            set_error(attr_deleted_r.error());
+        if (auto dropped = co_await drop_column_rows(resource_, ctx, table_oid_, attoid, stored_);
+            dropped.contains_error()) {
+            set_error(dropped);
             mark_failed();
             co_return;
         }
-        const auto& attr_deleted = attr_deleted_r.value();
-        if (attr_deleted.empty() || attr_deleted.front() == 0) {
-            std::string msg = "operator_alter_column_drop: no pg_attribute row was deleted for attoid ";
-            msg += std::to_string(attoid);
-            msg += " — the column is still live in the catalog";
-            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
-            mark_failed();
-            co_return;
-        }
-        if (ctx->txn.transaction_id != 0)
-            ctx->pg_catalog_delete_tables.insert(pg_attr_oid);
-
-        // dropped_at_commit_id is placeholder-0, backfilled post-commit once COMMIT allocates it (see
-        // pg_catalog_swap.hpp); the tombstone's MVCC insert_id is still the executing txn_id.
-        auto tombstone = catalog::build_pg_attribute_row(resource_,
-                                                         attoid,
-                                                         table_oid_,
-                                                         column_name_.t,
-                                                         atttypid,
-                                                         attnum,
-                                                         att_not_null,
-                                                         att_has_default,
-                                                         /*is_dropped=*/true,
-                                                         att_typspec,
-                                                         att_defspec,
-                                                         /*added_at_commit_id=*/0,
-                                                         /*dropped_at_commit_id=*/0);
-        auto [_w, wf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                    &services::disk::manager_disk_t::append_pg_catalog_row,
-                                                    exec_ctx,
-                                                    pg_attr_oid,
-                                                    std::move(tombstone));
-        auto rng_r = co_await std::move(wf);
-        if (rng_r.has_error()) {
-            set_error(rng_r.error());
-            mark_failed();
-            co_return;
-        }
-        auto rng = std::move(rng_r.value());
-        if (rng.count == 0) {
-            std::string msg = "operator_alter_column_drop: tombstone append produced no rows for attoid ";
-            msg += std::to_string(attoid);
-            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
-            mark_executed();
-            co_return;
-        }
-        ctx->pg_catalog_appends.push_back(std::move(rng));
-
-        {
-            components::execution_context_t stamp_ctx{ctx->session,
-                                                      ctx->txn,
-                                                      ctx->execution_context.timezone_offset,
-                                                      table_oid_};
-            auto [_s, sf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::stamp_column_dropped,
-                                                        stamp_ctx,
-                                                        table_oid_,
-                                                        static_cast<components::catalog::oid_t>(attoid));
-            if (auto stamped = co_await std::move(sf); stamped.contains_error()) {
-                set_error(stamped);
-                mark_failed();
-                co_return;
-            }
-        }
-
-        ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
-            attoid,
-            components::pg_attribute_commit_id_backfill_t::kind_t::dropped_at,
-            table_oid_,
-            column_name_.t,
-            std::string{},
-            components::types::complex_logical_type{}});
-
         mark_executed();
     }
 

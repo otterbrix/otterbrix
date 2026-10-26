@@ -62,11 +62,14 @@ namespace {
                                                                    std::size_t target) {
         auto* resource = d->resource();
         auto node = components::sql::transform::name_catalog_target(
-            core::dbname_t{db},
+            core::schema_t{db},
             core::relname_t{rel},
             logical_plan::make_node_insert(resource, one_row(resource, id, code)));
         logical_plan::execution_plan_t plan{resource, node, logical_plan::make_parameter_node(resource)};
-        components::sql::transform::register_catalog_resolve_table(resource, &plan.catalog_resolves, db, rel);
+        components::sql::transform::register_catalog_resolve_table(
+            resource,
+            &plan.catalog_resolves,
+            qualified_name_t{core::schema_t{db}, core::relname_t{rel}});
 
         logical_plan::resolve_entry_t constraint_entry;
         constraint_entry.direction = logical_plan::resolve_direction::outgoing;
@@ -77,7 +80,7 @@ namespace {
     }
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA cur;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE cur.t (id bigint, code bigint);")->is_success());
         REQUIRE(exec(d, "ALTER TABLE cur.t ADD CONSTRAINT uq_code UNIQUE (code);")->is_success());
     }

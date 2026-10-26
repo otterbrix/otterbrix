@@ -18,7 +18,7 @@ using id_par = core::parameter_id_t;
 using namespace components::types;
 
 // NOTE: SQL parser lowercases identifiers, so API names must be lowercase
-static const core::dbname_t database_name{"testdatabase"};
+static const core::schema_t database_name{"testdatabase"};
 static const core::relname_t collection_name{"testcollection"};
 static const core::relname_t collection_name_2{"testcollection2"};
 
@@ -26,7 +26,7 @@ static const core::relname_t collection_name_2{"testcollection2"};
     do {                                                                                                               \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
-            dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + (DB).t + ";");                          \
+            dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + (DB).t + ";");                            \
         }                                                                                                              \
         {                                                                                                              \
             auto session = otterbrix::session_id_t();                                                                  \
@@ -60,14 +60,14 @@ static const core::relname_t collection_name_2{"testcollection2"};
         auto session = otterbrix::session_id_t();                                                                      \
         auto plan = components::logical_plan::make_node_aggregate(                                                     \
             dispatcher->resource(),                                                                                    \
-            qualified_name_t{core::dbname_t{DB}, core::relname_t{COLL}});                                              \
+            qualified_name_t{core::schema_t{DB}, core::relname_t{COLL}});                                              \
         auto expr = components::expressions::make_compare_expression(dispatcher->resource(),                           \
                                                                      COMPARE,                                          \
                                                                      key{dispatcher->resource(), KEY, side_t::left},   \
                                                                      id_par{0});                                       \
         plan->append_child(                                                                                            \
             components::logical_plan::make_node_match(dispatcher->resource(),                                          \
-                                                      qualified_name_t{core::dbname_t{DB}, core::relname_t{COLL}},     \
+                                                      qualified_name_t{core::schema_t{DB}, core::relname_t{COLL}},     \
                                                       std::move(expr)));                                               \
         auto params = components::logical_plan::make_parameter_node(dispatcher->resource());                           \
         REQUIRE(params->add_parameter(components::vector::make_scalar(dispatcher->resource(), VALUE),                  \
@@ -311,7 +311,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_dml_full_cycle") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -408,7 +408,7 @@ TEST_CASE("integration::cpp::test_wal_pool::sql_constraint_enforcement") {
         // Create database
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         // Create table with NOT NULL on a string column
@@ -494,7 +494,7 @@ TEST_CASE("integration::cpp::test_wal_pool::constant_data_checkpoint_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         // Create table with a typed schema
@@ -550,7 +550,7 @@ TEST_CASE("integration::cpp::test_wal_pool::insert_delete_checkpoint_restart") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + database_name.t + ";");
         }
 
         {

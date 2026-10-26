@@ -92,7 +92,7 @@ constexpr auto database_name = "database";
 constexpr auto collection_name = "collection";
 
 static node_ptr make_match_with_expr(std::pmr::memory_resource* r, const expression_ptr& expr) {
-    return make_node_match(r, qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}}, expr);
+    return make_node_match(r, qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}}, expr);
 }
 
 TEST_CASE("optimizer::scalar_fold_add") {
@@ -1074,12 +1074,12 @@ TEST_CASE("optimizer::aggregate_match_folds_group_not") {
 
     auto aggregate =
         make_node_aggregate(&resource,
-                            qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+                            qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
 
     auto comp = make_compare_expression(&resource, compare_type::eq, id0, id1);
     aggregate->append_child(
         make_node_match(&resource,
-                        qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                         comp));
 
     auto scalar = make_scalar_expression(&resource, scalar_type::add, key(&resource, "result"));
@@ -1112,18 +1112,18 @@ TEST_CASE("optimizer::multiple_match_nodes") {
 
     auto aggregate =
         make_node_aggregate(&resource,
-                            qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+                            qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
 
     auto comp1 = make_compare_expression(&resource, compare_type::gt, id0, id1);
     aggregate->append_child(
         make_node_match(&resource,
-                        qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                         comp1));
 
     auto comp2 = make_compare_expression(&resource, compare_type::lt, id2, id3);
     aggregate->append_child(
         make_node_match(&resource,
-                        qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                         comp2));
 
     components::planner::optimize(&resource, aggregate, params.get(), test_execution_context());
@@ -1265,7 +1265,7 @@ TEST_CASE("create_plan_match::eq_uses_index_scan_hashed_preferred") {
     add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::hashed);
 
     auto node = make_node_match(&resource,
-                                qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                                qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                                 make_compare_expression(&resource, compare_type::eq, key(&resource, "age"), pid));
     node->set_table_oid(table_oid);
 
@@ -1290,7 +1290,7 @@ TEST_CASE("create_plan_match::range_uses_index_scan_single_preferred") {
     add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::single);
 
     auto node = make_node_match(&resource,
-                                qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                                qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                                 make_compare_expression(&resource, compare_type::gte, key(&resource, "age"), pid));
     node->set_table_oid(table_oid);
 
@@ -1315,7 +1315,7 @@ TEST_CASE("create_plan_match::range_with_only_hashed_falls_back_to_full_scan") {
     add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::hashed);
 
     auto node = make_node_match(&resource,
-                                qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                                qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                                 make_compare_expression(&resource, compare_type::gt, key(&resource, "age"), pid));
     node->set_table_oid(table_oid);
 
@@ -1337,7 +1337,7 @@ TEST_CASE("create_plan_match::key_on_right_mirrors_compare_type_for_index_scan")
     add_single_field_index(ctx, &resource, table_oid, "age", components::logical_plan::index_type::single);
 
     auto node = make_node_match(&resource,
-                                qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                                qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                                 make_compare_expression(&resource, compare_type::lt, pid, key(&resource, "age")));
     node->set_table_oid(table_oid);
 
@@ -1364,7 +1364,7 @@ TEST_CASE("create_plan_match::union_compare_uses_full_scan") {
     union_expr->append_child(make_compare_expression(&resource, compare_type::gte, key(&resource, "age"), pid));
 
     auto node = make_node_match(&resource,
-                                qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                                qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                                 union_expr);
     node->set_table_oid(table_oid);
 
@@ -1444,7 +1444,7 @@ TEST_CASE("optimizer::pushdown_aggregate::nested_aggregate_child_is_skipped") {
     auto agg = make_agg(&resource, group);
     auto nested =
         make_node_aggregate(&resource,
-                            qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+                            qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
     agg->append_child(std::move(nested));
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
@@ -1573,11 +1573,11 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_becomes_inner_hash") {
     where->append_child(lt);
 
     auto outer = make_node_aggregate(&resource,
-                                     qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+                                     qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
     outer->append_child(join);
     outer->append_child(
         make_node_match(&resource,
-                        qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                         where));
 
     auto sum_expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum_ap"));
@@ -1671,7 +1671,7 @@ namespace {
     constexpr auto prune_db = "database";
     constexpr auto prune_rel = "collection";
 
-    core::dbname_t pdb() { return core::dbname_t{std::string{prune_db}}; }
+    core::schema_t pdb() { return core::schema_t{std::string{prune_db}}; }
     core::relname_t prel() { return core::relname_t{std::string{prune_rel}}; }
 
     key pruned_key(std::pmr::memory_resource* r, const char* name, size_t idx, side_t side = side_t::undefined) {
@@ -1859,7 +1859,7 @@ TEST_CASE("optimizer::column_pruning") {
         components::catalog::fk_info_t fk;
         fk.parent_col_indices = {1};
         del->set_referencing_fks({fk});
-        auto cascade = boost::intrusive_ptr(new node_fk_cascade_t(&resource, core::dbname_t{}, core::relname_t{}, fk));
+        auto cascade = boost::intrusive_ptr(new node_fk_cascade_t(&resource, core::schema_t{}, core::relname_t{}, fk));
         cascade->append_child(del);
 
         components::planner::optimize(&resource, cascade, params.get(), test_execution_context());
@@ -1895,11 +1895,11 @@ namespace {
         auto scan_r = make_promote_scan(r, right_cols);
         auto uni = make_node_union(r, scan_l, scan_r, all);
         auto outer =
-            make_node_aggregate(r, qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+            make_node_aggregate(r, qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
         outer->append_child(uni);
         outer->append_child(
             make_node_match(r,
-                            qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                            qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                             where));
         auto validated =
             services::dispatcher::validate_schema(test_validation_context(r), outer.get(), params->parameters());
@@ -2313,7 +2313,7 @@ namespace {
     node_aggregate_ptr
     drd_agg(std::pmr::memory_resource* r, const node_group_ptr& group, const node_select_ptr& select) {
         auto agg =
-            make_node_aggregate(r, qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+            make_node_aggregate(r, qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
         agg->set_distinct(true);
         if (group) {
             agg->append_child(group);
@@ -2400,7 +2400,7 @@ namespace { namespace eag {
                             const char* rel,
                             components::catalog::oid_t oid,
                             std::initializer_list<const char*> cols) {
-        auto a = make_node_aggregate(r, qualified_name_t{core::dbname_t{"db"}, core::relname_t{rel}});
+        auto a = make_node_aggregate(r, qualified_name_t{core::schema_t{"db"}, core::relname_t{rel}});
         a->set_table_oid(oid);
         std::pmr::vector<components::types::complex_logical_type> types(r);
         for (const char* c : cols) {
@@ -2963,11 +2963,11 @@ TEST_CASE("optimizer::promote_cross_join::comma_join_on_narrow_key_becomes_inner
     where->append_child(lt);
 
     auto outer = make_node_aggregate(&resource,
-                                     qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}});
+                                     qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
     outer->append_child(join);
     outer->append_child(
         make_node_match(&resource,
-                        qualified_name_t{core::dbname_t{database_name}, core::relname_t{collection_name}},
+                        qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}},
                         where));
     auto sum_expr = make_aggregate_expression(&resource, "sum", key(&resource, "sum_ap"));
     sum_expr->append_param(key(&resource, "ap"));
@@ -3032,7 +3032,7 @@ namespace { namespace one_sided {
         join->append_child(scan(r, {"ak", "ap"}));
         join->append_child(scan(r, {"bk"}));
         join->append_expression(make_compare_expression(r, compare_type::all_true));
-        const qualified_name_t name{core::dbname_t{database_name}, core::relname_t{collection_name}};
+        const qualified_name_t name{core::schema_t{database_name}, core::relname_t{collection_name}};
         auto outer = make_node_aggregate(r, name);
         outer->append_child(join);
         outer->append_child(make_node_match(r, name, where));
@@ -3248,7 +3248,7 @@ TEST_CASE("optimizer::pushdown_filter::bare_key_does_not_propagate_through_narro
 TEST_CASE("optimizer::eager_aggregation::cast_join_key_is_pushed") {
     auto resource = core::pmr::otterbrix_resource();
     auto* r = &resource;
-    auto a = make_node_aggregate(r, qualified_name_t{core::dbname_t{"db"}, core::relname_t{"a"}});
+    auto a = make_node_aggregate(r, qualified_name_t{core::schema_t{"db"}, core::relname_t{"a"}});
     a->set_table_oid(components::catalog::oid_t{100});
     {
         std::pmr::vector<components::types::complex_logical_type> types(r);

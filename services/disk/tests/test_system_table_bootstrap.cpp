@@ -1,3 +1,5 @@
+#include "catalog_probe.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 // actor-zeta/spawn.hpp uses std::unique_ptr but does not include <memory>
@@ -338,9 +340,8 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
         REQUIRE_FALSE(fd3.boot.bootstrap_system_tables_sync().contains_error());
         REQUIRE_FALSE(fd3.boot.restore_oid_generator_sync().contains_error());
         REQUIRE_FALSE(fd3.boot.load_user_table_storages_sync().contains_error());
-        auto ns = fd3.invoke(&manager_disk_t::resolve_namespace, fd3.ctx(), std::string("ns_one"));
-        REQUIRE_FALSE(ns.has_error());
-        CHECK(ns.value().found);
+        auto ns = test_probe::probe_namespace(fd3, fd3.ctx(), std::string("ns_one"));
+        CHECK(ns.found);
         auto rows = disk_test_helpers::read_ok(
             fd3.invoke(&manager_disk_t::storage_total_rows, components::session::session_id_t{}, user_table));
         CHECK(rows == kRows);
@@ -401,9 +402,9 @@ TEST_CASE("services::disk::sysboot::uncreatable_system_table_refuses_the_start")
     const bool refused = fd.boot.bootstrap_system_tables_sync().contains_error();
     if (!refused) {
         plan.fail_writes_from = 0;
-        auto ns = fd.invoke(&manager_disk_t::resolve_namespace, fd.ctx(), std::string("public"));
+        auto ns = test_probe::probe_namespace(fd, fd.ctx(), std::string("public"));
         INFO("a start that came up over a pg_namespace it could not create has no 'public'");
-        CHECK((!ns.has_error() && ns.value().found));
+        CHECK((ns.found));
     }
     INFO("a pg_catalog table that could not be created must stop the start");
     CHECK(refused);
@@ -438,10 +439,9 @@ TEST_CASE("services::disk::sysboot::a_system_table_that_loads_empty_is_seeded_ag
 
     disk_only_fixture fd2(base);
     REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
-    auto ns = fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("public"));
-    REQUIRE_FALSE(ns.has_error());
+    auto ns = test_probe::probe_namespace(fd2, fd2.ctx(), std::string("public"));
     INFO("a system table that loaded with zero rows must be seeded, not left silently empty");
-    CHECK(ns.value().found);
+    CHECK(ns.found);
 
     cleanup_boot_dir();
 }

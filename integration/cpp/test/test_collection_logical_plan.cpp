@@ -26,7 +26,7 @@
 // enrich stamps table_oid() from the resolved entry.
 #define WRAP_DML_TARGET(DB, REL, NODE) test_dml_target(NODE, DB, REL)
 
-static const core::dbname_t table_database_name{"table_testdatabase"};
+static const core::schema_t table_database_name{"table_testdatabase"};
 static const core::relname_t table_collection_name{"table_testcollection"};
 static const core::relname_t table_other_collection_name{"table_othertestcollection"};
 static const core::relname_t table_collection_left{"table_testcollection_left_join"};
@@ -79,7 +79,7 @@ TEST_CASE("integration::cpp::test_collection::logical_plan") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + table_database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + table_database_name.t + ";");
         }
         {
             auto session = otterbrix::session_id_t();

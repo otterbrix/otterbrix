@@ -10,6 +10,7 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/logical_plan/effective_table_oid.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
@@ -34,7 +35,7 @@ namespace components::planner::optimizer {
             if (!n || n->type() != lp::node_type::aggregate_t) {
                 return false;
             }
-            if (n->table_oid() == components::catalog::INVALID_OID) {
+            if (!lp::reads_owned_table(*n)) {
                 return false;
             }
             if (static_cast<const lp::node_aggregate_t*>(n.get())->is_distinct()) {

@@ -79,6 +79,7 @@ namespace components::sql::transform {
     private:
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_database(CreatedbStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_drop_database(DropdbStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_create_schema(CreateSchemaStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_checkpoint(CheckPointStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_vacuum(VacuumStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_table(CreateStmt& node);
@@ -395,58 +396,38 @@ namespace components::sql::transform {
         // sub-queries and moved onto the execution_plan_t at the end of transform()
         logical_plan::catalog_resolves_t catalog_resolves_;
 
-        void register_namespace(const std::string& dbname) {
-            register_catalog_resolve_namespace(resource_, &catalog_resolves_, dbname);
+        void register_database(const std::string& database) {
+            register_catalog_resolve_database(resource_, &catalog_resolves_, std::string{}, database);
         }
-        void register_table(const std::string& dbname,
-                            const std::string& relname,
-                            constraint_resolve_kind with_constraints) {
-            register_catalog_resolve_table(resource_, &catalog_resolves_, dbname, relname, with_constraints);
+        void register_namespace(const qualified_name_t& name) {
+            register_catalog_resolve_namespace(resource_, &catalog_resolves_, name);
+        }
+        void register_table(const qualified_name_t& name, constraint_resolve_kind with_constraints) {
+            register_catalog_resolve_table(resource_, &catalog_resolves_, name, with_constraints);
         }
         void register_write_target(const qualified_name_t& written) {
-            register_catalog_resolve_write_target(resource_, &catalog_resolves_, written);
+            register_catalog_resolve_table(resource_, &catalog_resolves_, written);
         }
         void register_written_table(const logical_plan::node_aggregate_t& from) {
             register_write_target(from.target());
         }
-        void register_table_in_owner_database(const std::string& owner_db,
-                                              const std::string& owner_rel,
-                                              const std::string& relname,
-                                              constraint_resolve_kind with_constraints) {
-            register_catalog_resolve_table_in_owner_database(resource_,
-                                                             &catalog_resolves_,
-                                                             owner_db,
-                                                             owner_rel,
-                                                             relname,
-                                                             with_constraints);
-        }
-        void register_types(std::span<const std::string> type_names) {
+        void register_types(std::span<const qualified_name_t> type_names) {
             register_catalog_resolve_types(resource_, &catalog_resolves_, type_names);
         }
 
-        // A slot of `written` the node does not keep is recorded as an external target, which the executor refuses.
-        std::string set_target(logical_plan::node_t& node, const qualified_name_t& written, target_slots slots) {
-            qualified_name_t target{database_for(written, policy_of(node)), core::relname_t{}};
-            if (slots != target_slots::database) {
+        // The node keeps every slot of `written`; a CREATE without a database or schema is completed with the
+        // session's place by the executor. Answers what the node keeps.
+        qualified_name_t set_target(logical_plan::node_t& node, const qualified_name_t& written, target_slots slots) {
+            qualified_name_t target{written.connection, written.database, written.schema, core::relname_t{}};
+            if (slots == target_slots::relation) {
                 target.collection = written.collection;
             }
-            const bool keeps_schema = slots == target_slots::relation_with_schema;
-            if (keeps_schema) {
-                target.schema = written.schema;
-            }
-            const bool leads_elsewhere = !written.unique_identifier.t.empty() ||
-                                         (!keeps_schema && !written.schema.t.empty()) ||
-                                         (!written.database.t.empty() && written.database != target.database);
-            if (leads_elsewhere) {
-                catalog_resolves_.external_targets.push_back(logical_plan::external_target_t{written, node.type()});
-            }
-            std::string dbname = target.database.t;
-            node.set_target(std::move(target));
-            return dbname;
+            node.set_target(target);
+            return target;
         }
 
         // TODO: wrapp expressions in resolve node, and it won't be needed
-        std::vector<std::string> cast_type_names_;
+        std::vector<qualified_name_t> cast_type_names_;
 
         void note_cast_type(const types::complex_logical_type& target);
 

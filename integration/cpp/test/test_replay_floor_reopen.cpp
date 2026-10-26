@@ -45,7 +45,7 @@ TEST_CASE("integration::cpp::replay_floor::reopening twice must not replay an ab
 
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(test_helpers::exec(d, "CREATE DATABASE adb;")->is_success());
+        REQUIRE(test_helpers::exec(d, "CREATE SCHEMA adb;")->is_success());
         REQUIRE(test_helpers::exec(d, "CREATE TABLE adb.t (id BIGINT);")->is_success());
         for (int i = 1; i <= kRows; ++i) {
             REQUIRE(test_helpers::exec(d, "INSERT INTO adb.t (id) VALUES (" + std::to_string(i) + ");")->is_success());

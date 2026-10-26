@@ -138,17 +138,12 @@ namespace {
             return result;
         }
 
-        resolve_namespace_result_t resolve_namespace(const std::string& name) {
+        test_probe::probe_namespace_result_t resolve_namespace(const std::string& name) {
             components::execution_context_t ctx{components::session::session_id_t{},
                                                 components::table::transaction_data::committed(),
                                                 {}};
-            auto [_, fut] =
-                actor_zeta::otterbrix::send(manager_disk_->address(), &manager_disk_t::resolve_namespace, ctx, name);
-            REQUIRE(test_helpers::wait_ready(fut, scheduler_));
-            // The reader has its own error channel; a failed read must not be conflated with found=false.
-            auto r = std::move(fut).take_ready();
-            REQUIRE_FALSE(r.has_error());
-            return std::move(r.value());
+            auto adapter = probe_fx();
+            return test_probe::probe_namespace(adapter, ctx, name);
         }
 
         test_probe::probe_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
@@ -199,7 +194,7 @@ TEST_CASE("variant-e3 differential: SELECT pass-through") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_select");
 
-    fx.execute_sql("CREATE DATABASE ve3_sel;");
+    fx.execute_sql("CREATE SCHEMA ve3_sel;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_sel.t(id int, name string);");
@@ -227,7 +222,7 @@ TEST_CASE("variant-e3 differential: CREATE TABLE basic") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_create");
 
-    fx.execute_sql("CREATE DATABASE ve3_ct;");
+    fx.execute_sql("CREATE SCHEMA ve3_ct;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_ct.users(id int, email string);");
@@ -258,7 +253,7 @@ TEST_CASE("variant-e3 differential: INSERT + SELECT round-trip") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_insert");
 
-    fx.execute_sql("CREATE DATABASE ve3_ins;");
+    fx.execute_sql("CREATE SCHEMA ve3_ins;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_ins.kv(k int, v string);");
@@ -292,7 +287,7 @@ TEST_CASE("variant-e3 differential: CREATE INDEX") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_index");
 
-    fx.execute_sql("CREATE DATABASE ve3_idx;");
+    fx.execute_sql("CREATE SCHEMA ve3_idx;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_idx.items(id int, val int);");
@@ -322,7 +317,7 @@ TEST_CASE("variant-e3 differential: DROP TABLE") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_drop");
 
-    fx.execute_sql("CREATE DATABASE ve3_drop;");
+    fx.execute_sql("CREATE SCHEMA ve3_drop;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_drop.victim(id int, name string);");
@@ -352,7 +347,7 @@ TEST_CASE("variant-e3 differential: ALTER TABLE ADD COLUMN") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_alter");
 
-    fx.execute_sql("CREATE DATABASE ve3_alt;");
+    fx.execute_sql("CREATE SCHEMA ve3_alt;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_alt.items(id int, val int);");
@@ -405,7 +400,7 @@ TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
         REQUIRE(cur->is_success());
     }
 
-    fx.execute_sql("CREATE DATABASE ve3_ty_db;");
+    fx.execute_sql("CREATE SCHEMA ve3_ty_db;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_ty_db.pts(id int, p ve3_point_t);");
@@ -431,7 +426,7 @@ TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption"
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_computed");
 
-    fx.execute_sql("CREATE DATABASE ve3_cg;");
+    fx.execute_sql("CREATE SCHEMA ve3_cg;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_cg.events();");
@@ -472,7 +467,7 @@ TEST_CASE("variant-e3 differential: DROP DATABASE") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_drop_db");
 
-    fx.execute_sql("CREATE DATABASE ve3_dropdb;");
+    fx.execute_sql("CREATE SCHEMA ve3_dropdb;");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
@@ -480,7 +475,7 @@ TEST_CASE("variant-e3 differential: DROP DATABASE") {
         REQUIRE(rns.found);
     }
 
-    fx.execute_sql("DROP DATABASE ve3_dropdb;");
+    fx.execute_sql("DROP SCHEMA ve3_dropdb CASCADE;");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
@@ -494,7 +489,7 @@ TEST_CASE("variant-e3 differential: CREATE VIEW") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_view");
 
-    fx.execute_sql("CREATE DATABASE ve3_view;");
+    fx.execute_sql("CREATE SCHEMA ve3_view;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_view.t(col_a string, col_b bigint);");
@@ -524,7 +519,7 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_fk");
 
-    fx.execute_sql("CREATE DATABASE ve3_fk;");
+    fx.execute_sql("CREATE SCHEMA ve3_fk;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_fk.departments(id bigint, name text);");
@@ -578,7 +573,7 @@ TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_matview");
 
-    fx.execute_sql("CREATE DATABASE ve3_mv;");
+    fx.execute_sql("CREATE SCHEMA ve3_mv;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_mv.t(col_a string, col_b bigint);");
@@ -614,7 +609,7 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_check");
 
-    fx.execute_sql("CREATE DATABASE ve3_chk;");
+    fx.execute_sql("CREATE SCHEMA ve3_chk;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_chk.items(id bigint, age bigint, name text);");

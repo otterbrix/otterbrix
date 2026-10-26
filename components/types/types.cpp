@@ -807,14 +807,22 @@ namespace components::types {
         return return_type_ == rhs.return_type_ && argument_types_ == rhs.argument_types_;
     }
 
-    unknown_logical_type_extension::unknown_logical_type_extension(std::string type_name)
+    unknown_logical_type_extension::unknown_logical_type_extension(std::string type_name,
+                                                                   std::string database,
+                                                                   std::string schema)
         : logical_type_extension(extension_type::UNKNOWN)
-        , type_name_(std::move(type_name)) {}
+        , type_name_(std::move(type_name))
+        , database_(std::move(database))
+        , schema_(std::move(schema)) {}
 
     const std::string& unknown_logical_type_extension::type_name() const { return type_name_; }
 
+    const std::string& unknown_logical_type_extension::type_database() const { return database_; }
+
+    const std::string& unknown_logical_type_extension::type_schema() const { return schema_; }
+
     bool unknown_logical_type_extension::operator==(const unknown_logical_type_extension& rhs) const {
-        return type_name_ == rhs.type_name_;
+        return type_name_ == rhs.type_name_ && database_ == rhs.database_ && schema_ == rhs.schema_;
     }
 
     bool operator==(const logical_type_extension& lhs, const logical_type_extension& rhs) {

@@ -18,7 +18,7 @@ TEST_CASE("integration::cpp::concurrency::row_conflicts::interleaved", "[interle
     engine_t engine("row_conflicts_interleaved");
     session_t first(engine, "first");
     session_t second(engine, "second");
-    require_ok(first, "CREATE DATABASE db;");
+    require_ok(first, "CREATE SCHEMA db;");
     require_ok(first, "CREATE TABLE db.t (id bigint, v bigint);");
     require_ok(first, "INSERT INTO db.t (id, v) VALUES (1, 10), (2, 20), (3, 30);");
 
@@ -134,7 +134,7 @@ TEST_CASE("integration::cpp::concurrency::row_conflicts::overlapping", "[overlap
     engine_t engine("row_conflicts_overlapping");
     session_t first(engine, "first");
     session_t second(engine, "second");
-    require_ok(first, "CREATE DATABASE db;");
+    require_ok(first, "CREATE SCHEMA db;");
     require_ok(first, "CREATE TABLE db.big (id bigint, v bigint);");
     insert_numbered_rows(first, "db.big", PAUSABLE_TABLE_ROWS);
 
@@ -200,7 +200,7 @@ TEST_CASE("integration::cpp::concurrency::row_conflicts::overlapping", "[overlap
 TEST_CASE("integration::cpp::concurrency::row_conflicts::parallel", "[parallel]") {
     engine_t engine("row_conflicts_parallel");
     session_t admin(engine, "admin");
-    require_ok(admin, "CREATE DATABASE db;");
+    require_ok(admin, "CREATE SCHEMA db;");
     constexpr std::size_t SESSIONS = 8;
     constexpr int ITERATIONS = 23;
 

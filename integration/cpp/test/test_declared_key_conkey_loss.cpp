@@ -46,7 +46,7 @@ namespace {
         auto* resource = d->resource();
         auto node = components::logical_plan::make_node_create_constraint(
             resource,
-            qualified_name_t{core::dbname_t{db}, core::relname_t{rel}},
+            qualified_name_t{core::schema_t{db}, core::relname_t{rel}},
             core::constraint_name_t{con_name},
             kind);
         node->set_local_col_names(std::move(cols));
@@ -56,7 +56,10 @@ namespace {
         components::logical_plan::execution_plan_t plan{resource,
                                                         components::logical_plan::node_ptr{node},
                                                         components::logical_plan::make_parameter_node(resource)};
-        components::sql::transform::register_catalog_resolve_table(resource, &plan.catalog_resolves, db, rel);
+        components::sql::transform::register_catalog_resolve_table(
+            resource,
+            &plan.catalog_resolves,
+            qualified_name_t{core::schema_t{db}, core::relname_t{rel}});
         return d->execute_plan(otterbrix::session_id_t(), std::move(plan));
     }
 
@@ -77,7 +80,7 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::unreadable_conkey_does_no
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA cur;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE cur.t (id bigint, code bigint);")->is_success());
 
     auto ddl = add_constraint_with_lost_conkey(d,
@@ -109,7 +112,7 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::unreadable_conkey_does_no
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA cur;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE cur.t (id bigint, v bigint);")->is_success());
 
     auto ddl = add_constraint_with_lost_conkey(d,
@@ -140,7 +143,7 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unreadable_key_row_doe
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA cur;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE cur.t (id bigint, code bigint);")->is_success());
     REQUIRE(exec(d, "INSERT INTO cur.t (id, code) VALUES (1, 100), (2, 200);")->is_success());
     REQUIRE(exec(d, "CREATE TABLE cur.other (id bigint);")->is_success());
@@ -186,7 +189,7 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unenforceable_key_row_
         test_spaces space(config);
         auto* d = space.dispatcher();
 
-        REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA cur;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE cur.lost (id bigint, code bigint);")->is_success());
         REQUIRE(exec(d, "CREATE TABLE cur.stale (id bigint, code bigint);")->is_success());
         REQUIRE(exec(d, "CREATE TABLE cur.plain (id bigint);")->is_success());
@@ -283,19 +286,19 @@ namespace {
         auto* resource = d->resource();
         auto node = components::logical_plan::make_node_create_constraint(
             resource,
-            qualified_name_t{core::dbname_t{db}, core::relname_t{child_rel}},
+            qualified_name_t{core::schema_t{db}, core::relname_t{child_rel}},
             core::constraint_name_t{con_name},
             components::logical_plan::constraint_kind::foreign_key,
-            qualified_name_t{core::dbname_t{db}, core::relname_t{parent_rel}});
+            qualified_name_t{core::schema_t{db}, core::relname_t{parent_rel}});
         node->set_local_col_names(std::move(child_cols));
         node->set_ref_col_names(std::move(parent_cols));
         node->set_inline_with_table(true);
         components::logical_plan::execution_plan_t plan{resource,
                                                         components::logical_plan::node_ptr{node},
                                                         components::logical_plan::make_parameter_node(resource)};
-        components::sql::transform::register_catalog_resolve_tables(resource,
-                                                                    &plan.catalog_resolves,
-                                                                    {{db, child_rel}, {db, parent_rel}});
+        const qualified_name_t targets[] = {qualified_name_t{core::schema_t{db}, core::relname_t{child_rel}},
+                                            qualified_name_t{core::schema_t{db}, core::relname_t{parent_rel}}};
+        components::sql::transform::register_catalog_resolve_tables(resource, &plan.catalog_resolves, targets);
         return d->execute_plan(otterbrix::session_id_t(), std::move(plan));
     }
 
@@ -306,7 +309,7 @@ TEST_CASE("integration::cpp::declared_key_conkey_loss::an_unreadable_fk_column_l
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE cur;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA cur;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE cur.parent (id bigint);")->is_success());
     REQUIRE(exec(d, "CREATE TABLE cur.child (id bigint, parent_id bigint);")->is_success());
     REQUIRE(exec(d, "INSERT INTO cur.parent (id) VALUES (1);")->is_success());

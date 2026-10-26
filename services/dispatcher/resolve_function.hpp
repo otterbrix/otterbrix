@@ -34,5 +34,6 @@ namespace services::dispatcher {
                      const function_qualified_name_t& name,
                      const std::pmr::vector<components::types::complex_logical_type>& arguments,
                      components::compute::function_types_mask allowed_function_types,
+                     const components::compute::function_scope_t& scope,
                      std::span<const components::compute::function_pin_t> pins);
 } // namespace services::dispatcher

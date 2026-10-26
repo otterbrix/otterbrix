@@ -23,7 +23,8 @@ namespace components::operators {
                                   log_t log,
                                   std::string function_name,
                                   std::pmr::vector<types::complex_logical_type> inputs,
-                                  components::catalog::drop_behavior_t behavior);
+                                  components::catalog::drop_behavior_t behavior,
+                                  std::uint32_t schema_oid);
 
         // Sourceless SINK leaf (no data pipeline, no children): the registry
         // existence-check and the pg_proc/pg_depend purge run in
@@ -37,6 +38,7 @@ namespace components::operators {
         std::string function_name_;
         std::pmr::vector<types::complex_logical_type> inputs_;
         components::catalog::drop_behavior_t behavior_;
+        std::uint32_t schema_oid_;
     };
 
 } // namespace components::operators

@@ -75,7 +75,7 @@ TEST_CASE("integration::cpp::index_stale_after_compact::a_crash_after_a_compacti
             return d->execute_sql(session, sql);
         };
 
-        REQUIRE(exec("CREATE DATABASE sdb;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA sdb;")->is_success());
         REQUIRE(exec("CREATE TABLE sdb.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec("CREATE INDEX k_idx ON sdb.t (k);")->is_success());
 
@@ -196,7 +196,7 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE adb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA adb;")->is_success());
     REQUIRE(exec("CREATE TABLE adb.t (id bigint, k bigint);")->is_success());
     REQUIRE(exec("CREATE INDEX k_idx ON adb.t (k);")->is_success());
     for (int64_t start = 1; start <= kRows; start += 500) {

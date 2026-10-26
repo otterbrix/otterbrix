@@ -67,7 +67,7 @@ TEST_CASE("integration::cpp::test_explain::sql") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -230,7 +230,7 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -364,7 +364,7 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -459,7 +459,7 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -511,7 +511,7 @@ TEST_CASE("integration::cpp::test_explain::analyze_recursive_cte_rows") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -586,7 +586,7 @@ TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -656,7 +656,7 @@ TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -693,7 +693,7 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -750,7 +750,7 @@ TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
     auto* dispatcher = space.dispatcher();
 
     using test_helpers::exec;
-    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.t1 (id bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.t2 (id bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO db.t1 (id, k) VALUES (5,1),(5,2),(6,1);")->is_success());
@@ -812,7 +812,7 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
     auto* dispatcher = space.dispatcher();
 
     using test_helpers::exec;
-    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.t1 (id bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.t2 (id2 bigint, k bigint, v bigint);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO db.t1 (id, k) VALUES (1,5),(2,5),(3,9);")->is_success());
@@ -906,7 +906,7 @@ TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();

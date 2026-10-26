@@ -182,6 +182,14 @@ py::tuple wrapper_cursor::get_error() const {
             type = "database_not_exists";
             break;
 
+        case error_code_t::schema_already_exists:
+            type = "schema_already_exists";
+            break;
+
+        case error_code_t::schema_not_exists:
+            type = "schema_not_exists";
+            break;
+
         case error_code_t::table_already_exists:
             type = "table_already_exists";
             break;

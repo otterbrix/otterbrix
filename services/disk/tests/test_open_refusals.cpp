@@ -289,9 +289,8 @@ TEST_CASE("services::disk::open::an_unreadable_sidecar_is_not_never_checkpointed
         REQUIRE_FALSE(unclosed.has_error());
         CHECK(unclosed.value() == 0);
 
-        auto ns = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("ns_sidecar"));
-        REQUIRE_FALSE(ns.has_error());
-        CHECK(ns.value().found);
+        auto ns = test_probe::probe_namespace(fx, fx.ctx(), std::string("ns_sidecar"));
+        CHECK(ns.found);
 
         CHECK(std::filesystem::exists(otbx));
         CHECK(std::filesystem::file_size(sidecar) == 3);
@@ -540,9 +539,8 @@ TEST_CASE("services::disk::open::an_unreadable_system_table_sidecar_is_not_a_bri
         auto zero_floor = fx.boot.peek_checkpoint_wal_id_from_disk(well_known_oid::pg_namespace_table, sys_db);
         CHECK(zero_floor.has_error());
 
-        auto ns = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("ns_sys"));
-        REQUIRE_FALSE(ns.has_error());
-        CHECK(ns.value().found);
+        auto ns = test_probe::probe_namespace(fx, fx.ctx(), std::string("ns_sys"));
+        CHECK(ns.found);
 
         CHECK(std::filesystem::file_size(short_sidecar) == 3);
         CHECK(std::filesystem::file_size(zero_sidecar) == 0);

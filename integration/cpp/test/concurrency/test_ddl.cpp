@@ -19,7 +19,7 @@ TEST_CASE("integration::cpp::concurrency::ddl_visibility::interleaved", "[interl
     engine_t engine("ddl_visibility_interleaved");
     session_t alterer(engine, "alterer");
     session_t other(engine, "other");
-    require_ok(alterer, "CREATE DATABASE db;");
+    require_ok(alterer, "CREATE SCHEMA db;");
     require_ok(alterer, "CREATE TABLE db.t (id bigint, v bigint);");
     require_ok(alterer, "INSERT INTO db.t (id, v) VALUES (1, 10), (2, 20), (3, 30);");
 
@@ -114,7 +114,7 @@ TEST_CASE("integration::cpp::concurrency::ddl_conflicts::interleaved", "[interle
     engine_t engine("ddl_conflicts_interleaved");
     session_t first(engine, "first");
     session_t second(engine, "second");
-    require_ok(first, "CREATE DATABASE db;");
+    require_ok(first, "CREATE SCHEMA db;");
     require_ok(first, "CREATE TABLE db.t (id bigint, v bigint);");
     require_ok(first, "INSERT INTO db.t (id, v) VALUES (1, 10), (2, 20), (3, 30);");
 
@@ -123,6 +123,7 @@ TEST_CASE("integration::cpp::concurrency::ddl_conflicts::interleaved", "[interle
         std::string second_ddl;
         SECTION("table") { first_ddl = second_ddl = "CREATE TABLE db.contested (id bigint);"; }
         SECTION("database") { first_ddl = second_ddl = "CREATE DATABASE contested;"; }
+        SECTION("schema") { first_ddl = second_ddl = "CREATE SCHEMA contested;"; }
         SECTION("index") { first_ddl = second_ddl = "CREATE INDEX contested ON db.t (v);"; }
         SECTION("column") { first_ddl = second_ddl = "ALTER TABLE db.t ADD COLUMN contested bigint;"; }
         SECTION("column renamed onto it") {
@@ -221,7 +222,7 @@ TEST_CASE("integration::cpp::concurrency::ddl_conflicts::parallel", "[parallel]"
     constexpr std::size_t SESSIONS = 8;
     engine_t engine("ddl_conflicts_parallel");
     session_t admin(engine, "admin");
-    require_ok(admin, "CREATE DATABASE db;");
+    require_ok(admin, "CREATE SCHEMA db;");
     require_ok(admin, "CREATE TABLE db.t (id bigint, v bigint);");
 
     SECTION("one name created by every session at once is created once") {
@@ -232,7 +233,7 @@ TEST_CASE("integration::cpp::concurrency::ddl_conflicts::parallel", "[parallel]"
             use_it = "SELECT id FROM db.contested;";
         }
         SECTION("database") {
-            create = "CREATE DATABASE contested;";
+            create = "CREATE SCHEMA contested;";
             use_it = "CREATE TABLE contested.inside (id bigint);";
         }
         SECTION("index") {

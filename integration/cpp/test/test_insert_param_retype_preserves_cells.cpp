@@ -47,7 +47,7 @@ TEST_CASE("integration::cpp::insert_param_retype::null_literal_before_a_paramete
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d BIGINT);")->is_success());
 
     params_t params{{1, i64(resource, 42)}};
@@ -83,7 +83,7 @@ TEST_CASE("integration::cpp::insert_param_retype::literal_before_a_wider_typed_p
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d DOUBLE);")->is_success());
 
     params_t params{{1, f64(resource, 3.5)}};
@@ -116,7 +116,7 @@ TEST_CASE("integration::cpp::insert_param_retype::narrower_parameter_keeps_a_wid
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d DOUBLE);")->is_success());
 
     params_t params{{1, i64(resource, 3)}};
@@ -143,7 +143,7 @@ TEST_CASE("integration::cpp::insert_param_retype::several_rows_and_columns_at_on
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, a BIGINT, b DOUBLE);")->is_success());
 
     params_t params{{1, i64(resource, 2)}, {2, i64(resource, 3)}};
@@ -186,7 +186,7 @@ TEST_CASE("integration::cpp::insert_param_retype::null_parameter_keeps_a_literal
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d BIGINT);")->is_success());
 
     params_t params{{1, null_value(resource)}};
@@ -216,7 +216,7 @@ TEST_CASE("integration::cpp::insert_param_retype::matching_types_take_no_retype"
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d BIGINT);")->is_success());
 
     params_t params{{1, i64(resource, 1)}, {2, i64(resource, 2)}};
@@ -249,7 +249,7 @@ TEST_CASE("integration::cpp::insert_param_retype::parameter_between_text_and_int
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, s TEXT);")->is_success());
 
     params_t params{{1, i64(resource, 42)}};
@@ -280,7 +280,7 @@ TEST_CASE("integration::cpp::insert_param_retype::parameter_between_quoted_and_i
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, n INTEGER);")->is_success());
 
     params_t params{{1, i64(resource, 11)}};

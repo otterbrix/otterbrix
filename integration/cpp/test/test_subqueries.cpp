@@ -16,7 +16,7 @@ namespace {
     void setup_subquery_db(otterbrix::wrapper_dispatcher_t* dispatcher) {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1171,7 +1171,7 @@ TEST_CASE("integration::cpp::test_subqueries::union_complex_types") {
     {
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1268,7 +1268,7 @@ TEST_CASE("integration::cpp::test_subqueries::struct_field_names_in_type_identit
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    for (const char* sql : {"CREATE DATABASE d;",
+    for (const char* sql : {"CREATE SCHEMA d;",
                             "CREATE TYPE point_t AS (x int, y int);",
                             "CREATE TYPE ta AS (a int);",
                             "CREATE TYPE tb AS (b int);",
@@ -1306,7 +1306,7 @@ namespace {
     void setup_recursive_db(otterbrix::wrapper_dispatcher_t* dispatcher) {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE TestDatabase;");
+            dispatcher->execute_sql(session, "CREATE SCHEMA TestDatabase;");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -1587,7 +1587,7 @@ TEST_CASE("integration::cpp::test_subqueries::bool_numeric_coercion") {
         return dispatcher->execute_sql(s, sql);
     };
 
-    exec("CREATE DATABASE TestDatabase;");
+    exec("CREATE SCHEMA TestDatabase;");
     REQUIRE(exec("CREATE TABLE TestDatabase.flags (id bigint, ok boolean);")->is_success());
     REQUIRE(exec("INSERT INTO TestDatabase.flags (id, ok) VALUES (1, true), (2, false);")->is_success());
 
@@ -1786,7 +1786,7 @@ TEST_CASE("integration::cpp::test_subqueries::in_subquery_spans_all_chunks") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -1843,7 +1843,7 @@ TEST_CASE("integration::cpp::test_subqueries::recursive_cte_union_distinct") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -1895,7 +1895,7 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_dedup_fidelity") {
         return dispatcher->execute_sql(s, sql);
     };
 
-    exec("CREATE DATABASE TestDatabase;");
+    exec("CREATE SCHEMA TestDatabase;");
 
     INFO("DISTINCT over a DOUBLE column keeps values that differ beyond 6 significant digits");
     {
@@ -1942,7 +1942,7 @@ TEST_CASE("integration::cpp::test_subqueries::with_before_dml") {
         return dispatcher->execute_sql(s, sql);
     };
 
-    exec("CREATE DATABASE TestDatabase;");
+    exec("CREATE SCHEMA TestDatabase;");
     REQUIRE(exec("CREATE TABLE TestDatabase.staging (id bigint, flag bigint);")->is_success());
     REQUIRE(exec("INSERT INTO TestDatabase.staging (id, flag) VALUES (1,1),(2,0),(3,1);")->is_success());
     REQUIRE(exec("CREATE TABLE TestDatabase.t (id bigint);")->is_success());
@@ -2076,7 +2076,7 @@ TEST_CASE("integration::cpp::test_subqueries::nonpushable_where_limit_tail") {
         return dispatcher->execute_sql(s, sql);
     };
 
-    exec("CREATE DATABASE TestDatabase;");
+    exec("CREATE SCHEMA TestDatabase;");
     REQUIRE(exec("CREATE TABLE TestDatabase.tail_match (a bigint, b bigint);")->is_success());
     REQUIRE(exec("INSERT INTO TestDatabase.tail_match (a, b) VALUES "
                  "(100, 1),(100, 2),(100, 3),(100, 4),(100, 5),(100, 6),"
@@ -2172,7 +2172,7 @@ TEST_CASE("integration::cpp::test_subqueries::values_top_level_limit") {
         return dispatcher->execute_sql(s, sql);
     };
 
-    exec("CREATE DATABASE TestDatabase;");
+    exec("CREATE SCHEMA TestDatabase;");
 
     INFO("VALUES (1),(2),(3) LIMIT 2 returns 2 rows (was a hard parse error)");
     {
@@ -2204,7 +2204,7 @@ TEST_CASE("integration::cpp::test_subqueries::exists_operand") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.t (x bigint, flag boolean);")->is_success());
     REQUIRE(run("INSERT INTO db.t (x, flag) VALUES (1, true), (2, false);")->is_success());
 
@@ -2240,7 +2240,7 @@ TEST_CASE("integration::cpp::test_subqueries::value_position_scalar") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.t (x bigint);")->is_success());
     REQUIRE(run("INSERT INTO db.t (x) VALUES (10), (20), (30);")->is_success());
     REQUIRE(run("CREATE TABLE db.one (id bigint);")->is_success());
@@ -2294,7 +2294,7 @@ TEST_CASE("integration::cpp::test_subqueries::null_literal_typing") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.one (id bigint);")->is_success());
     REQUIRE(run("INSERT INTO db.one (id) VALUES (1);")->is_success());
 
@@ -2339,7 +2339,7 @@ TEST_CASE("integration::cpp::test_subqueries::like_ilike_family") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.t (id bigint, s string);")->is_success());
     REQUIRE(run("INSERT INTO db.t (id, s) VALUES (1, 'apple'), (2, 'Banana'), (3, 'cherry');")->is_success());
     REQUIRE(run("CREATE TABLE db.pat (p string);")->is_success());
@@ -2392,7 +2392,7 @@ TEST_CASE("integration::cpp::test_subqueries::any_subquery_disk_pushdown") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.t (id bigint, v bigint);")->is_success());
     REQUIRE(run("INSERT INTO db.t (id, v) VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50);")->is_success());
     REQUIRE(run("CREATE TABLE db.keys (k bigint);")->is_success());
@@ -2448,7 +2448,7 @@ TEST_CASE("integration::cpp::test_subqueries::like_any_disk_pushdown") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.t (id bigint, s string);")->is_success());
     REQUIRE(run("INSERT INTO db.t (id, s) VALUES (1, 'apple'), (2, 'Banana'), (3, 'cherry'), (4, 'avocado');")
                 ->is_success());
@@ -2508,7 +2508,7 @@ TEST_CASE("integration::cpp::test_subqueries::union_null_reconcile") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.one (id bigint);")->is_success());
     REQUIRE(run("INSERT INTO db.one (id) VALUES (1);")->is_success());
 
@@ -2638,7 +2638,7 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_semantics") {
 
     INFO("setup: outer with x in {10,20,30}; needles with a NULL element {10,NULL,30}");
     {
-        REQUIRE(run("CREATE DATABASE nulldb;")->is_success());
+        REQUIRE(run("CREATE SCHEMA nulldb;")->is_success());
         REQUIRE(run("CREATE TABLE nulldb.outer (id bigint, x bigint);")->is_success());
         REQUIRE(run("INSERT INTO nulldb.outer (id, x) VALUES (1, 10), (2, 20), (3, 30);")->is_success());
         REQUIRE(run("CREATE TABLE nulldb.needles (id bigint, v bigint);")->is_success());
@@ -2770,7 +2770,7 @@ TEST_CASE("integration::cpp::test_subqueries::distinct_on_subquery_sort_kept") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.events (k bigint, ts bigint, v bigint);")->is_success());
     // Insertion order is oldest-ts first, so a wrongly-stripped sort would keep the oldest, not latest, row per k.
     REQUIRE(run("INSERT INTO db.events (k, ts, v) VALUES "
@@ -2819,7 +2819,7 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_null_probe_and_null_only
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE pdb;")->is_success());
+    REQUIRE(run("CREATE SCHEMA pdb;")->is_success());
     REQUIRE(run("CREATE TABLE pdb.probe (id bigint, x bigint);")->is_success());
     REQUIRE(run("INSERT INTO pdb.probe (id, x) VALUES (1, 10), (2, NULL), (3, 1500);")->is_success());
     REQUIRE(run("CREATE TABLE pdb.big (v bigint);")->is_success());
@@ -2894,7 +2894,7 @@ TEST_CASE("integration::cpp::test_subqueries::in_not_in_select_null") {
         return cur->is_error() ? std::string(cur->get_error().what) : std::string("none");
     };
 
-    REQUIRE(run("CREATE DATABASE pdb;")->is_success());
+    REQUIRE(run("CREATE SCHEMA pdb;")->is_success());
     REQUIRE(run("CREATE TABLE pdb.probe (id bigint, x bigint, s string);")->is_success());
     REQUIRE(
         run("INSERT INTO pdb.probe (id, x, s) VALUES (1, 10, 'a'), (2, NULL, NULL), (3, 1500, 'b');")->is_success());
@@ -2998,7 +2998,7 @@ TEST_CASE("integration::cpp::test_subqueries::in_any_all_mixed_integer_widths") 
         return ids_of(cur);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.probe (id bigint, x bigint, i integer);")->is_success());
     REQUIRE(run("INSERT INTO db.probe (id, x, i) VALUES (1, 10, 10), (2, NULL, NULL), (3, 1500, 1500), (4, 30, 30);")
                 ->is_success());
@@ -3052,7 +3052,7 @@ TEST_CASE("integration::cpp::test_subqueries::in_any_all_null_and_empty_sets") {
         return ids_of(cur);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.probe (id bigint, x bigint);")->is_success());
     REQUIRE(run("INSERT INTO db.probe (id, x) VALUES (1, 5), (2, 10), (3, 20), (4, NULL);")->is_success());
     // with a NULL element
@@ -3123,7 +3123,7 @@ TEST_CASE("integration::cpp::test_subqueries::in_any_all_value_types") {
         return ids_of(cur);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy');")->is_success());
     REQUIRE(run("CREATE TABLE db.probe (id bigint, s string, d decimal(10,2), m mood, f double);")->is_success());
     REQUIRE(run("INSERT INTO db.probe (id, s, d, m, f) VALUES "
@@ -3179,7 +3179,7 @@ TEST_CASE("integration::cpp::test_subqueries::in_any_all_large_set") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.big (k bigint);")->is_success());
     for (int first = 1; first <= 100000; first += 1000) {
         std::string insert = "INSERT INTO db.big (k) VALUES ";
@@ -3269,7 +3269,7 @@ TEST_CASE("integration::cpp::test_subqueries::in_any_all_disk_pushdown_mixed_and
         return ids_of(cur);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.t (id bigint, v bigint);")->is_success());
     REQUIRE(run("INSERT INTO db.t (id, v) VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, NULL);")->is_success());
     REQUIRE(run("CREATE TABLE db.keys_int (k integer);")->is_success());
@@ -3307,7 +3307,7 @@ TEST_CASE("integration::cpp::test_subqueries::nan_bit_patterns_are_one_value") {
         return ids_of(cur);
     };
 
-    REQUIRE(run("CREATE DATABASE db;")->is_success());
+    REQUIRE(run("CREATE SCHEMA db;")->is_success());
     REQUIRE(run("CREATE TABLE db.t (id bigint, f double);")->is_success());
     REQUIRE(run("INSERT INTO db.t (id, f) VALUES (1, CAST('NaN' AS double)), (2, CAST('-NaN' AS double)), "
                 "(3, 1.5), (4, CAST('NaN' AS double)), (5, CAST('-NaN' AS double));")

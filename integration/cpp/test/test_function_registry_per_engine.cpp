@@ -49,7 +49,7 @@ namespace {
     }
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(exec(d, "CREATE DATABASE fdb;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA fdb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE fdb.t (id BIGINT);")->is_success());
         REQUIRE(exec(d, "INSERT INTO fdb.t (id) VALUES (2), (4), (6), (7);")->is_success());
     }

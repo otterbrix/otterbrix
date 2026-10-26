@@ -45,11 +45,11 @@ TEST_CASE("integration::cpp::wal_storage_namespace_dirs::no_worker_for_a_storage
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(exec(d, "CREATE DATABASE adb;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA adb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE adb.t1 (id bigint);")->is_success());
         REQUIRE(exec(d, "CREATE TABLE adb.t2 (id bigint);")->is_success());
         REQUIRE(exec(d, "INSERT INTO adb.t1 (id) VALUES (1), (2), (3);")->is_success());
-        REQUIRE(exec(d, "CREATE DATABASE bdb;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA bdb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE bdb.t (id bigint);")->is_success());
         REQUIRE(exec(d, "INSERT INTO bdb.t (id) VALUES (1);")->is_success());
     }

@@ -48,7 +48,7 @@ TEST_CASE("integration::cpp::created_oid::create_table_answers_its_oid") {
     auto config = config_for("sql");
     test_spaces space(config);
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE co;");
+    run_ok(d, "CREATE SCHEMA co;");
 
     auto created = run_ok(d, "CREATE TABLE co.t (id bigint);");
     REQUIRE(created->created_oid() != INVALID_OID);
@@ -63,7 +63,7 @@ TEST_CASE("integration::cpp::created_oid::create_table_with_inline_constraints_a
     auto config = config_for("inline_constraints");
     test_spaces space(config);
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE co;");
+    run_ok(d, "CREATE SCHEMA co;");
 
     auto created = run_ok(d, "CREATE TABLE co.t (id bigint PRIMARY KEY, code bigint UNIQUE CHECK (code > 0));");
     CHECK(created->created_oid() == pg_class_oid(d, "t"));
@@ -73,7 +73,7 @@ TEST_CASE("integration::cpp::created_oid::create_table_by_plan_answers_the_plann
     auto config = config_for("plan");
     test_spaces space(config);
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE co;");
+    run_ok(d, "CREATE SCHEMA co;");
 
     auto* resource = d->resource();
     std::pmr::vector<components::types::complex_logical_type> types{resource};
@@ -83,7 +83,7 @@ TEST_CASE("integration::cpp::created_oid::create_table_by_plan_answers_the_plann
     auto create =
         components::logical_plan::make_node_create_collection(resource, core::relname_t{"t"}, std::move(columns), {});
     components::logical_plan::node_ptr node =
-        components::sql::transform::name_catalog_target(core::dbname_t{"co"}, core::relname_t{"t"}, create);
+        components::sql::transform::name_catalog_target(core::schema_t{"co"}, core::relname_t{"t"}, create);
     auto cur = d->execute_plan(
         otterbrix::session_id_t(),
         components::logical_plan::execution_plan_t{resource,
@@ -99,7 +99,7 @@ TEST_CASE("integration::cpp::created_oid::a_rolled_back_create_leaves_no_table_w
     auto config = config_for("rollback");
     test_spaces space(config);
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE co;");
+    run_ok(d, "CREATE SCHEMA co;");
 
     const auto txn = otterbrix::session_id_t();
     REQUIRE(d->execute_sql(txn, "BEGIN;")->is_success());
@@ -120,7 +120,7 @@ TEST_CASE("integration::cpp::created_oid::if_not_exists_on_an_existing_table_ans
     auto config = config_for("if_not_exists");
     test_spaces space(config);
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE co;");
+    run_ok(d, "CREATE SCHEMA co;");
     auto first = run_ok(d, "CREATE TABLE IF NOT EXISTS co.t (id bigint);");
     CHECK(first->created_oid() == pg_class_oid(d, "t"));
 
@@ -132,7 +132,7 @@ TEST_CASE("integration::cpp::created_oid::a_refused_create_answers_no_oid") {
     auto config = config_for("refused");
     test_spaces space(config);
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE co;");
+    run_ok(d, "CREATE SCHEMA co;");
     run_ok(d, "CREATE TABLE co.t (id bigint);");
 
     auto again = exec(d, "CREATE TABLE co.t (id bigint);");
@@ -144,7 +144,7 @@ TEST_CASE("integration::cpp::created_oid::other_statements_answer_no_oid") {
     auto config = config_for("others");
     test_spaces space(config);
     auto* d = space.dispatcher();
-    CHECK(run_ok(d, "CREATE DATABASE co;")->created_oid() == INVALID_OID);
+    CHECK(run_ok(d, "CREATE SCHEMA co;")->created_oid() == INVALID_OID);
     run_ok(d, "CREATE TABLE co.t (id bigint);");
     CHECK(run_ok(d, "CREATE INDEX t_id ON co.t (id);")->created_oid() == INVALID_OID);
     CHECK(run_ok(d, "CREATE VIEW co.v AS SELECT id FROM co.t;")->created_oid() == INVALID_OID);

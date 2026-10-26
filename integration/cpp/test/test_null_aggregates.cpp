@@ -62,7 +62,7 @@ TEST_CASE("integration::cpp::null_agg::count_over_all_null_group_is_zero") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE ag;"));
+    REQUIRE(ok(d, "CREATE SCHEMA ag;"));
     // group 1: x all NULL ; group 2: x has one value and one NULL.
     REQUIRE(ok(d, "CREATE TABLE ag.t (k INT, x BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO ag.t (k, x) VALUES (1, NULL);"));
@@ -88,7 +88,7 @@ TEST_CASE("integration::cpp::null_agg::count_over_all_null_table_is_zero") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE ag;"));
+    REQUIRE(ok(d, "CREATE SCHEMA ag;"));
     REQUIRE(ok(d, "CREATE TABLE ag.t (id INT, x BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO ag.t (id, x) VALUES (1, NULL);"));
     REQUIRE(ok(d, "INSERT INTO ag.t (id, x) VALUES (2, NULL);"));
@@ -109,7 +109,7 @@ TEST_CASE("integration::cpp::null_agg::count_distinct_over_list_struct_interval_
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE dc;"));
+    REQUIRE(ok(d, "CREATE SCHEMA dc;"));
     REQUIRE(ok(d, "CREATE TYPE pair_t AS (px INT, py INT);"));
     REQUIRE(ok(d, "CREATE TABLE dc.t (l INT[], s pair_t, iv INTERVAL, tz TIMETZ);"));
     REQUIRE(ok(d,

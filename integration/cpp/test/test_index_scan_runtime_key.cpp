@@ -32,7 +32,7 @@ namespace {
     template<typename D>
     bool seed(D* d, const std::string& index_clause = "") {
         auto run = [&](const std::string& sql) { return d->execute_sql(otterbrix::session_id_t(), sql)->is_success(); };
-        return run("CREATE DATABASE s;") && run("CREATE TABLE s.o (id BIGINT);") &&
+        return run("CREATE SCHEMA s;") && run("CREATE TABLE s.o (id BIGINT);") &&
                run("INSERT INTO s.o (id) VALUES (NULL), (1), (2);") && run("CREATE TABLE s.n (k BIGINT, v BIGINT);") &&
                run("INSERT INTO s.n (k, v) VALUES (NULL, 300), (1, 100), (2, 200);") &&
                run("CREATE INDEX ik ON s.n " + index_clause + " (k);");

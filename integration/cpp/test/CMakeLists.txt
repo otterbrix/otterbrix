@@ -129,6 +129,10 @@ set( ${PROJECT_NAME}_SOURCES
         test_insert_positional_values.cpp
         test_dml_without_columns.cpp
         test_create_in_missing_database.cpp
+        test_schema_level.cpp
+        test_current_place.cpp
+        test_remote_databases.cpp
+        test_remote_ddl.cpp
         test_long_string_literal.cpp
         test_tinyint_numeric_cast.cpp
         test_alter_add_column_reads.cpp

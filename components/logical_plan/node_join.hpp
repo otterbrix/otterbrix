@@ -45,6 +45,9 @@ namespace components::logical_plan {
 
         bool is_lateral() const noexcept { return lateral_; }
         void set_lateral(bool lateral) noexcept { lateral_ = lateral; }
+        // The LEFT join a scalar sub-query became: one outer row may match one inner row at most.
+        bool single_match() const noexcept { return single_match_; }
+        void set_single_match(bool single) noexcept { single_match_ = single; }
         const std::pmr::vector<correlation_t>& correlations() const noexcept { return correlations_; }
         void add_correlation(core::parameter_id_t id, expressions::key_t key) {
             correlations_.emplace_back(id, std::move(key));
@@ -54,6 +57,7 @@ namespace components::logical_plan {
         join_type type_;
         join_algo algo_{join_algo::nested};
         bool lateral_{false};
+        bool single_match_{false};
         std::pmr::vector<correlation_t> correlations_{resource()};
 
         hash_t hash_impl() const override;

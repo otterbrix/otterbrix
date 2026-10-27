@@ -202,7 +202,7 @@ namespace services::disk {
             return table_storage.rename_column(old_attname, new_attname);
         }
 
-        // A column the catalog names and the file does not
+        // A column the catalog names and the file does not, and a NOT NULL the catalog holds and the file does not
         void adopt_catalog_columns(const std::vector<components::table::column_definition_t>& catalog_columns,
                                    std::pmr::memory_resource* res) {
             for (const auto& def : catalog_columns) {
@@ -210,9 +210,14 @@ namespace services::disk {
                     continue;
                 }
                 bool in_storage = false;
-                for (const auto& column : table_storage.table().columns()) {
+                const auto& columns = table_storage.table().columns();
+                for (uint64_t position = 0; position < columns.size(); ++position) {
+                    const auto& column = columns[position];
                     if (column.attoid() == def.attoid() || column.name() == def.name()) {
                         in_storage = true;
+                        if (def.is_not_null()) {
+                            table_storage.table().adopt_column_not_null(position);
+                        }
                         break;
                     }
                 }
@@ -355,25 +360,21 @@ namespace services::disk {
                                   components::catalog::oid_t table_oid,
                                   std::set<std::string> live_attnames);
 
-        unique_future<core::error_t> add_storage_column(execution_context_t ctx,
-                                                        components::catalog::oid_t table_oid,
-                                                        components::table::column_definition_t column);
+        unique_future<core::result_wrapper_t<ddl_reply_t>>
+        add_storage_column(execution_context_t ctx,
+                           components::catalog::oid_t table_oid,
+                           components::table::column_definition_t column);
 
-        unique_future<core::error_t> stamp_column_dropped(execution_context_t ctx,
-                                                          components::catalog::oid_t table_oid,
-                                                          components::catalog::oid_t attoid);
+        unique_future<core::result_wrapper_t<ddl_reply_t>> stamp_column_dropped(execution_context_t ctx,
+                                                                                components::catalog::oid_t table_oid,
+                                                                                components::catalog::oid_t attoid);
 
         unique_future<void> publish_column_stamps(execution_context_t ctx,
                                                   uint64_t commit_id,
                                                   std::pmr::set<components::catalog::oid_t> tables);
-        // The abort half: ctx.txn's column stamps on `tables'
-        unique_future<void> revert_column_stamps(execution_context_t ctx,
-                                                 uint64_t from_sub_id,
-                                                 std::pmr::set<components::catalog::oid_t> tables);
         // ctx.txn's COMMIT, above its WAL marker
         unique_future<core::error_t> storage_prepare(execution_context_t ctx,
-                                                     std::pmr::set<components::catalog::oid_t> tables,
-                                                     std::vector<components::pg_catalog_append_range_t> appends);
+                                                     std::pmr::set<components::catalog::oid_t> tables);
         unique_future<void> storage_release_prepared(execution_context_t ctx,
                                                      std::pmr::set<components::catalog::oid_t> tables);
         // ALTER TABLE RENAME COLUMN's physical half; ordering mirrors drop_storage_column — a reverted
@@ -410,23 +411,30 @@ namespace services::disk {
 
         unique_future<void> on_horizon_advanced(uint64_t new_horizon);
 
-        /// Runtime DROP TABLE path, sent BEFORE drop_storage_many while agents can still read live entries.
-        unique_future<void> mark_storage_dropped_many(session_id_t session,
-                                                      std::pmr::vector<components::catalog::oid_t> table_oids,
-                                                      uint64_t dropped_at_commit_id);
+        /// Runtime DROP TABLE path, sent BEFORE drop_storage_many while agents can still read live entries; the
+        /// drop is stamped with ctx.txn's id until COMMIT remaps it.
+        unique_future<core::result_wrapper_t<ddl_reply_t>>
+        mark_storage_dropped_many(execution_context_t ctx,
+                                  std::pmr::vector<components::catalog::oid_t> table_oids,
+                                  std::pmr::vector<qualified_name_t> names);
 
         /// Rewrites a DROP's dropped_at_commit_id from TXN-ID space into commit-id space once commit allocates one.
         unique_future<void> storage_dropped_committed(session_id_t session, uint64_t txn_id, uint64_t commit_id);
 
-        unique_future<core::error_t> abort_transaction(session_id_t session,
-                                                       components::table::txn_abort_drain_t drain);
+        unique_future<core::error_t> abort_transaction(execution_context_t ctx,
+                                                       uint64_t from_sub_id,
+                                                       std::pmr::set<components::catalog::oid_t> tables);
+        unique_future<core::error_t> undo_appends_and_storages(session_id_t session,
+                                                               components::table::txn_abort_drain_t drain);
 
         // `is_computed` (relkind='g') is derived by the caller — pg_class doesn't exist yet to check here.
-        unique_future<void> create_storage_disk(session_id_t session,
-                                                components::catalog::oid_t table_oid,
-                                                components::catalog::oid_t database_oid,
-                                                std::vector<components::table::column_definition_t> columns,
-                                                bool is_computed);
+        unique_future<core::result_wrapper_t<ddl_reply_t>>
+        create_storage_disk(execution_context_t ctx,
+                            components::catalog::oid_t table_oid,
+                            components::catalog::oid_t database_oid,
+                            qualified_name_t name,
+                            std::vector<components::table::column_definition_t> columns,
+                            bool is_computed);
         // Batched DROP, partitioned per owning agent. Caller must finish index unregisters before this.
         unique_future<void> drop_storage_many(session_id_t session,
                                               std::pmr::vector<components::catalog::oid_t> table_oids);
@@ -440,16 +448,27 @@ namespace services::disk {
         storage_fetch_next_batch(session_id_t session,
                                  components::catalog::oid_t table_oid,
                                  uint64_t cursor_id,
-                                 std::unique_ptr<components::table::pushed_filter_t> filter,
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
                                  components::table::transaction_data txn);
+        unique_future<core::result_wrapper_t<fetch_batch_t>>
+        storage_open_filtered_scan(session_id_t session,
+                                   components::catalog::oid_t table_oid,
+                                   std::unique_ptr<components::table::pushed_filter_t> filter,
+                                   int64_t limit,
+                                   std::vector<size_t> projected_cols,
+                                   components::table::transaction_data txn);
         unique_future<void>
         storage_close_cursor(session_id_t session, components::catalog::oid_t table_oid, uint64_t cursor_id);
         unique_future<core::result_wrapper_t<uint64_t>> storage_open_scan_hold(session_id_t session,
                                                                                components::catalog::oid_t table_oid);
         unique_future<core::result_wrapper_t<uint64_t>> storage_compact_epoch(session_id_t session,
                                                                               components::catalog::oid_t table_oid);
+        // ALTER's PRIMARY KEY over the column `attoid`: NOT NULL for ctx.txn now and for everyone from its COMMIT;
+        // refused while a row holds NULL in it ("column ... contains null values").
+        unique_future<core::error_t> storage_set_not_null(execution_context_t ctx,
+                                                          components::catalog::oid_t table_oid,
+                                                          components::catalog::oid_t attoid);
         // Aggregate-pushdown REDUCE: one reply carries ALL final rows (see disk_contract's single-owner invariant).
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_reduce(session_id_t session,
@@ -470,21 +489,25 @@ namespace services::disk {
                       components::table::fetch_visibility_t visibility,
                       int64_t limit,
                       uint64_t expected_compact_epoch);
-        unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
+        unique_future<core::result_wrapper_t<write_receipt_t>>
         storage_append(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
-                       std::pmr::vector<components::vector::data_chunk_t> data);
+                       std::pmr::vector<components::catalog::oid_t> attoids,
+                       std::pmr::vector<components::vector::data_chunk_t> data,
+                       bool returning);
 
-        unique_future<core::result_wrapper_t<components::storage::updated_rows_t>>
+        unique_future<core::result_wrapper_t<update_receipt_t>>
         storage_update(execution_context_t ctx,
                        components::catalog::oid_t table_oid,
                        std::pmr::vector<components::vector::vector_t> row_ids,
-                       std::pmr::vector<components::vector::data_chunk_t> data);
+                       std::pmr::vector<components::vector::data_chunk_t> data,
+                       bool returning);
         // Wrapped so a routing refusal is distinguishable from a legitimate "0 marks set".
-        unique_future<core::result_wrapper_t<uint64_t>> storage_delete_rows(execution_context_t ctx,
-                                                                            components::catalog::oid_t table_oid,
-                                                                            components::vector::vector_t row_ids,
-                                                                            uint64_t count);
+        unique_future<core::result_wrapper_t<write_receipt_t>> storage_delete_rows(execution_context_t ctx,
+                                                                                   components::catalog::oid_t table_oid,
+                                                                                   components::vector::vector_t row_ids,
+                                                                                   uint64_t count,
+                                                                                   bool returning);
         unique_future<void> storage_publish_commits(execution_context_t ctx,
                                                     uint64_t commit_id,
                                                     std::vector<components::pg_catalog_append_range_t> ranges);
@@ -493,32 +516,24 @@ namespace services::disk {
                                                     uint64_t commit_id,
                                                     std::set<components::catalog::oid_t> tables);
 
-        unique_future<core::error_t> storage_revert_appends(execution_context_t ctx,
-                                                            std::vector<components::pg_catalog_append_range_t> ranges);
-
-        unique_future<void> storage_revert_deletes(execution_context_t ctx,
-                                                   uint64_t from_sub_id,
-                                                   std::vector<components::catalog::oid_t> tables);
-
         using dispatch_traits = actor_zeta::implements<disk_contract,
-                                                       &manager_disk_t::checkpoint_all,
-                                                       &manager_disk_t::vacuum_all,
-                                                       &manager_disk_t::maybe_cleanup_many,
-                                                       &manager_disk_t::create_storage_disk,
-                                                       &manager_disk_t::drop_storage_many,
-                                                       &manager_disk_t::storage_types,
-                                                       &manager_disk_t::storage_total_rows,
                                                        &manager_disk_t::storage_fetch_next_batch,
                                                        &manager_disk_t::storage_close_cursor,
-                                                       &manager_disk_t::storage_reduce,
-                                                       &manager_disk_t::storage_fetch,
+                                                       &manager_disk_t::storage_total_rows,
                                                        &manager_disk_t::storage_append,
                                                        &manager_disk_t::storage_update,
                                                        &manager_disk_t::storage_delete_rows,
-                                                       &manager_disk_t::storage_publish_commits,
-                                                       &manager_disk_t::storage_publish_deletes,
-                                                       &manager_disk_t::storage_revert_appends,
-                                                       &manager_disk_t::storage_revert_deletes,
+                                                       &manager_disk_t::create_storage_disk,
+                                                       &manager_disk_t::mark_storage_dropped_many,
+                                                       &manager_disk_t::add_storage_column,
+                                                       &manager_disk_t::stamp_column_dropped,
+                                                       &manager_disk_t::storage_prepare,
+                                                       &manager_disk_t::storage_release_prepared,
+                                                       &manager_disk_t::abort_transaction,
+                                                       &manager_disk_t::storage_open_filtered_scan,
+                                                       &manager_disk_t::checkpoint_all,
+                                                       &manager_disk_t::vacuum_all,
+                                                       &manager_disk_t::maybe_cleanup_many,
                                                        &manager_disk_t::resolve_function_by_name,
                                                        &manager_disk_t::find_cast_oid,
                                                        &manager_disk_t::allocate_oids_batch,
@@ -529,24 +544,40 @@ namespace services::disk {
                                                        &manager_disk_t::scan_by_keys,
                                                        &manager_disk_t::read_chunks_by_key,
                                                        &manager_disk_t::read_chunks_by_keys,
+                                                       &manager_disk_t::storage_reduce,
                                                        &manager_disk_t::compact_relkind_g_storage,
-                                                       &manager_disk_t::add_storage_column,
-                                                       &manager_disk_t::stamp_column_dropped,
                                                        &manager_disk_t::publish_column_stamps,
                                                        &manager_disk_t::rename_storage_column,
-                                                       &manager_disk_t::on_horizon_advanced,
-                                                       &manager_disk_t::mark_storage_dropped_many,
-                                                       &manager_disk_t::storage_dropped_committed,
-                                                       &manager_disk_t::abort_transaction,
-                                                       // Appended last — positional msg ids (see
-                                                       // disk_contract::dispatch_traits).
+                                                       &manager_disk_t::drop_storage_many,
                                                        &manager_disk_t::storage_open_scan_hold,
+                                                       &manager_disk_t::storage_fetch,
+                                                       &manager_disk_t::storage_publish_commits,
+                                                       &manager_disk_t::storage_publish_deletes,
+                                                       &manager_disk_t::undo_appends_and_storages,
+                                                       &manager_disk_t::on_horizon_advanced,
+                                                       &manager_disk_t::storage_dropped_committed,
                                                        &manager_disk_t::storage_compact_epoch,
-                                                       &manager_disk_t::revert_column_stamps,
-                                                       &manager_disk_t::storage_prepare,
-                                                       &manager_disk_t::storage_release_prepared>;
+                                                       &manager_disk_t::storage_set_not_null,
+                                                       &manager_disk_t::storage_types>;
 
     private:
+        // The halves of a transaction's undo the messages above compose.
+        unique_future<core::error_t> storage_revert_appends(execution_context_t ctx,
+                                                            std::vector<components::pg_catalog_append_range_t> ranges);
+        unique_future<void> storage_revert_deletes(execution_context_t ctx,
+                                                   uint64_t from_sub_id,
+                                                   std::vector<components::catalog::oid_t> tables);
+        unique_future<void> revert_column_stamps(execution_context_t ctx,
+                                                 uint64_t from_sub_id,
+                                                 std::pmr::set<components::catalog::oid_t> tables);
+        unique_future<core::result_wrapper_t<fetch_batch_t>>
+        fetch_from_agent(session_id_t session,
+                         components::catalog::oid_t table_oid,
+                         uint64_t cursor_id,
+                         std::unique_ptr<components::table::pushed_filter_t> filter,
+                         int64_t limit,
+                         std::vector<size_t> projected_cols,
+                         components::table::transaction_data txn);
         bool has_storage(components::catalog::oid_t table_oid) const noexcept {
             if (agents_.empty())
                 return false;

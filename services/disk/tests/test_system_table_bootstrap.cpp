@@ -146,7 +146,13 @@ namespace {
                                                    components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
-        auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+        auto r =
+            fx.invoke(&manager_disk_t::storage_append,
+                      append_ctx,
+                      table_oid,
+                      std::pmr::vector<components::catalog::oid_t>(1, components::catalog::INVALID_OID, &fx.resource),
+                      std::move(batch),
+                      false);
         REQUIRE_FALSE(r.has_error());
     }
 } // namespace
@@ -310,12 +316,16 @@ TEST_CASE("services::disk::sysboot::unopenable_system_table_refuses_the_start") 
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         user_table = disk_test_helpers::test_create_table(fd, ns_oid, "t_one", cols);
-        fd.invoke(&manager_disk_t::create_storage_disk,
-                  components::session::session_id_t{},
-                  user_table,
-                  components::catalog::well_known_oid::main_database,
-                  cols,
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(fd.invoke(&manager_disk_t::create_storage_disk,
+                                components::execution_context_t{components::session::session_id_t{},
+                                                                components::table::transaction_data{0, 0},
+                                                                {}},
+                                user_table,
+                                components::catalog::well_known_oid::main_database,
+                                qualified_name_t{},
+                                cols,
+                                /*is_computed=*/false)
+                          .has_error());
         append_rows(fd, user_table, kRows);
         fd.checkpoint(services::wal::id_t{100});
     }
@@ -470,12 +480,16 @@ TEST_CASE("services::disk::sysboot::an_old_database_without_self_rows_is_caught_
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         const auto user_table = disk_test_helpers::test_create_table(fd, ns_oid, "t_old", cols);
-        fd.invoke(&manager_disk_t::create_storage_disk,
-                  components::session::session_id_t{},
-                  user_table,
-                  components::catalog::well_known_oid::main_database,
-                  cols,
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(fd.invoke(&manager_disk_t::create_storage_disk,
+                                components::execution_context_t{components::session::session_id_t{},
+                                                                components::table::transaction_data{0, 0},
+                                                                {}},
+                                user_table,
+                                components::catalog::well_known_oid::main_database,
+                                qualified_name_t{},
+                                cols,
+                                /*is_computed=*/false)
+                          .has_error());
         append_rows(fd, user_table, 3);
 
         for (const auto& def : all_system_tables()) {

@@ -5,6 +5,25 @@
 
 namespace components::operators::join_detail {
 
+    void emit_probe_rows(std::pmr::memory_resource* resource,
+                         const vector::data_chunk_t& probe,
+                         const vector::indexing_vector_t& kept,
+                         uint64_t count,
+                         chunks_vector_t& out) {
+        if (count == 0) {
+            return;
+        }
+        vector::data_chunk_t rows(resource, probe.types(), count);
+        probe.copy(rows, kept, count, 0);
+        out.emplace_back(std::move(rows));
+    }
+
+    core::error_t more_than_one_row(std::pmr::memory_resource* resource) {
+        return core::error_t{
+            core::error_code_t::invalid_parameter,
+            std::pmr::string{"more than one row returned by a subquery used as an expression", resource}};
+    }
+
     vector::vector_t broadcast_row(std::pmr::memory_resource* resource, const vector::vector_t& source, uint64_t row) {
         vector::vector_t value(resource, source.type(), 1);
         // copy's third argument is the END index in the source, not a length

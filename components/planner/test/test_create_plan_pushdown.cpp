@@ -9,13 +9,14 @@
 // the flag.
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 #include <core/pmr.hpp>
+#include <map>
 
 #include <components/compute/function.hpp>
 #include <components/expressions/key.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator.hpp>
@@ -56,6 +57,24 @@ namespace {
 
 } // namespace
 
+// A table the plan resolved: the planner reads the types of its columns from the catalog's metadata (eight BIGINTs).
+static const components::logical_plan::resolved_table_metadata_t* resolved_table_of(components::catalog::oid_t oid) {
+    static std::map<components::catalog::oid_t, components::logical_plan::resolved_table_metadata_t> tables;
+    auto& table = tables[oid];
+    if (table.columns.empty()) {
+        table.table_oid = oid;
+        for (std::int32_t position = 0; position < 8; ++position) {
+            components::logical_plan::resolved_column_metadata_t column;
+            column.attname = "c" + std::to_string(position);
+            column.type = components::types::complex_logical_type{components::types::logical_type::BIGINT};
+            column.attnum = position + 1;
+            column.chunk_position = position;
+            table.columns.push_back(std::move(column));
+        }
+    }
+    return &table;
+}
+
 TEST_CASE("create_plan: aggregate with pushdown group child lowers to merge over pushed_reduce_scan") {
     core::pmr::otterbrix_resource resource;
     services::context_storage_t context(&resource, log_t{}, components::catalog::session_catalog_t{});
@@ -83,6 +102,7 @@ TEST_CASE("create_plan: aggregate WITHOUT pushdown lowers to the normal aggregat
     // The aggregate NAMES its table, so the planner demands a resolved, known oid
     // (an unknown named table now refuses instead of scanning the no-FROM sentinel).
     context.known_oids.insert(components::catalog::oid_t{123});
+    context.table_metadata[components::catalog::oid_t{123}] = resolved_table_of(components::catalog::oid_t{123});
 
     auto node = build_agg(&resource, /*pushdown=*/false);
     auto plan_planned =
@@ -94,48 +114,5 @@ TEST_CASE("create_plan: aggregate WITHOUT pushdown lowers to the normal aggregat
     // The normal chain never produces the pushed pair; the group operator tags itself
     // operator_type::aggregate.
     REQUIRE(plan->type() != op::operator_type::group_merge);
-    REQUIRE(plan->type() == op::operator_type::aggregate);
-}
-
-namespace {
-
-    services::planner::plan_result_t host_source_operator(const services::context_storage_t& context,
-                                                          const components::compute::function_registry_t&,
-                                                          const node_extension_t&) {
-        std::pmr::vector<components::types::complex_logical_type> types(context.resource);
-        return {new op::operator_empty_t(context.resource, op::make_operator_data(context.resource, types, 0))};
-    }
-
-    bool contains_operator(const op::operator_t* root, op::operator_type type) {
-        if (root == nullptr) {
-            return false;
-        }
-        return root->type() == type || contains_operator(root->left().get(), type) ||
-               contains_operator(root->right().get(), type);
-    }
-
-} // namespace
-
-// A stamp that reaches physgen over an explicit source child (a later optimizer pass swapped the
-// implicit table scan for a host extension leaf) must not read the owning table on disk instead.
-TEST_CASE("create_plan: pushdown stamp over an extension source child does not lower to pushed_reduce_scan") {
-    core::pmr::otterbrix_resource resource;
-    services::context_storage_t context(&resource, log_t{}, components::catalog::session_catalog_t{});
-    context.known_oids.insert(components::catalog::oid_t{123});
-    components::compute::function_registry_t registry(&resource);
-
-    auto node = build_agg(&resource, /*pushdown=*/true);
-    node->append_child(
-        node_ptr{new node_extension_t(&resource,
-                                      "host_source",
-                                      std::pmr::vector<components::types::complex_logical_type>{&resource},
-                                      &host_source_operator)});
-    auto plan_planned =
-        services::planner::create_plan(context, registry, node, components::logical_plan::limit_t::all(), nullptr);
-    REQUIRE_FALSE(plan_planned.has_error());
-    auto plan = plan_planned.value();
-
-    REQUIRE(plan != nullptr);
-    REQUIRE_FALSE(contains_operator(plan.get(), op::operator_type::pushed_reduce_scan));
     REQUIRE(plan->type() == op::operator_type::aggregate);
 }

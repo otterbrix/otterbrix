@@ -15,6 +15,7 @@
 
 #include <optional>
 #include <span>
+#include <unordered_set>
 
 namespace components::sql::parser {
     class parser_extension_registry_t;
@@ -439,5 +440,14 @@ namespace components::sql::transform {
         logical_plan::node_join_t* lateral_join_{nullptr};
         logical_plan::execution_plan_t* lateral_plan_{nullptr};
         std::pmr::unordered_map<std::string, core::parameter_id_t> lateral_correlation_map_{resource_};
+
+        // PostgreSQL 18's pull-up of sub-links (optimizer/plan/subselect.c), on the parse tree before the FROM is
+        // read: a correlated [NOT] EXISTS / [NOT] IN of a WHERE conjunct becomes a semi / anti join, a correlated
+        // scalar sub-query and a LATERAL aggregate a LEFT join of their values per correlation key. A form it does
+        // not take keeps its old path.
+        core::error_t pull_up_sublinks(SelectStmt& node);
+        // The LEFT joins a scalar sub-query without an aggregate became: one row per outer row at most.
+        std::pmr::unordered_set<const JoinExpr*> single_match_joins_{resource_};
+        uint64_t sublink_counter_{0};
     };
 } // namespace components::sql::transform

@@ -198,12 +198,14 @@ namespace components::operators {
                 for (std::size_t i = 0; i < all_child_ids.size(); ++i) {
                     row_ids_vec.data<int64_t>()[i] = all_child_ids[i];
                 }
-                auto [_d, dfut] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                              &services::disk::manager_disk_t::storage_delete_rows,
-                                                              exec_ctx,
-                                                              fk_.child_table_oid,
-                                                              std::move(row_ids_vec),
-                                                              static_cast<uint64_t>(all_child_ids.size()));
+                // A FOREIGN KEY joins two tables of otterbrix's own: the child's storage is the disk.
+                auto [_d, dfut] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_delete_rows>(
+                    ctx->disk_storage(),
+                    exec_ctx,
+                    fk_.child_table_oid,
+                    std::move(row_ids_vec),
+                    static_cast<uint64_t>(all_child_ids.size()),
+                    false);
                 auto deleted_r = co_await std::move(dfut);
                 if (deleted_r.has_error()) {
                     set_error(deleted_r.error());
@@ -322,12 +324,13 @@ namespace components::operators {
                     upd_ids_batch.emplace_back(std::move(ids));
                     upd_data_batch.emplace_back(std::move(chunk));
                 }
-                auto [_u, ufut] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                              &services::disk::manager_disk_t::storage_update,
-                                                              exec_ctx,
-                                                              fk_.child_table_oid,
-                                                              std::move(upd_ids_batch),
-                                                              std::move(upd_data_batch));
+                auto [_u, ufut] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_update>(
+                    ctx->disk_storage(),
+                    exec_ctx,
+                    fk_.child_table_oid,
+                    std::move(upd_ids_batch),
+                    std::move(upd_data_batch),
+                    false);
                 auto update_result = co_await std::move(ufut);
                 if (update_result.has_error()) {
                     set_error(update_result.error());
@@ -335,7 +338,8 @@ namespace components::operators {
                     co_return;
                 }
                 if (ctx->txn.transaction_id != 0) {
-                    auto [upd_row_start, upd_row_count] = update_result.value().range;
+                    const auto upd_row_start = update_result.value().receipt.start_row;
+                    const auto upd_row_count = update_result.value().receipt.count;
                     if (upd_row_count > 0) {
                         ctx->dml_appends.push_back(
                             components::table::dml_append_range_t{fk_.child_table_oid, upd_row_start, upd_row_count});

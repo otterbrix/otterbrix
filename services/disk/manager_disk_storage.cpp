@@ -168,15 +168,16 @@ namespace services::disk {
 
     // Every site routes through agents_[pool_idx_for_oid(oid)]; no manager-side storage_t* survives.
 
-    manager_disk_t::unique_future<void>
-    manager_disk_t::create_storage_disk(session_id_t session,
+    manager_disk_t::unique_future<core::result_wrapper_t<ddl_reply_t>>
+    manager_disk_t::create_storage_disk(execution_context_t ctx,
                                         catalog::oid_t table_oid,
                                         catalog::oid_t database_oid,
+                                        qualified_name_t name,
                                         std::vector<components::table::column_definition_t> columns,
                                         bool is_computed) {
         trace(log_,
               "manager_disk_t::create_storage_disk , session : {} , oid : {}",
-              session.data(),
+              ctx.session.data(),
               static_cast<unsigned>(table_oid));
         auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid)) /
                          std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
@@ -193,7 +194,8 @@ namespace services::disk {
                                                                   table_oid,
                                                                   std::move(columns),
                                                                   std::move(otbx_path),
-                                                                  is_computed);
+                                                                  is_computed,
+                                                                  std::move(name.collection.t));
             if (needs_sched) {
                 scheduler_disk_->enqueue(agent.get());
             }
@@ -204,14 +206,16 @@ namespace services::disk {
                      pool_idx,
                      static_cast<unsigned>(table_oid),
                      created.error().what.c_str());
-            } else if (!created.value()) {
+                co_return created.error();
+            }
+            if (!created.value()) {
                 trace(log_,
                       "manager_disk_t::create_storage_disk: agent[{}] already owns oid {}",
                       pool_idx,
                       static_cast<unsigned>(table_oid));
             }
         }
-        co_return;
+        co_return ddl_reply_t{true, host_rows_t{}};
     }
 
     manager_disk_t::unique_future<void>
@@ -271,7 +275,11 @@ namespace services::disk {
         if (needs_sched) {
             scheduler_disk_->enqueue(agent.get());
         }
-        co_return co_await std::move(fut);
+        auto types = co_await std::move(fut);
+        if (types.has_error()) {
+            co_return types.error();
+        }
+        co_return std::move(types.value());
     }
 
     manager_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
@@ -356,14 +364,65 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
+    manager_disk_t::unique_future<core::error_t>
+    manager_disk_t::storage_set_not_null(execution_context_t ctx, catalog::oid_t table_oid, catalog::oid_t attoid) {
+        const std::size_t pool_idx = agents_.empty() ? 0 : pool_idx_for_oid(table_oid, agents_.size());
+        if (agents_.empty() || agents_[pool_idx] == nullptr) {
+            co_return core::error_t{core::error_code_t::io_error,
+                                    std::pmr::string{"storage_set_not_null: no disk agent owns the table", resource()}};
+        }
+        auto& agent = agents_[pool_idx];
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                              &agent_disk_t::storage_set_not_null_inner,
+                                                              ctx.txn,
+                                                              table_oid,
+                                                              attoid);
+        if (needs_sched) {
+            scheduler_disk_->enqueue(agent.get());
+        }
+        co_return co_await std::move(fut);
+    }
+
     manager_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
     manager_disk_t::storage_fetch_next_batch(session_id_t session,
                                              catalog::oid_t table_oid,
                                              uint64_t cursor_id,
-                                             std::unique_ptr<components::table::pushed_filter_t> filter,
                                              int64_t limit,
                                              std::vector<size_t> projected_cols,
                                              components::table::transaction_data txn) {
+        co_return co_await fetch_from_agent(session,
+                                            table_oid,
+                                            cursor_id,
+                                            std::unique_ptr<components::table::pushed_filter_t>{},
+                                            limit,
+                                            std::move(projected_cols),
+                                            txn);
+    }
+
+    manager_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
+    manager_disk_t::storage_open_filtered_scan(session_id_t session,
+                                               catalog::oid_t table_oid,
+                                               std::unique_ptr<components::table::pushed_filter_t> filter,
+                                               int64_t limit,
+                                               std::vector<size_t> projected_cols,
+                                               components::table::transaction_data txn) {
+        co_return co_await fetch_from_agent(session,
+                                            table_oid,
+                                            0,
+                                            std::move(filter),
+                                            limit,
+                                            std::move(projected_cols),
+                                            txn);
+    }
+
+    manager_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
+    manager_disk_t::fetch_from_agent(session_id_t session,
+                                     catalog::oid_t table_oid,
+                                     uint64_t cursor_id,
+                                     std::unique_ptr<components::table::pushed_filter_t> filter,
+                                     int64_t limit,
+                                     std::vector<size_t> projected_cols,
+                                     components::table::transaction_data txn) {
         if (agents_.empty()) {
             co_return core::error_t{core::error_code_t::io_error,
                                     std::pmr::string{"storage_fetch_next_batch: no disk agents", resource()}};
@@ -460,10 +519,13 @@ namespace services::disk {
         co_return co_await std::move(fut);
     }
 
-    manager_disk_t::unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
+    manager_disk_t::unique_future<core::result_wrapper_t<write_receipt_t>>
     manager_disk_t::storage_append(execution_context_t ctx,
                                    catalog::oid_t table_oid,
-                                   std::pmr::vector<components::vector::data_chunk_t> data) {
+                                   std::pmr::vector<catalog::oid_t> attoids,
+                                   std::pmr::vector<components::vector::data_chunk_t> data,
+                                   bool returning) {
+        write_receipt_t receipt{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}};
         bool has_rows = false;
         for (const auto& chunk : data) {
             if (chunk.size() != 0) {
@@ -472,7 +534,7 @@ namespace services::disk {
             }
         }
         if (!has_rows) {
-            co_return components::storage::appended_range_t{};
+            co_return std::move(receipt);
         }
         if (agents_.empty()) {
             co_return core::error_t{core::error_code_t::io_error,
@@ -484,44 +546,25 @@ namespace services::disk {
             co_return core::error_t{core::error_code_t::io_error,
                                     std::pmr::string{"storage_append: owning disk agent is null", resource()}};
         }
-        int64_t range_start = 0;
-        uint64_t total_count = 0;
-        bool have_range = false;
-        for (auto& chunk : data) {
-            if (chunk.size() == 0) {
-                continue;
-            }
-            auto one = std::make_unique<components::vector::data_chunk_t>(std::move(chunk));
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::storage_append_inner,
-                                                                  ctx,
-                                                                  table_oid,
-                                                                  std::move(one));
-            if (needs_sched) {
-                scheduler_disk_->enqueue(agent.get());
-            }
-            auto append_r = co_await std::move(fut);
-            if (append_r.has_error()) {
-                co_return std::move(append_r);
-            }
-            auto appended = append_r.value();
-            if (appended.count == 0) {
-                continue;
-            }
-            if (!have_range) {
-                range_start = appended.start_row;
-                have_range = true;
-            }
-            total_count += appended.count;
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                              &agent_disk_t::storage_append_inner,
+                                                              ctx,
+                                                              table_oid,
+                                                              std::move(attoids),
+                                                              std::move(data),
+                                                              returning);
+        if (needs_sched) {
+            scheduler_disk_->enqueue(agent.get());
         }
-        co_return components::storage::appended_range_t{range_start, total_count};
+        co_return co_await std::move(fut);
     }
 
-    manager_disk_t::unique_future<core::result_wrapper_t<components::storage::updated_rows_t>>
+    manager_disk_t::unique_future<core::result_wrapper_t<update_receipt_t>>
     manager_disk_t::storage_update(execution_context_t ctx,
                                    catalog::oid_t table_oid,
                                    std::pmr::vector<components::vector::vector_t> row_ids,
-                                   std::pmr::vector<components::vector::data_chunk_t> data) {
+                                   std::pmr::vector<components::vector::data_chunk_t> data,
+                                   bool returning) {
         bool has_rows = false;
         for (const auto& chunk : data) {
             if (chunk.size() != 0) {
@@ -529,11 +572,12 @@ namespace services::disk {
                 break;
             }
         }
-        components::storage::updated_rows_t result{{},
-                                                   std::pmr::vector<components::vector::data_chunk_t>{resource()},
-                                                   std::pmr::vector<std::uint32_t>{resource()}};
+        update_receipt_t result{
+            write_receipt_t{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}},
+            std::pmr::vector<components::vector::data_chunk_t>{resource()},
+            std::pmr::vector<std::uint32_t>{resource()}};
         if (!has_rows) {
-            co_return result;
+            co_return std::move(result);
         }
         if (agents_.empty()) {
             co_return core::error_t{core::error_code_t::io_error,
@@ -545,48 +589,26 @@ namespace services::disk {
             co_return core::error_t{core::error_code_t::io_error,
                                     std::pmr::string{"storage_update: owning disk agent is null", resource()}};
         }
-        int64_t range_start = 0;
-        uint64_t total_count = 0;
-        bool have_range = false;
-        for (std::size_t i = 0; i < data.size(); ++i) {
-            if (data[i].size() == 0) {
-                continue;
-            }
-            auto one = std::make_unique<components::vector::data_chunk_t>(std::move(data[i]));
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                                  &agent_disk_t::storage_update_inner,
-                                                                  table_oid,
-                                                                  std::move(row_ids[i]),
-                                                                  std::move(one),
-                                                                  ctx.txn);
-            if (needs_sched) {
-                scheduler_disk_->enqueue(agent.get());
-            }
-            auto update_r = co_await std::move(fut);
-            if (update_r.has_error()) {
-                co_return std::move(update_r);
-            }
-            auto& upd = update_r.value();
-            if (!have_range) {
-                range_start = upd.range.start_row;
-                have_range = true;
-            }
-            total_count += upd.range.count;
-            for (auto& written : upd.written) {
-                result.written.push_back(std::move(written));
-            }
-            result.attoids = std::move(upd.attoids);
+        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
+                                                              &agent_disk_t::storage_update_inner,
+                                                              table_oid,
+                                                              std::move(row_ids),
+                                                              std::move(data),
+                                                              ctx.txn,
+                                                              returning);
+        if (needs_sched) {
+            scheduler_disk_->enqueue(agent.get());
         }
-        result.range = components::storage::appended_range_t{range_start, total_count};
-        co_return result;
+        co_return co_await std::move(fut);
     }
 
     // The reply wraps the count: a route that doesn't exist is a delete that DID NOT HAPPEN, not 0 rows.
-    manager_disk_t::unique_future<core::result_wrapper_t<uint64_t>>
+    manager_disk_t::unique_future<core::result_wrapper_t<write_receipt_t>>
     manager_disk_t::storage_delete_rows(execution_context_t ctx,
                                         catalog::oid_t table_oid,
                                         components::vector::vector_t row_ids,
-                                        uint64_t count) {
+                                        uint64_t count,
+                                        bool returning) {
         if (agents_.empty()) {
             co_return core::error_t{core::error_code_t::io_error,
                                     std::pmr::string{"storage_delete_rows: no disk agents", resource()}};
@@ -602,7 +624,8 @@ namespace services::disk {
                                                               table_oid,
                                                               std::move(row_ids),
                                                               count,
-                                                              ctx.txn);
+                                                              ctx.txn,
+                                                              returning);
         if (needs_sched) {
             scheduler_disk_->enqueue(agent.get());
         }

@@ -1,6 +1,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
+#include <map>
 
 #include <components/casts/default_casts.hpp>
 #include <components/compute/function.hpp>
@@ -14,7 +16,6 @@
 #include <components/logical_plan/node_cte_scan.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_fk_cascade.hpp>
 #include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_join.hpp>
@@ -93,6 +94,24 @@ constexpr auto collection_name = "collection";
 
 static node_ptr make_match_with_expr(std::pmr::memory_resource* r, const expression_ptr& expr) {
     return make_node_match(r, qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}}, expr);
+}
+
+// A table the plan resolved: the planner reads the types of its columns from the catalog's metadata (eight BIGINTs).
+static const components::logical_plan::resolved_table_metadata_t* resolved_table_of(components::catalog::oid_t oid) {
+    static std::map<components::catalog::oid_t, components::logical_plan::resolved_table_metadata_t> tables;
+    auto& table = tables[oid];
+    if (table.columns.empty()) {
+        table.table_oid = oid;
+        for (std::int32_t position = 0; position < 8; ++position) {
+            components::logical_plan::resolved_column_metadata_t column;
+            column.attname = "c" + std::to_string(position);
+            column.type = components::types::complex_logical_type{components::types::logical_type::BIGINT};
+            column.attnum = position + 1;
+            column.chunk_position = position;
+            table.columns.push_back(std::move(column));
+        }
+    }
+    return &table;
 }
 
 TEST_CASE("optimizer::scalar_fold_add") {
@@ -1226,6 +1245,7 @@ static services::context_storage_t make_context_with_oid(std::pmr::memory_resour
                                                          const components::logical_plan::storage_parameters* params) {
     services::context_storage_t ctx(resource, log_t{}, components::catalog::session_catalog_t{});
     ctx.known_oids.insert(oid);
+    ctx.table_metadata[oid] = resolved_table_of(oid);
     ctx.parameters = params;
     return ctx;
 }
@@ -1465,26 +1485,6 @@ TEST_CASE("optimizer::pushdown_aggregate::cte_scan_child_is_skipped") {
     auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
     auto agg = make_agg(&resource, group);
     agg->append_child(make_node_cte_scan(&resource, std::pmr::string("cte")));
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-namespace {
-    services::planner::plan_result_t no_host_operator(const services::context_storage_t& context,
-                                                      const components::compute::function_registry_t&,
-                                                      const node_extension_t&) {
-        return services::planner::plan_refusal(context.resource, "never lowered in these tests");
-    }
-} // namespace
-
-TEST_CASE("optimizer::pushdown_aggregate::extension_child_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    agg->append_child(
-        node_ptr{new node_extension_t(&resource,
-                                      collection_name,
-                                      std::pmr::vector<components::types::complex_logical_type>{&resource},
-                                      &no_host_operator)});
     REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
 }
 
@@ -2590,83 +2590,6 @@ TEST_CASE("optimizer::constant_folding::non_numeric_constant_arithmetic_is_decli
     auto* s = static_cast<scalar_expression_t*>(scalar.get());
     REQUIRE(s->params().size() == 2);
     REQUIRE(s->type() == scalar_type::add);
-}
-
-namespace {
-    std::vector<int>& rule_trace() {
-        static std::vector<int> trace;
-        return trace;
-    }
-
-    template<int Tag>
-    node_ptr trace_rule(std::pmr::memory_resource*, node_ptr node) {
-        rule_trace().push_back(Tag);
-        return node;
-    }
-
-    bool group_stamped(const node_ptr& node) {
-        for (const auto& child : node->children()) {
-            if (child->type() == node_type::group_t) {
-                return static_cast<const node_group_t*>(child.get())->pushdown();
-            }
-        }
-        return false;
-    }
-
-    // Records, per stage, whether pushdown_aggregate had stamped the group by then.
-    std::vector<std::pair<int, bool>>& stamp_trace() {
-        static std::vector<std::pair<int, bool>> trace;
-        return trace;
-    }
-
-    template<int Tag>
-    node_ptr stamp_rule(std::pmr::memory_resource*, node_ptr node) {
-        stamp_trace().emplace_back(Tag, group_stamped(node));
-        return node;
-    }
-} // namespace
-
-TEST_CASE("optimizer::host_rules::stage_order_then_registration_order") {
-    using components::planner::optimizer_stage;
-    auto resource = core::pmr::otterbrix_resource();
-    auto agg = make_agg(&resource, make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false));
-    const components::planner::optimizer_rule_t rules[] = {
-        {optimizer_stage::last, &trace_rule<5>},
-        {optimizer_stage::after_simplify, &trace_rule<1>},
-        {optimizer_stage::after_limit, &trace_rule<3>},
-        {optimizer_stage::after_filters_and_joins, &trace_rule<2>},
-        {optimizer_stage::after_simplify, &trace_rule<11>},
-        {optimizer_stage::after_aggregate_pushdown, &trace_rule<4>},
-    };
-    rule_trace().clear();
-    auto params = make_parameter_node(&resource);
-    components::planner::optimize(&resource,
-                                  agg,
-                                  params.get(),
-                                  test_execution_context(),
-                                  /*can_push_to_agent=*/false,
-                                  rules);
-    REQUIRE(rule_trace() == std::vector<int>{1, 11, 2, 3, 4, 5});
-}
-
-TEST_CASE("optimizer::host_rules::aggregate_pushdown_stage_sees_the_stamp") {
-    using components::planner::optimizer_stage;
-    auto resource = core::pmr::otterbrix_resource();
-    auto agg = make_agg(&resource, make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false));
-    const components::planner::optimizer_rule_t rules[] = {
-        {optimizer_stage::after_limit, &stamp_rule<3>},
-        {optimizer_stage::after_aggregate_pushdown, &stamp_rule<4>},
-        {optimizer_stage::last, &stamp_rule<5>},
-    };
-    stamp_trace().clear();
-    auto params = make_parameter_node(&resource);
-    components::planner::optimize(&resource,
-                                  agg,
-                                  params.get(),
-                                  test_execution_context(),
-                                  /*can_push_to_agent=*/true,
-                                  rules);
-    REQUIRE(stamp_trace() == std::vector<std::pair<int, bool>>{{3, false}, {4, true}, {5, true}});
 }
 
 namespace {

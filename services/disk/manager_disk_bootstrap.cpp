@@ -984,6 +984,10 @@ namespace services::disk {
                 if (column.attoid() == 0) {
                     loaded_table.stamp_column_identity(position, def.attoid());
                 }
+                // A NOT NULL whose storage flag a crash discarded (ALTER ... ADD PRIMARY KEY)
+                if (def.is_not_null()) {
+                    loaded_table.adopt_column_not_null(position);
+                }
                 // A drop whose storage stamp a crash discarded
                 if (def.dropped_at() != components::table::NOT_DELETED_ID &&
                     column.dropped_at() == components::table::NOT_DELETED_ID) {
@@ -1021,7 +1025,7 @@ namespace services::disk {
 
     std::unordered_map<components::catalog::oid_t, std::vector<components::table::column_definition_t>>
     manager_disk_t::collect_catalog_columns_sync(const std::unordered_set<components::catalog::oid_t>& wanted) const {
-        // NOT-NULL is enforced above storage, not in this scan.
+        // attnotnull is the storage's NOT NULL: the file's flag is only as new as its last checkpoint.
         namespace att = catalog::pg_attribute_col;
         // Uses the widest ordinal read below, not a hand-written count — a literal `< 9` once left attdefspec out.
         constexpr std::uint64_t widest_read = att::dropped_at_commit_id;
@@ -1032,6 +1036,7 @@ namespace services::disk {
             components::types::complex_logical_type type;
             uint64_t added_at{0};
             uint64_t dropped_at{components::table::NOT_DELETED_ID};
+            bool not_null{false};
             // Decoded on resource_, not the scan's local arena, since the value outlives this function.
             std::optional<components::vector::vector_t> default_value;
         };
@@ -1094,6 +1099,7 @@ namespace services::disk {
                         rc.name.assign(attname_v.data(), attname_v.size());
                     }
                     rc.attnum = chunk.is_null(att::attnum, i) ? 0 : chunk.get_value<std::int32_t>(att::attnum, i);
+                    rc.not_null = !chunk.is_null(att::attnotnull, i) && chunk.get_value<bool>(att::attnotnull, i);
                     std::string typspec;
                     if (!chunk.is_null(att::atttypspec, i)) {
                         auto typspec_v = chunk.get_value<std::string_view>(att::atttypspec, i);
@@ -1155,6 +1161,7 @@ namespace services::disk {
                 defs.back().set_default_value(std::move(c.default_value));
                 defs.back().set_added_at(c.added_at);
                 defs.back().set_dropped_at(c.dropped_at);
+                defs.back().set_not_null(c.not_null);
             }
             result.emplace(relid, std::move(defs));
         }

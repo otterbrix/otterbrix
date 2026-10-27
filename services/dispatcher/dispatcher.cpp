@@ -154,10 +154,6 @@ namespace services::dispatcher {
                                                                             primitives);
             executor_addresses_.push_back(exec->address());
             executors_.push_back(std::move(exec));
-            if (executors_.back()->construction_error().contains_error()) {
-                construction_error_ = core::error_on(resource_ptr, executors_.back()->construction_error());
-                return;
-            }
         }
         trace(log_,
               "manager_dispatcher_t: spawned {} executors with WAL/Disk/Index addresses",
@@ -1069,7 +1065,7 @@ namespace services::dispatcher {
         context.txn = txn.data();
         context.settings = settings;
         context.lowest_active_start_time = txn_manager_.lowest_active_start_time();
-        context.savepoint_open = txn.has_open_savepoint();
+        context.write_connection = txn.write_connection();
         trace(log_,
               "manager_dispatcher_t::create_session_context, session: {}, txn: {}, ends with the statement: {}",
               session.data(),
@@ -1333,7 +1329,10 @@ namespace services::dispatcher {
         auto* txn_t = statement_transaction_(session, transaction_id);
         assert(txn_t != nullptr);
         if (!txn_t->has_accumulated()) {
-            // Empty COMMIT aborts instead of committing: it must not allocate a commit_id or advance the horizon.
+            // Empty COMMIT aborts instead of committing: it must not allocate a commit_id or advance the horizon. The
+            // storages it read still get its end.
+            out.txn = txn_t->data();
+            out.participants = txn_t->drain_participants();
             txn_manager_.abort(session);
             try_trigger_cleanup_if_horizon_advanced();
             co_return out;
@@ -1354,6 +1353,7 @@ namespace services::dispatcher {
         out.created_storage_oids = txn_t->drain_created_storages();
         out.created_indexes = txn_t->drain_created_indexes();
         out.referenced_deletes = txn_t->drain_referenced_deletes();
+        out.participants = txn_t->drain_participants();
         // No publish barrier here — txn_publish_msg runs it after storage/WAL, so no snapshot sees it half-flipped.
         out.commit_id = txn_manager_.commit(session, &out.commit_view);
         co_return out;
@@ -1382,6 +1382,7 @@ namespace services::dispatcher {
         out.dropped_storage_oids = txn.drain_dropped_storages();
         out.created_storage_oids = txn.drain_created_storages();
         out.created_indexes = txn.drain_created_indexes();
+        out.participants = txn.drain_participants();
         return out;
     }
 
@@ -1442,6 +1443,9 @@ namespace services::dispatcher {
         }
         for (auto& rows : payload.referenced_deletes) {
             txn_t->accumulate_referenced_delete(std::move(rows));
+        }
+        for (const auto& participant : payload.participants) {
+            txn_t->accumulate_participant(participant);
         }
         co_return core::error_t::no_error();
     }

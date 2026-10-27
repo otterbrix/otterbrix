@@ -139,19 +139,20 @@ namespace services::planner::impl {
                                                                                      join_node->type(),
                                                                                      std::move(probe_keys),
                                                                                      std::move(build_keys),
-                                                                                     swap_build_side));
-            // The hash path covers inner/left/right/full only; cross never carries an equi-key.
+                                                                                     swap_build_side,
+                                                                                     join_node->single_match()));
+            // Cross never carries an equi-key.
             switch (join_node->type()) {
                 case join_type::left:
                 case join_type::right:
                 case join_type::inner:
                 case join_type::full:
+                case join_type::semi:
+                case join_type::anti:
                     break;
                 case join_type::cross:
                 case join_type::invalid:
-                case join_type::semi:
-                case join_type::anti:
-                    assert(false && "a hash join is only inner, left, right or full");
+                    assert(false && "a hash join is never cross or invalid");
                     std::abort();
             }
             const auto& probe_child = swap_build_side ? node->children().back() : node->children().front();
@@ -165,8 +166,12 @@ namespace services::planner::impl {
         const auto& expression = node->expressions()[0];
 
         // Equi-join selection happens in rewrite_hash_joins; anything left as plain join_t lands here.
-        components::operators::operator_ptr join = boost::intrusive_ptr(
-            new components::operators::operator_join_t(resource, std::move(log), join_node->type(), expression));
+        components::operators::operator_ptr join =
+            boost::intrusive_ptr(new components::operators::operator_join_t(resource,
+                                                                            std::move(log),
+                                                                            join_node->type(),
+                                                                            expression,
+                                                                            join_node->single_match()));
 
         switch (join_node->type()) {
             case join_type::left:
@@ -174,12 +179,11 @@ namespace services::planner::impl {
             case join_type::cross:
             case join_type::inner:
             case join_type::full:
-                break;
-            case join_type::invalid:
             case join_type::semi:
             case join_type::anti:
-                // invalid never fires (validation); semi/anti appear only as LATERAL joins (handled above).
-                assert(false && "a semi, anti or invalid join outside LATERAL");
+                break;
+            case join_type::invalid:
+                assert(false && "an invalid join never reaches plan generation");
                 std::abort();
         }
         VALUE_OR_RETURN(auto left, lower_input(node->children().front()));

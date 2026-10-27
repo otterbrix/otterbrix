@@ -18,7 +18,9 @@ namespace components::logical_plan {
     {
         add,
         rename,
-        drop
+        drop,
+        // The NOT NULL of a PRIMARY KEY added by ALTER, on the column attoid().
+        set_not_null
     };
 
     // Lowered from node_alter_table_t by rewrite_alter_table; computed_ (relkind='g') routes add/drop through
@@ -59,11 +61,6 @@ namespace components::logical_plan {
             registered_cols_ = std::move(cols);
         }
 
-        // A column of a connection's table: the table's full name; the connector's operator changes the backend
-        // after otterbrix's checks and before the catalog, and no storage is touched.
-        const resolved_table_metadata_t& remote_table() const noexcept { return remote_table_; }
-        void set_remote_table(resolved_table_metadata_t table) { remote_table_ = std::move(table); }
-
     private:
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
@@ -79,7 +76,6 @@ namespace components::logical_plan {
         components::catalog::oid_t attoid_{components::catalog::INVALID_OID};
         bool computed_{false};
         std::pmr::vector<components::table::column_definition_t> registered_cols_;
-        resolved_table_metadata_t remote_table_;
     };
 
     using node_alter_column_ptr = boost::intrusive_ptr<node_alter_column_t>;

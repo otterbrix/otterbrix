@@ -1,7 +1,5 @@
 #include "create_plan.hpp"
 
-#include <components/physical_plan/operators/operator_sequence.hpp>
-
 #include <cassert>
 #include <cstdlib>
 
@@ -31,6 +29,7 @@
 #include "impl/create_plan_join.hpp"
 #include "impl/create_plan_match.hpp"
 #include "impl/create_plan_recursive_cte.hpp"
+#include "impl/create_plan_remote.hpp"
 #include "impl/create_plan_resolve_constraint.hpp"
 #include "impl/create_plan_resolve_database.hpp"
 #include "impl/create_plan_resolve_namespace.hpp"
@@ -45,10 +44,10 @@
 #include "impl/create_plan_unregister_udf.hpp"
 #include "impl/create_plan_update.hpp"
 #include "impl/create_plan_vacuum.hpp"
+#include <components/physical_plan/operators/operator_alter_column_set_not_null.hpp>
 
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_transaction.hpp>
 
 namespace services::planner {
@@ -66,57 +65,103 @@ namespace services::planner {
         return plan_refusal(resource, what);
     }
 
-    plan_result_t storage_operator(std::pmr::memory_resource* resource, std::string_view relname, plan_result_t built) {
-        if (built.has_error() || built.value()) {
-            return built;
+    core::result_wrapper_t<components::table::storage_address_t>
+    storage_address_of(const context_storage_t& context, components::catalog::oid_t table_oid) {
+        // The no-table sentinel (a SELECT without FROM) reads no storage.
+        if (table_oid == components::catalog::INVALID_OID) {
+            return components::table::storage_address_t{};
         }
-        std::pmr::string what{"the storage of \"", resource};
-        what += relname;
-        what += "\" built no operator";
-        return plan_refusal(resource, what);
-    }
-
-    core::result_wrapper_t<components::planner::connector_t*>
-    connector_for(const context_storage_t& context, const components::planner::remote_name_t& name) {
-        if (context.connector != nullptr) {
-            return context.connector;
+        if (const auto* table = context.table_metadata_for(table_oid); table != nullptr) {
+            return table->address;
         }
-        const qualified_name_t written{core::connection_name_t{std::string{name.connection}},
-                                       core::dbname_t{std::string{name.database}},
-                                       core::schema_t{std::string{name.schema}},
-                                       core::relname_t{std::string{name.table}}};
-        std::pmr::string what{name.table.empty() ? "schema \"" : "table \"", context.resource};
-        what += written.to_string();
-        what += "\" is of connection \"";
-        what += name.connection;
-        what += "\", and the host gave no connector";
-        return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
-    }
-
-    plan_result_t connector_then_catalog(const context_storage_t& context,
-                                         plan_result_t backend,
-                                         components::operators::operator_ptr catalog) {
-        VALUE_OR_RETURN(auto first, std::move(backend));
-        auto steps =
-            boost::intrusive_ptr(new components::operators::operator_sequence_t(context.resource, context.log.clone()));
-        steps->append_step(std::move(first));
-        steps->append_step(std::move(catalog));
-        return steps;
-    }
-
-    components::planner::remote_name_t remote_name_of(const qualified_name_t& table) {
-        return {table.connection.t, table.database.t, table.schema.t, table.collection.t};
-    }
-
-    components::planner::remote_table_t
-    remote_table_of(const components::logical_plan::resolved_table_metadata_t& table,
-                    std::pmr::vector<components::planner::remote_column_t>& columns) {
-        columns.clear();
-        columns.reserve(table.columns.size());
-        for (const auto& column : table.columns) {
-            columns.push_back({column.attoid, column.attname, column.type, column.attnotnull});
+        if (components::catalog::is_catalog_table(table_oid)) {
+            return components::table::storage_address_t{context.disk_address, {}};
         }
-        return {table.table_oid, {table.connection, table.database, table.schema, table.name}, columns};
+        std::pmr::string what{"no table metadata for oid ", context.resource};
+        what += std::to_string(static_cast<unsigned>(table_oid));
+        return core::error_t{core::error_code_t::missing_table, std::move(what)};
+    }
+
+    qualified_name_t qualified_name_of(const components::logical_plan::resolved_table_metadata_t& table) {
+        return qualified_name_t{core::connection_name_t{table.connection},
+                                core::dbname_t{table.database},
+                                core::schema_t{table.schema},
+                                core::relname_t{table.name}};
+    }
+
+    std::vector<size_t> scan_columns_of(const context_storage_t& context,
+                                        components::catalog::oid_t table_oid,
+                                        const std::vector<size_t>& projected) {
+        const auto* table = context.table_metadata_for(table_oid);
+        if (table == nullptr || table->relkind != components::catalog::relkind::computed) {
+            return projected;
+        }
+        std::vector<size_t> live;
+        live.reserve(table->columns.size());
+        for (const auto& column : table->columns) {
+            if (column.chunk_position >= 0) {
+                live.push_back(static_cast<size_t>(column.chunk_position));
+            }
+        }
+        return live;
+    }
+
+    core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>
+    page_types_of(const context_storage_t& context,
+                  components::catalog::oid_t table_oid,
+                  const std::vector<size_t>& projected) {
+        std::pmr::vector<components::types::complex_logical_type> types{context.resource};
+        // The no-table sentinel (a SELECT without FROM) reads no column.
+        if (table_oid == components::catalog::INVALID_OID) {
+            return types;
+        }
+        const auto* table = context.table_metadata_for(table_oid);
+        if (table == nullptr) {
+            std::pmr::string what{"table oid ", context.resource};
+            what += std::to_string(static_cast<unsigned>(table_oid));
+            what += " has no columns in this plan";
+            return plan_refusal(context.resource, what);
+        }
+        if (table->relkind == components::catalog::relkind::computed) {
+            const auto at = [&table](size_t position) -> const components::logical_plan::resolved_column_metadata_t* {
+                for (const auto& column : table->columns) {
+                    if (column.chunk_position == static_cast<std::int32_t>(position)) {
+                        return &column;
+                    }
+                }
+                return nullptr;
+            };
+            const auto read = projected.empty() ? scan_columns_of(context, table_oid, projected) : projected;
+            for (const auto position : read) {
+                const auto* column = at(position);
+                if (column == nullptr) {
+                    return plan_refusal(context.resource, "a computed table's scan reads a column it does not have");
+                }
+                types.push_back(column->type);
+            }
+            return types;
+        }
+        if (projected.empty()) {
+            for (const auto& column : table->columns) {
+                types.push_back(column.type);
+            }
+            return types;
+        }
+        for (const auto position : projected) {
+            if (position >= table->columns.size()) {
+                return plan_refusal(context.resource, "a scan reads a column its table does not have");
+            }
+            types.push_back(table->columns[position].type);
+        }
+        return types;
+    }
+
+    std::pmr::string full_name_of(const context_storage_t& context, components::catalog::oid_t table_oid) {
+        const auto* table = context.table_metadata_for(table_oid);
+        if (table == nullptr) {
+            return std::pmr::string{context.resource};
+        }
+        return std::pmr::string{qualified_name_of(*table).to_string(), context.resource};
     }
 
     plan_result_t create_plan(const context_storage_t& context,
@@ -182,8 +227,10 @@ namespace services::planner {
                         case components::logical_plan::alter_column_op::drop:
                             return impl::create_plan_computed_field_unregister(context, node);
                         case components::logical_plan::alter_column_op::rename:
+                        case components::logical_plan::alter_column_op::set_not_null:
                             // rewrite_alter_table never sets computed_ on a rename clause: a document table's
-                            // RENAME is answered by operator_alter_column_rename_t itself.
+                            // RENAME is answered by operator_alter_column_rename_t itself; a document table has
+                            // no PRIMARY KEY.
                             break;
                     }
                     assert(false && "a computed column is never renamed by ALTER");
@@ -196,6 +243,12 @@ namespace services::planner {
                         return impl::create_plan_alter_column_rename(context, node);
                     case components::logical_plan::alter_column_op::drop:
                         return impl::create_plan_alter_column_drop(context, node);
+                    case components::logical_plan::alter_column_op::set_not_null:
+                        return components::operators::operator_ptr{
+                            new components::operators::operator_alter_column_set_not_null_t(context.resource,
+                                                                                            context.log.clone(),
+                                                                                            ac->table_oid(),
+                                                                                            ac->attoid())};
                 }
                 assert(false && "unknown ALTER COLUMN operation");
                 std::abort();
@@ -252,26 +305,8 @@ namespace services::planner {
                 return impl::create_plan_allocate_oids(context, node);
             case node_type::function_t:
                 return impl::create_plan_function(context, function_registry, node);
-            case node_type::extension_t: {
-                const auto& ext = static_cast<const components::logical_plan::node_extension_t&>(*node);
-                VALUE_OR_RETURN(auto op, ext.operator_fn()(context, function_registry, ext));
-                // A host rule's function, unlike the engine's generators, may build nothing.
-                if (!op) {
-                    std::pmr::string what{"the physical plan generator built no operator for ", context.resource};
-                    what += node->to_string();
-                    return plan_refusal(context.resource, what);
-                }
-                if (!node->children().empty()) {
-                    VALUE_OR_RETURN(auto child,
-                                    create_plan(context,
-                                                function_registry,
-                                                node->children().front(),
-                                                components::logical_plan::limit_t::all(),
-                                                params));
-                    op->set_children(std::move(child));
-                }
-                return op;
-            }
+            case node_type::remote_t:
+                return impl::create_plan_remote(context, node);
             default:
                 break;
         }

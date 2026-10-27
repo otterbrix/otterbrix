@@ -68,7 +68,8 @@ namespace components::operators {
                              type join_type,
                              std::pmr::vector<expressions::expression_ptr> probe_keys,
                              std::pmr::vector<expressions::expression_ptr> build_keys,
-                             bool swapped = false);
+                             bool swapped = false,
+                             bool single_match = false);
 
         // The join is a SINK on its build side (it must fully retain the right
         // input before any match can be decided) and STREAMING on its probe side
@@ -106,7 +107,11 @@ namespace components::operators {
         }
 
     private:
+        std::pmr::string explain_label_impl() const override;
+
         type join_type_;
+        // A scalar sub-query's LEFT join: a second match of one probe row is SQL's error.
+        bool single_match_;
         // Plan-time orientation: true iff the physical build (right_) side is the
         // LOGICAL-left table. Fixed at construction — NOT cleared in
         // reset_pipeline_state() (a re-driven recursive-CTE term keeps the same plan).

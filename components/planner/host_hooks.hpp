@@ -1,42 +1,28 @@
 #pragma once
 
-#include <components/logical_plan/node.hpp>
-#include <components/planner/connector.hpp>
+#include <actor-zeta/actor/address.hpp>
 
 #include <cstdint>
-#include <memory_resource>
 #include <span>
+#include <string_view>
 
-// What an embedding host plugs in at open_engine: optimizer rules (plain function pointers, copied into every
-// executor, so they carry no host state) and its connector factory.
+// What an embedding host plugs in at open_engine: the backend actors that keep the rows of its connections' databases
+// (docs/embedding-host-api.md, "The backend actor").
 namespace components::planner {
 
-    // Seams of optimize(), in pipeline order; a rule runs after the built-in rules named here.
-    enum class optimizer_stage : std::uint8_t
-    {
-        after_simplify,           // fold_constants, drop_redundant_distinct, promote_cross_joins
-        after_filters_and_joins,  // pushdown_cte_filter, pushdown_filter, rewrite_hash_joins
-        after_limit,              // eager_aggregation, pushdown_limit
-        after_aggregate_pushdown, // pushdown_aggregate
-        last                      // prune_columns
+    // One connection and the actor of its backend; several connections may share an actor. max_rows_per_write: the
+    // most rows one write message to the connection's tables carries (0: no limit, as the disk's); the backend may
+    // run one message as several remote statements of the same transaction.
+    struct backend_address_t {
+        std::string_view connection;
+        actor_zeta::actor::address_t address;
+        std::uint64_t max_rows_per_write{0};
     };
 
-    // A rule recognizes the tables it serves by the owner tag of their storage (a read node's table_metadata()), and
-    // reads a parameter's value at run time from the operator's context, so it gets the tree only.
-    using optimizer_rule_fn = logical_plan::node_ptr (*)(std::pmr::memory_resource*, logical_plan::node_ptr);
-
-    // Within one stage the rules run in registration order.
-    struct optimizer_rule_t {
-        optimizer_stage stage;
-        optimizer_rule_fn apply;
-    };
-
-    // Read once by open_engine: every executor copies the rules and makes its own connector, so the array need not
-    // outlive the call; the factory and what it shares live longer than the engine. No factory: a host without
-    // connections (a database with a connection is then refused when a statement reaches its table).
+    // Read once by open_engine: every executor copies the map, so the array need not outlive the call. A database of
+    // a connection that is not in the map is refused when a statement reaches it.
     struct primitives_t final {
-        std::span<const optimizer_rule_t> optimizer_rules{};
-        const connector_factory_t* connector{nullptr};
+        std::span<const backend_address_t> backends{};
     };
 
 } // namespace components::planner

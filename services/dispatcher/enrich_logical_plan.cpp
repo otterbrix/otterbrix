@@ -58,22 +58,6 @@
 namespace services::dispatcher { namespace {
     using components::logical_plan::catalog_resolves_t;
 
-    void fill_not_null(const components::logical_plan::resolved_table_metadata_t& md, std::vector<std::string>& out) {
-        for (const auto& col : md.columns) {
-            if (col.attnotnull) {
-                out.push_back(col.attname);
-            }
-        }
-    }
-
-    void merge_pk_not_null(const std::vector<std::string>& pk_columns, std::vector<std::string>& not_null) {
-        for (const auto& col : pk_columns) {
-            if (std::find(not_null.begin(), not_null.end(), col) == not_null.end()) {
-                not_null.push_back(col);
-            }
-        }
-    }
-
     // DEFAULT is expanded here, once — the only reader of pg_attribute.attdefspec.
     core::error_t build_insert_fill_list(components::logical_plan::node_insert_t* node,
                                          const components::logical_plan::resolved_table_metadata_t& md) {
@@ -368,10 +352,6 @@ namespace services::dispatcher { namespace {
         const auto* md = node->table_metadata();
         if (!md)
             return;
-        std::vector<std::string> nn;
-        fill_not_null(*md, nn);
-        node->set_not_null_cols(std::move(nn));
-
         node->set_array_size_reqs(collect_array_size_reqs(*md));
     }
 
@@ -379,9 +359,6 @@ namespace services::dispatcher { namespace {
         const auto* md = node->table_metadata();
         if (!md)
             return;
-        std::vector<std::string> nn;
-        fill_not_null(*md, nn);
-        node->set_not_null_cols(std::move(nn));
         node->set_array_size_reqs(collect_array_size_reqs(*md));
     }
 
@@ -803,19 +780,6 @@ namespace services::catalog_resolve {
         return core::error_t::no_error();
     }
 
-    core::error_t refuse_storage_write_in_savepoint(std::pmr::memory_resource* resource,
-                                                    const catalog_resolves_t& resolves,
-                                                    const components::logical_plan::node_t& write) {
-        const auto* table = resolves.table_md(write.target());
-        if (table == nullptr || table->storage == nullptr) {
-            return core::error_t::no_error();
-        }
-        std::pmr::string msg{"cannot write to storage table \"", resource};
-        msg += write.target().to_string();
-        msg += "\" while a savepoint is open: ROLLBACK TO cannot undo what its backend wrote";
-        return core::error_t{core::error_code_t::unimplemented_yet, std::move(msg)};
-    }
-
     core::error_t refuse_stale_pins(std::pmr::memory_resource* resource, const catalog_resolves_t& resolves) {
         if (!resolves.tables) {
             return core::error_t::no_error();
@@ -1029,11 +993,6 @@ namespace services::dispatcher { namespace {
                         node->set_check_params(std::move(check_params));
                     }
                     node->set_unique_keys(constraints->unique_constraints);
-                    if (!constraints->pk_columns.empty()) {
-                        auto nn = node->not_null_cols();
-                        merge_pk_not_null(constraints->pk_columns, nn);
-                        node->set_not_null_cols(std::move(nn));
-                    }
                 }
                 break;
             }
@@ -1057,11 +1016,6 @@ namespace services::dispatcher { namespace {
                         node->set_check_params(std::move(check_params));
                     }
                     node->set_unique_groups(components::catalog::unique_key_columns(constraints->unique_constraints));
-                    if (!constraints->pk_columns.empty()) {
-                        auto nn = node->not_null_cols();
-                        merge_pk_not_null(constraints->pk_columns, nn);
-                        node->set_not_null_cols(std::move(nn));
-                    }
                 }
                 break;
             }

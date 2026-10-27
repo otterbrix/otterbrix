@@ -571,7 +571,7 @@ namespace services::index {
         for (const auto& created : drain.created_indexes) {
             co_await drop_index(session, created.table_oid, created.index_oid);
         }
-        // Before manager_disk_t::abort_transaction drops their storage
+        // Before the disk's undo_appends_and_storages drops their storage
         for (auto table_oid : drain.created_storage_oids) {
             co_await unregister_collection(session, table_oid);
         }

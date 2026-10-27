@@ -68,6 +68,8 @@ namespace components::table {
         , atttypid_(other.atttypid_)
         , added_at_(other.added_at_)
         , dropped_at_(other.dropped_at_)
+        , not_null_at_(other.not_null_at_)
+        , not_null_sub_id_(other.not_null_sub_id_)
         , not_null_(other.not_null_)
         , default_value_(copy_default(other.default_value_))
         , tags_(other.tags_) {}

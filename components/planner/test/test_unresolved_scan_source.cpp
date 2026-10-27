@@ -1,4 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
+#include <map>
 
 #include <components/compute/function.hpp>
 #include <components/context/context.hpp>
@@ -7,6 +9,7 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
+#include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_limit.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_union.hpp>
@@ -78,6 +81,24 @@ namespace {
 
 } // namespace
 
+// A table the plan resolved: the planner reads the types of its columns from the catalog's metadata (eight BIGINTs).
+static const components::logical_plan::resolved_table_metadata_t* resolved_table_of(components::catalog::oid_t oid) {
+    static std::map<components::catalog::oid_t, components::logical_plan::resolved_table_metadata_t> tables;
+    auto& table = tables[oid];
+    if (table.columns.empty()) {
+        table.table_oid = oid;
+        for (std::int32_t position = 0; position < 8; ++position) {
+            components::logical_plan::resolved_column_metadata_t column;
+            column.attname = "c" + std::to_string(position);
+            column.type = components::types::complex_logical_type{components::types::logical_type::BIGINT};
+            column.attnum = position + 1;
+            column.chunk_position = position;
+            table.columns.push_back(std::move(column));
+        }
+    }
+    return &table;
+}
+
 TEST_CASE("physical_plan_generator::unresolved_source::no_from_select_keeps_the_synthetic_row") {
     harness_t h;
 
@@ -93,6 +114,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::no_from_select_keeps_the_
 TEST_CASE("physical_plan_generator::unresolved_source::aggregate_over_a_resolved_table_still_lowers") {
     harness_t h;
     h.context.known_oids.insert(known_oid);
+    h.context.table_metadata[known_oid] = resolved_table_of(known_oid);
 
     auto agg = make_named_aggregate(&h.arena);
     agg->set_table_oid(known_oid);
@@ -134,6 +156,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::aggregate_with_an_unlower
 TEST_CASE("physical_plan_generator::unresolved_source::union_arm_refusal_reaches_the_root") {
     harness_t h;
     h.context.known_oids.insert(known_oid);
+    h.context.table_metadata[known_oid] = resolved_table_of(known_oid);
 
     auto good_arm = make_named_aggregate(&h.arena);
     good_arm->set_table_oid(known_oid);
@@ -187,6 +210,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerabl
 TEST_CASE("physical_plan_generator::unresolved_source::delete_with_an_unlowerable_using_source_refuses") {
     harness_t h;
     h.context.known_oids.insert(known_oid);
+    h.context.table_metadata[known_oid] = resolved_table_of(known_oid);
 
     // node_type::drop_t has no arm in create_plan's dispatch; swallowed, it'd stand as the semi-join's missing side.
     auto match =
@@ -221,4 +245,24 @@ TEST_CASE("physical_plan_generator::unresolved_source::update_over_an_unresolved
     INFO("an UPDATE whose target never resolved must refuse, same as DELETE");
     REQUIRE(plan.has_error());
     CHECK(plan.error().type == core::error_code_t::create_physical_plan_error);
+}
+
+// A write to a table the plan holds no metadata of has no storage to go to: the plan is refused, so no row reaches
+// a backend or the disk.
+TEST_CASE("physical_plan_generator::unresolved_source::a_write_without_table_metadata_is_refused") {
+    harness_t h;
+    h.context.known_oids.insert(known_oid);
+
+    std::pmr::vector<components::types::complex_logical_type> types{&h.arena};
+    types.emplace_back(components::types::logical_type::BIGINT);
+    components::vector::data_chunk_t row{&h.arena, types, 1};
+    row.set_value(0, 0, std::int64_t{1});
+    row.set_cardinality(1);
+    auto insert = lp::make_node_insert(&h.arena, std::move(row));
+    insert->set_table_oid(known_oid);
+    auto plan = services::planner::create_plan(h.context, h.registry, insert, lp::limit_t::all(), nullptr);
+
+    REQUIRE(plan.has_error());
+    CHECK(plan.error().type == core::error_code_t::missing_table);
+    CHECK(refusal(plan) == "no table metadata for oid 16400");
 }

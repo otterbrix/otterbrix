@@ -12,6 +12,7 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_insert.cpp
         impl/create_plan_insert_on_conflict.cpp
         impl/create_plan_match.cpp
+        impl/create_plan_remote.cpp
         impl/create_plan_select.cpp
         impl/create_plan_sort.cpp
         impl/create_plan_update.cpp

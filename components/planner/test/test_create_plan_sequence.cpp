@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
@@ -34,6 +35,16 @@ namespace {
         return add;
     }
 
+    // The table the ALTERs name, as the plan resolved it: the planner takes its storage from the metadata.
+    const lp::resolved_table_metadata_t* altered_table() {
+        static lp::resolved_table_metadata_t table = [] {
+            lp::resolved_table_metadata_t resolved;
+            resolved.table_oid = components::catalog::oid_t{16400};
+            return resolved;
+        }();
+        return &table;
+    }
+
     lp::node_ptr make_unlowerable_leaf(std::pmr::memory_resource* res) {
         return lp::make_node_drop(res, lp::drop_target_kind::collection);
     }
@@ -45,6 +56,7 @@ TEST_CASE("physical_plan_generator::sequence::an_unlowerable_first_child_refuses
     auto* res = &arena;
     services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
+    context.table_metadata[components::catalog::oid_t{16400}] = altered_table();
 
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
     seq->append_child(make_unlowerable_leaf(res));
@@ -63,6 +75,7 @@ TEST_CASE("physical_plan_generator::sequence::an_unlowerable_later_child_refuses
     auto* res = &arena;
     services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
+    context.table_metadata[components::catalog::oid_t{16400}] = altered_table();
 
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
     seq->append_child(make_lowerable_alter_add(res, "c1"));
@@ -78,6 +91,7 @@ TEST_CASE("physical_plan_generator::sequence::the_children_are_steps_not_a_chain
     auto* res = &arena;
     services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
+    context.table_metadata[components::catalog::oid_t{16400}] = altered_table();
 
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
     seq->append_child(make_lowerable_alter_add(res, "c1"));
@@ -101,6 +115,7 @@ TEST_CASE("physical_plan_generator::sequence::ten_thousand_steps_stay_flat") {
     auto* res = &arena;
     services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
+    context.table_metadata[components::catalog::oid_t{16400}] = altered_table();
 
     constexpr std::size_t count = 10000;
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
@@ -124,6 +139,7 @@ TEST_CASE("physical_plan_generator::sequence::the_first_written_clause_is_the_fi
     auto* res = &arena;
     services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
+    context.table_metadata[components::catalog::oid_t{16400}] = altered_table();
 
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
     seq->append_child(make_lowerable_alter_add(res, "c1"));

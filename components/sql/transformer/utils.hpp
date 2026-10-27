@@ -182,6 +182,11 @@ namespace components::sql::transform {
                 return logical_plan::join_type::left;
             case JOIN_RIGHT:
                 return logical_plan::join_type::right;
+            // Only the pull-up of a sub-link writes these: SQL has no syntax for them.
+            case JOIN_SEMI:
+                return logical_plan::join_type::semi;
+            case JOIN_ANTI:
+                return logical_plan::join_type::anti;
             default:
                 return logical_plan::join_type::invalid;
         }

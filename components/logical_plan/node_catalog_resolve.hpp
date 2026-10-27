@@ -1,7 +1,6 @@
 #pragma once
 
 #include "node.hpp"
-#include "table_storage.hpp"
 
 #include <components/base/identifier_types.hpp>
 #include <components/catalog/catalog_oids.hpp>
@@ -9,6 +8,7 @@
 #include <components/catalog/place.hpp>
 #include <components/catalog/unique_key.hpp>
 #include <components/catalog/view_binding.hpp>
+#include <components/table/storage_address.hpp>
 #include <components/types/types.hpp>
 
 #include <cstdint>
@@ -53,9 +53,9 @@ namespace components::logical_plan {
         std::string connection;
         std::string database;
         std::string schema;
-        bool is_remote() const noexcept { return !connection.empty(); }
-        // A connection's table: the storage the connector made for this statement, owned by a resolve entry.
-        table_storage_t* storage{nullptr};
+        // The actor that keeps the rows, set by the executor before the statement plans: otterbrix's disk, or the
+        // backend of the connection (empty: a connection the host's map no longer has).
+        components::table::storage_address_t address;
     };
 
     // Stamped by operator_resolve_type_t.
@@ -123,9 +123,6 @@ namespace components::logical_plan {
         bool names_only{false};
         // A view body name: what CREATE VIEW bound it to. Not part of the request identity.
         view_pin_t pin;
-        // A connection's table's storage for the statement, made by the connector; owned by the first entry of the
-        // oid.
-        table_storage_ptr storage{nullptr, core::pmr::polymorphic_deleter_t{nullptr, 0, 0}};
 
         components::catalog::oid_t namespace_oid{components::catalog::INVALID_OID};
         components::catalog::oid_t database_oid{components::catalog::INVALID_OID};
@@ -138,8 +135,7 @@ namespace components::logical_plan {
         // UNIQUE/PRIMARY KEY column groups (contype 'u'/'p'); enrich stamps these for
         // operator_unique_constraint_t to enforce.
         std::vector<catalog::unique_key_t> unique_constraints;
-        // PRIMARY KEY column names (contype 'p', flattened); pg_attribute.attnotnull is never
-        // backfilled by ALTER TABLE ADD PRIMARY KEY, so enrich merges these into not_null_cols instead.
+        // PRIMARY KEY column names (contype 'p', flattened): a FOREIGN KEY without a column list references them.
         std::vector<std::string> pk_columns;
         // Every pg_constraint row (conname, oid); enrich stamps DROP CONSTRAINT subcommands from it.
         std::vector<std::pair<std::string, components::catalog::oid_t>> constraint_oids;

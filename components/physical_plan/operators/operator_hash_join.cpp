@@ -52,9 +52,11 @@ namespace components::operators {
                                                type join_type,
                                                std::pmr::vector<expressions::expression_ptr> probe_keys,
                                                std::pmr::vector<expressions::expression_ptr> build_keys,
-                                               bool swapped)
+                                               bool swapped,
+                                               bool single_match)
         : read_only_operator_t(resource, std::move(log), operator_type::hash_join)
         , join_type_(join_type)
+        , single_match_(single_match)
         , swapped_(swapped)
         , probe_key_exprs_(std::move(probe_keys), resource_)
         , build_key_exprs_(std::move(build_keys), resource_) {
@@ -62,6 +64,17 @@ namespace components::operators {
         key_columns_.reserve(probe_key_exprs_.size());
         for (uint64_t key = 0; key < probe_key_exprs_.size(); ++key) {
             key_columns_.push_back(key);
+        }
+    }
+
+    std::pmr::string operator_hash_join_t::explain_label_impl() const {
+        switch (join_type_) {
+            case type::semi:
+                return std::pmr::string{"Hash Semi Join", resource_};
+            case type::anti:
+                return std::pmr::string{"Hash Anti Join", resource_};
+            default:
+                return std::pmr::string{resource_};
         }
     }
 
@@ -172,6 +185,7 @@ namespace components::operators {
                                                      chunks_vector_t& out) {
         const bool left_outer = (join_type_ == type::left || join_type_ == type::full);
         const bool mark_matched = (join_type_ == type::right || join_type_ == type::full);
+        const bool keeps_probe = (join_type_ == type::semi || join_type_ == type::anti);
 
         builder_.set_output(&out);
 
@@ -181,7 +195,15 @@ namespace components::operators {
         }
         assert(n <= vector::DEFAULT_VECTOR_CAPACITY && "a probe chunk exceeds the vector capacity");
         // PostgreSQL 18 skips the probe when its hash table is empty, and a right join's table keeps NULL keys.
-        if ((join_type_ == type::inner && right_index_.empty()) || (join_type_ == type::right && build_rows_ == 0)) {
+        if (((join_type_ == type::inner || join_type_ == type::semi) && right_index_.empty()) ||
+            (join_type_ == type::right && build_rows_ == 0)) {
+            return core::error_t::no_error();
+        }
+        if (join_type_ == type::anti && right_index_.empty()) {
+            vector::data_chunk_t every_row(resource_, probe.types(), n);
+            probe.copy(every_row, 0);
+            out.push_back(std::move(every_row));
+            note_emitted();
             return core::error_t::no_error();
         }
         if (!probe_graph_) {
@@ -222,6 +244,8 @@ namespace components::operators {
         const auto* h = hashes_.data<uint64_t>();
 
         const auto& build_chunks = right_->output()->chunks();
+        vector::indexing_vector_t kept(resource_, keeps_probe ? n : uint64_t{0});
+        uint64_t kept_count = 0;
         for (uint64_t li = 0; li < n; ++li) {
             bool matched = false;
             // A NULL probe key matches nothing (left-outer still emits the row).
@@ -233,6 +257,13 @@ namespace components::operators {
                     if (!keys_verify(keys, li, build_keys_[ref.chunk_index], ref.row_index)) {
                         continue;
                     }
+                    if (keeps_probe) {
+                        matched = true;
+                        break;
+                    }
+                    if (matched && single_match_) {
+                        return join_detail::more_than_one_row(resource_);
+                    }
                     builder_.emit_matched(probe, li, build_chunks[ref.chunk_index], ref.row_index);
                     matched = true;
                     if (mark_matched) {
@@ -240,9 +271,22 @@ namespace components::operators {
                     }
                 }
             }
+            if (keeps_probe) {
+                if (matched == (join_type_ == type::semi)) {
+                    kept.set_index(kept_count++, li);
+                }
+                continue;
+            }
             if (!matched && left_outer) {
                 builder_.emit_left_only(probe, li);
             }
+        }
+        if (keeps_probe) {
+            join_detail::emit_probe_rows(resource_, probe, kept, kept_count, out);
+            if (kept_count != 0) {
+                note_emitted();
+            }
+            return core::error_t::no_error();
         }
         builder_.gather();
         return core::error_t::no_error();
@@ -286,9 +330,21 @@ namespace components::operators {
         // emptied build here is always an inner join with genuinely zero matches.
         if (!right_ || !right_->output() || right_->output()->chunks().empty()) {
             index_built_ = true;
+            if (join_type_ == type::anti || join_type_ == type::semi) {
+                res_types_ = input.types();
+                layout_ready_ = true;
+                if (join_type_ == type::anti && input.size() != 0) {
+                    out.push_back(std::move(input));
+                    note_emitted();
+                }
+            }
             return core::error_t::no_error();
         }
 
+        if (!layout_ready_ && (join_type_ == type::semi || join_type_ == type::anti)) {
+            res_types_ = input.types();
+            layout_ready_ = true;
+        }
         if (!layout_ready_) {
             const auto& build_chunks = right_->output()->chunks();
             // Non-empty by the degenerate-build guard above.
@@ -303,7 +359,9 @@ namespace components::operators {
         }
         // As PostgreSQL 18's ExecHashJoin: inner and left joins build only once a probe row exists.
         if (!index_built_) {
-            if ((join_type_ == type::inner || join_type_ == type::left) && input.size() == 0) {
+            if ((join_type_ == type::inner || join_type_ == type::left || join_type_ == type::semi ||
+                 join_type_ == type::anti) &&
+                input.size() == 0) {
                 return core::error_t::no_error();
             }
             if (auto error = build_index_(ctx); error.contains_error()) {
@@ -334,11 +392,13 @@ namespace components::operators {
         if (res_types_.empty()) {
             return core::error_t::no_error();
         }
-        emit_unmatched_build_(out);
-        builder_.set_output(&out);
-        builder_.flush();
-        if (builder_.emitted()) {
-            note_emitted();
+        if (join_type_ != type::semi && join_type_ != type::anti) {
+            emit_unmatched_build_(out);
+            builder_.set_output(&out);
+            builder_.flush();
+            if (builder_.emitted()) {
+                note_emitted();
+            }
         }
         if (!emitted()) {
             vector::data_chunk_t empty(resource_, res_types_, 0);

@@ -31,7 +31,7 @@ namespace components::operators {
                                                                char relkind,
                                                                catalog::oid_t attoid,
                                                                catalog::drop_behavior_t behavior,
-                                                               bool stored)
+                                                               components::table::storage_address_t address)
         : read_write_operator_t(resource, std::move(log), operator_type::alter_column_drop)
         , table_oid_(table_oid)
         , column_name_(std::move(column_name))
@@ -39,7 +39,7 @@ namespace components::operators {
         , relkind_(relkind)
         , attoid_(attoid)
         , behavior_(behavior)
-        , stored_(stored) {}
+        , address_(std::move(address)) {}
 
     actor_zeta::unique_future<void> operator_alter_column_drop_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
@@ -263,13 +263,14 @@ namespace components::operators {
                                                          behavior_,
                                                          relation_,
                                                          relkind_,
-                                                         column_name_);
+                                                         column_name_,
+                                                         {});
             dropped.contains_error()) {
             set_error(dropped);
             co_return;
         }
 
-        if (auto dropped = co_await drop_column_rows(resource_, ctx, table_oid_, attoid, stored_);
+        if (auto dropped = co_await drop_column_rows(resource_, ctx, table_oid_, attoid, address_);
             dropped.contains_error()) {
             set_error(dropped);
             mark_failed();

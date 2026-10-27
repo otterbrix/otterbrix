@@ -173,12 +173,15 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
         std::vector<components::table::column_definition_t> scols;
         scols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
         scols.emplace_back("payload", complex_logical_type{logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  well_known_oid::main_database,
-                  std::move(scols),
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      well_known_oid::main_database,
+                      qualified_name_t{},
+                      std::move(scols),
+                      /*is_computed=*/false)
+                .has_error());
     }
     {
         std::pmr::vector<complex_logical_type> types(&fx.resource);
@@ -200,12 +203,14 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
                                                    components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
-        auto append_r =
-            fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
+        auto append_r = fx.invoke(&manager_disk_t::storage_append,
+                                  append_ctx,
+                                  table_oid,
+                                  std::pmr::vector<catalog::oid_t>(2, catalog::INVALID_OID, &fx.resource),
+                                  to_batch(&fx.resource, std::move(chunk)),
+                                  false);
         REQUIRE_FALSE(append_r.has_error());
-        auto [start, count] = append_r.value();
-        REQUIRE(count == nrows);
-        (void) start;
+        REQUIRE(append_r.value().count == nrows);
     }
 
     const std::vector<std::int64_t> probe_keys = {10, 20, 30, 99};
@@ -300,12 +305,15 @@ TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
     {
         std::vector<components::table::column_definition_t> scols;
         scols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  well_known_oid::main_database,
-                  std::move(scols),
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      well_known_oid::main_database,
+                      qualified_name_t{},
+                      std::move(scols),
+                      /*is_computed=*/false)
+                .has_error());
     }
 
     std::pmr::vector<std::uint64_t> bad_cols{&fx.resource};
@@ -349,12 +357,15 @@ TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
         scols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
         scols.emplace_back("a", complex_logical_type{logical_type::BIGINT});
         scols.emplace_back("b", complex_logical_type{logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  well_known_oid::main_database,
-                  std::move(scols),
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      well_known_oid::main_database,
+                      qualified_name_t{},
+                      std::move(scols),
+                      /*is_computed=*/false)
+                .has_error());
     }
     {
         std::pmr::vector<complex_logical_type> types(&fx.resource);
@@ -372,8 +383,12 @@ TEST_CASE("services::disk::resolve::projected_read_matches_full_read") {
                                                    components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
-        auto append_r =
-            fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
+        auto append_r = fx.invoke(&manager_disk_t::storage_append,
+                                  append_ctx,
+                                  table_oid,
+                                  std::pmr::vector<catalog::oid_t>(3, catalog::INVALID_OID, &fx.resource),
+                                  to_batch(&fx.resource, std::move(chunk)),
+                                  false);
         REQUIRE_FALSE(append_r.has_error());
     }
 

@@ -299,6 +299,7 @@ namespace components::sql::transform {
         }
         node_join->append_child(right);
 
+        node_join->set_single_match(single_match_joins_.count(join) != 0);
         if (join->quals) {
             VALUE_OR_RETURN(auto expr, transform_predicate(join->quals, names, plan));
             node_join->append_expression(expr);
@@ -653,6 +654,7 @@ namespace components::sql::transform {
                     resource_});
         }
         RETURN_IF_ERROR(register_with_ctes(node.withClause));
+        RETURN_IF_ERROR(pull_up_sublinks(node));
         logical_plan::node_aggregate_ptr agg = nullptr;
         name_collection_t names;
 

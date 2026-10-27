@@ -138,7 +138,10 @@ namespace {
         std::string marker_;
     };
 
-    void append_rows(open_fixture& fx, catalog::oid_t table_oid, uint64_t count) {
+    void append_rows(open_fixture& fx,
+                     catalog::oid_t table_oid,
+                     uint64_t count,
+                     catalog::oid_t attoid = catalog::INVALID_OID) {
         std::pmr::vector<components::types::complex_logical_type> types(&fx.resource);
         components::types::complex_logical_type t{components::types::logical_type::BIGINT};
         t.set_alias("value");
@@ -154,7 +157,13 @@ namespace {
                                                    components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
-        auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+        auto r = fx.invoke(&manager_disk_t::storage_append,
+                           append_ctx,
+                           table_oid,
+                           std::pmr::vector<catalog::oid_t>(1, attoid, &fx.resource),
+                           std::move(batch),
+                           false);
+        INFO((r.has_error() ? std::string{r.error().what} : std::string{}));
         REQUIRE_FALSE(r.has_error());
     }
 
@@ -241,12 +250,15 @@ TEST_CASE("services::disk::open::an_unreadable_sidecar_is_not_never_checkpointed
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         table_oid = test_create_table(fx, ns_oid, "t_sidecar", cols);
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  ns_oid,
-                  cols,
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      ns_oid,
+                      qualified_name_t{},
+                      cols,
+                      /*is_computed=*/false)
+                .has_error());
         append_rows(fx, table_oid, kRows);
         fx.checkpoint(kCheckpointId);
     }
@@ -563,12 +575,15 @@ TEST_CASE("services::disk::open::a_table_file_that_does_not_load_refuses_the_sta
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         table_oid = test_create_table(fx, ns_oid, "t_rotten", cols);
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  ns_oid,
-                  cols,
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      ns_oid,
+                      qualified_name_t{},
+                      cols,
+                      /*is_computed=*/false)
+                .has_error());
         append_rows(fx, table_oid, 5);
         fx.checkpoint(services::wal::id_t{70});
     }
@@ -614,12 +629,15 @@ TEST_CASE("services::disk::open::rehydrate_refuses_a_table_directory_it_cannot_e
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         table_oid = test_create_table(fx, ns_oid, "t_blocked", cols);
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  ns_oid,
-                  cols,
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      ns_oid,
+                      qualified_name_t{},
+                      cols,
+                      /*is_computed=*/false)
+                .has_error());
         append_rows(fx, table_oid, 5);
         fx.checkpoint(services::wal::id_t{70});
     }
@@ -656,12 +674,15 @@ TEST_CASE("services::disk::open::replay_refuses_a_namespace_directory_it_cannot_
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         table_oid = test_create_table(fx, ns_oid, "t_unstatable", cols);
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  ns_oid,
-                  cols,
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      ns_oid,
+                      qualified_name_t{},
+                      cols,
+                      /*is_computed=*/false)
+                .has_error());
         append_rows(fx, table_oid, 5);
         fx.checkpoint(services::wal::id_t{70});
     }
@@ -698,12 +719,15 @@ TEST_CASE("services::disk::open::rehydrate_refuses_a_table_directory_it_cannot_c
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         table_oid = test_create_table(fx, ns_oid, "t_readonly", cols);
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  ns_oid,
-                  cols,
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      ns_oid,
+                      qualified_name_t{},
+                      cols,
+                      /*is_computed=*/false)
+                .has_error());
         append_rows(fx, table_oid, 5);
         fx.checkpoint(services::wal::id_t{70});
     }
@@ -749,7 +773,15 @@ TEST_CASE("services::disk::open::a_rehydrate_walk_that_could_not_run_says_so") {
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto table_oid = test_create_table(fx, ns_oid, "t_walk", cols);
-        fx.invoke(&manager_disk_t::create_storage_disk, session_id_t{}, table_oid, ns_oid, cols, /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      ns_oid,
+                      qualified_name_t{},
+                      cols,
+                      /*is_computed=*/false)
+                .has_error());
         REQUIRE(fx.boot.has_storage(table_oid));
         auto r = fx.boot.rehydrate_missing_user_storages_sync();
         REQUIRE_FALSE(r.has_error());
@@ -805,7 +837,15 @@ TEST_CASE("services::disk::open::an_unreadable_relkind_does_not_open_a_document_
         doc_oid = test_create_computing_table(fx, ns_oid, "t_docload");
         REQUIRE(doc_oid >= FIRST_USER_OID);
         std::vector<components::table::column_definition_t> no_cols;
-        fx.invoke(&manager_disk_t::create_storage_disk, session_id_t{}, doc_oid, ns_oid, no_cols, /*is_computed=*/true);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      doc_oid,
+                      ns_oid,
+                      qualified_name_t{},
+                      no_cols,
+                      /*is_computed=*/true)
+                .has_error());
         REQUIRE(fx.boot.has_storage(doc_oid));
         append_rows(fx, doc_oid, 4);
         fx.checkpoint(services::wal::id_t{80});
@@ -835,7 +875,15 @@ TEST_CASE("services::disk::open::a_refused_sidecar_publish_leaves_no_staging_fil
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto table_oid = test_create_table(fx, ns_oid, "t_publish", cols);
-    fx.invoke(&manager_disk_t::create_storage_disk, session_id_t{}, table_oid, ns_oid, cols, /*is_computed=*/false);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                  table_oid,
+                  ns_oid,
+                  qualified_name_t{},
+                  cols,
+                  /*is_computed=*/false)
+            .has_error());
     append_rows(fx, table_oid, 3);
     fx.checkpoint(services::wal::id_t{100});
 
@@ -876,7 +924,7 @@ TEST_CASE("services::disk::open::a_replayed_update_with_mismatched_row_ids_is_re
         std::filesystem::create_directories(otbx.parent_path());
         REQUIRE_FALSE(
             fx.boot.create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false).contains_error());
-        append_rows(fx, table_oid, 3);
+        append_rows(fx, table_oid, 3, cols.front().attoid());
 
         std::pmr::vector<components::types::complex_logical_type> types(&fx.resource);
         components::types::complex_logical_type value_t{components::types::logical_type::BIGINT};
@@ -969,12 +1017,12 @@ TEST_CASE("services::disk::open::a_replayed_delete_that_deleted_less_than_named_
         open_fixture fx(base);
         REQUIRE_FALSE(fx.boot.bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fx, "ns_replay_del");
-        table_oid = test_create_table(fx, ns_oid, "t_del", cols);
+        table_oid = test_create_table(fx, ns_oid, "t_del", cols, catalog::relkind::regular, &cols);
         const auto otbx = otbx_at(base, ns_oid, table_oid);
         std::filesystem::create_directories(otbx.parent_path());
         REQUIRE_FALSE(
             fx.boot.create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false).contains_error());
-        append_rows(fx, table_oid, 3);
+        append_rows(fx, table_oid, 3, cols.front().attoid());
 
         {
             std::pmr::vector<std::int64_t> id(&fx.resource);

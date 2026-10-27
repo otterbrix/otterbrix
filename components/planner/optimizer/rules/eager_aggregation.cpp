@@ -35,7 +35,7 @@ namespace components::planner::optimizer {
             if (!n || n->type() != lp::node_type::aggregate_t) {
                 return false;
             }
-            if (!lp::reads_owned_table(*n)) {
+            if (n->table_oid() == components::catalog::INVALID_OID) {
                 return false;
             }
             if (static_cast<const lp::node_aggregate_t*>(n.get())->is_distinct()) {

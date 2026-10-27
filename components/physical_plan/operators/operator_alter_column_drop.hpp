@@ -4,6 +4,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/results/ddl_result.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/table/storage_address.hpp>
 
 #include <string>
 
@@ -21,7 +22,7 @@ namespace components::operators {
                                      char relkind,
                                      components::catalog::oid_t attoid,
                                      components::catalog::drop_behavior_t behavior,
-                                     bool stored);
+                                     components::table::storage_address_t address);
 
         // Sourceless sink leaf driven via the bottom-up needs_async_finalize pass; push()/finalize() default to no-ops.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
@@ -37,8 +38,7 @@ namespace components::operators {
         char relkind_;
         components::catalog::oid_t attoid_;
         components::catalog::drop_behavior_t behavior_;
-        // False for a connection's table: the column has no storage here to keep a tombstone for.
-        bool stored_;
+        components::table::storage_address_t address_;
     };
 
 } // namespace components::operators

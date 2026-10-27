@@ -957,7 +957,7 @@ namespace components::planner::optimizer {
                             // Prefer pushing below an identity projection so it rides the branch's disk scan.
                             node_select_t* branch_select = nullptr;
                             if (branch->type() == node_type::aggregate_t &&
-                                components::logical_plan::reads_owned_table(*branch)) {
+                                branch->table_oid() != components::catalog::INVALID_OID) {
                                 for (const auto& c : branch->children()) {
                                     if (c->type() == node_type::select_t) {
                                         branch_select = static_cast<node_select_t*>(c.get());
@@ -1048,7 +1048,7 @@ namespace components::planner::optimizer {
 
             auto source = agg->children()[0];
             // A recursive-CTE reference lowers to an empty-identity aggregate with no oid and is skipped.
-            if (source->type() != node_type::aggregate_t || !components::logical_plan::reads_owned_table(*source)) {
+            if (source->type() != node_type::aggregate_t || source->table_oid() == components::catalog::INVALID_OID) {
                 return node;
             }
             auto* body = static_cast<node_aggregate_t*>(source.get());

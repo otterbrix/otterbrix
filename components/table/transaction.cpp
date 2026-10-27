@@ -16,6 +16,18 @@ namespace components::table {
         return tail;
     }
 
+    void merge_participant(std::vector<participant_t>& participants, const participant_t& added) {
+        auto known = std::find_if(participants.begin(), participants.end(), [&added](const participant_t& participant) {
+            return participant.address.same_storage(added.address);
+        });
+        if (known == participants.end()) {
+            participants.push_back(added);
+            return;
+        }
+        known->tables.insert(added.tables.begin(), added.tables.end());
+        known->wrote = known->wrote || added.wrote;
+    }
+
     template<typename Savepoints>
     auto find_latest(Savepoints& savepoints, std::string_view name) {
         return std::find_if(savepoints.rbegin(), savepoints.rend(), [name](const savepoint_t& savepoint) {
@@ -98,6 +110,7 @@ namespace components::table {
         drain->created_storage_oids = cut_tail(created_storage_oids_, marks.created_storages);
         drain->created_indexes = cut_tail(created_indexes_, marks.created_indexes);
         cut_tail(referenced_deletes_, marks.referenced_deletes);
+        drain->participants = participants_;
 
         // A fresh level, so the WAL can tell the rolled-back writes from those made after this point.
         current_sub_id_ = ++last_sub_id_;

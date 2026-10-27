@@ -103,7 +103,12 @@ namespace {
                                                        components::table::transaction_data::committed(),
                                                        {},
                                                        table_oid};
-            auto r = fd.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+            auto r = fd.invoke(&manager_disk_t::storage_append,
+                               append_ctx,
+                               table_oid,
+                               std::pmr::vector<catalog::oid_t>(1, catalog::INVALID_OID, &fd.resource),
+                               std::move(batch),
+                               false);
             REQUIRE_FALSE(r.has_error());
             written += rows;
         }
@@ -115,12 +120,15 @@ namespace {
         columns.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto table_oid = test_create_table(fd, ns_oid, "sealed", columns);
         REQUIRE(table_oid >= catalog::FIRST_USER_OID);
-        fd.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  catalog::well_known_oid::main_database,
-                  columns,
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fd.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      catalog::well_known_oid::main_database,
+                      qualified_name_t{},
+                      columns,
+                      /*is_computed=*/false)
+                .has_error());
         append_rows(fd, table_oid, 0, rows);
         return table_oid;
     }
@@ -130,7 +138,6 @@ namespace {
                                session_id_t{},
                                table_oid,
                                uint64_t{0}, // 0 == OPEN
-                               std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                                int64_t{-1},
                                std::vector<size_t>{},
                                with_open_snapshot(0, 0));

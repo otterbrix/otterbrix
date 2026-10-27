@@ -25,11 +25,11 @@ namespace components::operators {
                                                              log_t log,
                                                              catalog::oid_t table_oid,
                                                              components::table::column_definition_t column,
-                                                             bool stored)
+                                                             components::table::storage_address_t address)
         : read_write_operator_t(resource, std::move(log), operator_type::alter_column_add)
         , table_oid_(table_oid)
         , column_(std::move(column))
-        , stored_(stored) {}
+        , address_(std::move(address)) {}
 
     actor_zeta::unique_future<void> operator_alter_column_add_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
@@ -95,8 +95,8 @@ namespace components::operators {
             }
         }
 
-        // The planner gave the column its attoid with the statement's oid batch (the connector's ADD COLUMN gets it
-        // before the row is written).
+        // The planner gave the column its attoid with the statement's oid batch (a backend's add_storage_column
+        // gets it before the row is written).
         const auto attoid = static_cast<catalog::oid_t>(column_.attoid());
         if (attoid == catalog::INVALID_OID) [[unlikely]] {
             std::fprintf(stderr, "operator_alter_column_add: column %s has no attoid\n", column_.name().c_str());
@@ -175,16 +175,43 @@ namespace components::operators {
                 ctx->pg_catalog_appends.push_back(std::move(dep_r.value()));
             }
         }
-        if (!stored_) {
-            // No storage to materialize the column: the pg_attribute row is all of it, visible by its own MVCC stamp.
-            if (rng.count > 0) {
-                ctx->pg_catalog_appends.push_back(std::move(rng));
+        if (rng.count > 0) {
+            ctx->pg_catalog_appends.push_back(std::move(rng));
+        }
+        std::optional<components::vector::vector_t> stored_default;
+        if (column_.has_default_value()) {
+            stored_default = components::vector::make_constant_copy(resource_, column_.default_value());
+        }
+        components::table::column_definition_t stored{std::string(column_.name()),
+                                                      column_.type(),
+                                                      column_.is_not_null(),
+                                                      std::move(stored_default)};
+        stored.set_attoid(static_cast<std::uint32_t>(attoid));
+        stored.set_atttypid(static_cast<std::uint32_t>(atttypid));
+        components::execution_context_t add_ctx{ctx->session,
+                                                ctx->txn,
+                                                ctx->execution_context.timezone_offset,
+                                                table_oid_};
+        ctx->join_transaction(address_, table_oid_, true);
+        auto [_a, af] =
+            actor_zeta::otterbrix::send<&services::disk::storage_contract::add_storage_column>(address_,
+                                                                                               add_ctx,
+                                                                                               table_oid_,
+                                                                                               std::move(stored));
+        auto added = co_await std::move(af);
+        if (added.has_error()) {
+            set_error(added.error());
+            mark_failed();
+            co_return;
+        }
+        if (!added.value().awaits_publish) {
+            if (!added.value().rows.empty()) {
+                ctx->host_rows.push_back(std::move(added.value().rows));
             }
             mark_executed();
             co_return;
         }
-        if (rng.count > 0) {
-            ctx->pg_catalog_appends.push_back(std::move(rng));
+        {
             // Backfill added_at_commit_id on this row, keyed by attoid.
             ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
                 attoid,
@@ -199,32 +226,6 @@ namespace components::operators {
                 // already a legal query (PostgreSQL 11+ attmissingval semantics), and the agent has no
                 // catalog to read the answer from otherwise.
                 components::pg_attribute_commit_id_backfill_t::added_column_type_t{column_.type(), defspec}});
-        }
-        {
-            std::optional<components::vector::vector_t> stored_default;
-            if (column_.has_default_value()) {
-                stored_default = components::vector::make_constant_copy(resource_, column_.default_value());
-            }
-            components::table::column_definition_t stored{std::string(column_.name()),
-                                                          column_.type(),
-                                                          column_.is_not_null(),
-                                                          std::move(stored_default)};
-            stored.set_attoid(static_cast<std::uint32_t>(attoid));
-            stored.set_atttypid(static_cast<std::uint32_t>(atttypid));
-            components::execution_context_t add_ctx{ctx->session,
-                                                    ctx->txn,
-                                                    ctx->execution_context.timezone_offset,
-                                                    table_oid_};
-            auto [_a, af] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::add_storage_column,
-                                                        add_ctx,
-                                                        table_oid_,
-                                                        std::move(stored));
-            if (auto added = co_await std::move(af); added.contains_error()) {
-                set_error(added);
-                mark_failed();
-                co_return;
-            }
         }
 
         mark_executed();

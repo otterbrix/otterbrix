@@ -133,6 +133,10 @@ set( ${PROJECT_NAME}_SOURCES
         test_current_place.cpp
         test_remote_databases.cpp
         test_remote_ddl.cpp
+        test_not_null.cpp
+        test_host_transactions.cpp
+        test_host_pushdown.cpp
+        test_decorrelation.cpp
         test_long_string_literal.cpp
         test_tinyint_numeric_cast.cpp
         test_alter_add_column_reads.cpp
@@ -179,7 +183,6 @@ set( ${PROJECT_NAME}_SOURCES
         test_extension_source.cpp
         test_host_tables.cpp
         test_host_name_resolution.cpp
-        test_host_optimizer_stages.cpp
         test_join_raw.cpp
         test_name_resolution.cpp
         test_connections.cpp

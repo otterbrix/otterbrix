@@ -23,6 +23,7 @@
 #include <services/index/manager_index.hpp>
 
 #include <components/catalog/system_table_schemas.hpp>
+#include <components/logical_plan/detached_block.hpp>
 #include <components/logical_plan/effective_table_oid.hpp>
 #include <components/logical_plan/for_each_plan_call.hpp>
 #include <components/logical_plan/forward.hpp>
@@ -44,13 +45,13 @@
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_function.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_register_cast.hpp>
+#include <components/logical_plan/node_remote.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_set_setting.hpp>
 #include <components/logical_plan/node_transaction.hpp>
@@ -238,19 +239,16 @@ namespace services::collection::executor {
         , log_(log)
         , function_registry_(resource)
         , cast_registry_(resource)
-        , optimizer_rules_(primitives.optimizer_rules.begin(), primitives.optimizer_rules.end(), resource)
+        , backends_(resource)
         , dml_flush_row_threshold_(execution.dml_flush_row_threshold)
         , explain_renderers_(resource) {
         register_default_functions(function_registry_);
         components::casts::register_default_casts(cast_registry_);
         explain_renderers_.push_back(&render_postgres);
-        if (primitives.connector != nullptr) {
-            auto made = primitives.connector->make(resource);
-            if (made.has_error()) {
-                construction_error_ = core::error_on(resource, made.error());
-                return;
-            }
-            connector_ = std::move(made.value());
+        backends_.reserve(primitives.backends.size());
+        for (const auto& backend : primitives.backends) {
+            backends_.push_back(
+                backend_t{std::pmr::string{backend.connection, resource}, backend.address, backend.max_rows_per_write});
         }
     }
 
@@ -396,6 +394,8 @@ namespace services::collection::executor {
         out.captured_explain_ir = std::move(captured_ir);
         out.referenced_deletes = std::move(result.referenced_deletes);
         out.written = result.written;
+        out.participants = std::move(result.participants);
+        out.host_rows = std::move(result.host_rows);
         co_return std::move(out);
     }
 
@@ -460,11 +460,9 @@ namespace services::collection::executor {
         // The DROPs of a planned statement whose closure may reach a connection's database: a type (a column of a
         // connection's table may be of it), any schema or database (a type of it may reach one), a connection's
         // table.
-        void
-        collect_remote_drop_seeds(components::logical_plan::node_t* node,
-                                  const components::logical_plan::catalog_resolves_t& resolves,
-                                  std::pmr::vector<components::logical_plan::node_dynamic_cascade_delete_t*>& drops,
-                                  std::pmr::vector<components::logical_plan::node_alter_column_t*>& columns) {
+        void collect_drop_seeds(components::logical_plan::node_t* node,
+                                const components::logical_plan::catalog_resolves_t& resolves,
+                                std::pmr::vector<components::logical_plan::node_dynamic_cascade_delete_t*>& drops) {
             using components::logical_plan::node_type;
             namespace wk = components::catalog::well_known_oid;
             if (node == nullptr) {
@@ -481,7 +479,7 @@ namespace services::collection::executor {
                         break;
                     case wk::pg_class_table: {
                         const auto* table = resolves.table_md(drop->target());
-                        reaches = table != nullptr && table->is_remote();
+                        reaches = table != nullptr && table->address.is_remote();
                         break;
                     }
                     default:
@@ -490,30 +488,22 @@ namespace services::collection::executor {
                 if (reaches) {
                     drops.push_back(drop);
                 }
-            } else if (node->type() == node_type::alter_column_t) {
-                auto* column = static_cast<components::logical_plan::node_alter_column_t*>(node);
-                if (column->op() == components::logical_plan::alter_column_op::drop &&
-                    column->remote_table().is_remote()) {
-                    columns.push_back(column);
-                }
             }
             for (const auto& child : node->children()) {
-                collect_remote_drop_seeds(child.get(), resolves, drops, columns);
+                collect_drop_seeds(child.get(), resolves, drops);
             }
         }
     } // namespace
 
     executor_t::unique_future<core::error_t>
-    executor_t::stamp_remote_drops_(components::session::session_id_t session,
-                                    const services::dispatcher::txn_session_context_t& session_ctx,
-                                    const services::context_storage_t& statement,
-                                    components::table::transaction_data txn,
-                                    components::logical_plan::execution_plan_t& plan) {
-        using kind_t = components::logical_plan::remote_object_t::kind_t;
+    executor_t::stamp_storage_targets_(components::session::session_id_t session,
+                                       const services::dispatcher::txn_session_context_t& session_ctx,
+                                       const services::context_storage_t& statement,
+                                       components::table::transaction_data txn,
+                                       components::logical_plan::execution_plan_t& plan) {
         std::pmr::vector<components::logical_plan::node_dynamic_cascade_delete_t*> drops{resource()};
-        std::pmr::vector<components::logical_plan::node_alter_column_t*> columns{resource()};
-        collect_remote_drop_seeds(plan.sub_queries.back().get(), plan.catalog_resolves, drops, columns);
-        if (drops.empty() && columns.empty()) {
+        collect_drop_seeds(plan.sub_queries.back().get(), plan.catalog_resolves, drops);
+        if (drops.empty()) {
             co_return core::error_t::no_error();
         }
         components::logical_plan::storage_parameters local_params(resource());
@@ -528,33 +518,7 @@ namespace services::collection::executor {
         pctx.txn = txn;
         pctx.place = statement.place;
 
-        std::string connection;
-        // RESTRICT of a dropped column, before the connector's DROP COLUMN.
-        for (auto* column : columns) {
-            const auto& table = column->remote_table();
-            const auto dropped =
-                std::find_if(table.columns.begin(), table.columns.end(), [column](const auto& candidate) {
-                    return candidate.attname == column->column_name().t;
-                });
-            if (dropped == table.columns.end()) {
-                continue;
-            }
-            auto closure =
-                co_await components::operators::drop_closure(resource(),
-                                                             &pctx,
-                                                             components::catalog::well_known_oid::pg_attribute_table,
-                                                             dropped->attoid,
-                                                             column->behavior(),
-                                                             column->target(),
-                                                             column->relkind(),
-                                                             column->column_name());
-            if (closure.has_error()) {
-                co_return closure.error();
-            }
-            connection = table.connection;
-        }
-
-        std::pmr::vector<std::pmr::vector<components::logical_plan::remote_object_t>> found{resource()};
+        std::pmr::vector<std::pmr::vector<components::catalog::oid_t>> found{resource()};
         found.reserve(drops.size());
         bool unresolved = false;
         for (auto* drop : drops) {
@@ -569,10 +533,10 @@ namespace services::collection::executor {
             if (closure.has_error()) {
                 co_return closure.error();
             }
-            for (const auto& object : closure.value()) {
-                if (object.kind != kind_t::schema && plan.catalog_resolves.table_md(object.table_oid) == nullptr) {
+            for (const auto table_oid : closure.value()) {
+                if (plan.catalog_resolves.table_md(table_oid) == nullptr) {
                     components::logical_plan::resolve_entry_t entry;
-                    entry.relation_oid = object.table_oid;
+                    entry.relation_oid = table_oid;
                     plan.catalog_resolves.ensure(resource(), components::logical_plan::resolve_kind::table)
                         .add(std::move(entry));
                     unresolved = true;
@@ -591,32 +555,507 @@ namespace services::collection::executor {
             if (resolved.cursor->is_error()) {
                 co_return resolved.cursor->get_error();
             }
+            if (auto unbound = bind_storages_(plan.catalog_resolves, true); unbound.contains_error()) {
+                co_return unbound;
+            }
         }
+        std::pmr::vector<std::string> connections{resource()};
         for (std::size_t i = 0; i < drops.size(); ++i) {
-            for (const auto& object : found[i]) {
-                if (object.kind == kind_t::schema) {
-                    connection = object.schema.connection;
-                    continue;
-                }
-                const auto* table = plan.catalog_resolves.table_md(object.table_oid);
+            std::pmr::vector<components::logical_plan::storage_target_t> targets{resource()};
+            for (const auto table_oid : found[i]) {
+                const auto* table = plan.catalog_resolves.table_md(table_oid);
                 if (table == nullptr) {
                     // Unreachable: the closure read the table's pg_class row in this statement's snapshot.
                     std::fprintf(stderr,
-                                 "stamp_remote_drops_: table oid %u of the DROP's closure did not resolve\n",
-                                 static_cast<unsigned>(object.table_oid));
-                    assert(false && "stamp_remote_drops_: a table of the DROP's closure did not resolve");
+                                 "stamp_storage_targets_: table oid %u of the DROP's closure did not resolve\n",
+                                 static_cast<unsigned>(table_oid));
+                    assert(false && "stamp_storage_targets_: a table of the DROP's closure did not resolve");
                     std::abort();
                 }
-                connection = table->connection;
+                if (std::find(connections.begin(), connections.end(), table->connection) == connections.end()) {
+                    connections.push_back(table->connection);
+                }
+                targets.push_back({table_oid, table->address, services::planner::qualified_name_of(*table)});
             }
-            drops[i]->set_remote_drops(std::move(found[i]));
+            drops[i]->set_storage_targets(std::move(targets));
         }
-        // DDL on the backend cannot be undone by a ROLLBACK (#663).
-        if (!connection.empty() && !plan.commits_when_done) {
+        if (connections.empty()) {
+            co_return core::error_t::no_error();
+        }
+        // DDL on the backend runs only in autocommit.
+        if (!plan.commits_when_done) {
             std::pmr::string msg{"connection \"", resource()};
-            msg.append(connection);
+            msg.append(connections.front());
             msg.append("\" only supports DDL in autocommit");
             co_return core::error_t{core::error_code_t::unimplemented_yet, std::move(msg)};
+        }
+        co_return check_write_place_(session_ctx, std::span<const std::string>{connections.data(), connections.size()});
+    }
+
+    core::result_wrapper_t<components::table::storage_address_t>
+    executor_t::storage_of_connection_(std::string_view connection) const {
+        if (connection.empty()) {
+            return components::table::storage_address_t{disk_address_, {}};
+        }
+        for (const auto& backend : backends_) {
+            if (backend.connection == connection) {
+                return components::table::storage_address_t{backend.address,
+                                                            std::string{connection},
+                                                            backend.max_rows_per_write};
+            }
+        }
+        std::pmr::string msg{"connection \"", resource()};
+        msg.append(connection);
+        msg.append("\" does not exist");
+        return core::error_t{core::error_code_t::do_not_exists, std::move(msg)};
+    }
+
+    core::error_t executor_t::bind_storages_(components::logical_plan::catalog_resolves_t& resolves,
+                                             bool catalog_only) const {
+        if (!resolves.tables) {
+            return core::error_t::no_error();
+        }
+        for (auto& entry : resolves.tables->entries()) {
+            if (!entry.table_md.has_value()) {
+                continue;
+            }
+            auto& table = *entry.table_md;
+            auto address = storage_of_connection_(table.connection);
+            if (address.has_error()) {
+                if (!catalog_only) {
+                    return address.error();
+                }
+                table.address =
+                    components::table::storage_address_t{actor_zeta::address_t::empty_address(), table.connection};
+                continue;
+            }
+            table.address = std::move(address.value());
+        }
+        return core::error_t::no_error();
+    }
+
+    core::error_t executor_t::check_write_place_(const services::dispatcher::txn_session_context_t& session_ctx,
+                                                 std::span<const std::string> written_connections) const {
+        std::string place = session_ctx.write_connection;
+        for (const auto& connection : written_connections) {
+            if (connection.empty()) {
+                continue;
+            }
+            if (place.empty()) {
+                place = connection;
+                continue;
+            }
+            if (place == connection) {
+                continue;
+            }
+            std::pmr::string msg{"transaction already wrote to connection \"", resource()};
+            msg.append(place);
+            msg.append("\"; writing to connection \"");
+            msg.append(connection);
+            msg.append("\" in the same transaction is not supported");
+            return core::error_t{core::error_code_t::unimplemented_yet, std::move(msg)};
+        }
+        return core::error_t::no_error();
+    }
+
+    executor_t::unique_future<core::error_t>
+    executor_t::write_host_rows_(components::session::session_id_t session,
+                                 const services::dispatcher::txn_session_context_t& session_ctx,
+                                 std::vector<components::host_rows_t> rows) {
+        for (auto& written : rows) {
+            // The host's table, read by its oid: its name for the statements below.
+            components::logical_plan::catalog_resolves_t resolves;
+            {
+                components::logical_plan::resolve_entry_t entry;
+                entry.relation_oid = written.table;
+                resolves.ensure(resource(), components::logical_plan::resolve_kind::table).add(std::move(entry));
+                std::pmr::vector<components::logical_plan::node_ptr> nodes{resource()};
+                nodes.push_back(resolves.tables);
+                services::context_storage_t resolve_storage{resource(), log_.clone(), session_ctx.settings};
+                auto resolved =
+                    co_await run_resolve_subplan_(session, session_ctx, resolve_storage, &resolves, std::move(nodes));
+                if (resolved.cursor->is_error()) {
+                    co_return resolved.cursor->get_error();
+                }
+            }
+            const auto* table = resolves.table_md(written.table);
+            if (table == nullptr) {
+                std::pmr::string msg{"the host's rows name table oid ", resource()};
+                msg.append(std::to_string(static_cast<unsigned>(written.table)));
+                msg.append(", which does not exist");
+                co_return core::error_t{core::error_code_t::table_not_exists, std::move(msg)};
+            }
+            const qualified_name_t name{core::connection_name_t{table->connection},
+                                        core::dbname_t{table->database},
+                                        core::schema_t{table->schema},
+                                        core::relname_t{table->name}};
+            const auto plan_of = [this, table](components::logical_plan::node_ptr root,
+                                               components::logical_plan::parameter_node_ptr parameters) {
+                components::logical_plan::execution_plan_t plan{resource(), std::move(root), std::move(parameters)};
+                plan.commits_when_done = false;
+                components::logical_plan::resolve_entry_t entry;
+                entry.connection = table->connection;
+                entry.database = table->database;
+                entry.schema = table->schema;
+                entry.relname = table->name;
+                entry.relation_oid = table->table_oid;
+                plan.catalog_resolves.ensure(resource(), components::logical_plan::resolve_kind::table)
+                    .add(std::move(entry));
+                return plan;
+            };
+            for (auto& chunk : written.insert) {
+                auto insert = components::logical_plan::make_node_insert(
+                    resource(),
+                    components::vector::adopted(resource(), std::move(chunk)));
+                insert->set_target(name);
+                auto done = co_await execute_statement_(
+                    session,
+                    plan_of(std::move(insert), components::logical_plan::make_parameter_node(resource())),
+                    session_ctx,
+                    std::pmr::vector<expanded_view_t>{resource()});
+                if (done.cursor->is_error()) {
+                    co_return done.cursor->get_error();
+                }
+            }
+            if (written.delete_column >= table->columns.size()) {
+                if (written.delete_keys.empty()) {
+                    continue;
+                }
+                std::pmr::string msg{"the host's rows delete by column ", resource()};
+                msg.append(std::to_string(written.delete_column));
+                msg.append(" of table \"");
+                msg.append(name.to_string());
+                msg.append("\", which has no such column");
+                co_return core::error_t{core::error_code_t::schema_error, std::move(msg)};
+            }
+            const auto& key_column = table->columns[written.delete_column].attname;
+            for (auto& foreign_keys : written.delete_keys) {
+                const auto keys = components::vector::adopted(resource(), std::move(foreign_keys));
+                for (uint64_t row = 0; row < keys.size(); ++row) {
+                    auto parameters = components::logical_plan::make_parameter_node(resource());
+                    auto key = parameters->add_parameter(
+                        components::vector::make_constant_copy(resource(),
+                                                               components::vector::vector_t(keys.data.front(), row, 1)),
+                        components::vector::parameter_kind::literal);
+                    auto erase = components::logical_plan::make_node_delete(
+                        resource(),
+                        components::logical_plan::make_node_match(
+                            resource(),
+                            name,
+                            components::expressions::make_compare_expression(
+                                resource(),
+                                components::expressions::compare_type::eq,
+                                components::expressions::key_t{resource(), key_column},
+                                key)),
+                        components::logical_plan::make_node_limit(resource(),
+                                                                  components::logical_plan::limit_t::all()));
+                    erase->set_target(name);
+                    auto done = co_await execute_statement_(session,
+                                                            plan_of(std::move(erase), std::move(parameters)),
+                                                            session_ctx,
+                                                            std::pmr::vector<expanded_view_t>{resource()});
+                    if (done.cursor->is_error()) {
+                        co_return done.cursor->get_error();
+                    }
+                }
+            }
+        }
+        co_return core::error_t::no_error();
+    }
+
+    namespace {
+
+        using components::logical_plan::node_ptr;
+        using components::logical_plan::node_type;
+
+        // A node a backend may take whole: a SELECT block, a join, an UPDATE / DELETE.
+        bool is_relation(node_type type) noexcept {
+            return type == node_type::aggregate_t || type == node_type::join_t || type == node_type::update_t ||
+                   type == node_type::delete_t;
+        }
+
+        // Does `node`'s whole sub-tree read the tables of one backend, and hold only what a block may hold?
+        struct block_reach_t {
+            bool fits{true};
+            const components::table::storage_address_t* address{nullptr};
+        };
+
+        block_reach_t reach_of(const components::logical_plan::node_t& node) {
+            if (!components::logical_plan::may_be_in_a_block(node.type())) {
+                return {false, nullptr};
+            }
+            block_reach_t reach;
+            if (const auto* table = node.table_metadata(); table != nullptr) {
+                if (!table->address.is_remote() || table->address.empty()) {
+                    return {false, nullptr};
+                }
+                reach.address = &table->address;
+            }
+            for (const auto& child : node.children()) {
+                if (!child) {
+                    continue;
+                }
+                const auto inner = reach_of(*child);
+                if (!inner.fits) {
+                    return {false, nullptr};
+                }
+                if (inner.address == nullptr) {
+                    continue;
+                }
+                if (reach.address != nullptr && !reach.address->same_storage(*inner.address)) {
+                    return {false, nullptr};
+                }
+                reach.address = inner.address;
+            }
+            return reach;
+        }
+
+        struct block_candidate_t {
+            node_ptr* slot;
+            components::table::storage_address_t address;
+        };
+
+        // The largest sub-trees of one backend's tables, top-down.
+        void collect_remote_blocks(node_ptr& slot, std::pmr::vector<block_candidate_t>& candidates) {
+            if (!slot) {
+                return;
+            }
+            if (is_relation(slot->type())) {
+                const auto reach = reach_of(*slot);
+                if (reach.fits && reach.address != nullptr) {
+                    candidates.push_back(block_candidate_t{&slot, *reach.address});
+                    return;
+                }
+            }
+            for (auto& child : slot->children()) {
+                collect_remote_blocks(child, candidates);
+            }
+        }
+
+        // The slots of `slot`'s sub-tree in preorder, with the size of each one's sub-tree.
+        void preorder_of(node_ptr& slot, std::pmr::vector<node_ptr*>& order, std::pmr::vector<std::size_t>& sizes) {
+            const auto position = order.size();
+            order.push_back(&slot);
+            sizes.push_back(1);
+            if (!slot) {
+                return;
+            }
+            for (auto& child : slot->children()) {
+                preorder_of(child, order, sizes);
+            }
+            sizes[position] = order.size() - position;
+        }
+
+        void tables_of(const components::logical_plan::node_t& node,
+                       std::pmr::vector<components::catalog::oid_t>& out) {
+            if (node.table_oid() != components::catalog::INVALID_OID &&
+                std::find(out.begin(), out.end(), node.table_oid()) == out.end()) {
+                out.push_back(node.table_oid());
+            }
+            for (const auto& child : node.children()) {
+                if (child) {
+                    tables_of(*child, out);
+                }
+            }
+        }
+
+        // The conjuncts of a WHERE: an AND's operands, or the one condition.
+        std::pmr::vector<components::expressions::expression_ptr>
+        conjuncts_of(std::pmr::memory_resource* resource, const components::expressions::expression_ptr& where) {
+            std::pmr::vector<components::expressions::expression_ptr> out{resource};
+            if (where && where->group() == components::expressions::expression_group::compare) {
+                const auto& compare = static_cast<const components::expressions::compare_expression_t&>(*where);
+                if (compare.type() == components::expressions::compare_type::union_and) {
+                    out.assign(compare.children().begin(), compare.children().end());
+                    return out;
+                }
+            }
+            out.push_back(where);
+            return out;
+        }
+
+        core::error_t take_refused(std::pmr::memory_resource* resource,
+                                   const components::table::storage_address_t& address,
+                                   std::string_view why) {
+            std::pmr::string what{"the backend of connection \"", resource};
+            what += address.connection();
+            what += "\" took a block wrongly: ";
+            what.append(why.data(), why.size());
+            return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
+        }
+
+        // What a backend took of one offered block, put in the plan: a taken node becomes a node_remote_t; a SELECT
+        // block taken with a residual WHERE keeps its clauses above a node_remote_t that reads its table's rows.
+        core::error_t apply_takes(std::pmr::memory_resource* resource,
+                                  block_candidate_t& candidate,
+                                  std::pmr::vector<services::disk::block_take_t>& takes) {
+            using components::logical_plan::node_remote_t;
+            std::pmr::vector<node_ptr*> order{resource};
+            std::pmr::vector<std::size_t> sizes{resource};
+            preorder_of(*candidate.slot, order, sizes);
+            std::pmr::vector<bool> taken(order.size(), false, resource);
+            for (const auto& take : takes) {
+                if (take.preorder >= order.size()) {
+                    return take_refused(resource, candidate.address, "no node of the block has that position");
+                }
+                const node_ptr& node = *order[take.preorder];
+                if (!node || !is_relation(node->type())) {
+                    return take_refused(resource, candidate.address, "a taken node is a relation");
+                }
+                if ((node->type() == node_type::update_t || node->type() == node_type::delete_t) &&
+                    take.preorder != 0) {
+                    return take_refused(resource, candidate.address, "an UPDATE / DELETE is taken only as the block");
+                }
+                if (!take.residual.empty() && node->type() != node_type::aggregate_t) {
+                    return take_refused(resource, candidate.address, "only a SELECT block leaves a residual WHERE");
+                }
+                for (std::size_t inside = take.preorder; inside < take.preorder + sizes[take.preorder]; ++inside) {
+                    if (taken[inside]) {
+                        return take_refused(resource, candidate.address, "two taken nodes overlap");
+                    }
+                }
+                for (std::size_t outside = 0; outside < take.preorder; ++outside) {
+                    if (taken[outside] && take.preorder < outside + sizes[outside]) {
+                        return take_refused(resource, candidate.address, "two taken nodes overlap");
+                    }
+                }
+                taken[take.preorder] = true;
+            }
+            // Deepest first: replacing a node never frees a slot still to be replaced (taken nodes do not overlap).
+            std::sort(takes.begin(), takes.end(), [](const auto& a, const auto& b) { return a.preorder > b.preorder; });
+            for (auto& take : takes) {
+                node_ptr& slot = *order[take.preorder];
+                std::pmr::vector<std::pmr::string> explain{resource};
+                for (const auto& line : take.explain) {
+                    explain.emplace_back(line);
+                }
+                const bool write = slot->type() == node_type::update_t || slot->type() == node_type::delete_t;
+                components::logical_plan::node_remote_ptr remote{
+                    new node_remote_t(resource,
+                                      write ? node_remote_t::kind_t::write : node_remote_t::kind_t::read,
+                                      candidate.address,
+                                      std::pmr::string{take.request, resource},
+                                      std::move(explain))};
+                tables_of(*slot, remote->tables());
+                if (write) {
+                    const auto& returning =
+                        slot->type() == node_type::update_t
+                            ? static_cast<const components::logical_plan::node_update_t&>(*slot).returning()
+                            : static_cast<const components::logical_plan::node_delete_t&>(*slot).returning();
+                    remote->returning().assign(returning.begin(), returning.end());
+                    if (slot->type() == node_type::delete_t) {
+                        remote->scan_columns() =
+                            static_cast<const components::logical_plan::node_delete_t&>(*slot).projected_cols();
+                    }
+                    remote->set_table_oid(slot->table_oid());
+                    slot = remote;
+                    continue;
+                }
+                if (take.residual.empty()) {
+                    if (!slot->has_output_types()) {
+                        return take_refused(resource, candidate.address, "the block's columns are not known");
+                    }
+                    remote->set_output_types(
+                        std::pmr::vector<components::types::complex_logical_type>{slot->output_types().begin(),
+                                                                                  slot->output_types().end(),
+                                                                                  resource});
+                    remote->set_result_alias(slot->result_alias());
+                    slot = remote;
+                    continue;
+                }
+                // The backend reads the table with the WHERE conjuncts it took; the SELECT block keeps the rest
+                // over the table's rows.
+                if (slot->type() != node_type::aggregate_t) {
+                    return take_refused(resource, candidate.address, "a residual WHERE is left of a node of no WHERE");
+                }
+                auto& aggregate = static_cast<components::logical_plan::node_aggregate_t&>(*slot);
+                const auto* table = aggregate.table_metadata();
+                if (table == nullptr) {
+                    return take_refused(resource, candidate.address, "a residual WHERE is left of a table's block");
+                }
+                std::pmr::vector<components::types::complex_logical_type> columns{resource};
+                for (const auto& column : table->columns) {
+                    auto type = column.type;
+                    type.set_alias(column.attname);
+                    columns.push_back(std::move(type));
+                }
+                remote->set_output_types(std::move(columns));
+                bool has_where = false;
+                for (auto& child : aggregate.children()) {
+                    if (!child || child->type() != node_type::match_t || child->expressions().empty()) {
+                        continue;
+                    }
+                    has_where = true;
+                    const auto conjuncts = conjuncts_of(resource, child->expressions().front());
+                    std::pmr::vector<components::expressions::expression_ptr> kept{resource};
+                    for (const auto position : take.residual) {
+                        if (position >= conjuncts.size()) {
+                            return take_refused(resource, candidate.address, "a residual conjunct is not in the WHERE");
+                        }
+                        kept.push_back(conjuncts[position]);
+                    }
+                    if (kept.size() == 1) {
+                        child->expressions().front() = kept.front();
+                    } else {
+                        auto both = components::expressions::make_compare_union_expression(
+                            resource,
+                            components::expressions::compare_type::union_and);
+                        for (const auto& conjunct : kept) {
+                            both->append_child(conjunct);
+                        }
+                        child->expressions().front() = both;
+                    }
+                }
+                if (!has_where) {
+                    return take_refused(resource, candidate.address, "a residual WHERE is left of a block without one");
+                }
+                aggregate.set_projected_cols({});
+                aggregate.clear_source_identity();
+                aggregate.children().insert(aggregate.children().begin(), remote);
+            }
+            return core::error_t::no_error();
+        }
+
+    } // namespace
+
+    executor_t::unique_future<core::error_t>
+    executor_t::offer_blocks_(components::session::session_id_t session,
+                              components::logical_plan::execution_plan_t& plan,
+                              components::table::transaction_data txn,
+                              const components::graph_execution_context& settings) {
+        // The statement's own tree: each sub-query was offered when it ran as a statement of its own.
+        std::pmr::vector<block_candidate_t> candidates{resource()};
+        collect_remote_blocks(plan.sub_queries.back(), candidates);
+        if (candidates.empty()) {
+            co_return core::error_t::no_error();
+        }
+        const components::execution_context_t ctx{session, txn, settings.timezone_offset};
+        std::pmr::vector<unique_future<core::result_wrapper_t<std::pmr::vector<services::disk::block_take_t>>>> offers{
+            resource()};
+        offers.reserve(candidates.size());
+        for (const auto& candidate : candidates) {
+            auto* target = candidate.address.actor().resource();
+            auto block = components::logical_plan::detach_block(target, **candidate.slot);
+            if (block.has_error()) {
+                co_return block.error();
+            }
+            auto [_o, of] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_offer>(
+                candidate.address,
+                ctx,
+                std::move(block.value()),
+                plan.parameters->parameters().clone(target));
+            offers.push_back(std::move(of));
+        }
+        // Every offer left before the first reply is awaited; candidates never overlap, so each reply is applied as
+        // it comes.
+        for (std::size_t i = 0; i < candidates.size(); ++i) {
+            auto reply = co_await std::move(offers[i]);
+            if (reply.has_error()) {
+                co_return reply.error();
+            }
+            if (auto applied = apply_takes(resource(), candidates[i], reply.value()); applied.contains_error()) {
+                co_return applied;
+            }
         }
         co_return core::error_t::no_error();
     }
@@ -712,45 +1151,6 @@ namespace services::collection::executor {
             }
         }
         co_return execute_result_t{make_cursor(resource())};
-    }
-
-    core::error_t executor_t::bind_remote_storages_(components::session::session_id_t session,
-                                                    const components::logical_plan::execution_plan_t& plan,
-                                                    const services::dispatcher::txn_session_context_t& session_ctx,
-                                                    const services::context_storage_t& context,
-                                                    components::logical_plan::catalog_resolves_t& resolves) {
-        if (!resolves.tables) {
-            return core::error_t::no_error();
-        }
-        const components::planner::statement_ctx_t statement{session,
-                                                             session_ctx.txn.transaction_id,
-                                                             !plan.commits_when_done};
-        std::pmr::unordered_map<components::catalog::oid_t, components::logical_plan::table_storage_t*> made{
-            resource()};
-        for (auto& entry : resolves.tables->entries()) {
-            if (!entry.table_md.has_value() || !entry.table_md->is_remote()) {
-                continue;
-            }
-            auto& md = *entry.table_md;
-            if (auto known = made.find(md.table_oid); known != made.end()) {
-                md.storage = known->second;
-                continue;
-            }
-            std::pmr::vector<components::planner::remote_column_t> columns{resource()};
-            const auto table = services::planner::remote_table_of(md, columns);
-            auto connector = services::planner::connector_for(context, table.name);
-            if (connector.has_error()) {
-                return connector.error();
-            }
-            auto storage = connector.value()->storage_for(resource(), table, statement);
-            if (storage.has_error()) {
-                return core::error_on(resource(), storage.error());
-            }
-            entry.storage = std::move(storage.value());
-            md.storage = entry.storage.get();
-            made.emplace(md.table_oid, entry.storage.get());
-        }
-        return core::error_t::no_error();
     }
 
     core::error_t executor_t::prepare_column_(const components::logical_plan::catalog_resolves_t& resolves,
@@ -977,13 +1377,17 @@ namespace services::collection::executor {
         using components::logical_plan::node_type;
         const auto* root = plan.sub_queries.back().get();
         const auto type = root->type();
-        // A database of a connection is created and dropped by a host's plan: created empty, dropped with the
-        // connector's DROP of every table and schema in it.
-        if (type == node_type::create_database_t || type == node_type::drop_t) {
-            const bool database = type == node_type::create_database_t ||
-                                  static_cast<const components::logical_plan::node_drop_t*>(root)->kind() ==
-                                      components::logical_plan::drop_target_kind::database;
-            if (database) {
+        // A database of a connection is created and dropped by a host's plan: created empty, and only for a
+        // connection the host's map has; dropped with what is in it.
+        if (type == node_type::create_database_t) {
+            if (auto backend = storage_of_connection_(target.connection.t); backend.has_error()) {
+                return backend.error();
+            }
+            return core::error_t::no_error();
+        }
+        if (type == node_type::drop_t) {
+            if (static_cast<const components::logical_plan::node_drop_t*>(root)->kind() ==
+                components::logical_plan::drop_target_kind::database) {
                 return core::error_t::no_error();
             }
         }
@@ -997,6 +1401,13 @@ namespace services::collection::executor {
         // The connection the statement's target is of: written or completed with the place for a CREATE, the
         // resolved table's for what a statement finds.
         std::string connection = target.connection.t;
+        if (type == node_type::drop_t) {
+            connection = components::catalog::complete_name(plan.catalog_resolves.place,
+                                                            target.connection.t,
+                                                            target.database.t,
+                                                            target.schema.t)
+                             .connection;
+        }
         if (const auto* table = plan.catalog_resolves.table_md(target); table != nullptr) {
             connection = table->connection;
         }
@@ -1036,7 +1447,7 @@ namespace services::collection::executor {
                 break;
             }
             case node_type::create_collection_t: {
-                // The backend keeps its own keys, checks and defaults; otterbrix keeps NOT NULL only.
+                // The backend keeps its own keys, checks, defaults and NOT NULL.
                 const auto& create = static_cast<const components::logical_plan::node_create_collection_t&>(*root);
                 const bool constrained =
                     !create.constraints().empty() ||
@@ -1477,17 +1888,6 @@ namespace services::collection::executor {
             return refused;
         }
 
-        // ALTER TABLE of a connection's table: its name, oid and columns, for the connector's operator.
-        void stamp_remote_table(components::logical_plan::execution_plan_t& plan, const qualified_name_t& target) {
-            auto* root = plan.sub_queries.back().get();
-            const auto* table = plan.catalog_resolves.table_md(target);
-            if (root == nullptr || table == nullptr || !table->is_remote() ||
-                root->type() != components::logical_plan::node_type::alter_table_t) {
-                return;
-            }
-            static_cast<components::logical_plan::node_alter_table_t*>(root)->set_remote_table(*table);
-        }
-
         // SET [LOCAL] search_path = '<place>': the place completed with the current one.
         struct set_place_t {
             bool sets{false};
@@ -1663,7 +2063,7 @@ namespace services::collection::executor {
         register_call_schemas(resource(), plan.sub_queries.back().get(), function_registry_, plan.catalog_resolves);
         services::context_storage_t context_storage(resource(), log_.clone(), session_ctx.settings);
         context_storage.place = place;
-        context_storage.connector = connector_.get();
+        context_storage.disk_address = disk_address_;
 
         if (original_type == node_type::transaction_t && plan.explain == components::logical_plan::explain_type::none &&
             static_cast<const components::logical_plan::node_transaction_t*>(plan.sub_queries.back().get())->op() ==
@@ -1817,14 +2217,10 @@ namespace services::collection::executor {
             stale.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(stale))};
         }
-        // A statement that reads or writes rows; DDL (CREATE VIEW over a connection's table included) reads none, and
-        // asks the connector for no storage.
-        if (!needs_ddl_txn) {
-            if (auto unbound =
-                    bind_remote_storages_(session, plan, session_ctx, context_storage, plan.catalog_resolves);
-                unbound.contains_error()) {
-                co_return execute_result_t{make_cursor(resource(), std::move(unbound))};
-            }
+        // A DROP takes the objects of a connection the host's map lost from the catalog alone.
+        if (auto unbound = bind_storages_(plan.catalog_resolves, original_type == node_type::drop_t);
+            unbound.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(unbound))};
         }
         if (auto crossing =
                 services::catalog_resolve::refuse_cross_database_references(resource(), plan.catalog_resolves);
@@ -1835,14 +2231,6 @@ namespace services::collection::executor {
             services::dispatcher::bind_catalog_data(plan.sub_queries.back().get(), plan.catalog_resolves);
             // With the CHECK predicates bind_catalog_data brought.
             scope_calls(plan.sub_queries.back().get(), plan.catalog_resolves);
-        }
-        if (needs_dml_txn && session_ctx.savepoint_open) {
-            if (auto refused = services::catalog_resolve::refuse_storage_write_in_savepoint(resource(),
-                                                                                           plan.catalog_resolves,
-                                                                                           *plan.sub_queries.back());
-                refused.contains_error()) {
-                co_return execute_result_t{make_cursor(resource(), std::move(refused))};
-            }
         }
         context_storage.catalog_resolves = &plan.catalog_resolves;
 
@@ -1902,7 +2290,21 @@ namespace services::collection::executor {
                 co_return execute_result_t{make_cursor(resource())};
             }
         }
-        stamp_remote_table(plan, target);
+        {
+            // The connection the statement writes to: one per transaction.
+            std::string written;
+            if (needs_dml_txn || original_type == node_type::alter_table_t ||
+                original_type == node_type::create_collection_t) {
+                written = target.connection.t;
+                if (const auto* table = plan.catalog_resolves.table_md(target); table != nullptr) {
+                    written = table->connection;
+                }
+            }
+            if (auto refused = check_write_place_(session_ctx, std::span<const std::string>{&written, 1});
+                refused.contains_error()) {
+                co_return execute_result_t{make_cursor(resource(), std::move(refused))};
+            }
+        }
         cursor_t_ptr error;
         // A CREATE never writes into a schema the catalog does not hold: its rows would have no namespace. IF NOT
         // EXISTS does not cover it, since what is missing is the schema, not the object.
@@ -1930,6 +2332,12 @@ namespace services::collection::executor {
                 break;
             case node_type::create_collection_t: {
                 auto* n = static_cast<node_create_collection_t*>(plan.sub_queries.back().get());
+                auto storage = storage_of_connection_(target.connection.t);
+                if (storage.has_error()) {
+                    error = make_cursor(resource(), storage.error());
+                    break;
+                }
+                n->set_storage_address(std::move(storage.value()));
                 for (auto& col_def : n->column_definitions()) {
                     if (auto invalid =
                             prepare_column_(plan.catalog_resolves, context_storage.execution_context, col_def);
@@ -2232,11 +2640,6 @@ namespace services::collection::executor {
                     for (const auto& entry : plan.catalog_resolves.tables->entries()) {
                         if (entry.table_md.has_value()) {
                             context_storage.table_metadata[entry.table_md->table_oid] = &*entry.table_md;
-                            // A known oid is a table otterbrix stores and scans; a connection's table's rows come
-                            // from the connector's storage.
-                            if (entry.table_md->storage != nullptr) {
-                                context_storage.known_oids.erase(entry.table_md->table_oid);
-                            }
                         }
                     }
                 }
@@ -2444,10 +2847,10 @@ namespace services::collection::executor {
                     co_return execute_result_t{make_cursor(resource(), rewritten.error())};
                 }
                 plan.sub_queries.back() = std::move(rewritten.value());
-                if (auto remote =
-                        co_await stamp_remote_drops_(session, session_ctx, context_storage, resolve_txn, plan);
-                    remote.contains_error()) {
-                    co_return execute_result_t{make_cursor(resource(), std::move(remote))};
+                if (auto reached =
+                        co_await stamp_storage_targets_(session, session_ctx, context_storage, resolve_txn, plan);
+                    reached.contains_error()) {
+                    co_return execute_result_t{make_cursor(resource(), std::move(reached))};
                 }
 
                 if (original_type == node_type::create_collection_t) {
@@ -2484,17 +2887,24 @@ namespace services::collection::executor {
                                                                 std::move(plan.sub_queries.back()),
                                                                 plan.parameters.get(),
                                                                 context_storage.execution_context,
-                                                                can_push_to_agent,
-                                                                optimizer_rules_);
+                                                                can_push_to_agent);
+        if (auto offered = co_await offer_blocks_(session, plan, resolve_txn, context_storage.execution_context);
+            offered.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(offered))};
+        }
 
         if (can_push_to_agent) {
             std::pmr::set<components::catalog::oid_t> inner_hash_join_oids{resource()};
             collect_inner_hash_join_oids(plan.sub_queries.back(), inner_hash_join_oids);
             for (auto oid : inner_hash_join_oids) {
-                auto [_tr, trf] = actor_zeta::otterbrix::send(disk_address_,
-                                                              &services::disk::manager_disk_t::storage_total_rows,
-                                                              session,
-                                                              oid);
+                auto address = services::planner::storage_address_of(context_storage, oid);
+                if (address.has_error()) {
+                    co_return execute_result_t{make_cursor(resource(), address.error())};
+                }
+                auto [_tr, trf] =
+                    actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_total_rows>(address.value(),
+                                                                                                       session,
+                                                                                                       oid);
                 auto rows_r = co_await std::move(trf);
                 if (!rows_r.has_error()) {
                     context_storage.row_counts[oid] = rows_r.value();
@@ -2509,7 +2919,7 @@ namespace services::collection::executor {
                                                  resolve_txn,
                                                  session_ctx.lowest_active_start_time,
                                                  std::move(captured_subplans));
-        // The type before optimize(): a host rule may have replaced the UPDATE / DELETE node with its own.
+        // The type before the offer: a backend may have taken the UPDATE / DELETE node.
         if (modified_rows && plan.explain == components::logical_plan::explain_type::none &&
             exec_result.cursor->is_success()) {
             exec_result.cursor->set_written(exec_result.written);
@@ -2535,11 +2945,14 @@ namespace services::collection::executor {
             }
             exec_result.pg_catalog_appends.clear();
             if (!revert_ranges.empty()) {
-                components::execution_context_t pgc_ctx{session, resolve_txn, {}};
-                auto [_pa, paf] = actor_zeta::otterbrix::send(disk_address_,
-                                                              &services::disk::manager_disk_t::storage_revert_appends,
-                                                              pgc_ctx,
-                                                              std::move(revert_ranges));
+                components::table::txn_abort_drain_t undo;
+                undo.txn = resolve_txn;
+                undo.base_appends = std::move(revert_ranges);
+                auto [_pa, paf] =
+                    actor_zeta::otterbrix::send(disk_address_,
+                                                &services::disk::manager_disk_t::undo_appends_and_storages,
+                                                session,
+                                                std::move(undo));
                 if (const auto reverted = co_await std::move(paf); reverted.contains_error()) {
                     ::error(log_, "executor: pg_catalog append rollback did not complete: {}", reverted.what);
                 }
@@ -2583,42 +2996,51 @@ namespace services::collection::executor {
                 }
             }
 
-            // Without this storage_revert_deletes (mirrors operator_abort_transaction), the next UPDATE's delete silently no-ops.
-            if (resolve_txn.transaction_id != 0 &&
-                (!exec_result.dml_deletes.empty() || !exec_result.pg_catalog_delete_tables.empty())) {
-                std::set<components::catalog::oid_t> revert_set{exec_result.pg_catalog_delete_tables.begin(),
-                                                                exec_result.pg_catalog_delete_tables.end()};
-                for (const auto& del : exec_result.dml_deletes) {
-                    revert_set.insert(del.table_oid);
-                }
-                std::vector<components::catalog::oid_t> revert_delete_tables{revert_set.begin(), revert_set.end()};
-                components::execution_context_t rd_ctx{session, resolve_txn, session_ctx.settings.timezone_offset};
-                auto [_rd, rdf] = actor_zeta::otterbrix::send(disk_address_,
-                                                              &services::disk::manager_disk_t::storage_revert_deletes,
-                                                              rd_ctx,
-                                                              uint64_t{0},
-                                                              std::move(revert_delete_tables));
-                co_await std::move(rdf);
+            // Without the delete marks undone (mirrors operator_abort_transaction), the next UPDATE's delete silently
+            // no-ops; the column stamps go the same way.
+            std::pmr::set<components::catalog::oid_t> undone_tables{exec_result.pg_catalog_delete_tables.begin(),
+                                                                    exec_result.pg_catalog_delete_tables.end(),
+                                                                    resource()};
+            for (const auto& del : exec_result.dml_deletes) {
+                undone_tables.insert(del.table_oid);
             }
-            exec_result.pg_catalog_delete_tables.clear();
-
-            std::pmr::set<components::catalog::oid_t> column_stamped_tables{resource()};
             for (const auto& backfill : exec_result.pg_attribute_commit_id_backfills) {
                 if (const auto table_oid = backfill.column_stamped_table();
                     table_oid != components::catalog::INVALID_OID) {
-                    column_stamped_tables.insert(table_oid);
+                    undone_tables.insert(table_oid);
                 }
             }
-            if (resolve_txn.transaction_id != 0 && !column_stamped_tables.empty()) {
-                components::execution_context_t cs_ctx{session, resolve_txn, session_ctx.settings.timezone_offset};
-                auto [_cs, csf] = actor_zeta::otterbrix::send(disk_address_,
-                                                              &services::disk::manager_disk_t::revert_column_stamps,
-                                                              cs_ctx,
-                                                              uint64_t{0},
-                                                              std::move(column_stamped_tables));
-                co_await std::move(csf);
+            components::execution_context_t abort_ctx{session, resolve_txn, session_ctx.settings.timezone_offset};
+            if (resolve_txn.transaction_id != 0 && !undone_tables.empty()) {
+                auto [_rd, rdf] = actor_zeta::otterbrix::send<&services::disk::storage_contract::abort_transaction>(
+                    components::table::storage_address_t{disk_address_, {}},
+                    abort_ctx,
+                    uint64_t{0},
+                    std::move(undone_tables));
+                if (const auto unstamped = co_await std::move(rdf); unstamped.contains_error()) {
+                    ::error(log_, "executor: the statement's delete marks were not undone: {}", unstamped.what);
+                }
             }
+            exec_result.pg_catalog_delete_tables.clear();
             exec_result.pg_attribute_commit_id_backfills.clear();
+
+            // A backend the statement wrote to or read from ends its part of the statement's transaction now.
+            for (const auto& participant : exec_result.participants) {
+                if (participant.address.empty()) {
+                    continue;
+                }
+                auto [_pa, paf] = actor_zeta::otterbrix::send<&services::disk::storage_contract::abort_transaction>(
+                    participant.address,
+                    abort_ctx,
+                    uint64_t{0},
+                    std::pmr::set<components::catalog::oid_t>{participant.tables.begin(),
+                                                              participant.tables.end(),
+                                                              resource()});
+                if (const auto aborted = co_await std::move(paf); aborted.contains_error()) {
+                    ::error(log_, "executor: a backend refused the statement's rollback: {}", aborted.what);
+                }
+            }
+            exec_result.participants.clear();
 
             exec_result.dml_appends.clear();
             exec_result.dml_deletes.clear();
@@ -2646,6 +3068,7 @@ namespace services::collection::executor {
             payload.created_storage_oids = std::move(exec_result.created_storage_oids);
             payload.created_indexes = std::move(exec_result.created_indexes);
             payload.referenced_deletes = std::move(exec_result.referenced_deletes);
+            payload.participants = exec_result.participants;
             trace(log_,
                   "executor::execute_plan_full: txn {} — accumulating {} appends, {} deletes ({})",
                   resolve_txn.transaction_id,
@@ -2672,7 +3095,9 @@ namespace services::collection::executor {
             co_return;
         };
 
-        if (needs_dml_txn || needs_commit_txn) {
+        // A read of a backend is a part of the transaction too: its storages get the transaction's end.
+        const bool reads_participants = !needs_ddl_txn && !exec_result.participants.empty();
+        if (needs_dml_txn || needs_commit_txn || reads_participants) {
             // Transaction stays failed, and only ROLLBACK or ROLLBACK TO SAVEPOINT are allowed
             if (exec_result.cursor->is_success() || !plan.commits_when_done) {
                 co_await park_in_transaction(this, exec_result);
@@ -2684,6 +3109,7 @@ namespace services::collection::executor {
                 exec_result.dropped_storage_oids.clear();
                 exec_result.created_storage_oids.clear();
                 exec_result.created_indexes.clear();
+                exec_result.participants.clear();
 
                 if (plan.commits_when_done && exec_result.cursor->is_success()) {
                     auto commit_result = co_await run_commit_pipeline_(session,
@@ -2700,6 +3126,13 @@ namespace services::collection::executor {
             }
         }
 
+        if (needs_ddl_txn && exec_result.cursor->is_success() && !exec_result.host_rows.empty()) {
+            if (auto written = co_await write_host_rows_(session, session_ctx, std::move(exec_result.host_rows));
+                written.contains_error()) {
+                exec_result.cursor = make_cursor(resource(), std::move(written));
+            }
+            exec_result.host_rows.clear();
+        }
         if (needs_ddl_txn && exec_result.cursor->is_success()) {
             components::pg_catalog_append_range_t create_index_pg_index_range{};
             bool has_create_index_pg_index_range = false;
@@ -2727,6 +3160,7 @@ namespace services::collection::executor {
             exec_result.created_indexes.clear();
             exec_result.dml_appends.clear();
             exec_result.dml_deletes.clear();
+            exec_result.participants.clear();
 
             auto undo_create_index =
                 [this, session, resolve_txn, &create_index_pg_index_range, &has_create_index_pg_index_range](
@@ -2734,14 +3168,14 @@ namespace services::collection::executor {
                     components::catalog::oid_t table_oid,
                     components::catalog::oid_t index_oid) -> executor_t::unique_future<void> {
                 if (has_create_index_pg_index_range) {
-                    std::vector<components::pg_catalog_append_range_t> revert_ranges;
-                    revert_ranges.push_back(create_index_pg_index_range);
-                    components::execution_context_t rv_ctx{session, resolve_txn, {}};
+                    components::table::txn_abort_drain_t undo;
+                    undo.txn = resolve_txn;
+                    undo.swap_appends.push_back(create_index_pg_index_range);
                     auto [_rv, rvf] =
                         actor_zeta::otterbrix::send(disk_address_,
-                                                    &services::disk::manager_disk_t::storage_revert_appends,
-                                                    rv_ctx,
-                                                    std::move(revert_ranges));
+                                                    &services::disk::manager_disk_t::undo_appends_and_storages,
+                                                    session,
+                                                    std::move(undo));
                     if (const auto reverted = co_await std::move(rvf); reverted.contains_error()) {
                         ::error(log_, "executor: pg_index append rollback did not complete: {}", reverted.what);
                     }
@@ -3033,11 +3467,7 @@ namespace services::collection::executor {
                     break;
                 }
                 auto batch = std::move(*next.value());
-                // The engine's own sources slice their batches; a source an external storage or a host rule built
-                // (operator_type::extension) is held to it here.
-                assert((source->type() == ops::operator_type::extension ||
-                        batch.size() <= components::vector::DEFAULT_VECTOR_CAPACITY) &&
-                       "an engine source emitted a batch over DEFAULT_VECTOR_CAPACITY");
+                // A backend's storage may answer a wider batch than the engine takes: it is held to the limit here.
                 if (batch.size() > components::vector::DEFAULT_VECTOR_CAPACITY) {
                     co_await release_source_cursor(resource());
                     std::pmr::string what{"source batch of ", resource()};
@@ -3420,7 +3850,15 @@ namespace services::collection::executor {
             }
 
             // Factored out so the CONSTRAINT-ERROR path can lift these ranges too, else the appended row leaks.
-            auto lift_dml_ranges = [&pipeline_context, &result_tracking]() {
+            auto lift_dml_ranges = [&pipeline_context, &result_tracking, &open_context]() {
+                for (const auto& participant : open_context.participants) {
+                    components::table::merge_participant(result_tracking.participants, participant);
+                }
+                open_context.participants.clear();
+                for (const auto& participant : pipeline_context.participants) {
+                    components::table::merge_participant(result_tracking.participants, participant);
+                }
+                pipeline_context.participants.clear();
                 for (const auto& app : pipeline_context.dml_appends) {
                     result_tracking.dml_appends.push_back({app.table_oid, app.row_start, app.row_count});
                 }
@@ -3631,6 +4069,10 @@ namespace services::collection::executor {
                 result_tracking.referenced_deletes.push_back(std::move(rows));
             }
             pipeline_context.referenced_deletes.clear();
+            for (auto& rows : pipeline_context.host_rows) {
+                result_tracking.host_rows.push_back(std::move(rows));
+            }
+            pipeline_context.host_rows.clear();
             if (pipeline_context.committed_id != 0) {
                 result_tracking.commit_id = pipeline_context.committed_id;
             }
@@ -3642,6 +4084,15 @@ namespace services::collection::executor {
         if (auto open_err = co_await await_opened_(opened, nullptr);
             open_err.contains_error() && cursor->is_success()) {
             cursor = make_cursor(resource(), std::move(open_err));
+        }
+        // A source the run never reached (an error stopped it first) still holds the cursor its open took.
+        for (auto& source : opened) {
+            if (source.op->holds_open_cursor()) {
+                co_await source.op->release_cursor(&open_context);
+            }
+        }
+        for (const auto& participant : open_context.participants) {
+            components::table::merge_participant(result_tracking.participants, participant);
         }
 
         trace(log_, "executor::execute_sub_plan finished, success: {}", cursor->is_success());

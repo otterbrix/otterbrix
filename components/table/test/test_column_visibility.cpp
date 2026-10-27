@@ -370,7 +370,6 @@ TEST_CASE("components::table::column_visibility::not_null_add") {
     test_env env;
     constexpr uint64_t adder_id = TRANSACTION_ID_START + 7;
     auto adder = running(adder_id, 100);
-    std::pmr::vector<row_range_t> no_appends(&env.resource);
 
     SECTION("it is decided at commit") {
         auto table = make_table_with_not_null(env);
@@ -378,12 +377,12 @@ TEST_CASE("components::table::column_visibility::not_null_add") {
         SECTION("over committed rows, which the ADD left NULL, it is refused") {
             append_without_c(env, *table, transaction_data::committed());
             table->stamp_column_added(1, adder_id, 0);
-            CHECK(table->prepare(adder, no_appends).contains_error());
+            CHECK(table->prepare(adder).contains_error());
         }
 
         SECTION("over an empty table it commits") {
             table->stamp_column_added(1, adder_id, 0);
-            CHECK_FALSE(table->prepare(adder, no_appends).contains_error());
+            CHECK_FALSE(table->prepare(adder).contains_error());
         }
     }
 
@@ -392,21 +391,20 @@ TEST_CASE("components::table::column_visibility::not_null_add") {
         constexpr uint64_t writer_id = TRANSACTION_ID_START + 8;
         auto writer = running(writer_id, 100);
         table->stamp_column_added(1, adder_id, 0);
-        std::pmr::vector<row_range_t> written(&env.resource);
-        written.push_back(append_without_c(env, *table, writer));
+        append_without_c(env, *table, writer);
 
         SECTION("the ADD prepares first: the writer's rows lack c") {
-            REQUIRE_FALSE(table->prepare(adder, no_appends).contains_error());
-            CHECK(table->prepare(writer, written).contains_error());
+            REQUIRE_FALSE(table->prepare(adder).contains_error());
+            CHECK(table->prepare(writer).contains_error());
         }
 
         SECTION("the writer prepares first: its rows now stand, and the ADD would leave them NULL") {
-            REQUIRE_FALSE(table->prepare(writer, written).contains_error());
-            CHECK(table->prepare(adder, no_appends).contains_error());
+            REQUIRE_FALSE(table->prepare(writer).contains_error());
+            CHECK(table->prepare(adder).contains_error());
 
             INFO("released without a commit, the writer's rows no longer stand");
             table->release_prepared(writer_id);
-            CHECK_FALSE(table->prepare(adder, no_appends).contains_error());
+            CHECK_FALSE(table->prepare(adder).contains_error());
         }
     }
 
@@ -445,14 +443,14 @@ TEST_CASE("components::table::column_visibility::not_null_add") {
             seed(true);
             table->stamp_column_added(1, adder_id, 0);
             table->stamp_column_added(2, adder_id, 0);
-            CHECK(table->prepare(adder, no_appends).contains_error());
+            CHECK(table->prepare(adder).contains_error());
         }
 
         SECTION("with that cell filled it commits") {
             seed(false);
             table->stamp_column_added(1, adder_id, 0);
             table->stamp_column_added(2, adder_id, 0);
-            CHECK_FALSE(table->prepare(adder, no_appends).contains_error());
+            CHECK_FALSE(table->prepare(adder).contains_error());
         }
     }
 }

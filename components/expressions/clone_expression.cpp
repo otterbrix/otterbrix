@@ -39,7 +39,7 @@ namespace components::expressions {
                                                    src->type(),
                                                    clone_param(resource, src->left()),
                                                    clone_param(resource, src->right()));
-                dst->set_key(src->key());
+                dst->set_key(key_t{src->key(), resource});
                 dst->set_inner_op(src->inner_op());
                 if (src->do_not_fold()) {
                     dst->make_unfoldable();
@@ -57,7 +57,7 @@ namespace components::expressions {
             }
             case expression_group::scalar: {
                 const auto* src = static_cast<const scalar_expression_t*>(expr.get());
-                auto dst = make_scalar_expression(resource, src->type(), src->key());
+                auto dst = make_scalar_expression(resource, src->type(), key_t{src->key(), resource});
                 for (const auto& param : src->params()) {
                     dst->append_param(clone_param(resource, param));
                 }
@@ -68,7 +68,7 @@ namespace components::expressions {
                 const auto* src = static_cast<const aggregate_expression_t*>(expr.get());
                 auto dst =
                     make_aggregate_over(make_function_expression(resource, function_qualified_name_t{src->full_name()}),
-                                        src->key());
+                                        key_t{src->key(), resource});
                 dst->set_pin(src->pin());
                 dst->set_function(copy_function(resource, src->function()));
                 dst->set_pins({src->pins().begin(), src->pins().end(), resource});
@@ -89,7 +89,7 @@ namespace components::expressions {
                                                  src->null_order());
                 sort->set_ordinal(src->ordinal());
                 copy = std::move(sort);
-                copy->key() = src->key();
+                copy->key() = key_t{src->key(), resource};
                 break;
             }
             case expression_group::function: {
@@ -101,7 +101,7 @@ namespace components::expressions {
                 }
                 auto dst =
                     make_function_expression(resource, function_qualified_name_t{src->full_name()}, std::move(args));
-                dst->set_key(src->key());
+                dst->set_key(key_t{src->key(), resource});
                 dst->set_pin(src->pin());
                 dst->set_function(copy_function(resource, src->function()));
                 dst->set_pins({src->pins().begin(), src->pins().end(), resource});

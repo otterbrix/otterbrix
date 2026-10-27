@@ -1,638 +1,26 @@
 // A test host whose remote tables are registered in the catalog (connection m2 > database shop > schema public) and
-// whose connector makes, per statement and table of the connection, a storage over canned backend rows keyed by
-// connection.database.table. otterbrix runs the SQL over the storage's operators: scans number the rows they give
-// out, and the insert, update and delete sinks change the canned rows. A host optimizer rule replaces a simple UPDATE
-// / DELETE of its own table with one remote statement.
+// kept by the backend actor of connection m2. otterbrix runs the SQL over the storage contract's messages: the
+// backend's scans number the rows they give out, and its writes change the rows it keeps.
 
-#include "connector_fixture.hpp"
+#include "host_fixture.hpp"
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
-#include <components/expressions/cast_expression.hpp>
-#include <components/expressions/compare_expression.hpp>
-#include <components/expressions/scalar_expression.hpp>
-#include <components/logical_plan/node_aggregate.hpp>
-#include <components/logical_plan/node_catalog_resolve.hpp>
-#include <components/logical_plan/node_delete.hpp>
-#include <components/logical_plan/node_extension.hpp>
-#include <components/logical_plan/node_limit.hpp>
-#include <components/logical_plan/node_match.hpp>
-#include <components/logical_plan/node_update.hpp>
-#include <components/logical_plan/table_storage.hpp>
-#include <components/physical_plan/operators/operator.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
-#include <components/vector/vector_builders.hpp>
-#include <services/collection/context_storage.hpp>
 
 #include <algorithm>
-#include <atomic>
-#include <map>
-#include <set>
 #include <string>
 #include <vector>
 
 using namespace components;
+using host_fixture::host_t;
+using host_fixture::strings;
+using rows_t = host_actor::rows_t;
 
 namespace {
 
-    using rows_t = std::vector<std::vector<int64_t>>;
-
-    // The "remote" data behind each name; one int64 per declared column (a TEXT column shows it as "s<n>").
-    std::map<std::string, rows_t>& backend() {
-        static std::map<std::string, rows_t> rows;
-        return rows;
-    }
-
-    // A backend that answers in several batches (an empty one included); the default is one batch of backend().
-    std::map<std::string, std::vector<rows_t>>& batches() {
-        static std::map<std::string, std::vector<rows_t>> script;
-        return script;
-    }
-
-    // Names whose backend cannot be reached: every operator of their storage fails with this reason.
-    std::map<std::string, std::string>& unreachable() {
-        static std::map<std::string, std::string> reasons;
-        return reasons;
-    }
-
-    // Names whose backend cannot change a row by its number (ClickHouse, say): make_update / make_delete refuse.
-    std::set<std::string>& no_row_numbers() {
-        static std::set<std::string> names;
-        return names;
-    }
-
-    // Names whose backend applies all but the last row of each batch and reports only what it applied.
-    std::set<std::string>& short_writing() {
-        static std::set<std::string> names;
-        return names;
-    }
-
-    // The storage's flush_row_threshold: the most rows one sink round carries.
-    std::uint64_t& flush_rows() {
-        static std::uint64_t rows = 0;
-        return rows;
-    }
-
-    // The rows of every sink round, in order.
-    std::vector<std::size_t>& round_sizes() {
-        static std::vector<std::size_t> sizes;
-        return sizes;
-    }
-
-    // The sink round, counted from 1 in round_sizes, whose backend call fails; 0 for none.
-    std::size_t& failing_round() {
-        static std::size_t round = 0;
-        return round;
-    }
-
-    // What reached the backend, one line per remote statement.
-    std::vector<std::string>& write_log() {
-        static std::vector<std::string> log;
-        return log;
-    }
-
-    // What the connector answers instead of a storage; no error for none.
-    core::error_t& storage_refusal() {
-        static core::error_t refusal = core::error_t::no_error();
-        return refusal;
-    }
-
-    core::error_t backend_error(std::pmr::memory_resource* resource, const std::string& reason) {
-        return core::error_t{core::error_code_t::connection_closed, std::pmr::string{reason.c_str(), resource}};
-    }
-
-    // The tag the host's storages carry: its rule takes only its own tables.
-    const int host_tag = 0;
-
-    // One statement's view of one remote table, named connection.database.table on the backend. A row number is the
-    // position of the row in the backend when the scan gave it out — the "ctid" the update and delete sinks get back.
-    class remote_storage_t final : public logical_plan::table_storage_t {
-    public:
-        remote_storage_t(std::pmr::memory_resource* resource,
-                         std::string name,
-                         std::pmr::vector<types::complex_logical_type> columns)
-            : logical_plan::table_storage_t(&host_tag)
-            , name_(std::move(name))
-            , columns_(std::move(columns), resource) {}
-
-        const std::string& name() const noexcept { return name_; }
-        const std::pmr::vector<types::complex_logical_type>& columns() const noexcept { return columns_; }
-
-        int64_t number(std::size_t position) {
-            positions_.push_back(position);
-            return static_cast<int64_t>(positions_.size() - 1);
-        }
-        std::size_t position(int64_t number) const { return positions_.at(static_cast<std::size_t>(number)); }
-
-    private:
-        logical_plan::storage_operator_t make_scan_impl(const services::context_storage_t& context) override;
-        logical_plan::storage_operator_t make_insert_impl(const services::context_storage_t& context) override;
-        logical_plan::storage_operator_t make_update_impl(const services::context_storage_t& context) override;
-        logical_plan::storage_operator_t make_delete_impl(const services::context_storage_t& context) override;
-        uint64_t flush_row_threshold_impl() const noexcept override { return flush_rows(); }
-
-        std::string name_;
-        std::pmr::vector<types::complex_logical_type> columns_;
-        std::vector<std::size_t> positions_;
-    };
-
-    // The table's name on its server: m2.shop.orders lives there as shop.orders.
-    std::string remote_name(const remote_storage_t& storage) {
-        return storage.name().substr(storage.name().find('.') + 1);
-    }
-
-    class remote_source_t final : public operators::read_only_operator_t {
-    public:
-        remote_source_t(std::pmr::memory_resource* resource,
-                        log_t log,
-                        remote_storage_t* storage,
-                        std::vector<rows_t> batches)
-            : operators::read_only_operator_t(resource, std::move(log), operators::operator_type::extension)
-            , storage_(storage)
-            , batches_(std::move(batches)) {}
-
-        [[nodiscard]] operators::pipeline_role role() const noexcept override {
-            return operators::pipeline_role::source;
-        }
-
-        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
-        source_next(pipeline::context_t*) override {
-            actor_zeta::promise<core::result_wrapper_t<std::optional<vector::data_chunk_t>>> promise(resource());
-            auto future = promise.get_future();
-            if (next_ == batches_.size()) {
-                promise.set_value(core::result_wrapper_t<std::optional<vector::data_chunk_t>>{std::nullopt});
-                return future;
-            }
-            const auto& columns = storage_->columns();
-            const auto& rows = batches_[next_++];
-            vector::data_chunk_t chunk(resource(), columns, std::max<std::size_t>(rows.size(), 1));
-            chunk.set_cardinality(rows.size());
-            for (std::size_t row = 0; row < rows.size(); ++row) {
-                chunk.row_ids.data<int64_t>()[row] = storage_->number(position_++);
-                for (std::size_t col = 0; col < columns.size(); ++col) {
-                    if (columns[col].type() == types::logical_type::STRING_LITERAL) {
-                        chunk.set_value(col, row, std::string_view{"s" + std::to_string(rows[row][col])});
-                    } else if (columns[col].type() == types::logical_type::INTEGER) {
-                        chunk.set_value(col, row, static_cast<int32_t>(rows[row][col]));
-                    } else {
-                        chunk.set_value(col, row, rows[row][col]);
-                    }
-                }
-            }
-            promise.set_value(core::result_wrapper_t<std::optional<vector::data_chunk_t>>{std::move(chunk)});
-            return future;
-        }
-
-        void reset_pipeline_state() noexcept override {
-            next_ = 0;
-            position_ = 0;
-        }
-
-    private:
-        std::pmr::string explain_label_impl() const override {
-            return std::pmr::string{"Foreign Scan on " + storage_->name(), resource()};
-        }
-        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
-            std::pmr::vector<std::pmr::string> details{resource()};
-            details.emplace_back("Remote SQL: SELECT * FROM " + remote_name(*storage_));
-            return details;
-        }
-
-        remote_storage_t* storage_;
-        std::vector<rows_t> batches_;
-        std::size_t next_{0};
-        std::size_t position_{0};
-    };
-
-    std::vector<int64_t> int_row(const vector::data_chunk_t& chunk, std::uint64_t row) {
-        std::vector<int64_t> values;
-        for (std::uint64_t col = 0; col < chunk.column_count(); ++col) {
-            values.push_back(chunk.get_value<int64_t>(col, row));
-        }
-        return values;
-    }
-
-    std::string type_names(const vector::data_chunk_t& chunk) {
-        std::string out;
-        for (const auto& column : chunk.data) {
-            out += out.empty() ? "" : ",";
-            out += std::string{column.type().alias()} + ":" +
-                   (column.type().type() == types::logical_type::BIGINT ? "bigint" : "other");
-        }
-        return out;
-    }
-
-    // A sink of the storage: buffers in push, talks to the backend once per await_async_and_resume.
-    class remote_sink_t : public operators::read_write_operator_t {
-    public:
-        remote_sink_t(std::pmr::memory_resource* resource, log_t log, remote_storage_t* storage)
-            : operators::read_write_operator_t(resource, std::move(log), operators::operator_type::extension)
-            , storage_(storage) {}
-
-        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
-
-    protected:
-        // Records the round; true, with the backend's error set, when it is the failing one.
-        bool round_fails(std::size_t rows) {
-            round_sizes().push_back(rows);
-            if (round_sizes().size() != failing_round()) {
-                return false;
-            }
-            set_error(backend_error(resource(), "server m2: round " + std::to_string(failing_round()) + " failed"));
-            return true;
-        }
-
-        remote_storage_t* storage_;
-    };
-
-    std::size_t rows_applied(const std::string& name, std::size_t received) {
-        return short_writing().count(name) != 0 && received > 0 ? received - 1 : received;
-    }
-
-    class remote_insert_t final : public remote_sink_t {
-    public:
-        using remote_sink_t::remote_sink_t;
-
-        [[nodiscard]] core::error_t
-        push(pipeline::context_t*, vector::data_chunk_t&& input, operators::chunks_vector_t&) override {
-            types_ = type_names(input);
-            for (std::uint64_t row = 0; row < input.size(); ++row) {
-                std::vector<int64_t> values;
-                for (std::uint64_t col = 0; col < input.column_count(); ++col) {
-                    // NULL in an omitted column reaches the backend as -1.
-                    values.push_back(input.data[col].is_null(row) ? -1 : input.data[col].get_value<int64_t>(row));
-                }
-                rows_.push_back(std::move(values));
-            }
-            return core::error_t::no_error();
-        }
-
-        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t*) override {
-            if (auto it = unreachable().find(storage_->name()); it != unreachable().end()) {
-                set_error(backend_error(resource(), it->second));
-                co_return;
-            }
-            if (round_fails(rows_.size())) {
-                co_return;
-            }
-            write_log().push_back("insert " + storage_->name() + " " + types_);
-            auto& remote = backend()[storage_->name()];
-            rows_.resize(rows_applied(storage_->name(), rows_.size()));
-            remote.insert(remote.end(), rows_.begin(), rows_.end());
-            written_ += rows_.size();
-            rows_.clear();
-            mark_executed();
-            co_return;
-        }
-
-    private:
-        std::pmr::string explain_label_impl() const override {
-            return std::pmr::string{"Foreign Insert on " + storage_->name(), resource()};
-        }
-        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
-            std::pmr::vector<std::pmr::string> details{resource()};
-            details.emplace_back("Remote SQL: INSERT INTO " + remote_name(*storage_) + " VALUES ($1, $2)");
-            details.emplace_back("Batch Size: " + std::to_string(flush_rows() > 0 ? flush_rows() : 1));
-            return details;
-        }
-
-        std::string types_;
-        rows_t rows_;
-    };
-
-    // UPDATE by number: every column of each row, the new values set.
-    class remote_update_t final : public remote_sink_t {
-    public:
-        using remote_sink_t::remote_sink_t;
-
-        [[nodiscard]] core::error_t
-        push(pipeline::context_t*, vector::data_chunk_t&& input, operators::chunks_vector_t&) override {
-            for (std::uint64_t row = 0; row < input.size(); ++row) {
-                changed_.emplace_back(storage_->position(input.row_ids.data<int64_t>()[row]), int_row(input, row));
-            }
-            return core::error_t::no_error();
-        }
-
-        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t*) override {
-            if (auto it = unreachable().find(storage_->name()); it != unreachable().end()) {
-                set_error(backend_error(resource(), it->second));
-                co_return;
-            }
-            if (round_fails(changed_.size())) {
-                co_return;
-            }
-            write_log().push_back("update " + storage_->name() + " rows " + std::to_string(changed_.size()));
-            auto& remote = backend()[storage_->name()];
-            changed_.resize(rows_applied(storage_->name(), changed_.size()));
-            for (auto& [position, values] : changed_) {
-                remote.at(position) = std::move(values);
-            }
-            written_ += changed_.size();
-            changed_.clear();
-            mark_executed();
-            co_return;
-        }
-
-    private:
-        std::pmr::string explain_label_impl() const override {
-            return std::pmr::string{"Foreign Update on " + storage_->name(), resource()};
-        }
-        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
-            std::pmr::vector<std::pmr::string> details{resource()};
-            details.emplace_back("Remote SQL: UPDATE " + remote_name(*storage_) +
-                                 " SET id = $1, amount = $2 WHERE ctid = $3");
-            return details;
-        }
-
-        std::vector<std::pair<std::size_t, std::vector<int64_t>>> changed_;
-    };
-
-    // DELETE by number.
-    class remote_delete_t final : public remote_sink_t {
-    public:
-        using remote_sink_t::remote_sink_t;
-
-        [[nodiscard]] core::error_t
-        push(pipeline::context_t*, vector::data_chunk_t&& input, operators::chunks_vector_t&) override {
-            for (std::uint64_t row = 0; row < input.size(); ++row) {
-                positions_.push_back(storage_->position(input.row_ids.data<int64_t>()[row]));
-            }
-            return core::error_t::no_error();
-        }
-
-        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t*) override {
-            if (auto it = unreachable().find(storage_->name()); it != unreachable().end()) {
-                set_error(backend_error(resource(), it->second));
-                co_return;
-            }
-            if (round_fails(positions_.size())) {
-                co_return;
-            }
-            write_log().push_back("delete " + storage_->name() + " rows " + std::to_string(positions_.size()));
-            positions_.resize(rows_applied(storage_->name(), positions_.size()));
-            std::sort(positions_.rbegin(), positions_.rend());
-            auto& remote = backend()[storage_->name()];
-            for (const auto position : positions_) {
-                const auto before = std::count_if(erased_.begin(), erased_.end(), [position](std::size_t erased) {
-                    return erased < position;
-                });
-                remote.erase(remote.begin() + static_cast<std::ptrdiff_t>(position) - before);
-                erased_.push_back(position);
-            }
-            written_ += positions_.size();
-            positions_.clear();
-            mark_executed();
-            co_return;
-        }
-
-    private:
-        std::pmr::string explain_label_impl() const override {
-            return std::pmr::string{"Foreign Delete on " + storage_->name(), resource()};
-        }
-        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
-            std::pmr::vector<std::pmr::string> details{resource()};
-            details.emplace_back("Remote SQL: DELETE FROM " + remote_name(*storage_) + " WHERE ctid = $1");
-            return details;
-        }
-
-        std::vector<std::size_t> positions_;
-        // The scan's positions of the rows earlier rounds of this statement erased: the rows after them moved up.
-        std::vector<std::size_t> erased_;
-    };
-
-    logical_plan::storage_operator_t remote_storage_t::make_scan_impl(const services::context_storage_t& context) {
-        if (auto it = unreachable().find(name_); it != unreachable().end()) {
-            return backend_error(context.resource, it->second);
-        }
-        auto scripted = batches().find(name_);
-        auto answer = scripted != batches().end() ? scripted->second : std::vector<rows_t>{backend()[name_]};
-        return operators::operator_ptr{
-            new remote_source_t(context.resource, context.log.clone(), this, std::move(answer))};
-    }
-
-    logical_plan::storage_operator_t remote_storage_t::make_insert_impl(const services::context_storage_t& context) {
-        return operators::operator_ptr{new remote_insert_t(context.resource, context.log.clone(), this)};
-    }
-
-    core::error_t no_row_numbers_error(std::pmr::memory_resource* resource, const std::string& name) {
-        std::pmr::string what{"storage \"", resource};
-        what += name;
-        what += "\" cannot change a row by its number";
-        return core::error_t{core::error_code_t::unimplemented_yet, std::move(what)};
-    }
-
-    logical_plan::storage_operator_t remote_storage_t::make_update_impl(const services::context_storage_t& context) {
-        if (no_row_numbers().count(name_) != 0) {
-            return no_row_numbers_error(context.resource, name_);
-        }
-        return operators::operator_ptr{new remote_update_t(context.resource, context.log.clone(), this)};
-    }
-
-    logical_plan::storage_operator_t remote_storage_t::make_delete_impl(const services::context_storage_t& context) {
-        if (no_row_numbers().count(name_) != 0) {
-            return no_row_numbers_error(context.resource, name_);
-        }
-        return operators::operator_ptr{new remote_delete_t(context.resource, context.log.clone(), this)};
-    }
-
-    // The connector's storage_for: a storage over the backend table connection.database.table, its columns those of
-    // the catalog.
-    core::result_wrapper_t<logical_plan::table_storage_ptr> make_remote_storage(std::pmr::memory_resource* resource,
-                                                                                const planner::remote_table_t& table,
-                                                                                const planner::statement_ctx_t&) {
-        std::pmr::vector<types::complex_logical_type> columns(resource);
-        for (const auto& column : table.columns) {
-            columns.push_back(column.type);
-        }
-        if (storage_refusal().contains_error()) {
-            return core::error_t{storage_refusal().type, std::pmr::string{storage_refusal().what, resource}};
-        }
-        return logical_plan::table_storage_ptr{core::pmr::make_polymorphic_unique<remote_storage_t>(
-            resource,
-            std::string{table.name.connection} + "." + std::string{table.name.database} + "." +
-                std::string{table.name.table},
-            std::move(columns))};
-    }
-
-    // The value of `<column> = <value>` or of a SET: a parameter, possibly under the assignment cast.
-    bool parameter_in(const expressions::param_storage& operand, core::parameter_id_t& out);
-
-    bool parameter_in(const expressions::expression_ptr& expression, core::parameter_id_t& out) {
-        switch (expression->group()) {
-            case expressions::expression_group::compare: {
-                const auto& compare = static_cast<const expressions::compare_expression_t&>(*expression);
-                return parameter_in(compare.right(), out);
-            }
-            case expressions::expression_group::scalar: {
-                // A value, not a computation over a column: `amount + 1` has two operands.
-                const auto& scalar = static_cast<const expressions::scalar_expression_t&>(*expression);
-                return scalar.params().size() == 1 && parameter_in(scalar.params().front(), out);
-            }
-            case expressions::expression_group::cast:
-                return parameter_in(static_cast<const expressions::cast_expression_t&>(*expression).child(), out);
-            default:
-                return false;
-        }
-    }
-
-    bool parameter_in(const expressions::param_storage& operand, core::parameter_id_t& out) {
-        if (std::holds_alternative<core::parameter_id_t>(operand)) {
-            out = std::get<core::parameter_id_t>(operand);
-            return true;
-        }
-        if (std::holds_alternative<expressions::expression_ptr>(operand)) {
-            return parameter_in(std::get<expressions::expression_ptr>(operand), out);
-        }
-        return false;
-    }
-
-    // One remote UPDATE / DELETE: `WHERE <column> = <value>` (or no WHERE) and, for UPDATE, `SET <column> = <value>`.
-    struct remote_modify_spec_t {
-        std::string name;
-        bool is_update{false};
-        bool has_where{false};
-        std::size_t where_column{0};
-        core::parameter_id_t where_value{0};
-        std::size_t set_column{0};
-        core::parameter_id_t set_value{0};
-    };
-
-    struct remote_modify_payload_t final : logical_plan::extension_payload_t {
-        explicit remote_modify_payload_t(remote_modify_spec_t spec)
-            : spec(std::move(spec)) {}
-        remote_modify_spec_t spec;
-    };
-
-    class remote_modify_t final : public operators::read_write_operator_t {
-    public:
-        remote_modify_t(std::pmr::memory_resource* resource, log_t log, const remote_modify_spec_t& spec)
-            : operators::read_write_operator_t(resource, std::move(log), operators::operator_type::extension)
-            , spec_(spec) {}
-
-        [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
-
-        actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override {
-            if (auto it = unreachable().find(spec_.name); it != unreachable().end()) {
-                set_error(backend_error(resource(), it->second));
-                co_return;
-            }
-            write_log().push_back(std::string{spec_.is_update ? "update " : "delete "} + spec_.name +
-                                  (spec_.has_where ? " where column " + std::to_string(spec_.where_column) : "") +
-                                  (spec_.is_update ? " set column " + std::to_string(spec_.set_column) : ""));
-            const auto key = spec_.has_where ? ctx->parameters.at(spec_.where_value).get_value<int64_t>(0) : 0;
-            auto& remote = backend()[spec_.name];
-            for (auto row = remote.begin(); row != remote.end();) {
-                if (spec_.has_where && (*row)[spec_.where_column] != key) {
-                    ++row;
-                    continue;
-                }
-                ++written_;
-                if (spec_.is_update) {
-                    (*row)[spec_.set_column] = ctx->parameters.at(spec_.set_value).get_value<int64_t>(0);
-                    ++row;
-                } else {
-                    row = remote.erase(row);
-                }
-            }
-            mark_executed();
-            co_return;
-        }
-
-    private:
-        remote_modify_spec_t spec_;
-    };
-
-    logical_plan::storage_operator_t make_remote_modify(const services::context_storage_t& context,
-                                                        const compute::function_registry_t&,
-                                                        const logical_plan::node_extension_t& node) {
-        const auto& payload = static_cast<const remote_modify_payload_t&>(*node.payload());
-        return operators::operator_ptr{new remote_modify_t(context.resource, context.log.clone(), payload.spec)};
-    }
-
-    const remote_storage_t* own_storage(const logical_plan::node_t& node) {
-        const auto* table = node.table_metadata();
-        if (table == nullptr || table->storage == nullptr || table->storage->owner() != &host_tag) {
-            return nullptr;
-        }
-        return static_cast<const remote_storage_t*>(table->storage);
-    }
-
-    // What one remote statement can say: no FROM / USING, no RETURNING, no LIMIT, `WHERE <column> = <value>` or
-    // none, and one `SET <column> = <value>`. Anything else stays with otterbrix's batch path.
-    bool one_remote_statement(const logical_plan::node_t& write, remote_modify_spec_t& spec) {
-        using logical_plan::node_type;
-        const bool is_update = write.type() == node_type::update_t;
-        spec.is_update = is_update;
-        const auto& returning = is_update ? static_cast<const logical_plan::node_update_t&>(write).returning()
-                                          : static_cast<const logical_plan::node_delete_t&>(write).returning();
-        if (!returning.empty()) {
-            return false;
-        }
-        for (const auto& child : write.children()) {
-            if (child->type() == node_type::limit_t) {
-                if (static_cast<const logical_plan::node_limit_t&>(*child).limit().is_effective()) {
-                    return false;
-                }
-                continue;
-            }
-            if (child->type() != node_type::match_t) {
-                return false;
-            }
-            const auto& where = child->expressions().front();
-            if (where->group() != expressions::expression_group::compare) {
-                return false;
-            }
-            const auto& compare = static_cast<const expressions::compare_expression_t&>(*where);
-            if (compare.type() == expressions::compare_type::all_true) {
-                continue;
-            }
-            if (compare.type() != expressions::compare_type::eq ||
-                !std::holds_alternative<expressions::key_t>(compare.left()) ||
-                !parameter_in(compare.right(), spec.where_value)) {
-                return false;
-            }
-            spec.has_where = true;
-            spec.where_column = std::get<expressions::key_t>(compare.left()).path().front();
-        }
-        if (!is_update) {
-            return true;
-        }
-        const auto& updates = static_cast<const logical_plan::node_update_t&>(write).updates();
-        if (updates.size() != 1 || !parameter_in(updates.front(), spec.set_value)) {
-            return false;
-        }
-        spec.set_column = updates.front()->key().path().front();
-        return true;
-    }
-
-    logical_plan::node_ptr push_whole_modify(std::pmr::memory_resource* resource, logical_plan::node_ptr node) {
-        for (auto& child : node->children()) {
-            child = push_whole_modify(resource, child);
-        }
-        if (node->type() != logical_plan::node_type::update_t && node->type() != logical_plan::node_type::delete_t) {
-            return node;
-        }
-        const auto* storage = own_storage(*node);
-        if (storage == nullptr) {
-            return node;
-        }
-        remote_modify_spec_t spec;
-        spec.name = storage->name();
-        if (!one_remote_statement(*node, spec)) {
-            return node;
-        }
-        return logical_plan::node_ptr{new logical_plan::node_extension_t(
-            resource,
-            storage->name(),
-            std::pmr::vector<types::complex_logical_type>{resource},
-            &make_remote_modify,
-            logical_plan::extension_payload_ptr{new remote_modify_payload_t{std::move(spec)}})};
-    }
-
-    constexpr planner::optimizer_rule_t host_rules[] = {
-        {planner::optimizer_stage::after_simplify, &push_whole_modify},
-    };
+    const std::string orders = "m2.shop.public.orders";
 
     components::cursor::cursor_t_ptr
     run(otterbrix::wrapper_dispatcher_t* dispatcher, const otterbrix::session_id_t& session, const std::string& sql) {
@@ -647,23 +35,24 @@ namespace {
 
     using column_spec_t = std::pair<std::string, types::logical_type>;
 
-    // m2.shop.public.<name> with these columns (BIGINT or TEXT), the backend table m2.shop.<name>.
-    void register_table(connector_fixture::host_t& host,
-                        const std::string& name,
-                        const std::vector<column_spec_t>& columns) {
+    // m2.shop.public.<name> with these columns (BIGINT or TEXT), created in the backend.
+    void register_table(host_t& host, const std::string& name, const std::vector<column_spec_t>& columns) {
         std::string sql = "CREATE TABLE m2.shop.public." + name + " (";
         for (std::size_t i = 0; i < columns.size(); ++i) {
             const auto& [column, type] = columns[i];
             sql += (i == 0 ? "" : ", ") + column + (type == types::logical_type::BIGINT ? " BIGINT" : " TEXT");
         }
         host.db.ok(otterbrix::session_id_t(), sql + ");");
+        host.backend().clear_journal();
     }
 
-    void declare_orders(connector_fixture::host_t& host) {
+    // m2.shop.public.orders(id, amount) holding (1, 100), (2, 200), (3, 300).
+    void declare_orders(host_t& host) {
         register_table(host, "orders", {{"id", types::logical_type::BIGINT}, {"amount", types::logical_type::BIGINT}});
+        host.backend().set_rows(orders, {{1, 100}, {2, 200}, {3, 300}});
     }
 
-    void drop_table(connector_fixture::host_t& host, const std::string& name) {
+    void drop_table(host_t& host, const std::string& name) {
         host.db.ok(otterbrix::session_id_t(), "DROP TABLE m2.shop.public." + name + ";");
     }
 
@@ -682,19 +71,12 @@ namespace {
 
     void flush_every_row(configuration::config& config) { config.execution.dml_flush_row_threshold = 1; }
 
-    // What one test left in the backend is not the next one's.
-    void reset_backend() {
-        backend().clear();
-        batches().clear();
-        unreachable().clear();
-        no_row_numbers().clear();
-        short_writing().clear();
-        flush_rows() = 0;
-        round_sizes().clear();
-        failing_round() = 0;
-        write_log().clear();
-        storage_refusal() = core::error_t::no_error();
-        backend()["m2.shop.orders"] = {{1, 100}, {2, 200}, {3, 300}};
+    std::vector<int64_t> int_row(const vector::data_chunk_t& chunk, std::uint64_t row) {
+        std::vector<int64_t> values;
+        for (std::uint64_t col = 0; col < chunk.column_count(); ++col) {
+            values.push_back(chunk.get_value<int64_t>(col, row));
+        }
+        return values;
     }
 
     rows_t sorted_int_rows(const components::cursor::cursor_t_ptr& cursor) {
@@ -713,12 +95,26 @@ namespace {
         return rows;
     }
 
+    std::vector<std::string> explain_lines(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
+        auto cursor = run(dispatcher, sql);
+        INFO(sql << " -> " << error_of(cursor));
+        REQUIRE(cursor->is_success());
+        std::vector<std::string> lines;
+        for (std::size_t row = 0; row < cursor->size(); ++row) {
+            auto cell = cursor->get<std::string_view>(0, row);
+            REQUIRE_FALSE(cell.has_error());
+            lines.emplace_back(cell.value());
+        }
+        return lines;
+    }
+
 } // namespace
 
-#define HOST_TEST_BOILERPLATE(DIR) HOST_TEST_BOILERPLATE_WITH(DIR, nullptr)
-#define HOST_TEST_BOILERPLATE_WITH(DIR, CONFIGURE)                                                                     \
-    reset_backend();                                                                                                   \
-    connector_fixture::host_t host(DIR, &make_remote_storage, host_rules, CONFIGURE);                                  \
+#define HOST_TEST_BOILERPLATE(DIR) HOST_TEST_BOILERPLATE_CAPPED(DIR, nullptr, 0)
+#define HOST_TEST_BOILERPLATE_WITH(DIR, CONFIGURE) HOST_TEST_BOILERPLATE_CAPPED(DIR, CONFIGURE, 0)
+// CAP: the most rows one write message to m2 carries (0: no limit), set when the engine opens.
+#define HOST_TEST_BOILERPLATE_CAPPED(DIR, CONFIGURE, CAP)                                                              \
+    host_t host(DIR, CONFIGURE, {"m2"}, {{"m2", CAP}});                                                                \
     auto* dispatcher = host.db.dispatcher();                                                                           \
     host.register_shop();
 
@@ -762,6 +158,7 @@ TEST_CASE("integration::cpp::host_names::registered_columns_drive_validation_and
     register_table(host,
                    "orders",
                    {{"id", types::logical_type::BIGINT}, {"label", types::logical_type::STRING_LITERAL}});
+    host.backend().set_rows(orders, {{1, 100}, {2, 200}, {3, 300}});
 
     REQUIRE(run(dispatcher, "SELECT nope FROM m2.shop.public.orders;")->is_error());
 
@@ -792,8 +189,8 @@ TEST_CASE("integration::cpp::host_names::count_star_counts_the_storage_rows") {
     REQUIRE(cell2.value() == 3);
 }
 
-// a statement over local tables only asks no connector for a storage.
-TEST_CASE("integration::cpp::host_names::local_statements_never_reach_the_connector") {
+// A statement over local tables only sends the backend nothing.
+TEST_CASE("integration::cpp::host_names::local_statements_never_reach_the_backend") {
     HOST_TEST_BOILERPLATE("test_host_names/local_only")
     declare_orders(host);
     REQUIRE(run(dispatcher, "CREATE SCHEMA loc;")->is_success());
@@ -802,7 +199,7 @@ TEST_CASE("integration::cpp::host_names::local_statements_never_reach_the_connec
     REQUIRE(run(dispatcher, "INSERT INTO loc.a (k, v) VALUES (1, 10), (2, 20);")->is_success());
     REQUIRE(run(dispatcher, "INSERT INTO loc.b (k, w) VALUES (1, 5);")->is_success());
     REQUIRE(run(dispatcher, "CREATE VIEW loc.av AS SELECT k, v FROM loc.a;")->is_success());
-    host.factory->clear();
+    host.backend().clear_journal();
     const char* statements[] = {
         "SELECT * FROM loc.a;",
         "SELECT count(*) FROM loc.a;",
@@ -819,10 +216,10 @@ TEST_CASE("integration::cpp::host_names::local_statements_never_reach_the_connec
         INFO(sql);
         REQUIRE(run(dispatcher, sql)->is_success());
     }
-    CHECK(host.factory->storage_calls().empty());
+    CHECK(host.backend().journal().empty());
 
     REQUIRE(run(dispatcher, "SELECT * FROM m2.shop.public.orders;")->is_success());
-    CHECK(host.factory->storage_calls().size() == 1);
+    CHECK(host.backend().journal("scan") == strings{"scan " + orders});
 }
 
 TEST_CASE("integration::cpp::host_names::dml_on_a_local_table_reads_a_storage_table") {
@@ -860,7 +257,7 @@ TEST_CASE("integration::cpp::host_names::dml_on_a_local_table_reads_a_storage_ta
 TEST_CASE("integration::cpp::host_names::a_storage_error_reaches_the_cursor") {
     HOST_TEST_BOILERPLATE("test_host_names/operator_error")
     declare_orders(host);
-    unreachable()["m2.shop.orders"] = "server m2: connection refused";
+    host.backend().set_unreachable(orders, "server m2: connection refused");
     REQUIRE(run(dispatcher, "CREATE SCHEMA loc;")->is_success());
     REQUIRE(run(dispatcher, "CREATE TABLE loc.c (id BIGINT);")->is_success());
 
@@ -932,9 +329,9 @@ TEST_CASE("integration::cpp::host_names::a_matview_over_a_view_over_a_storage_ta
 TEST_CASE("integration::cpp::host_names::rows_without_columns_are_counted") {
     HOST_TEST_BOILERPLATE("test_host_names/no_columns")
     register_table(host, "marks", {});
+    host.backend().set_rows("m2.shop.public.marks", {{}, {}, {}});
 
     SECTION("one batch") {
-        backend()["m2.shop.marks"] = {{}, {}, {}};
         auto counted = run(dispatcher, "SELECT count(*) AS c FROM m2.shop.public.marks;");
         REQUIRE(counted->is_success());
         REQUIRE(counted->size() == 1);
@@ -942,8 +339,8 @@ TEST_CASE("integration::cpp::host_names::rows_without_columns_are_counted") {
         REQUIRE_FALSE(cell3.has_error());
         CHECK(cell3.value() == 3);
     }
-    SECTION("an empty batch between two others") {
-        batches()["m2.shop.marks"] = {{{}, {}}, {}, {{}}};
+    SECTION("several batches") {
+        host.backend().set_batches("m2.shop.public.marks", {2, 1});
         auto counted = run(dispatcher, "SELECT count(*) AS c FROM m2.shop.public.marks;");
         REQUIRE(counted->is_success());
         REQUIRE(counted->size() == 1);
@@ -953,16 +350,22 @@ TEST_CASE("integration::cpp::host_names::rows_without_columns_are_counted") {
     }
 }
 
-// An empty batch is data like any other; only the source's explicit end stops the read.
-TEST_CASE("integration::cpp::host_names::an_empty_batch_is_not_the_end") {
-    HOST_TEST_BOILERPLATE("test_host_names/empty_batch")
+// A backend's pages of any sizes arrive whole; an empty page is the end of the scan, so what a backend would send
+// after one is never read.
+TEST_CASE("integration::cpp::host_names::the_pages_of_a_scan_arrive_whole") {
+    HOST_TEST_BOILERPLATE("test_host_names/pages")
     declare_orders(host);
-    batches()["m2.shop.orders"] = {{}, {{1, 100}}, {}, {{2, 200}, {3, 300}}, {}};
-
+    host.backend().set_batches(orders, {1, 2});
     auto rows = run(dispatcher, "SELECT id, amount FROM m2.shop.public.orders;");
     REQUIRE(rows->is_success());
     CHECK(sorted_int_rows(rows) == rows_t{{1, 100}, {2, 200}, {3, 300}});
 
+    host.backend().set_batches(orders, {1, 0, 2});
+    auto cut = run(dispatcher, "SELECT id, amount FROM m2.shop.public.orders;");
+    REQUIRE(cut->is_success());
+    CHECK(sorted_int_rows(cut) == rows_t{{1, 100}});
+
+    host.backend().set_batches(orders, {1, 2});
     auto counted = run(dispatcher, "SELECT count(*) AS c FROM m2.shop.public.orders;");
     REQUIRE(counted->is_success());
     auto cell5 = counted->get<int64_t>(0, 0);
@@ -970,19 +373,46 @@ TEST_CASE("integration::cpp::host_names::an_empty_batch_is_not_the_end") {
     CHECK(cell5.value() == 3);
 }
 
-// A write target is the registered table: its connector makes its storage once per statement, for its oid.
+// A page of a scan always comes with its cursor (as the disk's and PostgreSQL's); a non-empty page without one is
+// refused, whichever scan reads it.
+TEST_CASE("integration::cpp::host_names::a_page_without_a_cursor_is_refused") {
+    HOST_TEST_BOILERPLATE("test_host_names/page_without_cursor")
+    declare_orders(host);
+    host.backend().set_pages_without_cursor(true);
+    for (const char* sql : {"SELECT id, amount FROM m2.shop.public.orders;",
+                            "SELECT id FROM m2.shop.public.orders WHERE amount > 150;",
+                            "SELECT count(*) AS c FROM m2.shop.public.orders;"}) {
+        INFO(sql);
+        auto refused = run(dispatcher, sql);
+        REQUIRE(refused->is_error());
+        CHECK(refused->get_error().type == core::error_code_t::invalid_parameter);
+        CHECK(std::string{refused->get_error().what} ==
+              "the storage of table \"" + orders + "\" answered a page without a cursor");
+    }
+}
+
+// A write target is the registered table: every write reaches its backend for that table.
 TEST_CASE("integration::cpp::host_names::a_write_target_is_its_registered_table") {
     HOST_TEST_BOILERPLATE("test_host_names/write_schema")
     declare_orders(host);
-    for (const char* sql : {"INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400);",
-                            "UPDATE m2.shop.public.orders SET amount = 1 WHERE id = 1;",
-                            "DELETE FROM m2.shop.public.orders WHERE id = 2;"}) {
-        host.factory->clear();
-        auto cursor = run(dispatcher, sql);
-        INFO(sql << " -> " << error_of(cursor));
+    struct write_t {
+        const char* sql;
+        const char* kind;
+        std::string line;
+    };
+    const write_t writes[] = {
+        {"INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400);",
+         "insert",
+         "insert " + orders + " id:bigint,amount:bigint"},
+        {"UPDATE m2.shop.public.orders SET amount = 1 WHERE id = 1;", "update", "update " + orders + " rows 1"},
+        {"DELETE FROM m2.shop.public.orders WHERE id = 2;", "delete", "delete " + orders + " rows 1"},
+    };
+    for (const auto& write : writes) {
+        host.backend().clear_journal();
+        auto cursor = run(dispatcher, write.sql);
+        INFO(write.sql << " -> " << error_of(cursor));
         REQUIRE(cursor->is_success());
-        REQUIRE(host.factory->storage_calls().size() == 1);
-        CHECK(host.factory->storage_calls().front().table == "m2.shop.public.orders");
+        CHECK(host.backend().journal(write.kind) == strings{write.line});
     }
 }
 
@@ -997,14 +427,14 @@ TEST_CASE("integration::cpp::host_names::insert_into_a_storage_table") {
         INFO(error_of(inserted));
         REQUIRE(inserted->is_success());
         CHECK(inserted->affected_rows() == 2);
-        CHECK(write_log() == std::vector<std::string>{"insert m2.shop.orders id:bigint,amount:bigint"});
+        CHECK(host.backend().journal("insert") == strings{"insert " + orders + " id:bigint,amount:bigint"});
         auto read = run(dispatcher, "SELECT id, amount FROM m2.shop.public.orders;");
         REQUIRE(read->is_success());
         CHECK(sorted_int_rows(read) == rows_t{{1, 100}, {2, 200}, {3, 300}, {4, 400}, {5, 500}});
     }
     SECTION("a column list in another order still arrives in the declared order") {
         REQUIRE(run(dispatcher, "INSERT INTO m2.shop.public.orders (amount, id) VALUES (600, 6);")->is_success());
-        CHECK(backend()["m2.shop.orders"].back() == std::vector<int64_t>{6, 600});
+        CHECK(host.backend().rows(orders).back() == std::vector<int64_t>{6, 600});
     }
     SECTION("INSERT ... SELECT from a local table, with and without a column list") {
         REQUIRE(run(dispatcher, "CREATE SCHEMA loc;")->is_success());
@@ -1017,28 +447,28 @@ TEST_CASE("integration::cpp::host_names::insert_into_a_storage_table") {
         auto positional = run(dispatcher, "INSERT INTO m2.shop.public.orders SELECT id + 10, amount FROM loc.t;");
         INFO(error_of(positional));
         REQUIRE(positional->is_success());
-        CHECK(backend()["m2.shop.orders"].back() == std::vector<int64_t>{19, 900});
-        CHECK(backend()["m2.shop.orders"].size() == 7);
+        CHECK(host.backend().rows(orders).back() == std::vector<int64_t>{19, 900});
+        CHECK(host.backend().rows(orders).size() == 7);
     }
     SECTION("a value no assignment cast takes to the declared type is refused before the storage sees it") {
         auto refused = run(dispatcher, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (10, 'ten');");
         REQUIRE(refused->is_error());
-        CHECK(write_log().empty());
+        CHECK(host.backend().journal("insert").empty());
     }
 }
 
-// The count is what the sink reports after its own work, not the rows handed to it.
+// The count is what the backend reports after its own work, not the rows handed to it.
 TEST_CASE("integration::cpp::host_names::the_count_is_what_the_sink_reports_written") {
     HOST_TEST_BOILERPLATE("test_host_names/sink_count")
     declare_orders(host);
-    short_writing().insert("m2.shop.orders");
+    host.backend().set_short_writing(orders);
 
     auto inserted =
         run(dispatcher, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400), (5, 500), (6, 600);");
     INFO(error_of(inserted));
     REQUIRE(inserted->is_success());
     CHECK(inserted->affected_rows() == 2);
-    CHECK(backend()["m2.shop.orders"].size() == 5);
+    CHECK(host.backend().rows(orders).size() == 5);
 
     auto updated = run(dispatcher, "UPDATE m2.shop.public.orders SET amount = amount + 1 WHERE id <= 3;");
     INFO(error_of(updated));
@@ -1049,21 +479,20 @@ TEST_CASE("integration::cpp::host_names::the_count_is_what_the_sink_reports_writ
     INFO(error_of(deleted));
     REQUIRE(deleted->is_success());
     CHECK(deleted->affected_rows() == 2);
-    CHECK(backend()["m2.shop.orders"].size() == 3);
+    CHECK(host.backend().rows(orders).size() == 3);
 }
 
-// A flush round reports the sink's running total, not a part: the count is the total once, not a sum of totals.
+// A flush round reports what it wrote: the count is the total once, not a sum of totals.
 TEST_CASE("integration::cpp::host_names::the_count_survives_flush_rounds") {
-    HOST_TEST_BOILERPLATE("test_host_names/sink_count_rounds")
+    HOST_TEST_BOILERPLATE_CAPPED("test_host_names/sink_count_rounds", nullptr, 1)
     declare_orders(host);
-    batches()["m2.shop.orders"] = {{{1, 100}}, {{2, 200}, {3, 300}}};
-    flush_rows() = 1;
+    host.backend().set_batches(orders, {1, 2});
 
     auto updated = run(dispatcher, "UPDATE m2.shop.public.orders SET amount = amount + 1;");
     INFO(error_of(updated));
     REQUIRE(updated->is_success());
     CHECK(updated->affected_rows() == 3);
-    CHECK(backend()["m2.shop.orders"] == rows_t{{1, 101}, {2, 201}, {3, 301}});
+    CHECK(host.backend().rows(orders) == rows_t{{1, 101}, {2, 201}, {3, 301}});
 
     auto inserted =
         run(dispatcher,
@@ -1076,17 +505,16 @@ TEST_CASE("integration::cpp::host_names::the_count_survives_flush_rounds") {
     INFO(error_of(deleted));
     REQUIRE(deleted->is_success());
     CHECK(deleted->affected_rows() == 3);
-    CHECK(backend()["m2.shop.orders"] == rows_t{{11, 100}, {12, 200}, {13, 300}});
+    CHECK(host.backend().rows(orders) == rows_t{{11, 101}, {12, 201}, {13, 301}});
 }
 
-// The storage's flush_row_threshold caps every sink round; the rest of a flush goes in further rounds of the same
-// flush, and the count is the total.
+// The connection's max_rows_per_write caps every write message; the rest of a flush goes in further messages of the
+// same flush, and the count is the total.
 TEST_CASE("integration::cpp::host_names::the_storage_caps_each_sink_round") {
-    HOST_TEST_BOILERPLATE("test_host_names/flush_rows")
+    HOST_TEST_BOILERPLATE_CAPPED("test_host_names/flush_rows", nullptr, 2)
     declare_orders(host);
-    backend()["m2.shop.orders"] = {{1, 100}, {2, 200}, {3, 300}, {4, 400}};
-    batches()["m2.shop.orders"] = {{{1, 100}}, {{2, 200}}, {{3, 300}}, {{4, 400}}};
-    flush_rows() = 2;
+    host.backend().set_rows(orders, {{1, 100}, {2, 200}, {3, 300}, {4, 400}});
+    host.backend().set_batches(orders, {1, 1, 1, 1});
     const char* insert_five =
         "INSERT INTO m2.shop.public.orders (id, amount) VALUES (5, 500), (6, 600), (7, 700), (8, 800), "
         "(9, 900)";
@@ -1096,39 +524,31 @@ TEST_CASE("integration::cpp::host_names::the_storage_caps_each_sink_round") {
         INFO(error_of(inserted));
         REQUIRE(inserted->is_success());
         CHECK(inserted->affected_rows() == 5);
-        CHECK(round_sizes() == std::vector<std::size_t>{2, 2, 1});
-        CHECK(backend()["m2.shop.orders"].size() == 9);
-        CHECK(backend()["m2.shop.orders"].back() == std::vector<int64_t>{9, 900});
+        CHECK(host.backend().write_rounds() == std::vector<std::size_t>{2, 2, 1});
+        CHECK(host.backend().rows(orders).size() == 9);
+        CHECK(host.backend().rows(orders).back() == std::vector<int64_t>{9, 900});
     }
     SECTION("UPDATE") {
         auto updated = run(dispatcher, "UPDATE m2.shop.public.orders SET amount = amount + 1 WHERE id <= 3;");
         INFO(error_of(updated));
         REQUIRE(updated->is_success());
         CHECK(updated->affected_rows() == 3);
-        CHECK(round_sizes() == std::vector<std::size_t>{2, 1});
-        CHECK(backend()["m2.shop.orders"] == rows_t{{1, 101}, {2, 201}, {3, 301}, {4, 400}});
+        CHECK(host.backend().write_rounds() == std::vector<std::size_t>{2, 1});
+        CHECK(host.backend().rows(orders) == rows_t{{1, 101}, {2, 201}, {3, 301}, {4, 400}});
     }
     SECTION("DELETE") {
         auto deleted = run(dispatcher, "DELETE FROM m2.shop.public.orders WHERE id >= 2;");
         INFO(error_of(deleted));
         REQUIRE(deleted->is_success());
         CHECK(deleted->affected_rows() == 3);
-        CHECK(round_sizes() == std::vector<std::size_t>{2, 1});
-        CHECK(backend()["m2.shop.orders"] == rows_t{{1, 100}});
-    }
-    SECTION("a cap above the rows: one round") {
-        flush_rows() = 1000;
-        auto inserted = run(dispatcher, std::string{insert_five} + ";");
-        INFO(error_of(inserted));
-        REQUIRE(inserted->is_success());
-        CHECK(inserted->affected_rows() == 5);
-        CHECK(round_sizes() == std::vector<std::size_t>{5});
+        CHECK(host.backend().write_rounds() == std::vector<std::size_t>{2, 1});
+        CHECK(host.backend().rows(orders) == rows_t{{1, 100}});
     }
     SECTION("RETURNING gives every row, in order") {
         auto inserted = run(dispatcher, std::string{insert_five} + " RETURNING id;");
         INFO(error_of(inserted));
         REQUIRE(inserted->is_success());
-        CHECK(round_sizes() == std::vector<std::size_t>{2, 2, 1});
+        CHECK(host.backend().write_rounds() == std::vector<std::size_t>{2, 2, 1});
         rows_t ids;
         for (const auto& chunk : inserted->chunks()) {
             for (std::uint64_t row = 0; row < chunk.size(); ++row) {
@@ -1137,53 +557,88 @@ TEST_CASE("integration::cpp::host_names::the_storage_caps_each_sink_round") {
         }
         CHECK(ids == rows_t{{5}, {6}, {7}, {8}, {9}});
 
-        round_sizes().clear();
+        host.backend().clear_journal();
         auto updated =
             run(dispatcher, "UPDATE m2.shop.public.orders SET amount = amount + 1 WHERE id <= 3 RETURNING id, amount;");
         INFO(error_of(updated));
         REQUIRE(updated->is_success());
-        CHECK(round_sizes() == std::vector<std::size_t>{2, 1});
+        CHECK(host.backend().write_rounds() == std::vector<std::size_t>{2, 1});
         CHECK(sorted_int_rows(updated) == rows_t{{1, 101}, {2, 201}, {3, 301}});
     }
     SECTION("a short-writing backend: the count is what every round applied") {
-        short_writing().insert("m2.shop.orders");
+        host.backend().set_short_writing(orders);
         auto inserted = run(dispatcher, std::string{insert_five} + ";");
         INFO(error_of(inserted));
         REQUIRE(inserted->is_success());
-        CHECK(round_sizes() == std::vector<std::size_t>{2, 2, 1});
+        CHECK(host.backend().write_rounds() == std::vector<std::size_t>{2, 2, 1});
         CHECK(inserted->affected_rows() == 2);
     }
 }
 
-// A round the backend refuses ends the statement with the backend's error; the rounds before it stay written (no
-// two-phase commit, #663), and the next statement runs.
-TEST_CASE("integration::cpp::host_names::a_failed_sink_round_is_the_statement_error") {
-    HOST_TEST_BOILERPLATE("test_host_names/failed_round")
+// A cap above the rows of a flush: one write message.
+TEST_CASE("integration::cpp::host_names::a_cap_above_the_rows_is_one_round") {
+    HOST_TEST_BOILERPLATE_CAPPED("test_host_names/cap_above", nullptr, 1000)
     declare_orders(host);
-    flush_rows() = 1;
-    failing_round() = 2;
+    auto inserted = run(dispatcher,
+                        "INSERT INTO m2.shop.public.orders (id, amount) VALUES (5, 500), (6, 600), (7, 700), (8, 800), "
+                        "(9, 900);");
+    INFO(error_of(inserted));
+    REQUIRE(inserted->is_success());
+    CHECK(inserted->affected_rows() == 5);
+    CHECK(host.backend().write_rounds() == std::vector<std::size_t>{5});
+}
+
+// Every connection has its own cap, two connections of one actor included; a table of otterbrix's own flushes on the
+// engine's threshold.
+TEST_CASE("integration::cpp::host_names::every_connection_has_its_own_cap") {
+    host_t host("test_host_names/caps", nullptr, {"m2", "m3=m2"}, {{"m2", 2}, {"m3", 1000}});
+    host.register_database("m2", "shop");
+    host.register_database("m3", "shop");
+    host.db.ok(otterbrix::session_id_t(), "CREATE TABLE m2.shop.public.t (id BIGINT);");
+    host.db.ok(otterbrix::session_id_t(), "CREATE TABLE m3.shop.public.t (id BIGINT);");
+    host.db.ok(otterbrix::session_id_t(), "CREATE SCHEMA loc;");
+    host.db.ok(otterbrix::session_id_t(), "CREATE TABLE loc.t (id BIGINT);");
+    const char* five = " (id) VALUES (1), (2), (3), (4), (5);";
+    host.backend("m2").clear_journal();
+    host.db.ok(otterbrix::session_id_t(), std::string{"INSERT INTO m2.shop.public.t"} + five);
+    CHECK(host.backend("m2").write_rounds() == std::vector<std::size_t>{2, 2, 1});
+    host.backend("m2").clear_journal();
+    host.db.ok(otterbrix::session_id_t(), std::string{"INSERT INTO m3.shop.public.t"} + five);
+    CHECK(host.backend("m3").write_rounds() == std::vector<std::size_t>{5});
+    host.db.ok(otterbrix::session_id_t(), std::string{"INSERT INTO loc.t"} + five);
+    CHECK(host.db.ints(otterbrix::session_id_t(), "SELECT count(*) FROM loc.t;") == std::vector<std::int64_t>{5});
+}
+
+// A write message the backend refuses ends the statement with the backend's error; the statement's earlier messages
+// are rolled back by abort_transaction, and the next statement runs.
+TEST_CASE("integration::cpp::host_names::a_failed_sink_round_is_the_statement_error") {
+    HOST_TEST_BOILERPLATE_CAPPED("test_host_names/failed_round", nullptr, 1)
+    declare_orders(host);
+    host.backend().set_failing_round(2);
 
     auto failed =
         run(dispatcher, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400), (5, 500), (6, 600);");
     REQUIRE(failed->is_error());
     CHECK(failed->get_error().type == core::error_code_t::connection_closed);
     CHECK(std::string{failed->get_error().what} == "server m2: round 2 failed");
-    CHECK(round_sizes() == std::vector<std::size_t>{1, 1});
-    CHECK(backend()["m2.shop.orders"] == rows_t{{1, 100}, {2, 200}, {3, 300}, {4, 400}});
+    CHECK(host.backend().write_rounds() == std::vector<std::size_t>{1, 1});
+    CHECK(host.backend().rows(orders) == rows_t{{1, 100}, {2, 200}, {3, 300}});
+    CHECK(host.backend().journal("abort") == strings{"abort 0"});
+    CHECK(host.backend().open_transactions() == 0);
 
     auto next = run(dispatcher, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (7, 700);");
     INFO(error_of(next));
     REQUIRE(next->is_success());
     CHECK(next->affected_rows() == 1);
-    CHECK(backend()["m2.shop.orders"].back() == std::vector<int64_t>{7, 700});
+    CHECK(host.backend().rows(orders).back() == std::vector<int64_t>{7, 700});
 }
 
-// An INSERT into a storage flushes on the storage's threshold, not the engine's (as PostgreSQL 18 batches a foreign
-// INSERT by the FDW's batch size); an UPDATE / DELETE flushes on the engine's.
+// An INSERT into a backend's table flushes on the connection's max_rows_per_write, not the engine's threshold (as
+// PostgreSQL 18 batches a foreign INSERT by the FDW's batch size); an UPDATE / DELETE flushes on the engine's.
 TEST_CASE("integration::cpp::host_names::an_insert_flushes_on_the_storage_threshold") {
-    HOST_TEST_BOILERPLATE_WITH("test_host_names/insert_threshold", &flush_every_row)
+    HOST_TEST_BOILERPLATE_CAPPED("test_host_names/insert_threshold", &flush_every_row, 1000)
     declare_orders(host);
-    batches()["m2.shop.orders"] = {{{1, 100}}, {{2, 200}}, {{3, 300}}};
+    host.backend().set_batches(orders, {1, 1, 1});
 
     auto inserted =
         run(dispatcher,
@@ -1191,25 +646,25 @@ TEST_CASE("integration::cpp::host_names::an_insert_flushes_on_the_storage_thresh
     INFO(error_of(inserted));
     REQUIRE(inserted->is_success());
     CHECK(inserted->affected_rows() == 3);
-    CHECK(round_sizes() == std::vector<std::size_t>{3});
+    CHECK(host.backend().write_rounds() == std::vector<std::size_t>{3});
 
-    round_sizes().clear();
+    host.backend().clear_journal();
     auto updated = run(dispatcher, "UPDATE m2.shop.public.orders SET amount = amount + 1 WHERE id <= 3;");
     INFO(error_of(updated));
     REQUIRE(updated->is_success());
     CHECK(updated->affected_rows() == 3);
-    CHECK(round_sizes() == std::vector<std::size_t>{1, 1, 1});
+    CHECK(host.backend().write_rounds() == std::vector<std::size_t>{1, 1, 1});
 
-    round_sizes().clear();
+    host.backend().clear_journal();
     auto deleted = run(dispatcher, "DELETE FROM m2.shop.public.orders WHERE id <= 3;");
     INFO(error_of(deleted));
     REQUIRE(deleted->is_success());
     CHECK(deleted->affected_rows() == 3);
-    CHECK(round_sizes() == std::vector<std::size_t>{1, 1, 1});
-    CHECK(backend()["m2.shop.orders"] == rows_t{{11, 100}, {12, 200}, {13, 300}});
+    CHECK(host.backend().write_rounds() == std::vector<std::size_t>{1, 1, 1});
+    CHECK(host.backend().rows(orders) == rows_t{{11, 100}, {12, 200}, {13, 300}});
 }
 
-// A storage table declares no defaults: a column the INSERT leaves out is NULL, as for a local table without one.
+// A backend's table declares no defaults: a column the INSERT leaves out is NULL, as for a local table without one.
 TEST_CASE("integration::cpp::host_names::an_omitted_column_is_null") {
     HOST_TEST_BOILERPLATE("test_host_names/insert_null")
     declare_orders(host);
@@ -1223,7 +678,7 @@ TEST_CASE("integration::cpp::host_names::an_omitted_column_is_null") {
         INFO(sql << " -> " << error_of(cursor));
         REQUIRE(cursor->is_success());
     }
-    CHECK(sorted(backend()["m2.shop.orders"]) == rows_t{{-1, 800}, {1, 100}, {2, 200}, {3, 300}, {4, -1}, {5, -1}});
+    CHECK(sorted(host.backend().rows(orders)) == rows_t{{-1, 800}, {1, 100}, {2, 200}, {3, 300}, {4, -1}, {5, -1}});
 }
 
 TEST_CASE("integration::cpp::host_names::insert_returning_reads_the_rows_written") {
@@ -1234,14 +689,37 @@ TEST_CASE("integration::cpp::host_names::insert_returning_reads_the_rows_written
     INFO(error_of(returned));
     REQUIRE(returned->is_success());
     CHECK(sorted_int_rows(returned) == rows_t{{4}, {5}});
-    CHECK(backend()["m2.shop.orders"].size() == 5);
+    CHECK(host.backend().rows(orders).size() == 5);
+    CHECK(host.backend().journal("scan").empty());
 }
 
-// The host's rule replaces a simple UPDATE / DELETE of its table with one remote statement (as postgres_fdw's
-// direct modify does); the statement never scans the table.
+// A RETURNING of constants only is computed before anything is written, as PostgreSQL 18 folds an immutable
+// expression while planning: its error is the statement's, and the backend gets no write.
+TEST_CASE("integration::cpp::host_names::a_constant_returning_errs_before_the_write") {
+    HOST_TEST_BOILERPLATE("test_host_names/constant_returning")
+    declare_orders(host);
+    host.backend().clear_journal();
+    for (const char* sql : {"INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400) RETURNING 1 / 0;",
+                            "UPDATE m2.shop.public.orders SET amount = 1 WHERE id = 1 RETURNING 1 / 0;",
+                            "DELETE FROM m2.shop.public.orders WHERE id = 1 RETURNING 1 / 0;"}) {
+        INFO(sql);
+        auto refused = run(dispatcher, sql);
+        REQUIRE(refused->is_error());
+        CHECK(std::string{refused->get_error().what}.find("division by zero") != std::string::npos);
+    }
+    for (const char* write : {"insert", "update", "delete", "run"}) {
+        INFO(write);
+        CHECK(host.backend().journal(write).empty());
+    }
+    CHECK(host.backend().rows(orders) == rows_t{{1, 100}, {2, 200}, {3, 300}});
+}
+
+// The backend takes a simple UPDATE / DELETE of its table as one remote statement through storage_offer (as
+// postgres_fdw's direct modify does); the statement never scans the table.
 TEST_CASE("integration::cpp::host_names::a_simple_update_or_delete_is_one_remote_statement") {
     HOST_TEST_BOILERPLATE("test_host_names/one_remote_statement")
     declare_orders(host);
+    host.backend().set_take_policy({false, true});
 
     auto updated = run(dispatcher, "UPDATE m2.shop.public.orders SET amount = 250 WHERE id = 2;");
     INFO(error_of(updated));
@@ -1257,50 +735,37 @@ TEST_CASE("integration::cpp::host_names::a_simple_update_or_delete_is_one_remote
     REQUIRE(untouched->is_success());
     CHECK(untouched->affected_rows() == 0);
 
-    CHECK(write_log() == std::vector<std::string>{"update m2.shop.orders where column 0 set column 1",
-                                                  "delete m2.shop.orders where column 0",
-                                                  "delete m2.shop.orders where column 0"});
-    CHECK(backend()["m2.shop.orders"] == rows_t{{2, 250}, {3, 300}});
+    CHECK(host.backend().journal("run") == strings{"run update " + orders + " where column 0 set column 1",
+                                                   "run delete " + orders + " where column 0",
+                                                   "run delete " + orders + " where column 0"});
+    CHECK(host.backend().journal("scan").empty());
+    CHECK(host.backend().rows(orders) == rows_t{{2, 250}, {3, 300}});
 
     auto all = run(dispatcher, "DELETE FROM m2.shop.public.orders;");
     REQUIRE(all->is_success());
     CHECK(all->affected_rows() == 2);
-    CHECK(write_log().back() == "delete m2.shop.orders");
-    CHECK(backend()["m2.shop.orders"].empty());
+    REQUIRE_FALSE(host.backend().journal("run").empty());
+    CHECK(host.backend().journal("run").back() == "run delete " + orders);
+    CHECK(host.backend().rows(orders).empty());
 }
 
-namespace {
-    std::vector<std::string> explain_lines(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& sql) {
-        auto cursor = run(dispatcher, sql);
-        INFO(sql << " -> " << error_of(cursor));
-        REQUIRE(cursor->is_success());
-        std::vector<std::string> lines;
-        for (std::size_t row = 0; row < cursor->size(); ++row) {
-            auto cell6 = cursor->get<std::string_view>(0, row);
-            REQUIRE_FALSE(cell6.has_error());
-            lines.emplace_back(cell6.value());
-        }
-        return lines;
-    }
-} // namespace
-
-// PostgreSQL 18 postgres_fdw: "Foreign Scan on ..." with "Remote SQL: ..." under it. The storage's scan says both.
-TEST_CASE("integration::cpp::host_names::explain_prints_the_storage_scan_label_and_details") {
+// PostgreSQL 18 postgres_fdw: "Foreign Scan on ..." for a scan otterbrix runs itself; what the backend did not take
+// has no remote statement to print.
+TEST_CASE("integration::cpp::host_names::explain_prints_the_storage_scan_label") {
     HOST_TEST_BOILERPLATE("test_host_names/explain")
     declare_orders(host);
 
     SECTION("EXPLAIN") {
         CHECK(explain_lines(dispatcher, "EXPLAIN SELECT * FROM m2.shop.public.orders;") ==
-              std::vector<std::string>{"Foreign Scan on m2.shop.orders", "  Remote SQL: SELECT * FROM shop.orders"});
+              std::vector<std::string>{"Foreign Scan on " + orders});
     }
     SECTION("EXPLAIN ANALYZE") {
         auto lines = explain_lines(dispatcher, "EXPLAIN ANALYZE SELECT * FROM m2.shop.public.orders;");
-        REQUIRE(lines.size() == 2);
-        CHECK(lines[0].rfind("Foreign Scan on m2.shop.orders  (actual time=", 0) == 0);
+        REQUIRE(lines.size() == 1);
+        CHECK(lines[0].rfind("Foreign Scan on " + orders + "  (actual time=", 0) == 0);
         CHECK(lines[0].find("rows=3 loops=1)") != std::string::npos);
-        CHECK(lines[1] == "  Remote SQL: SELECT * FROM shop.orders");
     }
-    SECTION("the details of a node below the root are indented under its label") {
+    SECTION("a node below the root") {
         REQUIRE(run(dispatcher, "CREATE SCHEMA loc;")->is_success());
         REQUIRE(run(dispatcher, "CREATE TABLE loc.c (id BIGINT);")->is_success());
         auto lines =
@@ -1308,48 +773,39 @@ TEST_CASE("integration::cpp::host_names::explain_prints_the_storage_scan_label_a
                           "EXPLAIN SELECT o.id FROM m2.shop.public.orders AS o JOIN loc.c AS c ON o.id = c.id;");
         CHECK(lines == std::vector<std::string>{"Project",
                                                 "  ->  Hash Join",
-                                                "    ->  Foreign Scan on m2.shop.orders",
-                                                "          Remote SQL: SELECT * FROM shop.orders",
+                                                "    ->  Foreign Scan on " + orders,
                                                 "    ->  Seq Scan on c"});
     }
-    SECTION("a write into the storage table: the storage sink's line, not the engine's") {
-        CHECK(explain_lines(dispatcher, "EXPLAIN INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400);") ==
-              std::vector<std::string>{"Foreign Insert on m2.shop.orders",
-                                       "  Remote SQL: INSERT INTO shop.orders VALUES ($1, $2)",
-                                       "  Batch Size: 1",
-                                       "  ->  Values Scan"});
-        // RETURNING keeps both off the host's one-statement rule: the batch path's sinks say their lines, and the
-        // storage's scan feeds them.
+    SECTION("a write into the backend's table: the foreign write's line") {
+        auto inserted =
+            explain_lines(dispatcher, "EXPLAIN INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400);");
+        REQUIRE_FALSE(inserted.empty());
+        CHECK(inserted[0] == "Foreign Insert on " + orders);
         struct write_line_t {
             const char* sql;
-            const char* label;
-            const char* remote_sql;
+            std::string label;
         };
         const write_line_t writes[] = {
             {"EXPLAIN UPDATE m2.shop.public.orders SET amount = 1 WHERE id = 1 RETURNING id;",
-             "Foreign Update on m2.shop.orders",
-             "  Remote SQL: UPDATE shop.orders SET id = $1, amount = $2 WHERE ctid = $3"},
-            {"EXPLAIN DELETE FROM m2.shop.public.orders WHERE id = 1 RETURNING id;",
-             "Foreign Delete on m2.shop.orders",
-             "  Remote SQL: DELETE FROM shop.orders WHERE ctid = $1"},
+             "Foreign Update on " + orders},
+            {"EXPLAIN DELETE FROM m2.shop.public.orders WHERE id = 1 RETURNING id;", "Foreign Delete on " + orders},
         };
         for (const auto& write : writes) {
             INFO(write.sql);
             auto lines = explain_lines(dispatcher, write.sql);
-            REQUIRE(lines.size() >= 3);
+            REQUIRE(lines.size() >= 2);
             CHECK(lines[0] == write.label);
-            CHECK(lines[1] == write.remote_sql);
             CHECK(std::any_of(lines.begin(), lines.end(), [](const std::string& line) {
-                return line.find("->  Foreign Scan on m2.shop.orders") != std::string::npos;
+                return line.find("->  Foreign Scan on " + orders) != std::string::npos;
             }));
         }
-        CHECK(backend()["m2.shop.orders"] == rows_t{{1, 100}, {2, 200}, {3, 300}});
+        CHECK(host.backend().rows(orders) == rows_t{{1, 100}, {2, 200}, {3, 300}});
     }
 }
 
-// What one remote statement cannot say runs as otterbrix's own UPDATE / DELETE: the storage's scan numbers the
-// rows, otterbrix does the FROM / USING semi-join, the WHERE and RETURNING, and the numbers come back to the
-// storage's update or delete sink.
+// What the backend does not take runs as otterbrix's own UPDATE / DELETE: the backend's scan numbers the rows,
+// otterbrix does the FROM / USING semi-join, the WHERE and RETURNING, and the numbers come back to the backend's
+// update or delete.
 TEST_CASE("integration::cpp::host_names::update_and_delete_by_row_number") {
     HOST_TEST_BOILERPLATE("test_host_names/by_row_number")
     declare_orders(host);
@@ -1363,16 +819,16 @@ TEST_CASE("integration::cpp::host_names::update_and_delete_by_row_number") {
         INFO(error_of(updated));
         REQUIRE(updated->is_success());
         CHECK(updated->affected_rows() == 2);
-        CHECK(write_log() == std::vector<std::string>{"update m2.shop.orders rows 2"});
-        CHECK(backend()["m2.shop.orders"] == rows_t{{1, 111}, {2, 200}, {3, 333}});
+        CHECK(host.backend().journal("update") == strings{"update " + orders + " rows 2"});
+        CHECK(host.backend().rows(orders) == rows_t{{1, 111}, {2, 200}, {3, 333}});
     }
     SECTION("DELETE ... USING a local table") {
         auto deleted = run_in_shop(dispatcher, "DELETE FROM orders USING main.loc.t AS t WHERE orders.id = t.id;");
         INFO(error_of(deleted));
         REQUIRE(deleted->is_success());
         CHECK(deleted->affected_rows() == 2);
-        CHECK(write_log() == std::vector<std::string>{"delete m2.shop.orders rows 2"});
-        CHECK(backend()["m2.shop.orders"] == rows_t{{2, 200}});
+        CHECK(host.backend().journal("delete") == strings{"delete " + orders + " rows 2"});
+        CHECK(host.backend().rows(orders) == rows_t{{2, 200}});
     }
     SECTION("UPDATE ... RETURNING") {
         auto returned =
@@ -1380,8 +836,8 @@ TEST_CASE("integration::cpp::host_names::update_and_delete_by_row_number") {
         INFO(error_of(returned));
         REQUIRE(returned->is_success());
         CHECK(sorted_int_rows(returned) == rows_t{{2, 201}, {3, 301}});
-        CHECK(write_log() == std::vector<std::string>{"update m2.shop.orders rows 2"});
-        CHECK(backend()["m2.shop.orders"] == rows_t{{1, 100}, {2, 201}, {3, 301}});
+        CHECK(host.backend().journal("update") == strings{"update " + orders + " rows 2"});
+        CHECK(host.backend().rows(orders) == rows_t{{1, 100}, {2, 201}, {3, 301}});
     }
     SECTION("DELETE ... RETURNING, nothing matched: the columns are still typed") {
         auto returned = run(dispatcher, "DELETE FROM m2.shop.public.orders WHERE id = 3 RETURNING amount;");
@@ -1392,62 +848,69 @@ TEST_CASE("integration::cpp::host_names::update_and_delete_by_row_number") {
         INFO(error_of(none));
         REQUIRE(none->is_success());
         CHECK(none->size() == 0);
-        CHECK(backend()["m2.shop.orders"] == rows_t{{1, 100}, {2, 200}});
+        CHECK(host.backend().rows(orders) == rows_t{{1, 100}, {2, 200}});
     }
 }
 
-// A storage that cannot change a row by its number refuses make_update / make_delete: what the host's rule did not
-// take as one statement is refused with the storage's own error, and nothing reaches the backend.
+// A backend that cannot change a row by its number refuses storage_update / storage_delete_rows: what it did not
+// take as one statement is refused with its own error, and no row changes.
 TEST_CASE("integration::cpp::host_names::a_storage_without_row_numbers_refuses_the_batch_path") {
     HOST_TEST_BOILERPLATE("test_host_names/no_row_numbers")
     declare_orders(host);
     REQUIRE(run(dispatcher, "CREATE SCHEMA loc;")->is_success());
     REQUIRE(run(dispatcher, "CREATE TABLE loc.t (id BIGINT, amount BIGINT);")->is_success());
-    no_row_numbers().insert("m2.shop.orders");
+    REQUIRE(run(dispatcher, "INSERT INTO loc.t (id, amount) VALUES (1, 111);")->is_success());
+    host.backend().set_no_row_numbers(orders);
+    host.backend().set_take_policy({false, true});
     for (const char* sql : {"UPDATE orders SET amount = t.amount FROM main.loc.t AS t WHERE orders.id = t.id;",
-                            "DELETE FROM m2.shop.public.orders WHERE id = 1 RETURNING id;"}) {
+                            "DELETE FROM m2.shop.public.orders WHERE amount > 150 RETURNING id;"}) {
         INFO(sql);
         auto refused = run_in_shop(dispatcher, sql);
         REQUIRE(refused->is_error());
         CHECK(refused->get_error().type == core::error_code_t::unimplemented_yet);
-        CHECK(std::string{refused->get_error().what} == "storage \"m2.shop.orders\" cannot change a row by its number");
+        CHECK(std::string{refused->get_error().what} == "storage \"" + orders + "\" cannot change a row by its number");
     }
-    CHECK(write_log().empty());
+    CHECK(host.backend().rows(orders) == rows_t{{1, 100}, {2, 200}, {3, 300}});
 
+    host.backend().clear_journal();
     auto simple = run(dispatcher, "UPDATE m2.shop.public.orders SET amount = 1 WHERE id = 1;");
     INFO(error_of(simple));
     REQUIRE(simple->is_success());
-    CHECK(write_log() == std::vector<std::string>{"update m2.shop.orders where column 0 set column 1"});
+    CHECK(host.backend().journal("run") == strings{"run update " + orders + " where column 0 set column 1"});
 }
 
-// No refusal inside BEGIN ... COMMIT: the storage learns the statement is in an explicit transaction and decides
-// itself (a ROLLBACK does not undo what it wrote, #663).
+// The backend learns of the transaction's end: its writes of BEGIN ... COMMIT share one transaction, and COMMIT
+// prepares it and then releases it; an autocommit write is its own transaction, prepared at once.
 TEST_CASE("integration::cpp::host_names::a_storage_learns_of_an_explicit_transaction") {
     HOST_TEST_BOILERPLATE("test_host_names/write_txn")
     declare_orders(host);
     auto session = otterbrix::session_id_t();
     REQUIRE(run(dispatcher, session, "BEGIN;")->is_success());
-    host.factory->clear();
-    auto inside = run(dispatcher, session, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400);");
-    INFO(error_of(inside));
-    REQUIRE(inside->is_success());
-    REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
-    REQUIRE(host.factory->storage_calls().size() == 1);
-    CHECK(host.factory->storage_calls().front().explicit_transaction);
-
-    host.factory->clear();
+    REQUIRE(run(dispatcher, session, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400);")->is_success());
     REQUIRE(run(dispatcher, session, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (5, 500);")->is_success());
-    REQUIRE(host.factory->storage_calls().size() == 1);
-    CHECK_FALSE(host.factory->storage_calls().front().explicit_transaction);
-    CHECK(backend()["m2.shop.orders"].size() == 5);
+    CHECK(host.backend().journal("prepare").empty());
+    REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
+    CHECK(host.backend().journal("prepare") == strings{"prepare 1"});
+    CHECK(host.backend().journal("release") == strings{"release"});
+    const auto inside = host.backend().calls();
+    REQUIRE(inside.size() == 2);
+    CHECK(inside[0].transaction_id != 0);
+    CHECK(inside[0].transaction_id == inside[1].transaction_id);
+
+    host.backend().clear_journal();
+    REQUIRE(run(dispatcher, session, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (6, 600);")->is_success());
+    CHECK(host.backend().journal() == strings{"insert " + orders + " id:bigint,amount:bigint", "prepare 1", "release"});
+    REQUIRE(host.backend().calls().size() == 1);
+    CHECK(host.backend().calls().front().transaction_id != inside[0].transaction_id);
+    CHECK(host.backend().rows(orders).size() == 6);
+    CHECK(host.backend().open_transactions() == 0);
 }
 
-// The backend's refusal (a NOT NULL or CHECK it enforces, an unreachable server) reaches the cursor unchanged, on
-// the batch path and through the host's one-statement rule alike.
+// The backend's refusal (a NOT NULL or CHECK it enforces, an unreachable server) reaches the cursor unchanged.
 TEST_CASE("integration::cpp::host_names::a_storage_write_error_reaches_the_cursor") {
     HOST_TEST_BOILERPLATE("test_host_names/write_error")
     declare_orders(host);
-    unreachable()["m2.shop.orders"] = "server m2: new row violates check constraint \"amount_positive\"";
+    host.backend().set_unreachable(orders, "server m2: new row violates check constraint \"amount_positive\"");
     for (const char* sql : {"INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, -1);",
                             "UPDATE m2.shop.public.orders SET amount = -1 WHERE id = 1;",
                             "DELETE FROM m2.shop.public.orders WHERE id = 1;"}) {
@@ -1458,7 +921,8 @@ TEST_CASE("integration::cpp::host_names::a_storage_write_error_reaches_the_curso
         CHECK(std::string{cursor->get_error().what} ==
               "server m2: new row violates check constraint \"amount_positive\"");
     }
-    CHECK(backend()["m2.shop.orders"].size() == 3);
+    host.backend().clear_unreachable();
+    CHECK(host.backend().rows(orders).size() == 3);
 }
 
 // A name has at most four parts (connection.database.schema.table): a fifth is refused by the parser; the four-part
@@ -1466,12 +930,12 @@ TEST_CASE("integration::cpp::host_names::a_storage_write_error_reaches_the_curso
 TEST_CASE("integration::cpp::host_names::a_five_part_name_is_refused") {
     HOST_TEST_BOILERPLATE("test_host_names/uid_name")
     declare_orders(host);
-    backend()["m2.shop.orders"] = {{7, 700}};
+    host.backend().set_rows(orders, {{7, 700}});
 
     auto refused = run(dispatcher, "SELECT id, amount FROM u1.m2.shop.public.orders;");
     REQUIRE(refused->is_error());
     CHECK(refused->get_error().type == core::error_code_t::sql_parse_error);
-    CHECK(host.factory->storage_calls().empty());
+    CHECK(host.backend().journal().empty());
 
     auto found = run(dispatcher, "SELECT id, amount FROM m2.shop.public.orders;");
     INFO(error_of(found));
@@ -1479,7 +943,7 @@ TEST_CASE("integration::cpp::host_names::a_five_part_name_is_refused") {
     CHECK(sorted_int_rows(found) == rows_t{{7, 700}});
 }
 
-// every storage is made for its own session and transaction; a statement inside BEGIN says so.
+// Every message of a statement carries its own session and transaction; the statements of one BEGIN share it.
 TEST_CASE("integration::cpp::host_names::two_open_transactions") {
     HOST_TEST_BOILERPLATE("test_host_names/r5_1")
     declare_orders(host);
@@ -1487,12 +951,11 @@ TEST_CASE("integration::cpp::host_names::two_open_transactions") {
     const auto b = otterbrix::session_id_t();
     REQUIRE(run(dispatcher, a, "BEGIN;")->is_success());
     REQUIRE(run(dispatcher, b, "BEGIN;")->is_success());
-    host.factory->clear();
     REQUIRE(run(dispatcher, a, "SELECT id FROM m2.shop.public.orders;")->is_success());
     REQUIRE(run(dispatcher, b, "SELECT id FROM m2.shop.public.orders;")->is_success());
     REQUIRE(run(dispatcher, a, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400);")->is_success());
     REQUIRE(run(dispatcher, b, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (5, 500);")->is_success());
-    const auto calls = host.factory->storage_calls();
+    const auto calls = host.backend().calls();
     REQUIRE(calls.size() == 4);
     const auto& first_a = calls[0];
     const auto& first_b = calls[1];
@@ -1505,133 +968,129 @@ TEST_CASE("integration::cpp::host_names::two_open_transactions") {
     CHECK(calls[2].transaction_id == first_a.transaction_id);
     CHECK(calls[3].session == b.data());
     CHECK(calls[3].transaction_id == first_b.transaction_id);
-    for (const auto& call : calls) {
-        CHECK(call.explicit_transaction);
-    }
+    CHECK(host.backend().journal("prepare").empty());
     REQUIRE(run(dispatcher, a, "COMMIT;")->is_success());
     REQUIRE(run(dispatcher, b, "COMMIT;")->is_success());
+    CHECK(host.backend().journal("prepare").size() == 2);
+    CHECK(host.backend().rows(orders).size() == 5);
 }
 
-// two autocommit statements, two transactions.
+// Two autocommit statements, two transactions.
 TEST_CASE("integration::cpp::host_names::two_autocommit_statements") {
     HOST_TEST_BOILERPLATE("test_host_names/r5_2")
     declare_orders(host);
-    host.factory->clear();
     REQUIRE(run(dispatcher, "SELECT id FROM m2.shop.public.orders;")->is_success());
     REQUIRE(run(dispatcher, "SELECT id FROM m2.shop.public.orders;")->is_success());
-    const auto calls = host.factory->storage_calls();
+    const auto calls = host.backend().calls();
     REQUIRE(calls.size() == 2);
+    CHECK(calls[0].transaction_id != 0);
     CHECK(calls[0].transaction_id != calls[1].transaction_id);
-    CHECK_FALSE(calls[0].explicit_transaction);
-    CHECK_FALSE(calls[1].explicit_transaction);
 }
 
-// The connector gets the table as the catalog has it: its full name and its columns in attnum order.
-TEST_CASE("integration::cpp::host_names::the_connector_gets_the_tables_description") {
+// The backend gets the table as the catalog has it, at CREATE: its full name and its columns in attnum order.
+TEST_CASE("integration::cpp::host_names::the_backend_gets_the_tables_description") {
     HOST_TEST_BOILERPLATE("test_host_names/description")
-    declare_orders(host);
-    host.factory->clear();
-    REQUIRE(run(dispatcher, "SELECT amount FROM m2.shop.public.orders;")->is_success());
-    const auto calls = host.factory->storage_calls();
-    REQUIRE(calls.size() == 1);
-    const auto& call = calls.front();
-    CHECK(call.table == "m2.shop.public.orders");
-    CHECK(call.columns == std::vector<std::string>{"id", "amount"});
+    host.db.ok(otterbrix::session_id_t(), "CREATE TABLE m2.shop.public.orders (id BIGINT, amount BIGINT);");
+    CHECK(host.backend().journal("create") == strings{"create " + orders + " id amount"});
+    CHECK(host.backend().oid_of(orders) == oid_of(dispatcher, "orders"));
+    const auto attoids = host.backend().attoids_of(orders);
+    REQUIRE(attoids.size() == 2);
+    CHECK(attoids[0] != components::catalog::INVALID_OID);
+    CHECK(attoids[1] != components::catalog::INVALID_OID);
+    CHECK(attoids[0] != attoids[1]);
 }
 
-// one table read twice in a statement, one storage.
-TEST_CASE("integration::cpp::host_names::one_storage_per_table_and_statement") {
+// One table read twice in a statement: each read is its own scan of the backend.
+TEST_CASE("integration::cpp::host_names::each_read_of_a_table_is_its_own_scan") {
     HOST_TEST_BOILERPLATE("test_host_names/r5_4")
     declare_orders(host);
-    host.factory->clear();
     auto joined =
         run(dispatcher, "SELECT a.amount FROM m2.shop.public.orders a JOIN m2.shop.public.orders b USING (id);");
     INFO(error_of(joined));
     REQUIRE(joined->is_success());
-    CHECK(host.factory->storage_calls().size() == 1);
+    CHECK(sorted_int_rows(joined) == rows_t{{100}, {200}, {300}});
+    CHECK(host.backend().journal("scan") == strings{"scan " + orders, "scan " + orders});
+    CHECK(host.backend().open_cursors() == 0);
 }
 
-// the connector's refusal reaches the cursor unchanged.
-TEST_CASE("integration::cpp::host_names::a_connector_refusal_reaches_the_cursor") {
+// The backend's refusal to describe its table reaches the cursor unchanged.
+TEST_CASE("integration::cpp::host_names::a_backend_refusal_reaches_the_cursor") {
     HOST_TEST_BOILERPLATE("test_host_names/r5_5")
     declare_orders(host);
-    storage_refusal() = core::error_t{core::error_code_t::connection_closed,
-                                      std::pmr::string{"server m2: connection refused", dispatcher->resource()}};
+    host.backend().set_unreachable(orders, "server m2: connection refused");
     auto refused = run(dispatcher, "SELECT id FROM m2.shop.public.orders;");
     REQUIRE(refused->is_error());
     CHECK(refused->get_error().type == core::error_code_t::connection_closed);
     CHECK(std::string{refused->get_error().what} == "server m2: connection refused");
-    storage_refusal() = core::error_t::no_error();
 }
 
-// A table of a connection read in a run whose host gave no connector is refused, and the engine keeps running.
-TEST_CASE("integration::cpp::host_names::a_run_without_a_connector") {
+// A table of a connection the host's map does not hold is refused, and the engine keeps running.
+TEST_CASE("integration::cpp::host_names::a_run_without_the_connection_in_the_map") {
     HOST_TEST_BOILERPLATE("test_host_names/no_connector")
     declare_orders(host);
-    host.db.primitives.connector = nullptr;
-    host.db.restart();
+    host.restart_with({});
     dispatcher = host.db.dispatcher();
     auto refused = run(dispatcher, "SELECT id FROM m2.shop.public.orders;");
     REQUIRE(refused->is_error());
-    CHECK(refused->get_error().type == core::error_code_t::invalid_parameter);
-    CHECK(std::string{refused->get_error().what} ==
-          "table \"m2.shop.public.orders\" is of connection \"m2\", and the host gave no connector");
+    CHECK(refused->get_error().type == core::error_code_t::do_not_exists);
+    CHECK(std::string{refused->get_error().what} == "connection \"m2\" does not exist");
     REQUIRE(run(dispatcher, "SELECT 1;")->is_success());
 }
 
-// a bare name through a place in the connection.
+// A bare name through a place in the connection.
 TEST_CASE("integration::cpp::host_names::a_bare_name_through_the_place") {
     HOST_TEST_BOILERPLATE("test_host_names/r5_9")
     declare_orders(host);
-    host.factory->clear();
     auto read = run_in_shop(dispatcher, "SELECT id FROM orders;");
     INFO(error_of(read));
     REQUIRE(read->is_success());
     CHECK(sorted_int_rows(read) == rows_t{{1}, {2}, {3}});
-    CHECK(host.factory->storage_calls().size() == 1);
+    CHECK(host.backend().journal("scan") == strings{"scan " + orders});
 }
 
-// Rows of a storage table without columns reach the delete sink by their numbers: LIMIT keeps the statement off
-// the host's one-statement rule. (UPDATE has no column to set on such a table.)
+// Rows of a backend's table without columns reach its delete by their numbers.
 TEST_CASE("integration::cpp::host_names::delete_rows_without_columns_by_row_number") {
     HOST_TEST_BOILERPLATE("test_host_names/delete_no_columns")
     register_table(host, "marks", {});
-    backend()["m2.shop.marks"] = {{}, {}, {}};
+    host.backend().set_rows("m2.shop.public.marks", {{}, {}, {}});
 
     auto deleted = run(dispatcher, "DELETE FROM m2.shop.public.marks LIMIT 2;");
     INFO(error_of(deleted));
     REQUIRE(deleted->is_success());
     CHECK(deleted->affected_rows() == 2);
-    CHECK(write_log() == std::vector<std::string>{"delete m2.shop.marks rows 2"});
-    CHECK(backend()["m2.shop.marks"].size() == 1);
+    CHECK(host.backend().journal("delete") == strings{"delete m2.shop.public.marks rows 2"});
+    CHECK(host.backend().rows("m2.shop.public.marks").size() == 1);
 }
 
-TEST_CASE("integration::cpp::host_names::a_storage_write_after_a_savepoint_is_refused") {
+// A write after a savepoint reaches the backend; ROLLBACK TO undoes the backend's writes from the savepoint on, and
+// COMMIT keeps the rest.
+TEST_CASE("integration::cpp::host_names::a_storage_write_after_a_savepoint_is_rolled_back_to_it") {
     HOST_TEST_BOILERPLATE("test_host_names/savepoint_write")
     declare_orders(host);
     auto session = otterbrix::session_id_t();
     REQUIRE(run(dispatcher, session, "BEGIN;")->is_success());
+    REQUIRE(run(dispatcher, session, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400);")->is_success());
     REQUIRE(run(dispatcher, session, "SAVEPOINT s;")->is_success());
-    for (const char* sql : {"INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400);",
-                            "INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400) ON CONFLICT DO NOTHING;",
+    for (const char* sql : {"INSERT INTO m2.shop.public.orders (id, amount) VALUES (5, 500);",
                             "UPDATE m2.shop.public.orders SET amount = 1 WHERE id = 1;",
-                            "DELETE FROM m2.shop.public.orders WHERE id = 1;"}) {
+                            "DELETE FROM m2.shop.public.orders WHERE id = 2;"}) {
         INFO(sql);
-        auto refused = run(dispatcher, session, sql);
-        REQUIRE(refused->is_error());
-        CHECK(refused->get_error().type == core::error_code_t::unimplemented_yet);
-        const std::string what{refused->get_error().what};
-        CHECK(what.find("m2.shop.public.orders") != std::string::npos);
-        CHECK(what.find("savepoint") != std::string::npos);
-        CHECK(refused->transaction_status() == components::session::transaction_status_t::failed);
-        REQUIRE(run(dispatcher, session, "ROLLBACK TO SAVEPOINT s;")->is_success());
+        auto written = run(dispatcher, session, sql);
+        INFO(error_of(written));
+        REQUIRE(written->is_success());
     }
+    CHECK(host.backend().rows(orders) == rows_t{{1, 1}, {3, 300}, {4, 400}, {5, 500}});
+    REQUIRE(run(dispatcher, session, "ROLLBACK TO SAVEPOINT s;")->is_success());
+    const auto aborts = host.backend().journal("abort");
+    REQUIRE(aborts.size() == 1);
+    CHECK(aborts.front() != "abort 0");
+    CHECK(host.backend().rows(orders) == rows_t{{1, 100}, {2, 200}, {3, 300}, {4, 400}});
     REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
-    CHECK(write_log().empty());
-    CHECK(backend()["m2.shop.orders"] == rows_t{{1, 100}, {2, 200}, {3, 300}});
+    CHECK(host.backend().rows(orders) == rows_t{{1, 100}, {2, 200}, {3, 300}, {4, 400}});
+    CHECK(host.backend().open_transactions() == 0);
 }
 
-TEST_CASE("integration::cpp::host_names::a_storage_insert_select_after_a_savepoint_is_refused") {
+TEST_CASE("integration::cpp::host_names::a_storage_insert_select_after_a_savepoint_is_written") {
     HOST_TEST_BOILERPLATE("test_host_names/savepoint_insert_select")
     declare_orders(host);
     REQUIRE(run(dispatcher, "CREATE SCHEMA loc;")->is_success());
@@ -1640,33 +1099,33 @@ TEST_CASE("integration::cpp::host_names::a_storage_insert_select_after_a_savepoi
     auto session = otterbrix::session_id_t();
     REQUIRE(run(dispatcher, session, "BEGIN;")->is_success());
     REQUIRE(run(dispatcher, session, "SAVEPOINT s;")->is_success());
-    auto refused =
+    auto copied =
         run(dispatcher, session, "INSERT INTO m2.shop.public.orders (id, amount) SELECT id, amount FROM loc.t;");
-    REQUIRE(refused->is_error());
-    CHECK(refused->get_error().type == core::error_code_t::unimplemented_yet);
-    CHECK(refused->transaction_status() == components::session::transaction_status_t::failed);
+    INFO(error_of(copied));
+    REQUIRE(copied->is_success());
     REQUIRE(run(dispatcher, session, "ROLLBACK;")->is_success());
-    CHECK(write_log().empty());
-    CHECK(backend()["m2.shop.orders"].size() == 3);
+    CHECK(host.backend().journal("abort") == strings{"abort 0"});
+    CHECK(host.backend().rows(orders).size() == 3);
 }
 
-// ROLLBACK TO keeps its savepoint open (PostgreSQL 18 xact.c RollbackToSavepoint), so the refusal stays.
-TEST_CASE("integration::cpp::host_names::a_storage_write_after_rollback_to_is_refused") {
+// ROLLBACK TO keeps its savepoint open (PostgreSQL 18 xact.c RollbackToSavepoint): a write after it is undone by
+// the next ROLLBACK TO as well.
+TEST_CASE("integration::cpp::host_names::a_storage_write_after_rollback_to_is_rolled_back_again") {
     HOST_TEST_BOILERPLATE("test_host_names/savepoint_rollback_to")
     declare_orders(host);
     auto session = otterbrix::session_id_t();
     REQUIRE(run(dispatcher, session, "BEGIN;")->is_success());
     REQUIRE(run(dispatcher, session, "SAVEPOINT s;")->is_success());
     REQUIRE(run(dispatcher, session, "ROLLBACK TO SAVEPOINT s;")->is_success());
-    auto refused = run(dispatcher, session, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400);");
-    REQUIRE(refused->is_error());
-    CHECK(refused->get_error().type == core::error_code_t::unimplemented_yet);
-    REQUIRE(run(dispatcher, session, "ROLLBACK;")->is_success());
-    CHECK(write_log().empty());
-    CHECK(backend()["m2.shop.orders"].size() == 3);
+    REQUIRE(run(dispatcher, session, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400);")->is_success());
+    CHECK(host.backend().rows(orders).size() == 4);
+    REQUIRE(run(dispatcher, session, "ROLLBACK TO SAVEPOINT s;")->is_success());
+    CHECK(host.backend().rows(orders).size() == 3);
+    REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
+    CHECK(host.backend().rows(orders).size() == 3);
 }
 
-TEST_CASE("integration::cpp::host_names::a_storage_write_after_releasing_the_savepoints_is_allowed") {
+TEST_CASE("integration::cpp::host_names::a_storage_write_after_releasing_the_savepoints_commits") {
     HOST_TEST_BOILERPLATE("test_host_names/savepoint_release")
     declare_orders(host);
     auto session = otterbrix::session_id_t();
@@ -1680,19 +1139,20 @@ TEST_CASE("integration::cpp::host_names::a_storage_write_after_releasing_the_sav
         INFO(error_of(inserted));
         REQUIRE(inserted->is_success());
         REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
-        CHECK(write_log() == std::vector<std::string>{"insert m2.shop.orders id:bigint,amount:bigint"});
-        CHECK(backend()["m2.shop.orders"].size() == 4);
+        CHECK(host.backend().journal("insert") == strings{"insert " + orders + " id:bigint,amount:bigint"});
+        CHECK(host.backend().rows(orders).size() == 4);
     }
-    SECTION("an inner savepoint released, the outer one still open") {
+    SECTION("an inner savepoint released, the outer one rolled back to") {
         REQUIRE(run(dispatcher, session, "RELEASE SAVEPOINT inner_one;")->is_success());
-        auto refused = run(dispatcher, session, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400);");
-        REQUIRE(refused->is_error());
-        CHECK(refused->get_error().type == core::error_code_t::unimplemented_yet);
-        REQUIRE(run(dispatcher, session, "ROLLBACK;")->is_success());
-        CHECK(backend()["m2.shop.orders"].size() == 3);
+        REQUIRE(
+            run(dispatcher, session, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (4, 400);")->is_success());
+        REQUIRE(run(dispatcher, session, "ROLLBACK TO SAVEPOINT outer_one;")->is_success());
+        REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
+        CHECK(host.backend().rows(orders).size() == 3);
     }
 }
 
+// A read inside a transaction makes the backend a participant: it learns of the end, by COMMIT or ROLLBACK.
 TEST_CASE("integration::cpp::host_names::a_storage_read_after_a_savepoint_works") {
     HOST_TEST_BOILERPLATE("test_host_names/savepoint_read")
     declare_orders(host);
@@ -1703,7 +1163,26 @@ TEST_CASE("integration::cpp::host_names::a_storage_read_after_a_savepoint_works"
     INFO(error_of(read));
     REQUIRE(read->is_success());
     CHECK(sorted_int_rows(read) == rows_t{{1, 100}, {2, 200}, {3, 300}});
+    CHECK(host.backend().open_transactions() == 1);
     REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
+    CHECK(host.backend().journal("release") == strings{"release"});
+    CHECK(host.backend().open_transactions() == 0);
+}
+
+// An autocommit read of a backend's table ends its transaction there too.
+TEST_CASE("integration::cpp::host_names::an_autocommit_read_ends_at_the_backend") {
+    HOST_TEST_BOILERPLATE("test_host_names/autocommit_read")
+    declare_orders(host);
+    REQUIRE(run(dispatcher, "SELECT id FROM m2.shop.public.orders;")->is_success());
+    CHECK(host.backend().journal("release") == strings{"release"});
+    CHECK(host.backend().open_transactions() == 0);
+
+    auto session = otterbrix::session_id_t();
+    REQUIRE(run(dispatcher, session, "BEGIN;")->is_success());
+    REQUIRE(run(dispatcher, session, "SELECT id FROM m2.shop.public.orders;")->is_success());
+    REQUIRE(run(dispatcher, session, "ROLLBACK;")->is_success());
+    CHECK(host.backend().journal("abort") == strings{"abort 0"});
+    CHECK(host.backend().open_transactions() == 0);
 }
 
 TEST_CASE("integration::cpp::host_names::a_savepoint_over_local_tables_still_works_in_a_host_topology") {
@@ -1729,5 +1208,56 @@ TEST_CASE("integration::cpp::host_names::a_savepoint_over_local_tables_still_wor
     CHECK(sorted_int_rows(after) == rows_t{{1, 10}});
     REQUIRE(run(dispatcher, session, "COMMIT;")->is_success());
     CHECK(sorted_int_rows(run(dispatcher, "SELECT id, amount FROM loc.t;")) == rows_t{{1, 10}});
-    CHECK(write_log().empty());
+    CHECK(host.backend().journal("insert").empty());
+}
+
+// A LIMIT over a WHERE of a backend's table the backend did not take is otterbrix's, after the filter: the scan
+// reads every row.
+TEST_CASE("integration::cpp::host_names::a_limit_over_a_where_counts_the_matching_rows") {
+    HOST_TEST_BOILERPLATE("test_host_names/limit_over_where")
+    declare_orders(host);
+    auto found = run(dispatcher, "SELECT id, amount FROM m2.shop.public.orders WHERE amount = 300 LIMIT 1;");
+    INFO(error_of(found));
+    REQUIRE(found->is_success());
+    CHECK(sorted_int_rows(found) == rows_t{{3, 300}});
+}
+
+// INSERT ... ON CONFLICT into a backend's table the backend did not take is refused: otterbrix cannot find the
+// backend's conflicting row.
+TEST_CASE("integration::cpp::host_names::on_conflict_into_a_backends_table_is_refused") {
+    HOST_TEST_BOILERPLATE("test_host_names/on_conflict")
+    declare_orders(host);
+    auto refused =
+        run(dispatcher, "INSERT INTO m2.shop.public.orders (id, amount) VALUES (1, 5) ON CONFLICT DO NOTHING;");
+    REQUIRE(refused->is_error());
+    CHECK(refused->get_error().type == core::error_code_t::unimplemented_yet);
+    CHECK(std::string{refused->get_error().what} == "INSERT ... ON CONFLICT into table \"" + orders +
+                                                        "\" of connection \"m2\" is not supported unless its "
+                                                        "backend takes the statement");
+    CHECK(host.backend().journal("insert").empty());
+}
+
+// The columns of a scan are the catalog's (a backend has no message that answers them): a LATERAL inner scan read
+// once per outer row reads, and an empty table answers the catalog's columns.
+TEST_CASE("integration::cpp::host_names::a_scan_takes_its_columns_from_the_catalog") {
+    HOST_TEST_BOILERPLATE("test_host_names/columns_from_catalog")
+    declare_orders(host);
+    REQUIRE(run(dispatcher, "CREATE SCHEMA loc;")->is_success());
+    REQUIRE(run(dispatcher, "CREATE TABLE loc.d (id BIGINT);")->is_success());
+    REQUIRE(run(dispatcher, "INSERT INTO loc.d (id) VALUES (1), (2), (3);")->is_success());
+    auto lateral =
+        run(dispatcher,
+            "SELECT d.id, s.c FROM loc.d AS d, LATERAL (SELECT count(*) AS c FROM m2.shop.public.orders AS o "
+            "WHERE o.id = d.id) AS s;");
+    INFO(error_of(lateral));
+    REQUIRE(lateral->is_success());
+    CHECK(sorted_int_rows(lateral) == rows_t{{1, 1}, {2, 1}, {3, 1}});
+
+    REQUIRE(run(dispatcher, "CREATE TABLE m2.shop.public.empty (id BIGINT, amount BIGINT);")->is_success());
+    auto empty = run(dispatcher, "SELECT * FROM m2.shop.public.empty;");
+    INFO(error_of(empty));
+    REQUIRE(empty->is_success());
+    CHECK(empty->size() == 0);
+    REQUIRE_FALSE(empty->chunks().empty());
+    CHECK(empty->chunks().front().column_count() == 2);
 }

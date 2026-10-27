@@ -4,9 +4,6 @@
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
-#include <components/planner/host_hooks.hpp>
-
-#include <span>
 
 namespace components::planner {
 
@@ -31,7 +28,6 @@ namespace components::planner {
                                     logical_plan::node_ptr node,
                                     logical_plan::parameter_node_t* parameters,
                                     const graph_execution_context& ctx,
-                                    bool can_push_to_agent = false,
-                                    std::span<const optimizer_rule_t> host_rules = {});
+                                    bool can_push_to_agent = false);
 
 } // namespace components::planner

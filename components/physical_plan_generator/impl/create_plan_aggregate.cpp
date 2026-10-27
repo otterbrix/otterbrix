@@ -414,14 +414,6 @@ namespace services::planner::impl {
                 match_op->set_children(std::move(executor));
                 executor = std::move(match_op);
             }
-        } else if (const auto* table = node->table_metadata(); table != nullptr && table->storage != nullptr) {
-            // A table with external storage: its own scan, the WHERE filtered above it here.
-            VALUE_OR_RETURN(executor,
-                            storage_operator(context.resource, table->name, table->storage->make_scan(context)));
-            if (match_op) {
-                match_op->set_children(std::move(executor));
-                executor = std::move(match_op);
-            }
         } else {
             // The base scan comes from the declaration, not the oid: INVALID_OID means both no-FROM and unresolved.
             if (!match_op) {
@@ -436,12 +428,21 @@ namespace services::planner::impl {
                 }
             }
             std::vector<size_t> projected_cols = relkind_projected_cols(context, node, agg_node->projected_cols());
-            executor = match_op ? std::move(match_op)
-                                : static_cast<components::operators::operator_ptr>(boost::intrusive_ptr(
-                                      new components::operators::transfer_scan(plan_resource,
-                                                                               node->table_oid(),
-                                                                               agg_node->read_cap(),
-                                                                               std::move(projected_cols))));
+            if (match_op) {
+                executor = std::move(match_op);
+            } else {
+                VALUE_OR_RETURN(auto types, page_types_of(context, node->table_oid(), projected_cols));
+                VALUE_OR_RETURN(auto address, storage_address_of(context, node->table_oid()));
+                auto scan = boost::intrusive_ptr(
+                    new components::operators::transfer_scan(plan_resource,
+                                                             node->table_oid(),
+                                                             std::move(address),
+                                                             full_name_of(context, node->table_oid()),
+                                                             agg_node->read_cap(),
+                                                             std::move(projected_cols)));
+                scan->set_page_types(std::move(types));
+                executor = std::move(scan);
+            }
         }
         if (group_op) {
             // Forwarded so zero input rows still build correctly-typed results (PostgreSQL TupleDesc model).

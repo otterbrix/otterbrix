@@ -126,12 +126,15 @@ namespace {
         auto cols = vacuum_columns();
         auto table_oid = test_create_table(fx, ns_oid, "rows", cols);
         REQUIRE(table_oid >= catalog::FIRST_USER_OID);
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  catalog::well_known_oid::main_database,
-                  cols,
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      catalog::well_known_oid::main_database,
+                      qualified_name_t{},
+                      cols,
+                      /*is_computed=*/false)
+                .has_error());
         REQUIRE(std::filesystem::exists(otbx_path_for(table_oid)));
 
         uint64_t written = 0;
@@ -161,7 +164,12 @@ namespace {
                                                        components::table::transaction_data::committed(),
                                                        {},
                                                        table_oid};
-            auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+            auto r = fx.invoke(&manager_disk_t::storage_append,
+                               append_ctx,
+                               table_oid,
+                               std::pmr::vector<catalog::oid_t>(2, catalog::INVALID_OID, &fx.resource),
+                               std::move(batch),
+                               false);
             REQUIRE_FALSE(r.has_error());
             written += rows;
         }
@@ -190,7 +198,12 @@ namespace {
                                                    components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
-        auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+        auto r = fx.invoke(&manager_disk_t::storage_append,
+                           append_ctx,
+                           table_oid,
+                           std::pmr::vector<catalog::oid_t>(2, catalog::INVALID_OID, &fx.resource),
+                           std::move(batch),
+                           false);
         REQUIRE_FALSE(r.has_error());
     }
 

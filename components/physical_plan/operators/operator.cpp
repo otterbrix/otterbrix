@@ -66,8 +66,9 @@ namespace components::operators {
                     return "FK Cascade";
                 case operator_type::computed_field_register:
                     return "Computed Fields";
-                case operator_type::extension:
-                    return "Extension Scan";
+                case operator_type::remote_scan:
+                case operator_type::remote_write:
+                    return "Remote Query";
                 case operator_type::unused:
                 case operator_type::empty:
                 case operator_type::sequence:
@@ -75,6 +76,7 @@ namespace components::operators {
                 case operator_type::alter_column_add:
                 case operator_type::alter_column_rename:
                 case operator_type::alter_column_drop:
+                case operator_type::alter_column_set_not_null:
                 case operator_type::dynamic_cascade_delete:
                 case operator_type::checkpoint:
                 case operator_type::set_setting:
@@ -219,5 +221,20 @@ namespace components::operators {
 
     read_write_operator_t::read_write_operator_t(std::pmr::memory_resource* resource, log_t log, operator_type type)
         : operator_t(resource, std::move(log), type) {}
+
+    std::pmr::string foreign_label(std::pmr::memory_resource* resource,
+                                   const table::storage_address_t& address,
+                                   std::string_view verb,
+                                   std::string_view name) {
+        if (address.connection().empty()) {
+            return std::pmr::string{resource};
+        }
+        std::pmr::string label{verb, resource};
+        if (!name.empty()) {
+            label += " on ";
+            label.append(name.data(), name.size());
+        }
+        return label;
+    }
 
 } // namespace components::operators

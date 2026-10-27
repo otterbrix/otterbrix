@@ -1,5 +1,6 @@
 #pragma once
 
+#include <components/table/storage_address.hpp>
 #include <core/result_wrapper.hpp>
 
 #include <actor-zeta/detail/future.hpp>
@@ -66,6 +67,7 @@ namespace components::operators {
         alter_column_add,
         alter_column_rename,
         alter_column_drop,
+        alter_column_set_not_null,
         // Walks pg_depend at runtime, replacing the dispatcher BFS duplicated across the drop_* handlers.
         dynamic_cascade_delete,
         checkpoint,
@@ -94,7 +96,9 @@ namespace components::operators {
         resolve_type,
         resolve_constraint,
         allocate_oids,
-        extension,
+        // What a backend took: the rows it answers, or the write it runs.
+        remote_scan,
+        remote_write,
         batch
     };
 
@@ -274,7 +278,7 @@ namespace components::operators {
         virtual bool opens_at_start_impl() const noexcept { return false; }
         virtual uint64_t flush_row_threshold_impl(uint64_t engine) const noexcept { return engine; }
 
-        // Empty: the engine's name for type(), e.g. "Seq Scan", "Hash Join", "Extension Scan".
+        // Empty: the engine's name for type(), e.g. "Seq Scan", "Hash Join", "Remote Query".
         virtual std::pmr::string explain_label_impl() const { return std::pmr::string{resource_}; }
         virtual std::pmr::vector<std::pmr::string> explain_details_impl() const {
             return std::pmr::vector<std::pmr::string>{resource_};
@@ -314,5 +318,12 @@ namespace components::operators {
     };
 
     using operator_ptr = operator_t::ptr;
+
+    // EXPLAIN's line of an operator over a table of a connection: `verb` as PostgreSQL 18 names a foreign table's
+    // operator, then `name`; empty for a table of otterbrix's own (the line is then the engine's name for the operator).
+    std::pmr::string foreign_label(std::pmr::memory_resource* resource,
+                                   const table::storage_address_t& address,
+                                   std::string_view verb,
+                                   std::string_view name);
 
 } // namespace components::operators

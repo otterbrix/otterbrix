@@ -3010,11 +3010,6 @@ namespace services::dispatcher {
                             return key_res.convert_error<named_schema>();
                         }
                     }
-                    std::pmr::unordered_set<size_t> unchecked_columns(resource);
-                    for (size_t i = 0; i < table_schema.size(); i++) {
-                        unchecked_columns.emplace(i);
-                    }
-
                     const bool source_is_raw_values = node->children().front()->type() == node_type::data_t;
                     components::logical_plan::insert_column_bindings_t bindings(insert_node->resource());
                     bindings.reserve(incoming_schema.value().size());
@@ -3040,7 +3035,6 @@ namespace services::dispatcher {
                                            ? i
                                            : insert_node->key_translation()[key_pos].path().front();
                         const auto& corresponding_table_type = table_schema[index].type;
-                        unchecked_columns.erase(index);
                         const auto& incoming_type = incoming_schema.value()[i].type;
 
                         std::string target_name = insert_node->key_translation().empty()
@@ -3075,7 +3069,6 @@ namespace services::dispatcher {
                     // Each deferred cell is cast to the TABLE column's type by assignment, as PostgreSQL's
                     // transformInsertRow does. A cell of type text only reaches a non-text column through an
                     // unknown (quoted) literal; `x::text` has no assignment cast to it.
-                    std::pmr::unordered_set<std::uint64_t> deferred_positions(resource);
                     for (auto& cell : insert_node->deferred_cells()) {
                         if (cell.column >= insert_node->column_bindings().size()) {
                             return core::error_t(core::error_code_t::schema_error,
@@ -3083,7 +3076,6 @@ namespace services::dispatcher {
                                                                   "the INSERT columns",
                                                                   resource});
                         }
-                        deferred_positions.insert(cell.row * incoming_schema.value().size() + cell.column);
                         const auto& binding = insert_node->column_bindings()[cell.column];
                         const bool text_to_other = !cell.quoted &&
                                                    cell.value.type().type() == logical_type::STRING_LITERAL &&
@@ -3104,44 +3096,6 @@ namespace services::dispatcher {
                                                  resource});
                         }
                         cell.cast = std::move(*cast);
-                    }
-
-                    if (source_is_raw_values && tbl_ins) {
-                        const auto* dat = reinterpret_cast<const node_data_t*>(node->children().front().get());
-                        const auto& chunk = dat->data_chunk();
-                        const auto& cat_cols = tbl_ins->columns;
-                        for (size_t ci = 0; ci < incoming_schema.value().size(); ++ci) {
-                            size_t tbl_idx = insert_node->column_bindings()[ci].target_index;
-                            if (tbl_idx >= cat_cols.size() || !cat_cols[tbl_idx].attnotnull)
-                                continue;
-                            for (std::uint64_t row = 0; row < chunk.size(); ++row) {
-                                if (!chunk.data[ci].validity().row_is_valid(row) &&
-                                    !deferred_positions.contains(row * incoming_schema.value().size() + ci)) {
-                                    return core::error_t{
-                                        core::error_code_t::schema_error,
-                                        std::pmr::string{("insert_node: NULL value for NOT NULL column '" +
-                                                          cat_cols[tbl_idx].attname + "'")
-                                                             .c_str(),
-                                                         resource}};
-                                }
-                            }
-                        }
-                    }
-
-                    if (!unchecked_columns.empty()) {
-                        const auto& cat_columns =
-                            tbl_ins ? tbl_ins->columns
-                                    : std::vector<components::logical_plan::resolved_column_metadata_t>{};
-                        for (auto index : unchecked_columns) {
-                            if (!cat_columns[index].atthasdefault && cat_columns[index].attnotnull) {
-                                return core::error_t(
-                                    core::error_code_t::schema_error,
-                                    std::pmr::string{"insert_node: can not fill column \'" +
-                                                         cat_columns[index].attname +
-                                                         "\', because it lacks a default value and do not except null",
-                                                     resource});
-                            }
-                        }
                     }
                 }
             }

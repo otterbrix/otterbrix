@@ -8,6 +8,7 @@
 #include <core/result_wrapper.hpp>
 
 #include <set>
+#include <string>
 #include <vector>
 
 namespace services::dispatcher {
@@ -27,12 +28,13 @@ namespace services::dispatcher {
     //              scope for resolve + the operator pipeline.
     //   settings — dispatcher-owned settings cache (feeds context_storage_t).
     //   lowest_active_start_time — VACUUM/MVCC GC gate value for pipeline ctx.
-    //   savepoint_open — a savepoint of the transaction is neither released nor rolled past.
+    //   write_connection — the connection the transaction already wrote to; a write to another one is refused
+    //              before it reaches that connection's backend.
     struct txn_session_context_t {
         components::table::transaction_data txn{0, 0};
         components::catalog::session_catalog_t settings{};
         uint64_t lowest_active_start_time{0};
-        bool savepoint_open{false};
+        std::string write_connection{};
     };
 
     // Result of txn_commit_drain_msg: the dispatcher snapshots txn_data, drains
@@ -68,6 +70,8 @@ namespace services::dispatcher {
         std::vector<components::catalog::oid_t> created_storage_oids{};
         std::vector<components::table::created_index_t> created_indexes{};
         std::vector<components::table::referenced_delete_t> referenced_deletes{};
+        // Every storage that kept state of the transaction; drained also by an empty COMMIT, which takes no commit_id.
+        std::vector<components::table::participant_t> participants{};
     };
 
     // Writes made since the savepoint, which the operator reverts, or why ROLLBACK TO can't run
@@ -104,11 +108,13 @@ namespace services::dispatcher {
         std::vector<components::catalog::oid_t> created_storage_oids{};
         std::vector<components::table::created_index_t> created_indexes{};
         std::vector<components::table::referenced_delete_t> referenced_deletes{};
+        std::vector<components::table::participant_t> participants{};
 
         bool empty() const noexcept {
             return base_appends.empty() && base_deletes.empty() && pg_catalog_appends.empty() &&
                    pg_catalog_delete_tables.empty() && backfills.empty() && dropped_storage_oids.empty() &&
-                   created_storage_oids.empty() && created_indexes.empty() && referenced_deletes.empty();
+                   created_storage_oids.empty() && created_indexes.empty() && referenced_deletes.empty() &&
+                   participants.empty();
         }
     };
 

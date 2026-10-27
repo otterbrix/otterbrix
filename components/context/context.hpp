@@ -6,6 +6,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/place.hpp>
 #include <components/catalog/settings.hpp>
+#include <components/context/host_rows.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/execution_context/graph_execution_context.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -75,6 +76,24 @@ namespace components::pipeline {
         std::vector<components::table::referenced_delete_t> referenced_deletes;
         // commit_id drained by operator_commit_transaction_t, for follow-ups like an inline CREATE INDEX commit.
         uint64_t committed_id{0};
+        // Storages that keep state of the transaction, as the statement's reads and writes found them.
+        std::vector<table::participant_t> participants;
+        // A host's rows its DDL replies brought; the statement writes them before it ends.
+        std::vector<host_rows_t> host_rows;
+
+        // otterbrix's disk as a table's storage: where the storage messages of its own tables go.
+        table::storage_address_t disk_storage() const { return table::storage_address_t{disk_address, {}}; }
+
+        // otterbrix's disk: its versions are published and reverted by the transaction's own steps.
+        bool is_disk(const table::storage_address_t& address) const noexcept { return address.actor() == disk_address; }
+
+        // Called before the message is sent: a storage that refused it may still have done part of it.
+        void join_transaction(const table::storage_address_t& address, catalog::oid_t table_oid, bool wrote) {
+            if (is_disk(address)) {
+                return;
+            }
+            table::merge_participant(participants, table::participant_t{address, {table_oid}, wrote});
+        }
 
         // What a SET / SET LOCAL / ALTER SYSTEM ran: the dispatcher applies it once the statement succeeded.
         catalog::setting_scope_t applied_setting_scope{};

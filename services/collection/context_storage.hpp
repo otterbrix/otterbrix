@@ -15,10 +15,6 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace components::planner {
-    class connector_t;
-} // namespace components::planner
-
 namespace services {
 
     struct commit_input_t {
@@ -32,8 +28,8 @@ namespace services {
         components::graph_execution_context execution_context;
         // The statement's place; the resolve operators complete short names with it.
         components::catalog::place_t place;
-        // The host's connector, owned by the executor: the operators of DDL in a remote database come from it.
-        components::planner::connector_t* connector{nullptr};
+        // The disk's address: the storage of the catalog tables, which have no resolved metadata.
+        actor_zeta::actor::address_t disk_address{actor_zeta::actor::address_t::empty_address()};
         // oid-only routing. Plan generators ask "do we know about this table?"
         // via the resolved table_oid stamped on the logical_plan node.
         // Wrapper / parser-window paths fall back to the empty set.

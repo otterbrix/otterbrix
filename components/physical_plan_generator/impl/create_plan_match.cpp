@@ -148,10 +148,12 @@ namespace services::planner::impl {
                                          components::catalog::oid_t table_oid,
                                          const components::expressions::expression_ptr& expr,
                                          components::logical_plan::row_cap_t cap,
-                                         const std::vector<size_t>& projected_cols) {
+                                         const std::vector<size_t>& requested_cols) {
             if (context.has_table_oid(table_oid)) {
-                // TODO: function_expr in scans
-                if (is_pure_compare(expr)) {
+                const auto projected_cols = scan_columns_of(context, table_oid, requested_cols);
+                VALUE_OR_RETURN(auto address, storage_address_of(context, table_oid));
+                // Only the disk evaluates a predicate while it reads; any other storage is read whole, filtered above.
+                if (is_pure_compare(expr) && !address.is_remote()) {
                     auto comp_expr = boost::static_pointer_cast<expr::compare_expression_t>(expr);
                     if (!comp_expr->is_union()) {
                         bool key_on_left = true;
@@ -176,12 +178,18 @@ namespace services::planner::impl {
                         }
                     }
 
-                    return boost::intrusive_ptr(new components::operators::full_scan(context.resource,
-                                                                                     context.log.clone(),
-                                                                                     table_oid,
-                                                                                     comp_expr,
-                                                                                     cap,
-                                                                                     projected_cols));
+                    auto scan =
+                        boost::intrusive_ptr(new components::operators::full_scan(context.resource,
+                                                                                  context.log.clone(),
+                                                                                  table_oid,
+                                                                                  std::move(address),
+                                                                                  full_name_of(context, table_oid),
+                                                                                  comp_expr,
+                                                                                  cap,
+                                                                                  projected_cols));
+                    VALUE_OR_RETURN(auto types, page_types_of(context, table_oid, projected_cols));
+                    scan->set_page_types(std::move(types));
+                    return scan;
                 } else {
                     // The inner full_scan is unlimited because operator_match filters above it; capping
                     // here could starve the filter of matching rows. operator_match's own limit is an
@@ -189,13 +197,18 @@ namespace services::planner::impl {
                     // bound for DML (no operator_limit over a DML root).
                     auto match_operator = boost::intrusive_ptr(
                         new components::operators::operator_match_t(context.resource, context.log.clone(), expr, cap));
-                    match_operator->set_children(boost::intrusive_ptr(
+                    auto scan = boost::intrusive_ptr(
                         new components::operators::full_scan(context.resource,
                                                              context.log.clone(),
                                                              table_oid,
+                                                             std::move(address),
+                                                             full_name_of(context, table_oid),
                                                              nullptr,
                                                              components::logical_plan::row_cap_t::uncapped(),
-                                                             projected_cols)));
+                                                             projected_cols));
+                    VALUE_OR_RETURN(auto types, page_types_of(context, table_oid, projected_cols));
+                    scan->set_page_types(std::move(types));
+                    match_operator->set_children(std::move(scan));
                     return match_operator;
                 }
             } else {
@@ -216,36 +229,32 @@ namespace services::planner::impl {
                                     components::logical_plan::row_cap_t cap,
                                     const std::vector<size_t>& projected_cols) {
         if (node->expressions().empty()) {
-            // relkind::computed ('g') columns are read live by chunk_position, resolved at resolve-table
-            // time; relkind::regular ('r') tables use the caller's projected_cols (column_pruning output).
-            std::vector<size_t> effective_cols;
-            if (const auto* md = context.table_metadata_for(node->table_oid())) {
-                if (md->relkind == components::catalog::relkind::computed) {
-                    effective_cols.reserve(md->columns.size());
-                    for (const auto& col : md->columns) {
-                        if (col.chunk_position >= 0) {
-                            effective_cols.push_back(static_cast<size_t>(col.chunk_position));
-                        }
-                    }
-                } else {
-                    effective_cols = projected_cols;
-                }
-            }
+            auto effective_cols = scan_columns_of(context, node->table_oid(), projected_cols);
             if (context.has_table_oid(node->table_oid())) {
-                return boost::intrusive_ptr(new components::operators::transfer_scan(context.resource,
-                                                                                     node->table_oid(),
-                                                                                     cap,
-                                                                                     std::move(effective_cols)));
+                VALUE_OR_RETURN(auto types, page_types_of(context, node->table_oid(), effective_cols));
+                VALUE_OR_RETURN(auto address, storage_address_of(context, node->table_oid()));
+                auto scan = boost::intrusive_ptr(
+                    new components::operators::transfer_scan(context.resource,
+                                                             node->table_oid(),
+                                                             std::move(address),
+                                                             full_name_of(context, node->table_oid()),
+                                                             cap,
+                                                             std::move(effective_cols)));
+                scan->set_page_types(std::move(types));
+                return scan;
             }
             // node->source() — not the oid, which is INVALID_OID either way — says which absent-table
             // case this is. No default arm: a new match_source value must get a case here or the build stops.
             switch (static_cast<const components::logical_plan::node_match_t*>(node.get())->source()) {
                 case components::logical_plan::match_source::none:
                     // Emits a synthetic 1-row placeholder batch (transfer_scan::source_next).
-                    return boost::intrusive_ptr(new components::operators::transfer_scan(context.resource,
-                                                                                         node->table_oid(),
-                                                                                         cap,
-                                                                                         std::move(effective_cols)));
+                    return boost::intrusive_ptr(
+                        new components::operators::transfer_scan(context.resource,
+                                                                 node->table_oid(),
+                                                                 components::table::storage_address_t{},
+                                                                 std::pmr::string{context.resource},
+                                                                 cap,
+                                                                 std::move(effective_cols)));
                 case components::logical_plan::match_source::table: {
                     // Validation should refuse a named table with an unresolved oid before plan generation;
                     // refusing here (not the `none` sentinel) stops a regression from silently answering a

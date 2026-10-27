@@ -1,13 +1,13 @@
-// DDL of a table of a connection's database: the connector's operator is a step of the ordinary DDL plan, after
+// DDL of a table of a connection's database: the backend's DDL message is a step of the ordinary DDL plan, after
 // otterbrix's checks and before the catalog's rows; only in autocommit, only CREATE / DROP / ALTER ADD|DROP COLUMN,
 // and a backend refusal writes nothing.
 
-#include "connector_fixture.hpp"
+#include "host_fixture.hpp"
 
 #include <string>
 #include <vector>
 
-using connector_fixture::host_t;
+using host_fixture::host_t;
 using code = core::error_code_t;
 using strings = std::vector<std::string>;
 using ints = std::vector<std::int64_t>;
@@ -18,7 +18,7 @@ namespace {
 
     void registered(host_t& host) {
         host.register_shop();
-        host.factory->clear();
+        host.backend().clear_journal();
     }
 
     std::int64_t relations_named(host_t& host, const std::string& name) {
@@ -38,7 +38,7 @@ TEST_CASE("integration::cpp::remote_ddl::create_table_reaches_the_backend_and_th
     host_t host("test_remote_ddl/create");
     registered(host);
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t2 (id BIGINT NOT NULL, note TEXT);");
-    CHECK(host.factory->journal() == strings{"create m2.shop.public.t2 id:not_null note"});
+    CHECK(host.backend().changes() == strings{"create m2.shop.public.t2 id:not_null note"});
     CHECK(host.db.strings(any(), "SELECT relkind FROM pg_catalog.pg_class WHERE relname = 't2';") == strings{"r"});
     CHECK(columns_of(host, "t2") == strings{"id", "note"});
 }
@@ -47,7 +47,7 @@ TEST_CASE("integration::cpp::remote_ddl::only_in_autocommit") {
     host_t host("test_remote_ddl/autocommit");
     registered(host);
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t1 (id BIGINT);");
-    host.factory->clear();
+    host.backend().clear_journal();
     const std::string refusal = "connection \"m2\" only supports DDL in autocommit";
     for (const std::string& begin : {"BEGIN;", "SET autocommit = off;"}) {
         for (const std::string& sql : {"CREATE TABLE m2.shop.public.t3 (id BIGINT);",
@@ -60,7 +60,7 @@ TEST_CASE("integration::cpp::remote_ddl::only_in_autocommit") {
             host.db.ok(session, "ROLLBACK;");
         }
     }
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
     CHECK(relations_named(host, "t3") == 0);
     CHECK(relations_named(host, "t1") == 1);
 }
@@ -79,10 +79,10 @@ TEST_CASE("integration::cpp::remote_ddl::alter_add_and_drop_column") {
     host_t host("test_remote_ddl/alter");
     registered(host);
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t2 (id BIGINT NOT NULL, note TEXT);");
-    host.factory->clear();
+    host.backend().clear_journal();
     host.db.ok(any(), "ALTER TABLE m2.shop.public.t2 ADD COLUMN x BIGINT;");
     host.db.ok(any(), "ALTER TABLE m2.shop.public.t2 DROP COLUMN note;");
-    CHECK(host.factory->journal() == strings{"alter add m2.shop.public.t2 x", "alter drop m2.shop.public.t2 note"});
+    CHECK(host.backend().changes() == strings{"alter add m2.shop.public.t2 x", "alter drop m2.shop.public.t2 note"});
     CHECK(columns_of(host, "t2") == strings{"id", "x"});
 }
 
@@ -90,14 +90,14 @@ TEST_CASE("integration::cpp::remote_ddl::other_alters_are_refused") {
     host_t host("test_remote_ddl/other_alters");
     registered(host);
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t2 (id BIGINT);");
-    host.factory->clear();
+    host.backend().clear_journal();
     for (const std::string& sql : {"ALTER TABLE m2.shop.public.t2 RENAME COLUMN id TO id2;",
                                    "ALTER TABLE m2.shop.public.t2 ALTER COLUMN id TYPE TEXT;"}) {
         const auto error = host.db.refused(any(), sql);
         INFO(sql);
         CHECK(error.type == code::unimplemented_yet);
     }
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
 }
 
 TEST_CASE("integration::cpp::remote_ddl::create_table_as_is_refused") {
@@ -106,7 +106,7 @@ TEST_CASE("integration::cpp::remote_ddl::create_table_as_is_refused") {
     // Refused for every target before any name is looked up (#675), a connection's database included.
     const auto error = host.db.refused(any(), "CREATE TABLE m2.shop.public.t4 AS SELECT 1 AS a;");
     CHECK(error.type == code::sql_parse_error);
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
     CHECK(relations_named(host, "t4") == 0);
 }
 
@@ -121,7 +121,7 @@ TEST_CASE("integration::cpp::remote_ddl::constraints_but_not_null_are_refused") 
         INFO(sql);
         CHECK(error.type == code::unimplemented_yet);
     }
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
     CHECK(relations_named(host, "t5") == 0);
 }
 
@@ -133,15 +133,15 @@ TEST_CASE("integration::cpp::remote_ddl::drop_restrict_before_the_backend") {
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t2 (id BIGINT);");
     host.db.ok(any(), "CREATE SCHEMA loc;");
     host.db.ok(any(), "CREATE VIEW loc.v AS SELECT id FROM m2.shop.public.t2;");
-    host.factory->clear();
+    host.backend().clear_journal();
     const auto error = host.db.refused(any(), "DROP TABLE m2.shop.public.t2;");
     CHECK(error.type == code::dependent_objects_still_exist);
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
     CHECK(relations_named(host, "t2") == 1);
 
     host.db.ok(any(), "DROP VIEW loc.v;");
     host.db.ok(any(), "DROP TABLE m2.shop.public.t2;");
-    CHECK(host.factory->journal() == strings{"drop m2.shop.public.t2"});
+    CHECK(host.backend().changes() == strings{"drop m2.shop.public.t2"});
     CHECK(relations_named(host, "t2") == 0);
 }
 
@@ -149,7 +149,7 @@ TEST_CASE("integration::cpp::remote_ddl::a_backend_refusal_of_drop_keeps_the_tab
     host_t host("test_remote_ddl/drop_refused");
     registered(host);
     host.db.ok(any(), "CREATE TABLE m2.shop.public.nodrop1 (id BIGINT);");
-    host.factory->clear();
+    host.backend().clear_journal();
     host.db.check_refused(any(),
                           "DROP TABLE m2.shop.public.nodrop1;",
                           code::connection_closed,
@@ -163,51 +163,51 @@ TEST_CASE("integration::cpp::remote_ddl::through_the_place") {
     const auto session = otterbrix::session_id_t();
     host.db.ok(session, "SET search_path = 'm2.shop.public';");
     host.db.ok(session, "CREATE TABLE t6 (a BIGINT);");
-    CHECK(host.factory->journal() == strings{"create m2.shop.public.t6 a"});
+    CHECK(host.backend().changes() == strings{"create m2.shop.public.t6 a"});
 }
 
 TEST_CASE("integration::cpp::remote_ddl::an_index_on_a_table_of_a_connection_is_refused") {
     host_t host("test_remote_ddl/index");
     registered(host);
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t6 (a BIGINT);");
-    host.factory->clear();
+    host.backend().clear_journal();
     const auto error = host.db.refused(any(), "CREATE INDEX i ON m2.shop.public.t6 (a);");
     CHECK(error.type == code::unimplemented_yet);
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
 }
 
-TEST_CASE("integration::cpp::remote_ddl::a_created_table_is_read_through_the_connector") {
+TEST_CASE("integration::cpp::remote_ddl::a_created_table_is_read_through_its_backend") {
     host_t host("test_remote_ddl/read");
     registered(host);
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t7 (a BIGINT);");
-    host.factory->clear();
+    host.backend().clear_journal();
     CHECK(host.db.ints(any(), "SELECT count(*) FROM m2.shop.public.t7;") == ints{0});
-    REQUIRE(host.factory->storage_calls().size() == 1);
+    CHECK(host.backend().journal("scan") == strings{"scan m2.shop.public.t7"});
 }
 
-// DROP SCHEMA ... CASCADE in a connection's database: the connector's DROP of each table it reaches, then of the
-// schema, then the catalog's rows.
-TEST_CASE("integration::cpp::remote_ddl::drop_schema_cascade_drops_each_table_through_the_connector") {
+// DROP SCHEMA ... CASCADE in a connection's database: the backend's DROP of each table it reaches, then the catalog's
+// rows; the schema itself is a row of otterbrix's catalog only.
+TEST_CASE("integration::cpp::remote_ddl::drop_schema_cascade_drops_each_table_in_the_backend") {
     host_t host("test_remote_ddl/drop_schema");
     registered(host);
     const auto session = otterbrix::session_id_t();
     host.db.ok(session, "SET search_path = 'm2.shop.public';");
     host.db.ok(session, "CREATE SCHEMA s;");
     host.db.ok(any(), "CREATE TABLE m2.shop.s.t8 (a BIGINT);");
-    host.factory->clear();
+    host.backend().clear_journal();
     host.db.ok(session, "DROP SCHEMA s CASCADE;");
-    CHECK(host.factory->journal() == strings{"drop m2.shop.s.t8", "drop schema m2.shop.s"});
+    CHECK(host.backend().changes() == strings{"drop m2.shop.s.t8"});
     CHECK(relations_named(host, "t8") == 0);
 }
 
 // DROP TYPE that reaches a column of a connection's table: RESTRICT refuses it before the backend is asked; CASCADE
-// drops the column through the connector, as ALTER TABLE ... DROP COLUMN does; only in autocommit.
+// drops the column in the backend, as ALTER TABLE ... DROP COLUMN does; only in autocommit.
 TEST_CASE("integration::cpp::remote_ddl::drop_type_cascade_reaches_a_column_of_a_connections_table") {
     host_t host("test_remote_ddl/drop_type");
     registered(host);
     host.db.ok(any(), "CREATE TYPE mood AS ENUM ('x', 'y');");
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t9 (id BIGINT, m mood);");
-    host.factory->clear();
+    host.backend().clear_journal();
     CHECK(host.db.refused(any(), "DROP TYPE mood;").type == code::dependent_objects_still_exist);
     const auto session = otterbrix::session_id_t();
     host.db.ok(session, "BEGIN;");
@@ -216,28 +216,29 @@ TEST_CASE("integration::cpp::remote_ddl::drop_type_cascade_reaches_a_column_of_a
                           code::unimplemented_yet,
                           "connection \"m2\" only supports DDL in autocommit");
     host.db.ok(session, "ROLLBACK;");
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
     host.db.ok(any(), "DROP TYPE mood CASCADE;");
-    CHECK(host.factory->journal() == strings{"alter drop m2.shop.public.t9 m"});
+    CHECK(host.backend().changes() == strings{"alter drop m2.shop.public.t9 m"});
     CHECK(columns_of(host, "t9") == strings{"id"});
 }
 
-// What the host keeps of an object lives in its own ordinary otterbrix table, written by its operators in the
-// statement's transaction: a row after CREATE, none after DROP, none after a backend refusal or a refused statement.
+// What the host keeps of a table lives in its own ordinary otterbrix table: the backend's DDL reply brings the rows and
+// otterbrix writes them in the statement's transaction: a row after CREATE, none after DROP, none after a backend
+// refusal or a refused statement. A schema is otterbrix's catalog only: it has no row.
 TEST_CASE("integration::cpp::remote_ddl::the_hosts_parameters_are_rows_of_its_own_table") {
     host_t host("test_remote_ddl/host_rows");
     host.db.ok(any(), "CREATE SCHEMA otterstax;");
     auto created = host.db.ok(any(), "CREATE TABLE otterstax.params (oid BIGINT, name TEXT);");
     REQUIRE(created->created_oid() != components::catalog::INVALID_OID);
-    host.factory->parameters_table = created->created_oid();
+    host.backend().set_parameters_table(created->created_oid());
     const auto rows = [&host] { return host.db.strings(any(), "SELECT name FROM otterstax.params ORDER BY name;"); };
     host.register_shop();
-    CHECK(rows() == strings{"m2.shop.public"});
+    CHECK(rows() == strings{});
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t1 (id BIGINT);");
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t2 (id BIGINT);");
-    CHECK(rows() == strings{"m2.shop.public", "m2.shop.public.t1", "m2.shop.public.t2"});
+    CHECK(rows() == strings{"m2.shop.public.t1", "m2.shop.public.t2"});
     host.db.ok(any(), "DROP TABLE m2.shop.public.t1;");
-    CHECK(rows() == strings{"m2.shop.public", "m2.shop.public.t2"});
+    CHECK(rows() == strings{"m2.shop.public.t2"});
     host.db.check_refused(any(),
                           "CREATE TABLE m2.shop.public.bad1 (id BIGINT);",
                           code::connection_closed,
@@ -246,15 +247,15 @@ TEST_CASE("integration::cpp::remote_ddl::the_hosts_parameters_are_rows_of_its_ow
     host.db.ok(session, "BEGIN;");
     CHECK(host.db.refused(session, "CREATE TABLE m2.shop.public.t3 (id BIGINT);").type == code::unimplemented_yet);
     host.db.ok(session, "ROLLBACK;");
-    CHECK(rows() == strings{"m2.shop.public", "m2.shop.public.t2"});
+    CHECK(rows() == strings{"m2.shop.public.t2"});
     host.db.ok(session, "SET search_path = 'm2.shop.public';");
     host.db.ok(session, "CREATE SCHEMA s;");
     host.db.ok(any(), "CREATE TABLE m2.shop.s.t4 (id BIGINT);");
-    CHECK(rows() == strings{"m2.shop.public", "m2.shop.public.t2", "m2.shop.s", "m2.shop.s.t4"});
+    CHECK(rows() == strings{"m2.shop.public.t2", "m2.shop.s.t4"});
     host.db.ok(session, "DROP SCHEMA s CASCADE;");
-    CHECK(rows() == strings{"m2.shop.public", "m2.shop.public.t2"});
+    CHECK(rows() == strings{"m2.shop.public.t2"});
 
-    // A step that writes and then refuses: its rows and the earlier steps' go with the statement.
+    // A DROP the backend refuses: no table goes and no row.
     host.db.check_refused(any(),
                           "CREATE TABLE m2.shop.public.bad2 (id BIGINT);",
                           code::connection_closed,
@@ -272,11 +273,11 @@ TEST_CASE("integration::cpp::remote_ddl::the_hosts_parameters_are_rows_of_its_ow
 TEST_CASE("integration::cpp::remote_ddl::a_column_the_view_does_not_read_keeps_it_fresh") {
     host_t host("test_remote_ddl/view_fresh");
     host.register_orders();
-    test_connector::backend_rows()["m2.shop.public.orders"] = {{1, 100}, {2, 200}};
+    host.backend().set_rows("m2.shop.public.orders", {{1, 100}, {2, 200}});
     host.db.ok(any(), "CREATE VIEW public.ov AS SELECT id FROM m2.shop.public.orders;");
     host.db.ok(any(), "ALTER TABLE m2.shop.public.orders DROP COLUMN amount;");
     host.db.ok(any(), "ALTER TABLE m2.shop.public.orders ADD COLUMN label BIGINT;");
-    test_connector::backend_rows()["m2.shop.public.orders"] = {{1, 7}, {2, 8}};
+    host.backend().set_rows("m2.shop.public.orders", {{1, 7}, {2, 8}});
     CHECK(host.db.ints(any(), "SELECT id FROM public.ov ORDER BY id;") == ints{1, 2});
 }
 
@@ -286,10 +287,10 @@ TEST_CASE("integration::cpp::remote_ddl::a_column_the_view_reads_is_kept") {
     registered(host);
     host.db.ok(any(), "CREATE TABLE m2.shop.public.orders (id BIGINT, amount INT);");
     host.db.ok(any(), "CREATE VIEW public.ov AS SELECT id, amount FROM m2.shop.public.orders;");
-    host.factory->clear();
+    host.backend().clear_journal();
     const auto error = host.db.refused(any(), "ALTER TABLE m2.shop.public.orders DROP COLUMN amount;");
     CHECK(error.type == code::dependent_objects_still_exist);
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
     CHECK(columns_of(host, "orders") == strings{"id", "amount"});
 }
 
@@ -298,11 +299,11 @@ TEST_CASE("integration::cpp::remote_ddl::add_column_with_a_default_is_refused") 
     host_t host("test_remote_ddl/add_default");
     registered(host);
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t2 (id BIGINT);");
-    host.factory->clear();
+    host.backend().clear_journal();
     const auto error = host.db.refused(any(), "ALTER TABLE m2.shop.public.t2 ADD COLUMN x BIGINT DEFAULT 5;");
     CHECK(error.type == code::unimplemented_yet);
     CHECK(columns_of(host, "t2") == strings{"id"});
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
 }
 
 // ADD CONSTRAINT names the table of the connection, never a local table of the same database.schema.table name.
@@ -312,15 +313,15 @@ TEST_CASE("integration::cpp::remote_ddl::add_constraint_names_the_table_of_the_c
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t2 (id BIGINT);");
     host.db.ok(any(), "CREATE DATABASE shop;");
     host.db.ok(any(), "CREATE TABLE shop.public.t2 (id BIGINT);");
-    host.factory->clear();
+    host.backend().clear_journal();
     const auto error = host.db.refused(any(), "ALTER TABLE m2.shop.public.t2 ADD CONSTRAINT u UNIQUE (id);");
     CHECK(error.type == code::unimplemented_yet);
     CHECK(host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_constraint WHERE conname = 'u';") == ints{0});
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
 }
 
 // A local DROP SCHEMA / DROP DATABASE ... CASCADE that reaches a column of a connection's table through a type drops it
-// through the connector, and only in autocommit.
+// in the backend, and only in autocommit.
 TEST_CASE("integration::cpp::remote_ddl::a_local_drop_cascade_reaches_a_column_of_a_connections_table") {
     host_t host("test_remote_ddl/local_cascade");
     registered(host);
@@ -329,28 +330,28 @@ TEST_CASE("integration::cpp::remote_ddl::a_local_drop_cascade_reaches_a_column_o
         host.db.ok(any(), "CREATE SCHEMA loc;");
         host.db.ok(any(), "CREATE TYPE loc.mood AS ENUM ('x');");
         host.db.ok(any(), "CREATE TABLE m2.shop.public.t (id BIGINT, m loc.mood);");
-        host.factory->clear();
+        host.backend().clear_journal();
         const auto session = otterbrix::session_id_t();
         host.db.ok(session, "BEGIN;");
         host.db.check_refused(session, "DROP SCHEMA loc CASCADE;", code::unimplemented_yet, refusal);
         host.db.ok(session, "ROLLBACK;");
-        CHECK(host.factory->journal().empty());
+        CHECK(host.backend().changes().empty());
         host.db.ok(any(), "DROP SCHEMA loc CASCADE;");
-        CHECK(host.factory->journal() == strings{"alter drop m2.shop.public.t m"});
+        CHECK(host.backend().changes() == strings{"alter drop m2.shop.public.t m"});
         CHECK(columns_of(host, "t") == strings{"id"});
     }
     SECTION("DROP DATABASE") {
         host.db.ok(any(), "CREATE DATABASE locdb;");
         host.db.ok(any(), "CREATE TYPE locdb.public.mood AS ENUM ('x');");
         host.db.ok(any(), "CREATE TABLE m2.shop.public.t (id BIGINT, m locdb.public.mood);");
-        host.factory->clear();
+        host.backend().clear_journal();
         const auto session = otterbrix::session_id_t();
         host.db.ok(session, "BEGIN;");
         host.db.check_refused(session, "DROP DATABASE locdb;", code::unimplemented_yet, refusal);
         host.db.ok(session, "ROLLBACK;");
-        CHECK(host.factory->journal().empty());
+        CHECK(host.backend().changes().empty());
         host.db.ok(any(), "DROP DATABASE locdb;");
-        CHECK(host.factory->journal() == strings{"alter drop m2.shop.public.t m"});
+        CHECK(host.backend().changes() == strings{"alter drop m2.shop.public.t m"});
         CHECK(columns_of(host, "t") == strings{"id"});
     }
 }
@@ -360,7 +361,7 @@ TEST_CASE("integration::cpp::remote_ddl::subcommands_of_one_alter_are_checked_in
     host_t host("test_remote_ddl/alter_sequence");
     registered(host);
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t2 (id BIGINT, a BIGINT);");
-    host.factory->clear();
+    host.backend().clear_journal();
     host.db.check_refused(any(),
                           "ALTER TABLE m2.shop.public.t2 ADD COLUMN x BIGINT, ADD COLUMN x BIGINT;",
                           code::already_exists,
@@ -369,10 +370,10 @@ TEST_CASE("integration::cpp::remote_ddl::subcommands_of_one_alter_are_checked_in
                           "ALTER TABLE m2.shop.public.t2 DROP COLUMN a, DROP COLUMN a;",
                           code::schema_error,
                           "column \"a\" of relation \"t2\" does not exist; use DROP COLUMN IF EXISTS to ignore it");
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
     CHECK(columns_of(host, "t2") == strings{"id", "a"});
     host.db.ok(any(), "ALTER TABLE m2.shop.public.t2 DROP COLUMN a, ADD COLUMN a BIGINT;");
-    CHECK(host.factory->journal() == strings{"alter drop m2.shop.public.t2 a", "alter add m2.shop.public.t2 a"});
+    CHECK(host.backend().changes() == strings{"alter drop m2.shop.public.t2 a", "alter add m2.shop.public.t2 a"});
 }
 
 // CREATE TABLE IF NOT EXISTS of a table that is there does nothing, before what a connection's database refuses.
@@ -380,10 +381,10 @@ TEST_CASE("integration::cpp::remote_ddl::create_if_not_exists_of_a_table_that_is
     host_t host("test_remote_ddl/if_not_exists");
     registered(host);
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t2 (id BIGINT);");
-    host.factory->clear();
+    host.backend().clear_journal();
     const auto session = otterbrix::session_id_t();
     host.db.ok(session, "BEGIN;");
     host.db.ok(session, "CREATE TABLE IF NOT EXISTS m2.shop.public.t2 (id BIGINT PRIMARY KEY);");
     host.db.ok(session, "ROLLBACK;");
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
 }

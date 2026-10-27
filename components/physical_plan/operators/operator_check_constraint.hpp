@@ -20,7 +20,6 @@ namespace components::operators {
         // check_params has no default -- a storage_parameters needs a resource, not a process-wide default.
         operator_check_constraint_t(std::pmr::memory_resource* resource,
                                     log_t log,
-                                    std::vector<std::string> not_null_columns,
                                     std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates,
                                     std::vector<std::pair<std::string, uint64_t>> array_size_reqs,
                                     vector::storage_parameters&& check_params);
@@ -56,7 +55,6 @@ namespace components::operators {
                            const vector::data_chunk_t& chunk,
                            std::string_view constraint_name);
 
-        std::vector<std::string> not_null_columns_;
         // A value shorter than the declared fixed-ARRAY size cannot be padded and is rejected.
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_;
         // Not the SQL text -- resolved expression trees with ordinals and casts already bound.

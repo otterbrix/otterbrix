@@ -1,6 +1,7 @@
 #include "create_plan_insert.hpp"
 
 #include "create_plan_select.hpp"
+#include <components/catalog/catalog_codes.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/physical_plan/operators/operator_insert.hpp>
@@ -15,11 +16,28 @@ namespace services::planner::impl {
                                      const components::logical_plan::storage_parameters* params) {
         const auto* node_insert = static_cast<const components::logical_plan::node_insert_t*>(node.get());
         auto returning = build_returning_columns(context.resource, node_insert->returning());
-        auto plan = boost::intrusive_ptr(new components::operators::operator_insert(context.resource,
-                                                                                    context.log.clone(),
-                                                                                    node->table_oid(),
-                                                                                    std::move(returning)));
+        std::pmr::vector<components::catalog::oid_t> attoids(context.resource);
+        if (const auto* table = context.table_metadata_for(node->table_oid());
+            table != nullptr && table->relkind != components::catalog::relkind::computed) {
+            attoids.reserve(table->columns.size());
+            for (const auto& column : table->columns) {
+                attoids.push_back(column.attoid);
+            }
+        }
+        VALUE_OR_RETURN(auto address, storage_address_of(context, node->table_oid()));
+        auto plan =
+            boost::intrusive_ptr(new components::operators::operator_insert(context.resource,
+                                                                            context.log.clone(),
+                                                                            node->table_oid(),
+                                                                            std::move(address),
+                                                                            full_name_of(context, node->table_oid()),
+                                                                            std::move(attoids),
+                                                                            std::move(returning)));
         plan->set_table_has_indexes(node->table_has_indexes());
+        if (!node_insert->returning().empty()) {
+            VALUE_OR_RETURN(auto table_types, page_types_of(context, node->table_oid(), {}));
+            plan->set_table_types(std::move(table_types));
+        }
         // The validator resolved, per incoming column, the target it lands in and the cast
         // that stores it there. The operator puts every column at its target position, so the
         // payload arrives in the order the writer sees the table's columns.
@@ -45,19 +63,6 @@ namespace services::planner::impl {
                 components::vector::make_constant_copy(context.resource, column.value)});
         }
         plan->set_fill_list(std::move(fill));
-        if (const auto* table = node->table_metadata(); table != nullptr && table->storage != nullptr) {
-            VALUE_OR_RETURN(auto sink,
-                            storage_operator(context.resource, table->name, table->storage->make_insert(context)));
-            std::pmr::vector<components::types::complex_logical_type> columns(context.resource);
-            columns.reserve(table->columns.size());
-            for (const auto& column : table->columns) {
-                columns.push_back(column.type);
-            }
-            plan->set_storage_sink(std::move(sink),
-                                   std::move(columns),
-                                   std::pmr::vector<uint64_t>{node_insert->column_slots(), context.resource},
-                                   table->storage->flush_row_threshold());
-        }
         VALUE_OR_RETURN(auto child,
                         create_plan(context,
                                     function_registry,

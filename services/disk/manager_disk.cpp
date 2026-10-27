@@ -48,8 +48,8 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_delete_rows>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_commits>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_deletes>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_appends>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_deletes>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_open_filtered_scan>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::undo_appends_and_storages>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function_by_name>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::find_cast_oid>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::allocate_oids_batch>,
@@ -71,9 +71,9 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::abort_transaction>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_open_scan_hold>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_compact_epoch>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::revert_column_stamps>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_prepare>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_release_prepared>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_set_not_null>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -522,8 +522,12 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_compact_epoch, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::revert_column_stamps>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::revert_column_stamps, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_set_not_null>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_set_not_null, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_open_filtered_scan>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_open_filtered_scan, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_prepare>: {
@@ -562,12 +566,8 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_publish_deletes, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_appends>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_revert_appends, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_deletes>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_revert_deletes, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::undo_appends_and_storages>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::undo_appends_and_storages, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function_by_name>: {
@@ -700,17 +700,19 @@ namespace services::disk {
         }
     }
 
-    manager_disk_t::unique_future<void>
-    manager_disk_t::mark_storage_dropped_many(session_id_t /*session*/,
+    manager_disk_t::unique_future<core::result_wrapper_t<ddl_reply_t>>
+    manager_disk_t::mark_storage_dropped_many(execution_context_t ctx,
                                               std::pmr::vector<components::catalog::oid_t> table_oids,
-                                              uint64_t dropped_at_commit_id) {
+                                              std::pmr::vector<qualified_name_t> /*names*/) {
         // Each agent derives its own path, so the manager never borrows agent state across the boundary.
+        const uint64_t dropped_at_commit_id = ctx.txn.transaction_id;
         trace(log_,
               "manager_disk_t::mark_storage_dropped_many , oids : {} , commit_id : {}",
               table_oids.size(),
               dropped_at_commit_id);
+        ddl_reply_t reply{true, host_rows_t{}};
         if (agents_.empty()) {
-            co_return;
+            co_return reply;
         }
         std::pmr::vector<std::pmr::vector<components::catalog::oid_t>> per_agent{resource()};
         per_agent.reserve(agents_.size());
@@ -743,7 +745,7 @@ namespace services::disk {
         for (auto& f : agent_futures) {
             co_await std::move(f);
         }
-        co_return;
+        co_return reply;
     }
 
     manager_disk_t::unique_future<void>
@@ -770,8 +772,24 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<core::error_t>
-    manager_disk_t::abort_transaction(session_id_t session, components::table::txn_abort_drain_t drain) {
-        trace(log_, "manager_disk::abort_transaction , txn_id : {}", drain.txn.transaction_id);
+    manager_disk_t::abort_transaction(execution_context_t ctx,
+                                      uint64_t from_sub_id,
+                                      std::pmr::set<components::catalog::oid_t> tables) {
+        trace(log_,
+              "manager_disk::abort_transaction , txn_id : {} , from_sub_id : {}",
+              ctx.txn.transaction_id,
+              from_sub_id);
+        if (tables.empty()) {
+            co_return core::error_t::no_error();
+        }
+        co_await storage_revert_deletes(ctx, from_sub_id, std::vector<catalog::oid_t>{tables.begin(), tables.end()});
+        co_await revert_column_stamps(ctx, from_sub_id, std::move(tables));
+        co_return core::error_t::no_error();
+    }
+
+    manager_disk_t::unique_future<core::error_t>
+    manager_disk_t::undo_appends_and_storages(session_id_t session, components::table::txn_abort_drain_t drain) {
+        trace(log_, "manager_disk::undo_appends_and_storages , txn_id : {}", drain.txn.transaction_id);
         const execution_context_t ctx{session, drain.txn, {}};
 
         auto reverted = core::error_t::no_error();
@@ -779,22 +797,6 @@ namespace services::disk {
         appends.insert(appends.end(), drain.base_appends.begin(), drain.base_appends.end());
         if (!appends.empty()) {
             reverted = co_await storage_revert_appends(ctx, std::move(appends));
-        }
-
-        std::set<catalog::oid_t> delete_tables = std::move(drain.base_delete_tables);
-        delete_tables.insert(drain.pg_catalog_delete_tables.begin(), drain.pg_catalog_delete_tables.end());
-        if (!delete_tables.empty()) {
-            co_await storage_revert_deletes(ctx,
-                                            drain.from_sub_id,
-                                            std::vector<catalog::oid_t>{delete_tables.begin(), delete_tables.end()});
-        }
-
-        if (!drain.column_stamped_tables.empty()) {
-            co_await revert_column_stamps(ctx,
-                                          drain.from_sub_id,
-                                          std::pmr::set<catalog::oid_t>{drain.column_stamped_tables.begin(),
-                                                                        drain.column_stamped_tables.end(),
-                                                                        resource()});
         }
 
         if (!drain.dropped_storage_oids.empty()) {

@@ -1024,7 +1024,7 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_rejected_delete_leaves_row_upd
     }
 }
 
-// UPDATE variant of #552; NOT NULL is used here since CHECK on the UPDATE path is a known gap that never rejects.
+// UPDATE variant of #552: a PRIMARY KEY refuses the new version after it was written, so the write is reverted.
 TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves_row_updatable") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/rejected_update_row_identity"));
     test_clear_directory(config);
@@ -1037,17 +1037,18 @@ TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE db.p (id bigint, val text NOT NULL);")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE db.p (id bigint PRIMARY KEY, val text);")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO db.p (id, val) VALUES (1, 'p1');")->is_success());
+        REQUIRE(
+            dispatcher->execute_sql(session, "INSERT INTO db.p (id, val) VALUES (1, 'p1'), (2, 'p2');")->is_success());
     }
     const auto reverts_before = services::collection::executor::dml_appends_reverted();
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "UPDATE db.p SET val = NULL, id = 77 WHERE id = 1;");
-        INFO("NOT-NULL-violating UPDATE error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        auto cur = dispatcher->execute_sql(session, "UPDATE db.p SET val = 'x', id = 2 WHERE id = 1;");
+        INFO("key-violating UPDATE error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_error());
     }
     const auto reverts_after = services::collection::executor::dml_appends_reverted();
@@ -1055,7 +1056,7 @@ TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves
     REQUIRE(reverts_after == reverts_before + 1);
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p;");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         const int id_col = find_column(*cur, "id");
@@ -1078,7 +1079,7 @@ TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves
     }
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p;");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         const int val_col = find_column(*cur, "val");
@@ -1099,7 +1100,7 @@ TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves
     }
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p;");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
     }

@@ -141,3 +141,27 @@ TEST_CASE("integration::cpp::computed_drop::every_variant_of_the_field_is_hidden
     INFO("no typed variant of a dropped field may survive in SELECT *");
     REQUIRE_FALSE(has_column(*cur, "x"));
 }
+
+// A computed table keeps a dropped field's column physically: a write that scans the table reads its live columns
+// (the catalog's, by chunk position), whatever the write's shape.
+TEST_CASE("integration::cpp::computed_drop::writes_after_a_dropped_field_read_the_live_columns") {
+    auto config = test_create_config(fixture_path("writes_after_drop"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+
+    run_ok(d, "CREATE SCHEMA cdc;");
+    run_ok(d, "CREATE TABLE cdc.g();");
+    run_ok(d, "INSERT INTO cdc.g (a, b, c) VALUES (1, 10, 100), (2, 20, 200), (3, 30, 300), (4, 40, 400);");
+    run_ok(d, "CREATE TABLE cdc.t (a BIGINT);");
+    run_ok(d, "INSERT INTO cdc.t (a) VALUES (1), (2);");
+    run_ok(d, "ALTER TABLE cdc.g DROP COLUMN c;");
+
+    CHECK(run_ok(d, "UPDATE cdc.g SET b = 11 FROM cdc.t WHERE cdc.g.a = cdc.t.a;")->affected_rows() == 2);
+    CHECK(run_ok(d, "UPDATE cdc.g SET b = 33 WHERE a = 3;")->affected_rows() == 1);
+    CHECK(run_ok(d, "DELETE FROM cdc.g USING cdc.t WHERE cdc.g.a = cdc.t.a;")->affected_rows() == 2);
+    CHECK(run_ok(d, "DELETE FROM cdc.g WHERE a = 4;")->affected_rows() == 1);
+    auto left = run_ok(d, "SELECT * FROM cdc.g;");
+    REQUIRE(left->size() == 1);
+    REQUIRE_FALSE(has_column(*left, "c"));
+}

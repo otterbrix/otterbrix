@@ -11,57 +11,6 @@
 
 namespace services::planner::impl {
 
-    namespace {
-        // The rows come from the storage's scan, numbered in row_ids; the changed ones go to its update sink. A
-        // WHERE without FROM filters above the scan; with FROM the semi-join applies it, as for a local table.
-        plan_result_t create_plan_storage_update(const context_storage_t& context,
-                                                 const components::compute::function_registry_t& function_registry,
-                                                 const components::logical_plan::node_update_t& node_update,
-                                                 const components::logical_plan::resolved_table_metadata_t& table,
-                                                 const components::logical_plan::node_ptr& node_match,
-                                                 const components::logical_plan::node_ptr& node_source,
-                                                 components::logical_plan::row_cap_t cap,
-                                                 std::pmr::vector<components::operators::projected_column_t> returning,
-                                                 const components::logical_plan::storage_parameters* params) {
-            VALUE_OR_RETURN(auto sink,
-                            storage_operator(context.resource, table.name, table.storage->make_update(context)));
-            VALUE_OR_RETURN(auto scan,
-                            storage_operator(context.resource, table.name, table.storage->make_scan(context)));
-            std::pmr::vector<components::types::complex_logical_type> columns(context.resource);
-            columns.reserve(table.columns.size());
-            for (const auto& column : table.columns) {
-                columns.push_back(column.type);
-            }
-            const auto& where = node_match->expressions()[0];
-            if (!node_source) {
-                auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
-                                                                                            context.log.clone(),
-                                                                                            node_update.table_oid(),
-                                                                                            node_update.updates(),
-                                                                                            std::move(returning)));
-                plan->set_storage_sink(std::move(sink), std::move(columns), table.storage->flush_row_threshold());
-                auto filter = boost::intrusive_ptr(
-                    new components::operators::operator_match_t(context.resource, context.log.clone(), where, cap));
-                filter->set_children(std::move(scan));
-                plan->set_children(std::move(filter));
-                return plan;
-            }
-            auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
-                                                                                        context.log.clone(),
-                                                                                        node_update.table_oid(),
-                                                                                        node_update.updates(),
-                                                                                        std::move(returning),
-                                                                                        where,
-                                                                                        cap));
-            plan->set_storage_sink(std::move(sink), std::move(columns), table.storage->flush_row_threshold());
-            VALUE_OR_RETURN(
-                auto source_op,
-                create_plan(context, function_registry, node_source, components::logical_plan::limit_t::all(), params));
-            plan->set_children(std::move(scan), std::move(source_op));
-            return plan;
-        }
-    } // namespace
-
     plan_result_t create_plan_update(const context_storage_t& context,
                                      const components::compute::function_registry_t& function_registry,
                                      const components::logical_plan::node_ptr& node,
@@ -91,17 +40,6 @@ namespace services::planner::impl {
             return invalid;
         }
         const auto cap = limit.read_cap();
-        if (const auto* table = node->table_metadata(); table != nullptr && table->storage != nullptr) {
-            return create_plan_storage_update(context,
-                                              function_registry,
-                                              *node_update,
-                                              *table,
-                                              node_match,
-                                              node_source,
-                                              cap,
-                                              std::move(returning),
-                                              params);
-        }
         auto table_oid = node->table_oid();
         // The update target is always a NAMED table; a target the context cannot vouch
         // for is a table that never resolved. Validation refuses this before plan
@@ -110,14 +48,22 @@ namespace services::planner::impl {
         if (!context.has_table_oid(table_oid)) {
             return unresolved_table_refusal(context.resource, node_update->target());
         }
+        VALUE_OR_RETURN(auto address, storage_address_of(context, table_oid));
+        auto name = full_name_of(context, table_oid);
         if (!node_update->excluded_alias().empty()) {
             auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
                                                                                         context.log.clone(),
                                                                                         table_oid,
+                                                                                        std::move(address),
+                                                                                        std::move(name),
                                                                                         node_update->updates(),
                                                                                         std::move(returning),
                                                                                         node_match->expressions()[0]));
             plan->set_table_has_indexes(node->table_has_indexes());
+            if (!node_update->returning().empty()) {
+                VALUE_OR_RETURN(auto table_types, page_types_of(context, table_oid, {}));
+                plan->set_table_types(std::move(table_types));
+            }
             plan->set_paired_from(true);
             return plan;
         }
@@ -125,9 +71,15 @@ namespace services::planner::impl {
             auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
                                                                                         context.log.clone(),
                                                                                         table_oid,
+                                                                                        std::move(address),
+                                                                                        std::move(name),
                                                                                         node_update->updates(),
                                                                                         std::move(returning)));
             plan->set_table_has_indexes(node->table_has_indexes());
+            if (!node_update->returning().empty()) {
+                VALUE_OR_RETURN(auto table_types, page_types_of(context, table_oid, {}));
+                plan->set_table_types(std::move(table_types));
+            }
             VALUE_OR_RETURN(auto scan, create_plan_match(context, node_match, cap));
             plan->set_children(std::move(scan));
 
@@ -139,21 +91,33 @@ namespace services::planner::impl {
         auto plan = boost::intrusive_ptr(new components::operators::operator_update(context.resource,
                                                                                     context.log.clone(),
                                                                                     table_oid,
+                                                                                    address,
+                                                                                    name,
                                                                                     node_update->updates(),
                                                                                     std::move(returning),
                                                                                     node_match->expressions()[0],
                                                                                     cap));
         plan->set_table_has_indexes(node->table_has_indexes());
+        if (!node_update->returning().empty()) {
+            VALUE_OR_RETURN(auto table_types, page_types_of(context, table_oid, {}));
+            plan->set_table_types(std::move(table_types));
+        }
         VALUE_OR_RETURN(
             auto source_op,
             create_plan(context, function_registry, node_source, components::logical_plan::limit_t::all(), params));
-        plan->set_children(
+        auto scan_columns = scan_columns_of(context, table_oid, {});
+        VALUE_OR_RETURN(auto scan_types, page_types_of(context, table_oid, scan_columns));
+        auto scan =
             boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                       context.log.clone(),
                                                                       table_oid,
+                                                                      std::move(address),
+                                                                      std::move(name),
                                                                       nullptr,
-                                                                      components::logical_plan::row_cap_t::uncapped())),
-            std::move(source_op));
+                                                                      components::logical_plan::row_cap_t::uncapped(),
+                                                                      std::move(scan_columns)));
+        scan->set_page_types(std::move(scan_types));
+        plan->set_children(std::move(scan), std::move(source_op));
         return plan;
     }
 

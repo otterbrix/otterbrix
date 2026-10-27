@@ -11,12 +11,16 @@ namespace components::operators {
     operator_create_collection_t::operator_create_collection_t(std::pmr::memory_resource* resource,
                                                                log_t log,
                                                                components::catalog::oid_t table_oid,
-                                                               components::catalog::oid_t database_oid,
+                                                               components::catalog::oid_t namespace_oid,
+                                                               qualified_name_t name,
+                                                               table::storage_address_t address,
                                                                std::vector<table::column_definition_t> columns,
                                                                std::vector<catalog_write_t> catalog_writes)
         : read_write_operator_t(resource, std::move(log), operator_type::create_collection)
         , table_oid_(table_oid)
-        , database_oid_(database_oid)
+        , namespace_oid_(namespace_oid)
+        , name_(std::move(name))
+        , address_(std::move(address))
         , columns_(std::move(columns))
         , catalog_writes_(std::move(catalog_writes)) {}
 
@@ -25,39 +29,49 @@ namespace components::operators {
         // (planner.cpp rewrite_create_table) on the same list plan-gen copied here, so this flag and the
         // pg_class row written below cannot disagree. relkind cannot be scanned instead: the pg_class row
         // does not exist yet at this point.
-        {
-            const bool is_computed = columns_.empty();
-            auto [_, f] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                      &services::disk::manager_disk_t::create_storage_disk,
-                                                      ctx->session,
-                                                      table_oid_,
-                                                      database_oid_,
-                                                      std::move(columns_),
-                                                      is_computed);
-            co_await std::move(f);
+        components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
+        const bool is_computed = columns_.empty();
+        ctx->join_transaction(address_, table_oid_, true);
+        auto [_c, cf] =
+            actor_zeta::otterbrix::send<&services::disk::storage_contract::create_storage_disk>(address_,
+                                                                                                exec_ctx,
+                                                                                                table_oid_,
+                                                                                                namespace_oid_,
+                                                                                                name_,
+                                                                                                std::move(columns_),
+                                                                                                is_computed);
+        auto created = co_await std::move(cf);
+        if (created.has_error()) {
+            set_error(created.error());
+            mark_failed();
+            co_return;
         }
-
-        // CREATE back-channel: record the storage oid this statement brought into
-        // being so the COMMIT can publish it and a same-txn ABORT can drop it (a
-        // CREATE inside a txn must be revertible until COMMIT). Mirror of the
-        // operator_dynamic_cascade_delete drop back-channel; gated on a non-zero
-        // txn id (autocommit/bootstrap txn 0 publishes inline, never accumulates).
-        if (ctx->txn.transaction_id != 0) {
-            ctx->created_storage_oids.push_back(table_oid_);
-        }
-
-        if (ctx->index_address != actor_zeta::address_t::empty_address()) {
-            auto [_, f] = actor_zeta::otterbrix::send(ctx->index_address,
-                                                      &services::index::manager_index_t::register_collection,
-                                                      ctx->session,
-                                                      table_oid_);
-            co_await std::move(f);
+        const bool awaits_publish = created.value().awaits_publish;
+        if (awaits_publish) {
+            // CREATE back-channel: record the storage oid this statement brought into
+            // being so the COMMIT can publish it and a same-txn ABORT can drop it (a
+            // CREATE inside a txn must be revertible until COMMIT). Mirror of the
+            // operator_dynamic_cascade_delete drop back-channel; gated on a non-zero
+            // txn id (autocommit/bootstrap txn 0 publishes inline, never accumulates).
+            if (ctx->txn.transaction_id != 0) {
+                ctx->created_storage_oids.push_back(table_oid_);
+            }
+            if (ctx->index_address != actor_zeta::address_t::empty_address()) {
+                auto [_, f] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                          &services::index::manager_index_t::register_collection,
+                                                          ctx->session,
+                                                          table_oid_);
+                co_await std::move(f);
+            }
+        } else {
+            if (!created.value().rows.empty()) {
+                ctx->host_rows.push_back(std::move(created.value().rows));
+            }
         }
 
         // Write pg_catalog rows (pg_class, pg_attribute, pg_depend).
         // Two-phase: every append is independent (no iteration consumes the
         // previous result), so send all rows first then await in order.
-        components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
         std::pmr::vector<actor_zeta::unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>>
             append_futures(resource_);
         append_futures.reserve(catalog_writes_.size());
@@ -83,6 +97,12 @@ namespace components::operators {
             }
             if (rng_r.value().count > 0)
                 ctx->pg_catalog_appends.push_back(std::move(rng_r.value()));
+        }
+        if (append_error.contains_error() && !awaits_publish) {
+            // The backend's CREATE is undone with the statement's transaction.
+            set_error(std::move(append_error));
+            mark_failed();
+            co_return;
         }
         if (append_error.contains_error()) {
             // A refused catalog append (the name-uniqueness gate, a WAL refusal, ...) leaves the

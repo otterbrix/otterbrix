@@ -1,6 +1,6 @@
 #pragma once
 
-// Fills logical plan node fields (outgoing_fks, not_null_cols, etc.) from the resolve idx
+// Fills logical plan node fields (outgoing_fks, check expressions, etc.) from the resolve idx
 // operator_resolve_*_t populated, so the planner's rewrite needs no external context parameter.
 
 #include <actor-zeta.hpp>
@@ -47,18 +47,13 @@ namespace services::catalog_resolve {
                                const components::logical_plan::node_t* root,
                                components::logical_plan::catalog_resolves_t* resolves);
 
-    // A view body name pinned to a relation the catalog no longer holds: the view is stale. Runs before any
-    // connector is asked for a storage.
+    // A view body name pinned to a relation the catalog no longer holds: the view is stale.
     core::error_t refuse_stale_pins(std::pmr::memory_resource* resource,
                                     const components::logical_plan::catalog_resolves_t& resolves);
 
     // A REFERENCES target in another database than the table owning the key is refused.
     core::error_t refuse_cross_database_references(std::pmr::memory_resource* resource,
                                                    const components::logical_plan::catalog_resolves_t& resolves);
-
-    core::error_t refuse_storage_write_in_savepoint(std::pmr::memory_resource* resource,
-                                                    const components::logical_plan::catalog_resolves_t& resolves,
-                                                    const components::logical_plan::node_t& write);
 
 } // namespace services::catalog_resolve
 

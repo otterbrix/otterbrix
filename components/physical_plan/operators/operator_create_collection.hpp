@@ -1,15 +1,17 @@
 #pragma once
 
+#include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/table/column_definition.hpp>
+#include <components/table/storage_address.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <vector>
 
 namespace components::operators {
 
-    // Creates physical storage, registers the collection with the index manager,
-    // and writes pre-built pg_catalog rows (pg_class, pg_attribute, pg_depend).
+    // Creates the table at its storage, registers the collection with the index manager for a storage otterbrix
+    // publishes, and writes pre-built pg_catalog rows (pg_class, pg_attribute, pg_depend).
     // All work is done in a single await_async_and_resume.
     class operator_create_collection_t final : public read_write_operator_t {
     public:
@@ -18,7 +20,9 @@ namespace components::operators {
         operator_create_collection_t(std::pmr::memory_resource* resource,
                                      log_t log,
                                      components::catalog::oid_t table_oid,
-                                     components::catalog::oid_t database_oid,
+                                     components::catalog::oid_t namespace_oid,
+                                     qualified_name_t name,
+                                     table::storage_address_t address,
                                      std::vector<table::column_definition_t> columns,
                                      std::vector<catalog_write_t> catalog_writes);
 
@@ -32,7 +36,9 @@ namespace components::operators {
 
     private:
         components::catalog::oid_t table_oid_;
-        components::catalog::oid_t database_oid_;
+        components::catalog::oid_t namespace_oid_;
+        qualified_name_t name_;
+        table::storage_address_t address_;
         std::vector<table::column_definition_t> columns_;
         std::vector<catalog_write_t> catalog_writes_;
     };

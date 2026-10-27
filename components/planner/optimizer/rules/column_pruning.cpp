@@ -227,9 +227,8 @@ namespace components::planner::optimizer {
                 return 0;
             }
             const auto* metadata = aggregate.table_metadata();
-            if (metadata == nullptr || metadata->storage != nullptr ||
-                (metadata->relkind != catalog::relkind::regular &&
-                 metadata->relkind != catalog::relkind::materialized_view)) {
+            if (metadata == nullptr || (metadata->relkind != catalog::relkind::regular &&
+                                        metadata->relkind != catalog::relkind::materialized_view)) {
                 return 0;
             }
             return metadata->columns.size();
@@ -440,9 +439,8 @@ namespace components::planner::optimizer {
                 return;
             }
             const auto* metadata = node.table_metadata();
-            if (metadata == nullptr || metadata->storage != nullptr ||
-                (metadata->relkind != catalog::relkind::regular &&
-                 metadata->relkind != catalog::relkind::materialized_view)) {
+            if (metadata == nullptr || (metadata->relkind != catalog::relkind::regular &&
+                                        metadata->relkind != catalog::relkind::materialized_view)) {
                 return;
             }
             size_t width = metadata->columns.size();

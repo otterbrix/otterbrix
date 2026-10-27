@@ -5,12 +5,6 @@
 #include <algorithm>
 #include <vector>
 
-// TODO: edge case with connecting query and it's subquery
-/*
-SELECT ... FROM A WHERE EXISTS ( SELECT ... FROM B WHERE A.id = B.id););
-This requires replanning into a join
-*/
-
 namespace {
 
     void setup_subquery_db(otterbrix::wrapper_dispatcher_t* dispatcher) {
@@ -206,8 +200,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->size() == 5);
     }
 
-    // TODO: those ones have to be replanned in 'planner' into a join
-    /*
     INFO("EXISTS correlated subquery");
     {
         auto session = otterbrix::session_id_t();
@@ -252,7 +244,6 @@ TEST_CASE("integration::cpp::test_subqueries::where_clause") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 5);
     }
-    */
 
     INFO("ANY subquery");
     {
@@ -372,7 +363,7 @@ TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
         REQUIRE(cur->size() == 0);
     }
 
-    INFO("EXPLAIN: correlated EXISTS lowers to a join (Nested Loop), not a Filter");
+    INFO("EXPLAIN: correlated EXISTS lowers to a hash semi join, not a Filter");
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session,
@@ -382,12 +373,12 @@ TEST_CASE("integration::cpp::test_subqueries::correlated_exists_semi_anti") {
                                            "  WHERE e.dept_id = d.id AND e.salary > 85000"
                                            ");");
         REQUIRE(cur->is_success());
-        REQUIRE(contains(plan_text(cur), "Nested Loop"));
+        REQUIRE(contains(plan_text(cur), "Hash Semi Join"));
     }
 }
 
-// NOTE: NOT IN is deliberately not routed to an anti-join — a plain anti-join can't reproduce SQL
-// three-valued logic (a NULL in the subquery makes `x NOT IN (S)` never TRUE), so it keeps the membership-test path.
+// NOTE: an uncorrelated NOT IN keeps the membership-test path; a correlated one is an anti join whose condition
+// carries SQL's three-valued logic (a NULL in the subquery makes `x NOT IN (S)` never TRUE), test_decorrelation.cpp.
 
 TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
     auto config = test_create_config(integration_fixture_path("test_subqueries/select_list_and_from"));
@@ -398,8 +389,6 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
     INFO("setup");
     { setup_subquery_db(dispatcher); }
 
-    // TODO: those have to be replanned into join
-    /*
     INFO("scalar correlated subquery in SELECT list");
     {
         auto session = otterbrix::session_id_t();
@@ -453,7 +442,6 @@ TEST_CASE("integration::cpp::test_subqueries::select_list_and_from") {
         REQUIRE_FALSE(sub7.has_error());
         REQUIRE(sub7.value() == 90000);
     }
-    */
 
     INFO("derived table in FROM (basic)");
     {
@@ -638,8 +626,6 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
         REQUIRE(cur->size() == 2);
     }
 
-    // TODO: those have to be replanned in 'planer'
-    /*
     INFO("3-level nested: EXISTS inside IN inside scalar");
     {
         auto session = otterbrix::session_id_t();
@@ -680,7 +666,6 @@ TEST_CASE("integration::cpp::test_subqueries::nested") {
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 3);
     }
-    */
 
     INFO("4-level nested: IN in IN in scalar in scalar");
     {

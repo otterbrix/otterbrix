@@ -59,13 +59,11 @@ namespace components::planner {
                 cur = fk_node;
             }
 
-            if (!ins->not_null_cols().empty() || !ins->check_predicates().empty() || !ins->array_size_reqs().empty() ||
-                !ins->unique_groups().empty()) {
+            if (!ins->check_predicates().empty() || !ins->array_size_reqs().empty() || !ins->unique_groups().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                     r,
                     core::schema_t{},
                     core::relname_t{},
-                    std::vector<std::string>(ins->not_null_cols()),
                     std::vector<std::pair<std::string, uint64_t>>(ins->array_size_reqs())));
                 cc->set_unique_groups(ins->unique_groups());
                 cc->set_conflict_groups(std::move(conflict_groups));
@@ -105,13 +103,11 @@ namespace components::planner {
                 }
             }
 
-            if (!upd->not_null_cols().empty() || !live_unique_groups.empty() || !upd->check_predicates().empty() ||
-                !upd->array_size_reqs().empty()) {
+            if (!live_unique_groups.empty() || !upd->check_predicates().empty() || !upd->array_size_reqs().empty()) {
                 auto cc = boost::intrusive_ptr(new logical_plan::node_check_constraint_t(
                     r,
                     core::schema_t{},
                     core::relname_t{},
-                    std::vector<std::string>(upd->not_null_cols()),
                     std::vector<std::pair<std::string, uint64_t>>(upd->array_size_reqs())));
                 cc->set_unique_groups(std::move(live_unique_groups));
                 cc->set_table_oid(upd->table_oid());
@@ -206,12 +202,6 @@ namespace components::planner {
             auto writes = catalog::build_create_namespace_writes(r, cs->target().schema.t, ns_oid, cs->database_oid());
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
-            // A schema of a connection's database: the node stays first, for the connector's CREATE SCHEMA before
-            // the rows.
-            if (!cs->target().connection.t.empty()) {
-                cs->set_namespace_oid(ns_oid);
-                seq->append_child(node);
-            }
             for (auto& w : writes) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
             }
@@ -229,6 +219,31 @@ namespace components::planner {
             const char rk = cc->column_definitions().empty() && cc->target().connection.t.empty()
                                 ? catalog::relkind::computed
                                 : catalog::relkind::regular;
+            // A PRIMARY KEY column is NOT NULL, as in PostgreSQL 18: the storage refuses a NULL in it.
+            auto mark_not_null = [cc](const std::string& name) {
+                for (auto& column : cc->column_definitions()) {
+                    if (column.name() == name) {
+                        column.set_not_null(true);
+                    }
+                }
+            };
+            for (const auto& child : cc->children()) {
+                if (child && child->type() == logical_plan::node_type::create_constraint_t) {
+                    const auto* constraint = static_cast<const logical_plan::node_create_constraint_t*>(child.get());
+                    if (constraint->kind() == logical_plan::constraint_kind::primary_key) {
+                        for (const auto& name : constraint->local_col_names()) {
+                            mark_not_null(std::string{name});
+                        }
+                    }
+                }
+            }
+            for (const auto& constraint : cc->constraints()) {
+                if (constraint.type == table::table_constraint_type::PRIMARY_KEY) {
+                    for (const auto& name : constraint.columns) {
+                        mark_not_null(name);
+                    }
+                }
+            }
             const catalog::oid_t table_oid = oid_batch.peek();
             auto writes = catalog::build_create_table_writes(r,
                                                              std::string{},
@@ -326,6 +341,16 @@ namespace components::planner {
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
             for (auto& w : writes.value()) {
                 seq->append_child(make_catalog_write(r, w.table_oid, std::move(w.row)));
+            }
+            // A PRIMARY KEY column is NOT NULL, as in PostgreSQL 18.
+            if (cstr->kind() == logical_plan::constraint_kind::primary_key) {
+                for (const auto attoid : cstr->fk_col_attoids()) {
+                    auto not_null =
+                        logical_plan::make_node_alter_column(r, logical_plan::alter_column_op::set_not_null);
+                    not_null->set_table_oid(cstr->table_oid());
+                    not_null->set_attoid(attoid);
+                    seq->append_child(not_null);
+                }
             }
             return node_ptr{std::move(seq)};
         }
@@ -622,8 +647,6 @@ namespace components::planner {
             }
 
             auto seq = boost::intrusive_ptr(new logical_plan::node_sequence_t(r));
-            // A connection's table as each step finds it: the earlier subcommands applied.
-            auto current = alter->remote_table();
             for (const auto& sub : alter->subcommands()) {
                 if (sub.kind == logical_plan::alter_table_kind::add_column) {
                     // The executor already typed the column and cast its DEFAULT, as for CREATE TABLE.
@@ -631,15 +654,6 @@ namespace components::planner {
                     add->set_table_oid(table_oid);
                     auto column = sub.column;
                     column.set_attoid(static_cast<std::uint32_t>(oid_batch.allocate()));
-                    add->set_remote_table(current);
-                    if (current.is_remote()) {
-                        logical_plan::resolved_column_metadata_t added;
-                        added.attname = column.name();
-                        added.type = column.type();
-                        added.attoid = column.attoid();
-                        added.attnotnull = column.is_not_null();
-                        current.columns.push_back(std::move(added));
-                    }
                     add->set_column(std::move(column));
                     seq->append_child(add);
                 } else if (sub.kind == logical_plan::alter_table_kind::rename_column) {
@@ -658,9 +672,6 @@ namespace components::planner {
                         drop->set_behavior(sub.behavior);
                         drop->set_target(alter->target());
                         drop->set_relkind(alter->relkind());
-                        drop->set_remote_table(current);
-                        std::erase_if(current.columns,
-                                      [&sub](const auto& column) { return column.attname == sub.column_name; });
                     }
                     seq->append_child(drop);
                 } else if (sub.kind == logical_plan::alter_table_kind::drop_constraint) {

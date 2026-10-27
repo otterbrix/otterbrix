@@ -122,12 +122,15 @@ TEST_CASE("pushdown_reduce: read-your-own-writes SUM over an uncommitted txn (D4
     const catalog::oid_t table_oid{catalog::FIRST_USER_OID};
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("val", types::complex_logical_type{types::logical_type::BIGINT});
-    fx.invoke(&manager_disk_t::create_storage_disk,
-              session_id_t{},
-              table_oid,
-              catalog::well_known_oid::main_database,
-              cols,
-              /*is_computed=*/false);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                  table_oid,
+                  catalog::well_known_oid::main_database,
+                  qualified_name_t{},
+                  cols,
+                  /*is_computed=*/false)
+            .has_error());
 
     const auto txn = open_txn(88);
     components::execution_context_t append_ctx{session_id_t{}, txn, {}};
@@ -135,7 +138,9 @@ TEST_CASE("pushdown_reduce: read-your-own-writes SUM over an uncommitted txn (D4
     auto appended = fx.invoke(&manager_disk_t::storage_append,
                               append_ctx,
                               table_oid,
-                              batch_rows(&fx.resource, {"val"}, {{10}, {20}, {30}}));
+                              std::pmr::vector<catalog::oid_t>(cols.size(), catalog::INVALID_OID, &fx.resource),
+                              batch_rows(&fx.resource, {"val"}, {{10}, {20}, {30}}),
+                              false);
     REQUIRE_FALSE(appended.has_error());
 
     auto partials = fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), txn);
@@ -160,12 +165,15 @@ TEST_CASE("pushdown_reduce: empty slice SUM emits one NULL scalar row") {
     const catalog::oid_t table_oid{catalog::FIRST_USER_OID};
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("val", types::complex_logical_type{types::logical_type::BIGINT});
-    fx.invoke(&manager_disk_t::create_storage_disk,
-              session_id_t{},
-              table_oid,
-              catalog::well_known_oid::main_database,
-              cols,
-              /*is_computed=*/false);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                  table_oid,
+                  catalog::well_known_oid::main_database,
+                  qualified_name_t{},
+                  cols,
+                  /*is_computed=*/false)
+            .has_error());
 
     auto partials =
         fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/-1, /*val_col=*/0), open_txn(88));
@@ -184,12 +192,15 @@ TEST_CASE("pushdown_reduce: GROUP BY key + SUM returns the full grouped result")
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("grp", types::complex_logical_type{types::logical_type::BIGINT});
     cols.emplace_back("val", types::complex_logical_type{types::logical_type::BIGINT});
-    fx.invoke(&manager_disk_t::create_storage_disk,
-              session_id_t{},
-              table_oid,
-              catalog::well_known_oid::main_database,
-              cols,
-              /*is_computed=*/false);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                  table_oid,
+                  catalog::well_known_oid::main_database,
+                  qualified_name_t{},
+                  cols,
+                  /*is_computed=*/false)
+            .has_error());
 
     // Distinct group sums let the key/sum columns be identified regardless of output order.
     const auto txn = open_txn(88);
@@ -198,7 +209,9 @@ TEST_CASE("pushdown_reduce: GROUP BY key + SUM returns the full grouped result")
     auto appended = fx.invoke(&manager_disk_t::storage_append,
                               append_ctx,
                               table_oid,
-                              batch_rows(&fx.resource, {"grp", "val"}, {{1, 10}, {1, 20}, {2, 30}, {2, 5}}));
+                              std::pmr::vector<catalog::oid_t>(cols.size(), catalog::INVALID_OID, &fx.resource),
+                              batch_rows(&fx.resource, {"grp", "val"}, {{1, 10}, {1, 20}, {2, 30}, {2, 5}}),
+                              false);
     REQUIRE_FALSE(appended.has_error());
 
     auto partials = fx.drive_reduce(table_oid, build_sum_spec(&fx.resource, /*group_col=*/0, /*val_col=*/1), txn);
@@ -226,12 +239,15 @@ TEST_CASE("pushdown_reduce: manager routes a storage_reduce and replies a well-f
     const catalog::oid_t table_oid{catalog::FIRST_USER_OID};
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("val", types::complex_logical_type{types::logical_type::BIGINT});
-    fx.invoke(&manager_disk_t::create_storage_disk,
-              session_id_t{},
-              table_oid,
-              catalog::well_known_oid::main_database,
-              cols,
-              /*is_computed=*/false);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                  table_oid,
+                  catalog::well_known_oid::main_database,
+                  qualified_name_t{},
+                  cols,
+                  /*is_computed=*/false)
+            .has_error());
 
     auto reply = fx.invoke(&manager_disk_t::storage_reduce,
                            session_id_t{},

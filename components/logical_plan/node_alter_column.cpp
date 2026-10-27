@@ -40,6 +40,7 @@ namespace components::logical_plan {
                 case alter_column_op::drop:
                     return "$computed_field_unregister[" + column_name_.t + "]";
                 case alter_column_op::rename:
+                case alter_column_op::set_not_null:
                     break; // never emitted — see create_plan's computed rename case
             }
         }
@@ -50,6 +51,8 @@ namespace components::logical_plan {
                 return "$alter_column_rename[" + old_name_.t + " -> " + new_name_.t + "]";
             case alter_column_op::drop:
                 return "$alter_column_drop[" + column_name_.t + "]";
+            case alter_column_op::set_not_null:
+                return "$alter_column_set_not_null[" + std::to_string(attoid_) + "]";
         }
         return "$alter_column";
     }

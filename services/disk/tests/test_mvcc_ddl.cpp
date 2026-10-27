@@ -275,8 +275,11 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
     REQUIRE_FALSE(before_other.found);
     // The handler grew an error channel (it used to return void), so the rollback is asserted here
     // rather than discarded -- that is the whole point of the channel.
-    REQUIRE_FALSE(fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn), std::move(appends_for_test))
-                      .contains_error());
+    components::table::txn_abort_drain_t drain;
+    drain.txn = fx.txn_ctx(txn).txn;
+    drain.swap_appends = std::move(appends_for_test);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::undo_appends_and_storages, session_id_t{}, std::move(drain)).contains_error());
     auto after = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("ephemeral"));
     REQUIRE_FALSE(after.found);
     auto after_same = test_probe::probe_table(fx, fx.txn_ctx(txn), ns_oid, std::string("ephemeral"));
@@ -381,8 +384,11 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_rollback_undoes") {
     REQUIRE(before.found);
     REQUIRE(before.columns.size() == 0);
 
-    REQUIRE_FALSE(fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn1), std::move(pending_ranges))
-                      .contains_error());
+    components::table::txn_abort_drain_t drain;
+    drain.txn = fx.txn_ctx(txn1).txn;
+    drain.swap_appends = std::move(pending_ranges);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::undo_appends_and_storages, session_id_t{}, std::move(drain)).contains_error());
 
     auto after_other = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("docs"));
     REQUIRE(after_other.found);

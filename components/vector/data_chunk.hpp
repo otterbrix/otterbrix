@@ -101,6 +101,10 @@ namespace components::vector {
 
     void validate_chunk_capacity(vector::data_chunk_t& chunk, size_t filled_size);
 
+    // The chunk on `resource`: the chunk itself when it is there, else a copy. A storage's reply lives on the
+    // storage's resource, which a host's backend does not share with the engine.
+    data_chunk_t adopted(std::pmr::memory_resource* resource, data_chunk_t&& chunk);
+
     // Sub-query result compacters: fold ALL of a cursor's chunks (not just the first) into one bound
     // parameter value, so a >1024-row or multi-branch result is not silently truncated. `result_type` is the
     // type of that value, from the sub-query's schema: what a result of no row takes.

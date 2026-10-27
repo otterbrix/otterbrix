@@ -1,7 +1,7 @@
 // A database of a host's connection is a pg_database row whose datconnection names the connection: a host's plan
 // creates it, connection.database.schema.table resolves through it, and its tables keep their rows on the backend.
 
-#include "connector_fixture.hpp"
+#include "host_fixture.hpp"
 
 #include <filesystem>
 #include <initializer_list>
@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-using connector_fixture::host_t;
+using host_fixture::host_t;
 using code = core::error_code_t;
 using strings = std::vector<std::string>;
 using ints = std::vector<std::int64_t>;
@@ -53,12 +53,11 @@ TEST_CASE("integration::cpp::remote_databases::a_database_of_a_connection_is_a_p
           strings{"", "m2"});
     const std::string schemas = "SELECT n.nspname FROM pg_catalog.pg_namespace n JOIN pg_catalog.pg_database d "
                                 "ON n.nspdatabase = d.oid WHERE d.datconnection = 'm2' ORDER BY n.nspname;";
-    // Created empty: the host registers the schemas its backend has.
+    // Created empty: the host registers the schemas its backend has, in otterbrix's catalog only.
     CHECK(host.db.strings(any(), schemas).empty());
-    CHECK(host.factory->journal().empty());
     host.ok(host.remote_schema("m2", "shop", "public"));
     CHECK(host.db.strings(any(), schemas) == strings{"public"});
-    CHECK(host.factory->journal() == strings{"create schema m2.shop.public"});
+    CHECK(host.backend().changes().empty());
 }
 
 TEST_CASE("integration::cpp::remote_databases::a_remote_and_a_local_database_of_one_name") {
@@ -67,13 +66,13 @@ TEST_CASE("integration::cpp::remote_databases::a_remote_and_a_local_database_of_
     host.db.ok(any(), "CREATE DATABASE shop;");
     host.db.ok(any(), "CREATE TABLE shop.public.t (a BIGINT);");
     host.db.ok(any(), "INSERT INTO shop.public.t (a) VALUES (5);");
-    test_connector::backend_rows()["m2.shop.public.orders"] = {{1, 100}};
+    host.backend().set_rows("m2.shop.public.orders", {{1, 100}});
     CHECK(host.db.ints(any(), "SELECT a FROM shop.public.t;") == ints{5});
     CHECK(host.db.ints(any(), "SELECT amount FROM m2.shop.public.orders;") == ints{100});
 }
 
 TEST_CASE("integration::cpp::remote_databases::a_database_of_a_connection_twice") {
-    host_t host("test_remote_databases/twice");
+    host_t host("test_remote_databases/twice", nullptr, {"m2", "m3"});
     host.ok(host.remote_database("m2", "shop"));
     const auto error = host.refused(host.remote_database("m2", "shop"));
     CHECK(error.type == code::database_already_exists);
@@ -92,56 +91,53 @@ TEST_CASE("integration::cpp::remote_databases::a_table_of_a_connection_has_no_st
     host.db.restart();
     CHECK(oid_of(host, "orders") == orders);
     CHECK_FALSE(std::filesystem::exists(storage));
-    test_connector::backend_rows()["m2.shop.public.orders"] = {{7, 70}};
+    host.backend().set_rows("m2.shop.public.orders", {{7, 70}});
     CHECK(host.db.ints(any(), "SELECT id FROM m2.shop.public.orders;") == ints{7});
 }
 
-TEST_CASE("integration::cpp::remote_databases::the_operators_get_the_oids_the_catalog_holds") {
+TEST_CASE("integration::cpp::remote_databases::the_backend_gets_the_oids_the_catalog_holds") {
     host_t host("test_remote_databases/oids");
     host.register_shop();
-    host.factory->clear();
     host.db.ok(any(), "CREATE TABLE m2.shop.public.orders (id BIGINT, amount BIGINT);");
     const auto orders = oid_of(host, "orders");
-    auto calls = host.factory->ddl_calls();
-    REQUIRE(calls.size() == 1);
-    CHECK(calls[0].table_oid == orders);
-    CHECK(calls[0].attoids == attoids_of(host, orders));
+    const std::string name = "m2.shop.public.orders";
+    CHECK(host.backend().oid_of(name) == orders);
+    CHECK(host.backend().attoids_of(name) == attoids_of(host, orders));
 
-    host.factory->clear();
-    test_connector::backend_rows()["m2.shop.public.orders"] = {};
+    using oid_call_t = host_actor::backend_t::oid_call_t;
+    constexpr auto none = components::catalog::INVALID_OID;
+
+    host.backend().clear_journal();
     REQUIRE(host.db.ints(any(), "SELECT count(*) FROM m2.shop.public.orders;") == ints{0});
-    const auto storage = host.factory->storage_calls();
-    REQUIRE(storage.size() == 1);
-    CHECK(storage[0].table_oid == orders);
-    CHECK(storage[0].attoids == attoids_of(host, orders));
+    CHECK(host.backend().journal("scan") == strings{"scan " + name});
+    CHECK(host.backend().oid_calls() == std::vector<oid_call_t>{{"scan", orders, none}});
 
-    host.factory->clear();
+    const auto before = attoids_of(host, orders);
+    host.backend().clear_journal();
     host.db.ok(any(), "ALTER TABLE m2.shop.public.orders DROP COLUMN amount;");
     host.db.ok(any(), "ALTER TABLE m2.shop.public.orders ADD COLUMN amount BIGINT;");
     const auto after = attoids_of(host, orders);
-    calls = host.factory->ddl_calls();
-    REQUIRE(calls.size() == 2);
-    CHECK(calls[0].kind == "drop column");
-    CHECK(calls[0].attoids != std::vector<std::uint32_t>{after[1]});
-    CHECK(calls[1].kind == "add");
-    CHECK(calls[1].attoids == std::vector<std::uint32_t>{after[1]});
+    CHECK(host.backend().changes() == strings{"alter drop " + name + " amount", "alter add " + name + " amount"});
+    CHECK(host.backend().attoids_of(name) == after);
+    REQUIRE(before.size() == 2);
+    REQUIRE(after.size() == 2);
+    CHECK(before[1] != after[1]);
+    CHECK(host.backend().oid_calls() ==
+          std::vector<oid_call_t>{{"alter drop", orders, before[1]}, {"alter add", orders, after[1]}});
 
-    host.factory->clear();
+    host.backend().clear_journal();
     host.db.ok(any(), "DROP TABLE m2.shop.public.orders;");
-    calls = host.factory->ddl_calls();
-    REQUIRE(calls.size() == 1);
-    CHECK(calls[0].table_oid == orders);
-    CHECK(calls[0].attoids == after);
-    CHECK(test_connector::parameters().count(orders) == 0);
+    CHECK(host.backend().changes() == strings{"drop " + name});
+    CHECK(host.backend().oid_calls() == std::vector<oid_call_t>{{"drop", orders, none}});
+    CHECK_FALSE(host.backend().has_table(name));
 }
 
-// As DROP DATABASE, with everything in it: the connector's DROP of each table and schema it reaches, the dependents
-// first, and then the catalog's rows.
+// As DROP DATABASE, with everything in it: the backend's DROP of each table it reaches, and then the catalog's rows.
 TEST_CASE("integration::cpp::remote_databases::a_database_of_a_connection_goes_with_what_is_in_it") {
     host_t host("test_remote_databases/drop");
     host.register_orders();
     host.ok(host.drop_remote_database("m2", "shop"));
-    CHECK(host.factory->journal() == strings{"drop m2.shop.public.orders", "drop schema m2.shop.public"});
+    CHECK(host.backend().changes() == strings{"drop m2.shop.public.orders"});
     CHECK(host.db.strings(any(), "SELECT datname FROM pg_catalog.pg_database;") == strings{"main"});
     CHECK(host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'orders';") == ints{0});
     host.db.check_refused(any(),
@@ -162,7 +158,7 @@ TEST_CASE("integration::cpp::remote_databases::a_database_of_a_connection_is_cre
     CHECK(schema->get_error().type == code::unimplemented_yet);
     CHECK(std::string{schema->get_error().what} == "connection \"m2\" only supports DDL in autocommit");
     host.db.ok(a, "ROLLBACK;");
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
     CHECK(count_of(host, "pg_catalog.pg_database") == 1);
 }
 
@@ -182,29 +178,27 @@ TEST_CASE("integration::cpp::remote_databases::a_place_in_a_connection") {
                           "SET search_path = 'm2.nodb.public';",
                           code::database_not_exists,
                           "database \"m2.nodb\" does not exist");
-    test_connector::backend_rows()["m2.shop.public.orders"] = {{3, 30}};
+    host.backend().set_rows("m2.shop.public.orders", {{3, 30}});
     CHECK(host.db.ints(session, "SELECT id FROM orders;") == ints{3});
 }
 
-// CREATE / DROP SCHEMA in a connection's database: otterbrix's checks, the connector's operator, the catalog's rows;
-// only in autocommit, and a backend refusal writes nothing.
-TEST_CASE("integration::cpp::remote_databases::a_schema_of_a_database_of_a_connection_through_the_connector") {
+// CREATE / DROP SCHEMA in a connection's database: otterbrix's checks and the catalog's rows, never the backend; only
+// in autocommit.
+TEST_CASE("integration::cpp::remote_databases::a_schema_of_a_database_of_a_connection_is_the_catalogs") {
     host_t host("test_remote_databases/schema");
     host.register_orders();
     const auto session = otterbrix::session_id_t();
     host.db.ok(session, "SET search_path = 'm2.shop.public';");
     host.db.ok(session, "CREATE SCHEMA s;");
     host.db.ok(session, "DROP SCHEMA s;");
-    CHECK(host.factory->journal() == strings{"create schema m2.shop.s", "drop schema m2.shop.s"});
-    host.factory->clear();
-    host.db.check_refused(session, "CREATE SCHEMA bad1;", code::connection_closed, "backend refused \"bad1\"");
-    CHECK(host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = 'bad1';") == ints{0});
+    host.db.ok(session, "CREATE SCHEMA bad1;");
+    CHECK(host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = 'bad1';") == ints{1});
+    CHECK(host.backend().changes().empty());
     host.db.ok(session, "CREATE SCHEMA s;");
     const auto restricted = host.db.refused(session, "DROP SCHEMA public;");
     CHECK(restricted.type == code::dependent_objects_still_exist);
     CHECK(std::string{restricted.what}.starts_with(
         "cannot drop schema m2.shop.public because other objects depend on it"));
-    host.factory->clear();
     for (const std::string& sql : {"CREATE SCHEMA s2;", "DROP SCHEMA s;"}) {
         INFO(sql);
         host.db.ok(session, "BEGIN;");
@@ -214,7 +208,7 @@ TEST_CASE("integration::cpp::remote_databases::a_schema_of_a_database_of_a_conne
                               "connection \"m2\" only supports DDL in autocommit");
         host.db.ok(session, "ROLLBACK;");
     }
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
 }
 
 TEST_CASE("integration::cpp::remote_databases::pg_catalog_from_a_connections_place") {
@@ -294,7 +288,7 @@ TEST_CASE("integration::cpp::remote_databases::a_missing_database_of_a_connectio
                           "database \"m2.nodb\" does not exist");
     host.db.ok(session, "ROLLBACK;");
     CHECK(host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 't3';") == ints{0});
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
 }
 
 // pg_rewrite_ref keeps a body name's connection apart from its database: a local database named "m2.shop" is not the
@@ -302,7 +296,7 @@ TEST_CASE("integration::cpp::remote_databases::a_missing_database_of_a_connectio
 TEST_CASE("integration::cpp::remote_databases::a_local_database_named_like_a_connections_one") {
     host_t host("test_remote_databases/dotted_name");
     host.register_orders();
-    test_connector::backend_rows()["m2.shop.public.orders"] = {{1, 100}, {2, 200}};
+    host.backend().set_rows("m2.shop.public.orders", {{1, 100}, {2, 200}});
     host.db.ok(any(), "CREATE DATABASE \"m2.shop\";");
     host.db.ok(any(), "CREATE TABLE \"m2.shop\".public.orders (id BIGINT, amount BIGINT);");
     host.db.ok(any(), "INSERT INTO \"m2.shop\".public.orders (id, amount) VALUES (9, 900);");
@@ -316,21 +310,49 @@ TEST_CASE("integration::cpp::remote_databases::a_local_database_named_like_a_con
           ints{1});
 }
 
-TEST_CASE("integration::cpp::remote_databases::every_executor_has_its_own_connector") {
-    host_t host("test_remote_databases/executors");
-    REQUIRE(host.factory->made.size() == host.db.config.execution.executor_pool_size);
-    if (host.factory->made.size() > 1) {
-        CHECK(host.factory->made[0] != host.factory->made[1]);
-    }
-
-    test_connector::factory_t refusing;
-    refusing.refuse = true;
-    auto config = test_create_config(integration_fixture_path("test_remote_databases/executors_refused"));
+// open_engine reads the host's map once: every executor keeps its own copy, so the host's array may change or go.
+TEST_CASE("integration::cpp::remote_databases::every_executor_has_its_own_copy_of_the_map") {
+    host_fixture::backends_t backends({"m2"});
+    auto config = test_create_config(integration_fixture_path("test_remote_databases/executors"));
     config.log.level = log_t::level::off;
     test_clear_directory(config);
-    auto refused = otterbrix::base_otterbrix_t::open(config, components::planner::primitives_t{{}, &refusing});
-    REQUIRE(refused.has_error());
-    CHECK(std::string{refused.error().what} == "the test backend cannot be reached");
+    std::string connection = "m2";
+    std::vector<components::planner::backend_address_t> map{{connection, backends.actors.front()->address()}};
+    test_spaces space(config, components::planner::primitives_t{map});
+    connection = "xx";
+    map.clear();
+    map.shrink_to_fit();
+    auto* dispatcher = space.dispatcher();
+    auto* resource = dispatcher->resource();
+    const auto plan_of = [resource](components::logical_plan::node_ptr node) {
+        return components::logical_plan::execution_plan_t{resource,
+                                                          std::move(node),
+                                                          components::logical_plan::make_parameter_node(resource)};
+    };
+    REQUIRE(dispatcher
+                ->execute_plan(any(),
+                               plan_of(components::logical_plan::make_node_create_database(
+                                   resource,
+                                   qualified_name_t{core::connection_name_t{"m2"}, core::dbname_t{"shop"}, {}, {}})))
+                ->is_success());
+    REQUIRE(dispatcher
+                ->execute_plan(any(),
+                               plan_of(components::logical_plan::make_node_create_schema(
+                                   resource,
+                                   qualified_name_t{core::connection_name_t{"m2"},
+                                                    core::dbname_t{"shop"},
+                                                    core::schema_t{"public"},
+                                                    {}})))
+                ->is_success());
+    const auto statements = 2 * config.execution.executor_pool_size;
+    for (std::size_t i = 0; i < statements; ++i) {
+        const std::string table = "t" + std::to_string(i);
+        INFO(table);
+        REQUIRE(dispatcher->execute_sql(any(), "CREATE TABLE m2.shop.public." + table + " (id BIGINT);")->is_success());
+        REQUIRE(dispatcher->execute_sql(any(), "SELECT id FROM m2.shop.public." + table + ";")->is_success());
+    }
+    CHECK(backends.of("m2").journal("create").size() == statements);
+    CHECK(backends.of("m2").journal("scan").size() == statements);
 }
 
 TEST_CASE("integration::cpp::remote_databases::only_tables_in_a_database_of_a_connection") {
@@ -360,31 +382,20 @@ TEST_CASE("integration::cpp::remote_databases::create_in_pg_catalog_from_a_conne
     host.db.ok(session, "SET search_path = 'm2.shop.public';");
     const auto error = host.db.refused(session, "CREATE TABLE pg_catalog.x (a BIGINT);");
     CHECK(std::string{error.what}.find("system catalog") != std::string::npos);
-    CHECK(host.factory->journal().empty());
+    CHECK(host.backend().changes().empty());
     CHECK(host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'x';") == ints{0});
 }
 
-// A host without a connector: a schema of a connection's database is refused, named as a schema.
-TEST_CASE("integration::cpp::remote_databases::a_schema_without_a_connector") {
-    session_sql::fixture_t db("test_remote_databases/no_connector");
-    auto* resource = db.dispatcher()->resource();
-    const auto plan_of = [resource](components::logical_plan::node_ptr node) {
-        return components::logical_plan::execution_plan_t{resource,
-                                                          std::move(node),
-                                                          components::logical_plan::make_parameter_node(resource)};
-    };
-    REQUIRE(db.dispatcher()
-                ->execute_plan(any(),
-                               plan_of(components::logical_plan::make_node_create_database(
-                                   resource,
-                                   qualified_name_t{core::connection_name_t{"m2"}, core::dbname_t{"shop"}, {}, {}})))
-                ->is_success());
-    auto refused = db.dispatcher()->execute_plan(
-        any(),
-        plan_of(components::logical_plan::make_node_create_schema(
-            resource,
-            qualified_name_t{core::connection_name_t{"m2"}, core::dbname_t{"shop"}, core::schema_t{"s"}, {}})));
-    REQUIRE(refused->is_error());
-    CHECK(std::string{refused->get_error().what} ==
-          "schema \"m2.shop.s\" is of connection \"m2\", and the host gave no connector");
+// A schema of a connection's database is otterbrix's catalog alone; a database of a connection the host's map does
+// not hold is refused.
+TEST_CASE("integration::cpp::remote_databases::a_schema_needs_no_backend") {
+    host_t host("test_remote_databases/no_connector");
+    host.ok(host.remote_database("m2", "shop"));
+    host.ok(host.remote_schema("m2", "shop", "s"));
+    CHECK(host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = 's';") == ints{1});
+    CHECK(host.backend().changes().empty());
+    const auto refused = host.refused(host.remote_database("m3", "shop"));
+    CHECK(refused.type == code::do_not_exists);
+    CHECK(std::string{refused.what} == "connection \"m3\" does not exist");
+    CHECK(host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_database WHERE datconnection = 'm3';") == ints{0});
 }

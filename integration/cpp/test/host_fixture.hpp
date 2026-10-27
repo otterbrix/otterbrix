@@ -1,26 +1,101 @@
 #pragma once
 
 #include "session_sql_fixture.hpp"
-#include "test_connector.hpp"
+#include "test_host_actor.hpp"
 
 #include <components/logical_plan/node_create_database.hpp>
 #include <components/logical_plan/node_create_schema.hpp>
 #include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/planner/host_hooks.hpp>
 
 #include <memory>
+#include <memory_resource>
 #include <string>
+#include <vector>
 
-namespace connector_fixture {
+namespace host_fixture {
 
-    // An engine opened with the test connector factory; the factory outlives it.
+    using strings = std::vector<std::string>;
+
+    // The most rows one write message to a connection carries, by connection (absent: no limit).
+    using caps_t = std::vector<std::pair<std::string, std::uint64_t>>;
+
+    // The backend actors of a host's connections, one per connection, and the map open_engine reads. They outlive the
+    // engine: they are declared before it. "b=a" makes the connection b another connection of a's actor.
+    struct backends_t {
+        explicit backends_t(const strings& connections, caps_t write_caps = {})
+            : caps(std::move(write_caps)) {
+            for (const auto& spec : connections) {
+                const auto shared = spec.find('=');
+                if (shared == std::string::npos) {
+                    names.push_back(spec);
+                    actor_of.push_back(actors.size());
+                    actors.push_back(actor_zeta::spawn<host_actor::backend_t>(std::pmr::new_delete_resource(), spec));
+                    continue;
+                }
+                names.push_back(spec.substr(0, shared));
+                actor_of.push_back(index_of(spec.substr(shared + 1)));
+            }
+            map_all();
+        }
+
+        // The map holds only `present` of the connections (for the next open).
+        void map_only(const strings& present) {
+            map.clear();
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                if (std::find(present.begin(), present.end(), names[i]) != present.end()) {
+                    std::uint64_t cap = 0;
+                    for (const auto& [connection, rows] : caps) {
+                        if (connection == names[i]) {
+                            cap = rows;
+                        }
+                    }
+                    map.push_back({names[i], actors[actor_of[i]]->address(), cap});
+                }
+            }
+        }
+        void map_all() { map_only(names); }
+
+        host_actor::backend_t& of(const std::string& connection) { return *actors[actor_of[index_of(connection)]]; }
+
+        components::planner::primitives_t primitives() const { return components::planner::primitives_t{map}; }
+
+        strings names;
+        caps_t caps;
+        std::vector<std::size_t> actor_of;
+        std::vector<host_actor::backend_ptr> actors;
+        std::vector<components::planner::backend_address_t> map;
+
+    private:
+        std::size_t index_of(const std::string& connection) const {
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                if (names[i] == connection) {
+                    return i;
+                }
+            }
+            FAIL("the host has no backend of connection " << connection);
+            return 0;
+        }
+    };
+
+    // An engine of a host whose connections (m2 by default) have test backends.
     struct host_t {
         explicit host_t(const std::string& leaf,
-                        test_connector::storage_maker_fn maker = &test_connector::make_read_storage,
-                        std::span<const components::planner::optimizer_rule_t> rules = {},
-                        void (*configure)(configuration::config&) = nullptr)
-            : factory(std::make_unique<test_connector::factory_t>(maker))
-            , db(leaf, components::planner::primitives_t{rules, factory.get()}, configure) {}
+                        void (*configure)(configuration::config&) = nullptr,
+                        strings connections = {"m2"},
+                        caps_t write_caps = {})
+            : backends(connections, std::move(write_caps))
+            , db(leaf, backends.primitives(), configure) {}
+
+        host_actor::backend_t& backend(const std::string& connection = "m2") { return backends.of(connection); }
+
+        // Reopens the engine with a map of only `present` connections.
+        void restart_with(const strings& present) {
+            backends.map_only(present);
+            db.primitives = backends.primitives();
+            db.restart();
+        }
 
         std::pmr::memory_resource* resource() { return db.dispatcher()->resource(); }
 
@@ -60,7 +135,8 @@ namespace connector_fixture {
                 qualified_name_t{core::connection_name_t{connection}, core::dbname_t{name}, {}, {}}));
         }
 
-        // The host's plan that registers the schema `schema` of the database `database` of `connection`.
+        // The host's plan that registers the schema `schema` of the database `database` of `connection`: a row of
+        // otterbrix's catalog only.
         components::logical_plan::execution_plan_t
         remote_schema(const std::string& connection, const std::string& database, const std::string& schema) {
             return plan_of(
@@ -80,7 +156,7 @@ namespace connector_fixture {
         void register_shop() { register_database("m2", "shop"); }
 
         // The host's plan that takes the database `name` of `connection` away with what is in it, as DROP DATABASE
-        // does: the connector's DROP of each table and schema, then the catalog's rows.
+        // does: the backend's DROP of its tables, then the catalog's rows.
         components::logical_plan::execution_plan_t drop_remote_database(const std::string& connection,
                                                                         const std::string& name) {
             auto drop = components::logical_plan::make_node_drop(resource(),
@@ -92,15 +168,15 @@ namespace connector_fixture {
             return plan_of(drop);
         }
 
-        // m2.shop.public.orders(id, amount), created through the connector.
+        // m2.shop.public.orders(id, amount), created in the backend.
         void register_orders() {
             register_shop();
             db.ok(otterbrix::session_id_t(), "CREATE TABLE m2.shop.public.orders (id BIGINT, amount BIGINT);");
-            factory->clear();
+            backend().clear_journal();
         }
 
-        std::unique_ptr<test_connector::factory_t> factory;
+        backends_t backends;
         session_sql::fixture_t db;
     };
 
-} // namespace connector_fixture
+} // namespace host_fixture

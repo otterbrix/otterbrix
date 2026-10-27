@@ -3,35 +3,42 @@
 An embedding host (OtterStax) plugs into otterbrix when the engine opens. A database of one of its connections is a
 row of otterbrix's own `pg_database` whose `datconnection` names the connection; its schemas and tables are ordinary
 catalog rows (`pg_namespace`, `pg_class` relkind `'r'`, `pg_attribute`), and a table is the backend's because its
-database is a connection's. otterbrix resolves every name and plans every statement. The host plugs in one connector
-factory: its connector gives the per-statement storage of a table and the operators of DDL on the backend, and
-otterbrix places them in the ordinary plan, as it places its own. otterbrix runs the SQL: FROM / USING, joins,
-sub-queries, RETURNING, casts, NULL in omitted columns. otterbrix keeps nothing of the backend's: what a host needs
-(the remote name of a table, a location, a topic) it keeps in its own tables, keyed by otterbrix's oids — the table's
-oid and its columns' attoids, which every call of the connector carries.
+database is a connection's. otterbrix resolves every name and plans every statement. The host plugs in its backend
+actors, one address per connection: a table's operators reach the table's rows only through the messages of the
+storage contract, sent to the table's address — otterbrix's disk for a table of its own, the connection's backend for
+a table of a connection. One path for both: the same scans, writes, DDL steps, transactions and RETURNING; what
+differs is only what each storage answers. otterbrix runs the SQL (FROM / USING, joins, sub-queries, RETURNING, casts,
+NULL in omitted columns) over whatever the backend does not take of a statement (pushdown). otterbrix keeps nothing of
+the backend's: what a host needs (the remote name of a table, a location, a topic) it keeps in its own tables, keyed by
+otterbrix's oids — the table's oid and its columns' attoids, which every message carries.
 
-The example host is the test host: `integration/cpp/test/test_host_name_resolution.cpp` (scan, INSERT, UPDATE,
-DELETE, the one-statement rule), `integration/cpp/test/test_extension_source.cpp` (async fetches, parallel open, a
-passthrough rule), the connector in `integration/cpp/test/test_connector.hpp` (its parameters keyed by oid), and
-`test_remote_databases.cpp`, `test_remote_ddl.cpp`.
+The example host is the test backend `integration/cpp/test/test_host_actor.hpp` (an `actor_mixin` with its own
+loop thread and a journal of what reached it) with `integration/cpp/test/host_fixture.hpp`; the tests that read it:
+`test_host_name_resolution.cpp` (scan, INSERT, UPDATE, DELETE, savepoints), `test_host_transactions.cpp`,
+`test_host_pushdown.cpp`, `test_extension_source.cpp` (parallel opens, pages), `test_remote_databases.cpp`,
+`test_remote_ddl.cpp`.
 
 | Point | Declared in |
 |---|---|
-| `primitives_t`, optimizer rules | `components/planner/host_hooks.hpp` |
-| `connector_t`, `connector_factory_t`, `remote_table_t`, `statement_ctx_t` | `components/planner/connector.hpp` |
+| `primitives_t`, `backend_address_t` | `components/planner/host_hooks.hpp` |
+| The storage contract, its replies | `services/disk/storage_contract.hpp` |
+| `storage_address_t` | `components/table/storage_address.hpp` |
+| The block a backend is offered | `components/logical_plan/detached_block.hpp` |
+| What a backend took (`node_remote_t`) | `components/logical_plan/node_remote.hpp` |
 | A database of a connection (plan) | `components/logical_plan/node_create_database.hpp`, `node_drop.hpp` |
-| `table_storage_t` | `components/logical_plan/table_storage.hpp` |
-| Host operators | `components/physical_plan/operators/operator.hpp` |
-| Host node for rules (`node_extension_t`) | `components/logical_plan/node_extension.hpp` |
 | Row count on the cursor | `components/cursor/cursor.hpp` |
 
 ## Opening the engine
 
 ```cpp
 namespace components::planner {
+    struct backend_address_t {
+        std::string_view connection;
+        actor_zeta::actor::address_t address;
+        std::uint64_t max_rows_per_write{0};    // the most rows one write message carries; 0: no limit
+    };
     struct primitives_t final {
-        std::span<const optimizer_rule_t> optimizer_rules{};
-        const connector_factory_t* connector{nullptr};
+        std::span<const backend_address_t> backends{};
     };
 }
 
@@ -40,28 +47,25 @@ services::engine::open_engine(resource, schedulers, config, log, components::pla
 // or, with the C++ facade: otterbrix::base_otterbrix_t::open(config, primitives)
 ```
 
-`open_engine` reads `primitives` once: every executor copies the rules and calls the factory's `make` once to get a
-connector of its own. The array need not outlive the call. The factory, and whatever it shares between the connectors
-it makes (a connection pool), belongs to the host and lives longer than the engine.
+`open_engine` reads `primitives` once: every executor copies the map (`every_executor_has_its_own_copy_of_the_map`),
+so the array need not outlive the call. The backend actors belong to the host and live longer than the engine.
 
-- **A connector per executor.** Only its executor calls a connector: its methods are not `const` and need no thread
-  safety, and nothing passes between executors through it.
-- **Refused start.** An error of the factory's `make` refuses the start.
-- **No factory.** A host without connections passes none; a statement that reaches a table of a connection's
-  database is then refused with `invalid_parameter`, `table "c.d.s.t" is of connection "c", and the host gave no
-  connector`, and the engine keeps running.
-- **Rules** are plain function pointers and carry no host state; executors run on the `exec` pool, so a rule is
-  called from several threads at once, one call per statement: it must be reentrant.
+- **Several connections, one actor.** A map may give one actor to several connections; the actor tells them apart
+  by the tables (their oids and full names) its messages name:
 
-The test host's set:
-
-```cpp
-constexpr planner::optimizer_rule_t host_rules[] = {
-    {planner::optimizer_stage::after_simplify, &push_whole_modify},
-};
-test_connector::factory_t factory{&make_remote_storage};
-planner::primitives_t{host_rules, &factory};
-```
+  ```cpp
+  const components::planner::backend_address_t map[] = {
+      {"pg_main", postgres_backend->address()},
+      {"pg_reports", postgres_backend->address()},   // the same backend, another server
+      {"ch", clickhouse_backend->address()},
+  };
+  otterbrix::base_otterbrix_t::open(config, components::planner::primitives_t{map});
+  ```
+- **A connection the map does not hold.** `CREATE DATABASE` of it is refused with `do_not_exists`,
+  `connection "c" does not exist`. A database of it that the catalog already has (the host's map lost the
+  connection, say after a restart) keeps only its catalog rows: every statement that reaches one of its tables is
+  refused with the same error, and the engine keeps running; `DROP TABLE`, `DROP SCHEMA` and the host's DROP of the
+  database take its objects from the catalog alone (`a_vanished_connection`).
 
 ## Names and the current place
 
@@ -97,269 +101,230 @@ planner::primitives_t{host_rules, &factory};
 
 A host creates one by a plan: `make_node_create_database(resource,
 qualified_name_t{core::connection_name_t{"c"}, core::dbname_t{"d"}, {}, {}})` in an `execution_plan_t`; SQL has no
-spelling for it. It is created empty, with no schema: the host registers the schemas its backend has, each by a plan
-`make_node_create_schema(resource, qualified_name_t{core::connection_name_t{"c"}, core::dbname_t{"d"},
-core::schema_t{"s"}, {}})`, which runs the connector's `make_create_schema` (a local `CREATE DATABASE` still gets
-`public` and `information_schema`). A database name is unique per connection: a local `shop` and `m2.shop` live side
-by side, and `m2.shop` twice is `database_already_exists`. A `node_drop_t` of kind `database` whose target names the
-connection takes it away with everything in it (always CASCADE, whatever behavior the node carries, as `DROP
-DATABASE`): the connector's DROP of each table, column and schema it reaches, then the catalog's rows.
+spelling for it, and the connection must be in the host's map. It is created empty, with no schema: the host
+registers the schemas its backend has, each by a plan `make_node_create_schema(resource,
+qualified_name_t{core::connection_name_t{"c"}, core::dbname_t{"d"}, core::schema_t{"s"}, {}})` (a local
+`CREATE DATABASE` still gets `public` and `information_schema`). A schema of a connection's database is a row of
+otterbrix's catalog alone: no message reaches the backend for it. A database name is unique per connection: a local
+`shop` and `m2.shop` live side by side, and `m2.shop` twice is `database_already_exists`. A `node_drop_t` of kind
+`database` whose target names the connection takes it away with everything in it (always CASCADE, whatever behavior
+the node carries, as `DROP DATABASE`): the backend's DROP of every table it reaches, then the catalog's rows.
 
 Inside a connection's database:
 
-- `CREATE SCHEMA` / `DROP SCHEMA` (through the place: a schema name is simple) run the connector's
-  `make_create_schema` / `make_drop_schema`; `DROP SCHEMA … CASCADE` runs its `make_drop_table` for each table first.
-- Only tables are created: views, sequences, functions and types are refused with `invalid_parameter`, `only tables
-  can be created in a schema of connection "c"`; a view over a connection's table lives in a local schema, and
-  depends on the table in `pg_depend` as on a local one.
+- `CREATE SCHEMA` / `DROP SCHEMA` (through the place: a schema name is simple) write the catalog only;
+  `DROP SCHEMA … CASCADE` drops each of its tables in the backend first.
+- Only tables are created: views, materialized views, sequences, functions and types are refused with
+  `invalid_parameter`, `only tables can be created in a schema of connection "c"`; a view over a connection's table
+  lives in a local schema, and depends on the table in `pg_depend` as on a local one.
 - A table has no storage in otterbrix, before and after a restart: its catalog rows are all otterbrix keeps.
 - Keys, checks, defaults (ADD COLUMN … DEFAULT included), CREATE INDEX, ADD CONSTRAINT and ALTERs other than ADD /
-  DROP COLUMN are refused with `unimplemented_yet`; NOT NULL is kept.
+  DROP COLUMN are refused with `unimplemented_yet`; NOT NULL is the backend's to enforce (see "Writes").
 
-## The connector
+## The backend actor
 
-```cpp
-struct statement_ctx_t { session::session_id_t session; std::uint64_t transaction_id; bool explicit_transaction; };
-struct remote_name_t { std::string_view connection, database, schema, table; };
-struct remote_column_t {
-    catalog::oid_t attoid; std::string_view name; types::complex_logical_type type; bool not_null;
-};
-struct remote_table_t { catalog::oid_t oid; remote_name_t name; std::span<const remote_column_t> columns; };
-struct remote_alter_t { enum class kind_t { add_column, drop_column } kind; remote_column_t column; };
-struct remote_schema_t { catalog::oid_t oid; remote_name_t name; };   // name.table is empty
+A backend is an actor-zeta actor that `implements<services::disk::storage_contract, …>` (all seventeen methods, in
+the contract's order: actor-zeta numbers messages by position) and answers its messages without blocking the sender.
 
-class connector_t {   // NVI: the public calls are not virtual
-public:
-    core::result_wrapper_t<logical_plan::table_storage_ptr>
-    storage_for(std::pmr::memory_resource*, const remote_table_t&, const statement_ctx_t&);
-    logical_plan::storage_operator_t make_create_table(const services::context_storage_t&, const remote_table_t&);
-    logical_plan::storage_operator_t make_drop_table(const services::context_storage_t&, const remote_table_t&);
-    logical_plan::storage_operator_t make_alter_table(const services::context_storage_t&, const remote_table_t&,
-                                                      const remote_alter_t&);
-    logical_plan::storage_operator_t make_create_schema(const services::context_storage_t&, const remote_schema_t&);
-    logical_plan::storage_operator_t make_drop_schema(const services::context_storage_t&, const remote_schema_t&);
-};
-```
+- **Schedules itself.** otterbrix only enqueues messages to it, from its executors' threads. The test backend is an
+  `actor_mixin` with a loop thread of its own: `enqueue_impl` pushes the message into an inbox under a mutex and
+  wakes the loop, the loop starts each message's `behavior` and resumes the coroutines whose awaited reply is ready.
+- **Thread-safe resource.** The chunks of its replies are allocated on its own resource and handed over to
+  otterbrix, which frees them on its threads (otterbrix copies a reply onto its own resource when they differ,
+  `vector::adopted`): the resource must be thread-safe.
+- **Never throws, never blocks.** A refusal is a `core::error_t` / `result_wrapper_t` reply; its code and text reach
+  the cursor unchanged (`a_storage_error_reaches_the_cursor`, `a_storage_write_error_reaches_the_cursor`).
+- **Its state is its own.** Between otterbrix and a backend there are messages only; what a backend keeps per
+  transaction (open cursors, undo of its writes) it keys by `ctx.txn.transaction_id` and the savepoint level
+  `ctx.txn.sub_id`.
 
-A `remote_table_t` is the table as otterbrix's catalog has it: its oid, its full name and its columns in attnum
-order with their attoids. Its views are valid for the call: what the storage or an operator keeps of it, it copies.
+## The storage contract
 
-### `storage_for`
+`services/disk/storage_contract.hpp`. Its first thirteen methods are the prefix otterbrix's disk shares, number for
+number (`disk_contract` repeats them first, and a `static_assert` per method keeps them identical); the last four are
+the host's (the disk is never offered a block). Every table's operator reaches its storage only by
+`actor_zeta::otterbrix::send<&storage_contract::m>(table.address, …)`.
 
-- Called once per table of a connection's database a statement reads or writes (the same oid twice — once), after the
-  names resolved and the views were checked. DDL asks for no storage.
-- The host finds its parameters of the table by `oid` and of a column by `attoid`.
-- The connector's error is the statement's, code and text.
-
-### DDL on the backend
-
-DDL of a table or schema of a connection's database (by its full name or through the place) puts the connector's
-operator into the ordinary DDL plan as a step of its own, which the executor runs like every other step: otterbrix's
-checks first (the name, its levels, RESTRICT), then the connector's operator, then the catalog's rows.
-
-| Statement | Operator | Runs |
+| Message | Reply | What |
 |---|---|---|
-| CREATE TABLE | `make_create_table(table)`: the oids the table and its columns get | before the catalog rows |
-| DROP TABLE | `make_drop_table(table)` | after the RESTRICT check, before the rows go |
-| ADD COLUMN | `make_alter_table(table, {add_column, column})`: the new attoid | before its row |
-| DROP COLUMN | `make_alter_table(table, {drop_column, column})`: the dropped attoid | after the RESTRICT check |
-| CREATE SCHEMA | `make_create_schema(schema)`: the oid the schema gets | before its row |
-| DROP SCHEMA | `make_drop_schema(schema)` | after the RESTRICT check, before its row goes |
+| `storage_fetch_next_batch(session, oid, cursor, limit, projected, txn)` | `fetch_batch_t{batch, cursor_id}` | cursor 0 opens a scan; an EMPTY batch ends it |
+| `storage_close_cursor(session, oid, cursor)` | — | a scan left before its end |
+| `storage_total_rows(session, oid)` | rows | an estimate is an answer: it only orders the sides of a hash join |
+| `storage_append(ctx, oid, attoids, chunks, returning)` | `write_receipt_t` | INSERT; `attoids` name the chunk's columns, the table's declared order |
+| `storage_update(ctx, oid, row_ids, chunks, returning)` | `update_receipt_t` | UPDATE of the rows the backend's scan numbered |
+| `storage_delete_rows(ctx, oid, row_ids, count, returning)` | `write_receipt_t` | DELETE by the same numbers |
+| `create_storage_disk(ctx, oid, database_oid, name, columns, computed)` | `ddl_reply_t` | CREATE TABLE |
+| `mark_storage_dropped_many(ctx, oids, names)` | `ddl_reply_t` | DROP TABLE, in the statement |
+| `add_storage_column(ctx, oid, column)` | `ddl_reply_t` | ALTER TABLE … ADD COLUMN |
+| `stamp_column_dropped(ctx, oid, attoid)` | `ddl_reply_t` | ALTER TABLE … DROP COLUMN |
+| `storage_prepare(ctx, tables)` | `error_t` | COMMIT of the backend's part: the last step that may refuse |
+| `storage_release_prepared(ctx, tables)` | — | the transaction ended: whatever it kept goes |
+| `abort_transaction(ctx, from_sub_id, tables)` | `error_t` | ROLLBACK (from_sub_id 0) or ROLLBACK TO the savepoint `from_sub_id` |
+| `storage_offer(ctx, block, parameters)` | `block_take_t[]` | which nodes of a block the backend takes (pushdown) |
+| `storage_run_block(ctx, request, cursor, parameters)` | `fetch_batch_t` | a taken read; cursor 0 runs it (again, on a rescan) |
+| `storage_close_block(ctx, cursor)` | — | a taken read left before its end |
+| `storage_run_write(ctx, request, parameters, returning)` | `write_receipt_t` | a taken UPDATE / DELETE |
 
-- A DROP that reaches tables, columns and schemas of connections — `DROP SCHEMA … CASCADE`, `DROP DATABASE` of a
-  connection's database, `DROP TYPE … CASCADE` over a column of a user type (`make_alter_table(table, {drop_column,
-  column})`) — runs one operator for each, dependents first, before any catalog row goes.
-- The operator is any operator tree: a sink with no input (`needs_async_finalize`, the backend round trip awaited in
-  `await_async_and_resume`), or otterbrix's own INSERT / DELETE into the host's table. Its error is the statement's,
-  and the catalog is not written.
-- It runs in the statement's transaction: the rows it writes into otterbrix tables (the host's parameters, keyed by
-  the oids above) commit with the catalog's rows and roll back with them
-  (`the_hosts_parameters_are_rows_of_its_own_table`).
-- Whether CREATE makes the object on the backend or takes one already there is the host's to decide inside its
-  operator; otterbrix has no registration of its own. A table gone from the backend is taken away by an ordinary
-  `DROP TABLE`: a view over it keeps it (RESTRICT, `dependent_objects_still_exist`) and the backend is not asked.
+- `write_receipt_t{start_row, count, awaits_publish, returned}`: `count` is what the backend applied (a short write
+  is a smaller count, `the_count_is_what_the_sink_reports_written`); `awaits_publish` is the disk's: its rows wait for
+  otterbrix's MVCC publication at COMMIT. A backend that commits its writes itself answers `false`, and the
+  transaction has it as a participant. `returned`, when asked for, holds every column of each written row (of each
+  deleted row, as it was), in the order the rows were sent.
+- `ddl_reply_t{awaits_publish, rows}`: `rows` are rows of the host's own otterbrix table (`host_rows_t`: rows to
+  insert in its declared order, and keys of a column whose rows to delete), which otterbrix writes in the statement's
+  transaction (`the_hosts_parameters_are_rows_of_its_own_table`). That is how a host keeps its parameters of a table
+  with otterbrix's oids, rolled back with the statement.
+- `fetch_batch_t::cursor_id`: the cursor the OPEN (cursor 0) minted, never 0, as the disk's and PostgreSQL 18's
+  portals; a non-empty page that comes with cursor 0 is refused with `invalid_parameter`, `the storage of table "t"
+  answered a page without a cursor` (`the backend of connection "c" …` for a taken read).
+- One write message is one write: otterbrix's disk checks every chunk of a `storage_append` / `storage_update` before
+  it journals any, and a chunk that fails to land takes the ones before it back, so a refused message leaves no row
+  (`a_refused_message_writes_none_of_its_chunks`). A backend answers the same way.
+
+## Scans
+
+A scan of a connection's table opens in `open_impl`: every source of a plan is opened, its OPEN sent, before any
+reply is awaited, so the scans of a JOIN of several backend tables read at the same time
+(`sources_open_in_parallel`); a LATERAL inner opens on every drive. A page holds the projected columns (all of them
+when none are projected) in projection order, and at most `vector::DEFAULT_VECTOR_CAPACITY` rows: a wider page is
+refused with `invalid_parameter` (`chunk_over_vector_capacity`), slicing a backend page is the backend's job. An
+empty page ends the scan: what a backend would send after one is never read (`the_pages_of_a_scan_arrive_whole`).
+Every page is checked against the columns otterbrix planned the scan with (count and types): a page of other columns
+is refused with `invalid_parameter`, `the storage of table "t" answered a page of other columns`
+(`a_page_of_other_columns_errors_not_crash`). A row id is the backend's own number for a row it
+gave out in the scan (`row_ids`, BIGINT); UPDATE and DELETE send it back. Which remote row a number stands for
+(`ctid`, a key) is the backend's to remember.
+
+A WHERE over a connection's table is otterbrix's `operator_match` over the scan (the backend sees no filter); a
+LIMIT is the scan's `limit` only when no filter stands between. What a backend should filter itself it takes as a
+block (see "Pushdown").
+
+## Writes
+
+- **INSERT.** otterbrix's own: column list, arity, an assignment cast to every declared type, NULL in an omitted
+  column (a connection's table declares no defaults). `storage_append` gets full rows in the declared column order,
+  already cast, with `attoids` of the table's columns (`insert_into_a_storage_table`, `an_omitted_column_is_null`).
+- **UPDATE and DELETE.** Whatever the backend does not take as one statement runs as otterbrix's own: the backend's
+  scan numbers the rows, otterbrix applies the WHERE, the FROM / USING semi-join, LIMIT and RETURNING, and the chosen
+  rows go to `storage_update` (every column of the row, the new values set) or `storage_delete_rows` with their numbers
+  (`update_and_delete_by_row_number`). A backend that cannot change a row by its number refuses those messages
+  (`a_storage_without_row_numbers_refuses_the_batch_path`) and takes the statements it can run itself.
+- **Rows per message.** A write message to a connection's table carries at most the connection's
+  `max_rows_per_write` rows, set in the map at `open_engine` (0: no limit, as the disk's); the rest of a flush goes in
+  further messages (`the_storage_caps_each_sink_round`, `every_connection_has_its_own_cap`). The backend may run one
+  message as several remote statements of the same transaction: a hard limit of its own in bytes or parameters is
+  the backend's to keep, as postgres_fdw sends Min(batch_size, 65535 / parameters per row) rows per statement. An
+  INSERT also flushes on the cap instead of the engine's `dml_flush_row_threshold`; an UPDATE / DELETE flushes on the
+  engine's, as PostgreSQL 18 batches only an INSERT into a foreign table
+  (`an_insert_flushes_on_the_storage_threshold`). A backend that sees a write before its scan ends
+  keeps its row numbers and its scan's snapshot stable for the whole statement.
+- **RETURNING** is one path for every storage: the receipt's `returned` rows, over which otterbrix computes the
+  expressions (`insert_returning_reads_the_rows_written`); an error there is the statement's and rolls the write
+  back, as PostgreSQL 18 computes RETURNING after the row is written. A RETURNING of constants only (`RETURNING 1 / 0`)
+  is computed before the first write, as PostgreSQL 18 folds it while planning
+  (`a_constant_returning_errs_before_the_write`).
+- **NOT NULL** is the storage's: the disk refuses a NULL in a NOT NULL column when it writes the row (after the row is
+  widened to the table's columns) with `invalid_constraint`, PostgreSQL 18's 23502 `null value in column "c" of
+  relation "t" violates not-null constraint`; otterbrix does not check it before. A backend checks its own and
+  answers the same way. A PRIMARY KEY column is NOT NULL, as in PostgreSQL (`test_not_null.cpp`). The disk takes
+  NOT NULL from `pg_attribute.attnotnull` when it comes up, so a crash before the checkpoint after the DDL keeps it
+  (`the_storage_learns_not_null_from_the_catalog_after_a_crash`).
+
+## DDL on the backend
+
+DDL of a table of a connection's database (by its full name or through the place) is a step of the ordinary DDL
+plan: otterbrix's checks first (the name, its levels, RESTRICT), then the backend's message, then the catalog's rows.
+
+| Statement | Message | Runs |
+|---|---|---|
+| CREATE TABLE | `create_storage_disk`: the oids the table and its columns get, its full name | before the catalog rows |
+| DROP TABLE | `mark_storage_dropped_many`, in the statement | after the RESTRICT check, before the rows go |
+| ADD COLUMN | `add_storage_column`: the new attoid | after its row |
+| DROP COLUMN | `stamp_column_dropped`: the dropped attoid | after the RESTRICT check |
+
+- A DROP that reaches several tables and columns of connections — `DROP SCHEMA … CASCADE`, `DROP DATABASE` of a
+  connection's database, `DROP TYPE … CASCADE` over a column of a user type — sends one `mark_storage_dropped_many`
+  per backend with all its tables, and `stamp_column_dropped` per column, before any catalog row goes. A refusal is
+  the statement's, and the catalog is not written (`a_backend_refusal_of_drop_keeps_the_table`).
+- Whether CREATE makes the object on the backend or takes one already there is the host's to decide; otterbrix has
+  no registration of its own. A table gone from the backend is taken away by an ordinary `DROP TABLE`.
 - Only in autocommit: inside BEGIN or with `autocommit` off it is refused with `unimplemented_yet`, `connection "c"
   only supports DDL in autocommit`, and the backend is not asked (#663).
-- A column dropped and added again under one name gets a new attoid; a column a view reads is kept by RESTRICT.
-- One ALTER TABLE with several subcommands is checked whole before its first operator runs, each subcommand against
-  the columns the earlier ones leave; each `make_alter_table` gets the table as its step finds it.
-- `CREATE TABLE IF NOT EXISTS` of a table that is there does nothing, before any of the refusals above.
+- One ALTER TABLE with several subcommands is checked whole before its first message, each subcommand against the
+  columns the earlier ones leave. `CREATE TABLE IF NOT EXISTS` of a table that is there does nothing.
+
+## Transactions
+
+A backend a statement sends a message to — a scan, a write, a taken block, a DDL step — is a participant of
+otterbrix's transaction from the moment the message leaves, before its reply (a backend that refused a write may
+have done part of it: `a_refused_first_write_still_ends_at_the_backend`), until the transaction ends. A participant
+is an actor and a connection: two connections of one actor are two participants, each told of the end with its own
+tables (`two_connections_of_one_actor_are_two_participants`). otterbrix's disk is never one: its versions are
+published and reverted by the transaction's own steps. An autocommit statement is a transaction of its own
+(`two_autocommit_statements`).
+
+- **COMMIT** runs in this order: otterbrix's checks; the disk's prepare; the index's commit of inserts; the
+  pg_attribute backfill; `storage_prepare` of every backend that wrote — the last step that may refuse; the WAL commit
+  marker; the MVCC publication of the disk's rows; the publish barrier; `storage_release_prepared` to every
+  participant. A refusal before the marker rolls the transaction back: the disk's rows go, `abort_transaction` reaches
+  every participant that was not prepared, and a prepared one gets only its release
+  (`a_backend_refusing_its_commit_refuses_the_transaction`). A transaction that only read a backend sends it its
+  release, and no prepare (`a_reading_transaction_is_released`).
+- **The window of #663.** A backend that prepared has committed its part; when the WAL marker then fails, otterbrix
+  rolls back its own part only, and the backend's outcome is in doubt until #663.
+- **ROLLBACK** sends `abort_transaction(ctx, 0, tables)` to every participant; **ROLLBACK TO** a savepoint sends
+  `abort_transaction(ctx, sub_id, tables)`: the backend undoes the writes of that level and above, and the savepoint
+  stays (`a_storage_write_after_a_savepoint_is_rolled_back_to_it`). A statement that fails inside BEGIN leaves its
+  writes to the transaction's ROLLBACK; a failed autocommit statement is rolled back at once
+  (`a_failed_sink_round_is_the_statement_error`, `a_failed_statement_in_a_transaction_rolls_back_with_it`).
+- **One write place.** A transaction writes to one connection at most (otterbrix's own tables do not count); the
+  place is set by the first write and kept to the transaction's end, ROLLBACK TO included. A write to another
+  connection — a DROP whose closure reaches the tables of two included — is refused with `unimplemented_yet`,
+  `transaction already wrote to connection "pg"; writing to connection "pg2" in the same transaction is not
+  supported`, before the second backend gets anything (`a_second_connection_written_in_a_transaction_is_refused`).
+  Reads of other connections are free.
+
+## Pushdown
+
+After the whole of `optimize()`, the executor offers every backend the largest parts of the plan that read only its
+tables (`collect_remote_blocks`): a relation node (a SELECT block, a join, an UPDATE / DELETE) whose sub-tree holds
+only the classes a block may hold — aggregate, group, match, sort, limit, having, select, join, update, delete; a
+function, a CTE scan or a catalog read ends a block. All offers leave before the first reply is awaited.
+
+- **The block** is `detached_block_t`: a copy of the sub-tree on the backend's resource made of the plan's own node
+  classes, which points nowhere into otterbrix's plan (`table_metadata()` is null) and carries the slice of its tables
+  the backend reads — oid, full name, columns with attoid, name, type. The backend owns it and may keep it until it
+  runs (`the_offered_block_is_the_backends`). The parameters come along; a correlated one (kind `execution`) gets its
+  value only when the node runs.
+- **The answer** is a list of `block_take_t{preorder, request, explain, residual}`: the preorder position of each
+  relation node the backend takes (taken nodes never overlap; an UPDATE / DELETE only as the block itself), the
+  backend's own description of how to run it, the lines EXPLAIN prints under it, and the WHERE conjuncts it leaves to
+  otterbrix. A take otterbrix cannot place is refused with `invalid_parameter`, `the backend of connection "c" took a
+  block wrongly: …`; the backend's error is the statement's.
+- **A taken read** becomes `node_remote_t`: `storage_run_block` runs the request when the plan opens and again on
+  every re-drive (a LATERAL inner gets the values of each drive), `storage_close_block` ends it early. Its pages are
+  checked against the types otterbrix planned the taken node with (`the backend of connection "c" answered a block
+  with a page of other columns`) and cut to the engine's batch size. With a residual, the backend reads the table
+  with the conjuncts it took and answers the table's columns; the SELECT block keeps the rest over those rows
+  (`a_residual_where_stays_with_otterbrix`).
+- **A taken write** runs `storage_run_write` once: its count is the statement's, its receipt's rows feed RETURNING
+  (`a_simple_update_or_delete_is_one_remote_statement`).
+- The optimizer's rules are the same for every storage; only the aggregate pushdown to the disk (`storage_reduce`,
+  the disk's own message) reads otterbrix's tables alone.
 
 ## Column names and their case
 
 otterbrix matches a column reference byte by byte, and the parser folds an unquoted one to lower case, as
 PostgreSQL 18 does. So a connection's table's columns are created in lower case. The remote spelling is the host's
 business, as in Trino 483 (`IdentifierMapping` lives in the connector): it keeps the remote name of a column by its
-attoid and puts `"AMOUNT"` into the remote SQL its storage builds.
-
-## `table_storage_t`: one object per statement
-
-```cpp
-class table_storage_t {   // NVI: the public make_* call the private make_*_impl
-public:
-    const void* owner() const noexcept;
-    storage_operator_t make_scan(const services::context_storage_t&);    // source; row numbers in row_ids
-    storage_operator_t make_insert(const services::context_storage_t&);  // sink of full rows, declared order, cast
-    storage_operator_t make_update(const services::context_storage_t&);  // sink: row_ids + the rows' new values
-    storage_operator_t make_delete(const services::context_storage_t&);  // sink: row_ids
-    uint64_t flush_row_threshold() const noexcept;                       // most rows per sink round; 0: no cap
-protected:
-    explicit table_storage_t(const void* owner) noexcept;
-};
-using table_storage_ptr = core::pmr::polymorphic_unique_ptr<table_storage_t>;
-```
-
-- `storage_for` makes it with `core::pmr::make_polymorphic_unique<the host's storage>(resource, …)`. otterbrix owns
-  it until the statement ends, and the operators it builds may keep a raw pointer to it. An object shared by all
-  executors would share state between actors; this one is per statement, like `fdw_state` in PostgreSQL 18.
-- The table's columns are those of the `remote_table_t` `storage_for` got (also `context.table_metadata_for(oid)`).
-- `owner()` is a tag of the host's choosing, typically the address of a static, one per kind of connector. A rule
-  recognizes its own tables by it.
-- **Row ids.** A row id is the storage's own number for a row it gave out in this statement: `make_scan` writes it
-  into the chunk's `row_ids` (BIGINT), the update and delete sinks get it back in theirs. Which remote row a number
-  stands for (`ctid`, primary key) is the storage's to remember (`remote_storage_t::number` / `position`).
-- **Refusals.** A `make_*_impl` may return an error, which becomes the statement's error. A storage that cannot
-  change a row by its number (ClickHouse, say) refuses `make_update` / `make_delete`; then only the host's rule can
-  take an UPDATE / DELETE (`a_storage_without_row_numbers_refuses_the_batch_path`).
-- **Rows per round.** `flush_row_threshold_impl()` (pure virtual) is the storage's batch size: no sink round carries
-  more rows, the rest of a flush goes in further rounds (`the_storage_caps_each_sink_round`). An INSERT also flushes
-  on it instead of the engine's `dml_flush_row_threshold`, 0 meaning one round at the end; an UPDATE / DELETE
-  flushes on the engine's, as PostgreSQL 18 batches only an INSERT into a foreign table
-  (`an_insert_flushes_on_the_storage_threshold`).
-  A storage whose sinks see a round before its scan ends (by its own threshold, or by the engine's
-  `dml_flush_row_threshold` for UPDATE / DELETE) keeps its row numbers and its scan's snapshot stable for the whole
-  statement: an earlier round has already changed the backend (an INSERT … SELECT from the same table, a DELETE by
-  number).
-- **Connections** to the backend live in what the factory shares with its connectors (keyed per connection, as
-  postgres_fdw's `ConnectionHash` is), not in the storage and not in otterbrix.
-
-```cpp
-class remote_storage_t final : public logical_plan::table_storage_t {
-public:
-    remote_storage_t(std::pmr::memory_resource*, std::string name,
-                     std::pmr::vector<types::complex_logical_type> columns)
-        : logical_plan::table_storage_t(&host_tag) /* … */ {}
-private:
-    logical_plan::storage_operator_t make_scan_impl(const services::context_storage_t& context) override {
-        return operators::operator_ptr{new remote_source_t(context.resource, context.log.clone(), this, /*rows*/)};
-    }
-    // make_insert_impl, make_update_impl, make_delete_impl alike
-};
-```
-
-## Host operators
-
-A storage operator derives from `operators::read_only_operator_t` (a scan) or `read_write_operator_t` (a sink).
-
-| Point | Called | Contract |
-|---|---|---|
-| `role()` | while the plan is built | `pipeline_role::source` for a scan; the default is `sink` |
-| `open_impl(ctx)` (private, behind `open`) | once per drive; every source of the plan is opened first and the opens are awaited together | start the backend fetch here, so the fetches of several tables overlap (`sources_open_in_parallel`) |
-| `source_next(ctx)` | repeatedly, one awaited call at a time | a chunk, or `std::nullopt` for the end. An empty chunk or one without columns is data (`an_empty_batch_is_not_the_end`) |
-| `reset_pipeline_state()` | before a re-drive (LATERAL, recursive CTE) | rewind to the first chunk |
-| `push(ctx, chunk, out)` | a sink, once per chunk, synchronously | buffer the rows |
-| `needs_async_finalize()` → `true`, `await_async_and_resume(ctx)` | a sink, after its pushes | send the buffered rows; report a backend refusal with `set_error`; `mark_executed()` on success |
-
-Pitfalls:
-
-- **Never block the thread** in `open_impl`, `source_next`, `push` or `await_async_and_resume`. A backend round trip
-  is an `actor_zeta::unique_future` the host's own thread fulfils through its promise (`fetch_on_open_source_op_t`
-  in `test_extension_source.cpp`).
-- **The resource of an actor-zeta coroutine comes from its arguments**: the first that is a
-  `std::pmr::memory_resource*` or has `resource()`. A member coroutine of the operator takes it from `this`; a
-  coroutine without such an argument aborts at its first call. Under GCC define a member coroutine inside the class.
-- **A batch holds at most `vector::DEFAULT_VECTOR_CAPACITY` rows.** A wider chunk from a storage source is refused
-  with `invalid_parameter` (`chunk_over_vector_capacity`): slicing a wide backend page is the storage's job.
-- A sink may see several rounds of pushes + `await_async_and_resume` in one statement: per buffer flush during the
-  scan and at the end, each split into rounds of at most `flush_row_threshold()` rows. A round's error is the
-  statement's; the rounds before it stay written (`a_failed_sink_round_is_the_statement_error`, #663).
-- Errors travel only as `core::error_t` / `result_wrapper_t`. The backend's error reaches the cursor unchanged, code
-  and text (`a_storage_error_reaches_the_cursor`, `a_storage_write_error_reaches_the_cursor`). Connectors, factories,
-  storages and operators never throw; a refusal is an `error_t` / `result_wrapper_t`; an exception escaping into the
-  executor is undefined (the coroutine swallows it).
-
-## INSERT
-
-The plan is otterbrix's own INSERT: column list, arity, an assignment cast to every declared type, NULL in an
-omitted column (a connection's table declares no defaults), RETURNING. The storage's sink gets full rows in the declared
-column order, already cast (`insert_into_a_storage_table`, `an_omitted_column_is_null`,
-`insert_returning_reads_the_rows_written`). A value no assignment cast takes is refused before the storage sees
-it. NOT NULL and CHECK are the backend's: its refusal comes back through the sink's error.
-
-## UPDATE and DELETE
-
-Two paths, the host's rule first.
-
-**One remote statement (the fast path).** A host optimizer rule finds a `node_update_t` / `node_delete_t` over its
-own table and replaces it with a `node_extension_t` whose operator sends one remote statement, as postgres_fdw's
-direct modify does. The statement never scans the table. The operator reads `$n` values from
-`ctx->parameters.parameters` at run time and adds the rows the backend reported to `written_`.
-
-```cpp
-const remote_storage_t* own_storage(const logical_plan::node_t& node) {
-    const auto* table = node.table_metadata();
-    if (table == nullptr || table->storage == nullptr || table->storage->owner() != &host_tag) {
-        return nullptr;
-    }
-    return static_cast<const remote_storage_t*>(table->storage);
-}
-// push_whole_modify: if one_remote_statement(*node, spec), return
-//     new logical_plan::node_extension_t(resource, storage->name(), {}, &make_remote_modify, payload{spec});
-```
-
-Test: `a_simple_update_or_delete_is_one_remote_statement`.
-
-**Batches by row id.** Whatever the rule does not take runs as otterbrix's own UPDATE / DELETE: the storage's scan
-numbers the rows, otterbrix applies the WHERE, the FROM / USING semi-join, LIMIT and RETURNING, and the chosen rows
-go to the storage's update or delete sink with their numbers in `row_ids`. The update sink gets every column of
-the row with the new values set. No WAL, index or MVCC marker is touched for a connection's table
-(`update_and_delete_by_row_number`, `delete_rows_without_columns_by_row_number`).
-
-## Transactions
-
-Inside `BEGIN … COMMIT` (or with `autocommit` off) a write into a connection's table is not refused: `storage_for`
-gets `statement_ctx_t::explicit_transaction == true` and the storage decides what it allows
-(`a_storage_learns_of_an_explicit_transaction`). Until #663:
-
-- ROLLBACK does not undo what a storage wrote;
-- while a savepoint is open (taken and neither released nor left by an outer ROLLBACK TO), an INSERT / UPDATE /
-  DELETE into a connection's table is refused with `unimplemented_yet` before the storage sees it; reads and SAVEPOINT
-  itself are accepted (`a_storage_write_after_a_savepoint_is_refused`);
-- an UPDATE / DELETE whose sink is flushed during the scan may be half written if a later round fails.
-
-## Optimizer rules
-
-```cpp
-enum class optimizer_stage : std::uint8_t {
-    after_simplify,           // fold_constants, drop_redundant_distinct, promote_cross_joins
-    after_filters_and_joins,  // pushdown_cte_filter, pushdown_filter, rewrite_hash_joins
-    after_limit,              // eager_aggregation, pushdown_limit
-    after_aggregate_pushdown, // pushdown_aggregate
-    last                      // prune_columns
-};
-using optimizer_rule_fn = logical_plan::node_ptr (*)(std::pmr::memory_resource*, logical_plan::node_ptr);
-struct optimizer_rule_t { optimizer_stage stage; optimizer_rule_fn apply; };
-```
-
-- Once per statement, inside `optimize()`, after the built-in rules of its stage; within a stage in registration
-  order. What each stage sees: `test_host_optimizer_stages.cpp`.
-- A rule gets the validated, enriched tree and returns it or a rewritten one. It recognizes the tables of its kind of
-  connector by the owner tag of a node's `table_metadata()->storage` (a tag per kind, not an object's address). It
-  cannot fail: to refuse, it puts a node whose operator returns the error.
-- `node_extension_t` is for rules only (one remote statement, a JOIN of the host's own tables, pushdown,
-  passthrough). Its columns are named by the type alias; the tree is not validated again, so the columns are the
-  rule's responsibility. A leaf is a source, a node with a child is a sink. The operator function must not be null;
-  a function that builds no operator is a plan error. The payload is the host's; the engine never reads it.
-  Example of a passthrough rule: `attach_passthrough_rule` in `test_extension_source.cpp`.
+attoid and puts `"AMOUNT"` into the remote SQL it builds.
 
 ## Written-row count
 
-`operator_t::written()` is one counter in the base class, cumulative for the whole statement. For INSERT / UPDATE /
-DELETE into a storage sink the sink adds what the backend applied to `written_` on every round, and the DML reads the
-total with `written_ = sink->written()` after its last round. A host operator that replaces the write (the
-fast path) adds what the backend reported to `written_` the same way. The executor knows from the statement before
-optimization that it is a write and takes `written()` of the plan root. The cursor answers `affected_rows()` and
-`is_write()`; a write without RETURNING has no result rows.
+`operator_t::written()` is one counter in the base class, cumulative for the whole statement: the receipts' counts
+of every write message, or the count of a taken write. The executor knows from the statement before the offer that
+it is a write and takes `written()` of the plan root. The cursor answers `affected_rows()` and `is_write()`; a write
+without RETURNING has no result rows.
 Bindings: C `cursor_affected_rows`, C# `AffectedRows()`, Python `rowcount`, Rust `Cursor::affected_rows()`.
 
 ## Created table oid
@@ -479,19 +444,19 @@ the same SQL, and the host does not add them (`test_hand_built_constraints.cpp`)
 
 `explain_label()` / `explain_details()` are public NVI over the private `explain_label_impl()` /
 `explain_details_impl()`. The label is the operator's line; each detail is printed under it, two columns right of
-the label. EXPLAIN ANALYZE appends actual time, rows and loops to the label line. Without an override a host
-operator reads `Extension Scan`. For a write into a connection's table, the INSERT / UPDATE / DELETE line is the storage
-sink's (`explain_prints_the_storage_scan_label_and_details`):
+the label. EXPLAIN ANALYZE appends actual time, rows and loops to the label line. A scan or a write of a
+connection's table is `Foreign Scan / Insert / Update / Delete on <connection>.<database>.<schema>.<table>`, as
+PostgreSQL 18 prints a foreign table, without a remote SQL line: otterbrix sends no SQL there
+(`explain_prints_the_storage_scan_label`). What a backend took is `Remote Query on <connection>`, with the
+`explain` lines of its take under it (`explain_shows_the_remote_query`); EXPLAIN offers the plan as a run would and
+runs nothing:
 
 ```
 Project
   ->  Hash Join
-    ->  Foreign Scan on m2.shop.orders
-          Remote SQL: SELECT * FROM shop.orders
+    ->  Foreign Scan on m2.shop.public.orders
     ->  Seq Scan on c
 
-Foreign Insert on m2.shop.orders
-  Remote SQL: INSERT INTO shop.orders VALUES ($1, $2)
-  Batch Size: 1
-  ->  Values Scan
+Remote Query on m2
+  Request: select m2.shop.public.orders where column 0
 ```

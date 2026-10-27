@@ -2,13 +2,12 @@ project(physical_plan)
 
 
 set(${PROJECT_NAME}_SOURCES
-        table_storage.cpp
-        connector.cpp
         operators/operator.cpp
         operators/operator_data.cpp
         operators/operator_write_data.cpp
         operators/operator_empty.cpp
         operators/operator_raw_data.cpp
+        operators/operator_remote.cpp
         operators/operator_function.cpp
         operators/operator_lateral_join.cpp
 
@@ -54,6 +53,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_alter_column_add.cpp
         operators/operator_alter_column_drop.cpp
         operators/operator_alter_column_rename.cpp
+        operators/operator_alter_column_set_not_null.cpp
         operators/operator_checkpoint.cpp
         operators/operator_set_setting.cpp
         operators/operator_vacuum.cpp

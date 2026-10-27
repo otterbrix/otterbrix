@@ -16,4 +16,24 @@ namespace components::operators {
         return vector::data_chunk_t{resource, projected_types, 0};
     }
 
+    core::error_t check_scan_page(std::pmr::memory_resource* resource,
+                                  const std::pmr::string& table,
+                                  const std::pmr::vector<types::complex_logical_type>& planned,
+                                  const vector::data_chunk_t& page) {
+        if (planned.empty()) {
+            return core::error_t::no_error();
+        }
+        bool fits = page.column_count() == planned.size();
+        for (uint64_t column = 0; fits && column < planned.size(); ++column) {
+            fits = page.data[column].type().type() == planned[column].type();
+        }
+        if (fits) {
+            return core::error_t::no_error();
+        }
+        std::pmr::string what{"the storage of table \"", resource};
+        what += table;
+        what += "\" answered a page of other columns";
+        return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
+    }
+
 } // namespace components::operators

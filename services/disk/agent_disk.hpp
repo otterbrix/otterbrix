@@ -143,10 +143,12 @@ namespace services::disk {
                                          bool is_computed) noexcept;
 
         unique_future<core::result_wrapper_t<bool>>
+        // `relname`: what the table's refusals name it by (PostgreSQL 18's relation "t"); empty keeps the default.
         create_storage_disk_inner(components::catalog::oid_t oid,
                                   std::vector<components::table::column_definition_t> columns,
                                   std::filesystem::path otbx_path,
-                                  bool is_computed);
+                                  bool is_computed,
+                                  std::string relname);
 
         // WAL-replay only, before scheduler.start; the storage_* handlers replace these after.
         [[nodiscard]] core::error_t no_replay_storage_error(const char* who, components::catalog::oid_t table_oid);
@@ -166,10 +168,15 @@ namespace services::disk {
                                                            uint64_t first_position);
 
         // Mutation handlers: a not-owned oid REFUSES on every leg below; only an empty request succeeds as a no-op.
-        unique_future<core::result_wrapper_t<components::storage::appended_range_t>>
+        // `attoids` name the payload's columns: the table's visible ones, in order (a computed table: none).
+        // One message is one write: every chunk is checked before any is journalled, and a chunk that fails to
+        // materialize takes the ones before it back with it.
+        unique_future<core::result_wrapper_t<write_receipt_t>>
         storage_append_inner(execution_context_t ctx,
                              components::catalog::oid_t table_oid,
-                             std::unique_ptr<components::vector::data_chunk_t> data);
+                             std::pmr::vector<components::catalog::oid_t> attoids,
+                             std::pmr::vector<components::vector::data_chunk_t> data,
+                             bool returning);
 
         unique_future<void>
         storage_publish_commits_inner(uint64_t commit_id,
@@ -187,17 +194,19 @@ namespace services::disk {
         unique_future<core::error_t>
         storage_revert_appends_inner(std::pmr::vector<components::pg_catalog_append_range_t> ranges);
 
-        unique_future<core::result_wrapper_t<components::storage::updated_rows_t>>
+        unique_future<core::result_wrapper_t<update_receipt_t>>
         storage_update_inner(components::catalog::oid_t table_oid,
-                             components::vector::vector_t row_ids,
-                             std::unique_ptr<components::vector::data_chunk_t> data,
-                             components::table::transaction_data txn);
+                             std::pmr::vector<components::vector::vector_t> row_ids,
+                             std::pmr::vector<components::vector::data_chunk_t> data,
+                             components::table::transaction_data txn,
+                             bool returning);
 
-        unique_future<core::result_wrapper_t<uint64_t>>
+        unique_future<core::result_wrapper_t<write_receipt_t>>
         storage_delete_rows_inner(components::catalog::oid_t table_oid,
                                   components::vector::vector_t row_ids,
                                   uint64_t count,
-                                  components::table::transaction_data txn);
+                                  components::table::transaction_data txn,
+                                  bool returning);
 
         // SNAPSHOT drops invisible rows; RAW keeps all. `expected_compact_epoch` is checked atomically with the read.
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
@@ -354,13 +363,15 @@ namespace services::disk {
                                                        uint64_t from_sub_id,
                                                        std::pmr::vector<components::catalog::oid_t> tables);
 
-        unique_future<core::error_t>
-        storage_prepare_inner(components::table::transaction_data txn,
-                              std::pmr::vector<components::catalog::oid_t> tables,
-                              std::pmr::vector<components::pg_catalog_append_range_t> appends);
+        unique_future<core::error_t> storage_prepare_inner(components::table::transaction_data txn,
+                                                           std::pmr::vector<components::catalog::oid_t> tables);
 
         unique_future<void> storage_release_prepared_inner(uint64_t txn_id,
                                                            std::pmr::vector<components::catalog::oid_t> tables);
+
+        unique_future<core::error_t> storage_set_not_null_inner(components::table::transaction_data txn,
+                                                                components::catalog::oid_t table_oid,
+                                                                components::catalog::oid_t attoid);
 
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
 
@@ -406,7 +417,8 @@ namespace services::disk {
                                                             &agent_disk_t::storage_compact_epoch_inner,
                                                             &agent_disk_t::revert_column_stamps_inner,
                                                             &agent_disk_t::storage_prepare_inner,
-                                                            &agent_disk_t::storage_release_prepared_inner>;
+                                                            &agent_disk_t::storage_release_prepared_inner,
+                                                            &agent_disk_t::storage_set_not_null_inner>;
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 

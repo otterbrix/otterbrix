@@ -5,25 +5,19 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/place.hpp>
 #include <components/catalog/results/ddl_result.hpp>
+#include <components/table/storage_address.hpp>
 
 #include <cstdint>
 #include <string>
 
 namespace components::logical_plan {
 
-    // One object of a connection's database a DROP takes, found by the executor before it plans (dependents first):
-    // the connector's DROP of it is a step of the plan before the catalog's rows go.
-    struct remote_object_t {
-        enum class kind_t : std::uint8_t
-        {
-            table,  // `oid`: the table
-            column, // `oid`: the column's attoid, `table_oid` its table, which the DROP keeps
-            schema  // `oid`: the schema, `schema` its names
-        };
-        kind_t kind;
-        components::catalog::oid_t oid{components::catalog::INVALID_OID};
+    // A table of a connection's database a DROP reaches (it goes, or a column of it goes) and its storage: found by
+    // the executor before the statement plans. Any other table's storage is otterbrix's disk.
+    struct storage_target_t {
         components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
-        components::catalog::place_t schema;
+        components::table::storage_address_t address;
+        qualified_name_t name;
     };
 
     // Planner-emitted DDL leaf: drives a CASCADE/RESTRICT walk over pg_depend
@@ -49,10 +43,8 @@ namespace components::logical_plan {
         components::catalog::drop_behavior_t behavior() const noexcept { return behavior_; }
         char relkind() const noexcept { return relkind_; }
 
-        // What the DROP takes of connections' databases, in drop order, stamped by the executor: each is a step of
-        // the connector before the catalog's rows go.
-        const std::pmr::vector<remote_object_t>& remote_drops() const noexcept { return remote_drops_; }
-        void set_remote_drops(std::pmr::vector<remote_object_t> drops) { remote_drops_ = std::move(drops); }
+        const std::pmr::vector<storage_target_t>& storage_targets() const noexcept { return storage_targets_; }
+        void set_storage_targets(std::pmr::vector<storage_target_t> targets) { storage_targets_ = std::move(targets); }
 
     private:
         hash_t hash_impl() const override;
@@ -62,7 +54,7 @@ namespace components::logical_plan {
         components::catalog::oid_t seed_objid_;
         components::catalog::drop_behavior_t behavior_;
         char relkind_;
-        std::pmr::vector<remote_object_t> remote_drops_{resource()};
+        std::pmr::vector<storage_target_t> storage_targets_{resource()};
     };
 
     using node_dynamic_cascade_delete_ptr = boost::intrusive_ptr<node_dynamic_cascade_delete_t>;

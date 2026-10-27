@@ -27,11 +27,15 @@ namespace components::operators {
     operator_delete::operator_delete(std::pmr::memory_resource* resource,
                                      log_t log,
                                      components::catalog::oid_t table_oid,
+                                     table::storage_address_t address,
+                                     std::pmr::string name,
                                      std::pmr::vector<projected_column_t> returning,
                                      expressions::expression_ptr expr,
                                      logical_plan::row_cap_t affected_bound)
         : read_write_operator_t(resource, log, operator_type::remove)
         , table_oid_(table_oid)
+        , address_(std::move(address))
+        , name_(std::move(name), resource)
         , expression_(std::move(expr))
         , condition_(expressions::classify_condition(expression_))
         , returning_(std::move(returning))
@@ -44,6 +48,7 @@ namespace components::operators {
                                      components::catalog::oid_t target_oid)
         : read_write_operator_t(resource, log, operator_type::remove)
         , table_oid_(catalog_table_oid)
+        , name_(resource)
         , returning_(resource)
         , oid_col_idx_(oid_col_idx)
         , target_oid_(target_oid) {}
@@ -63,7 +68,6 @@ namespace components::operators {
         if (chunk.size() == 0) {
             return core::error_t::no_error();
         }
-        const bool collect_returning = !returning_.empty();
         auto types = chunk.types();
 
         // all_true/all_false can skip graph
@@ -118,19 +122,6 @@ namespace components::operators {
         index_old_chunks_.emplace_back(dml_detail::stage_matched(resource_, chunk, matched_indexing, index));
         for (size_t i = 0; i < index; i++) {
             index_old_row_ids_.push_back(batch_ids.data<int64_t>()[i]);
-        }
-
-        if (collect_returning) {
-            auto proj = evaluate_projection(resource_,
-                                            returning_,
-                                            &index_old_chunks_.back(),
-                                            pipeline_context->parameters,
-                                            pipeline_context->execution_context,
-                                            &returning_graph_);
-            if (proj.has_error()) {
-                return proj.error();
-            }
-            returning_staged_.emplace_back(std::move(proj.value()));
         }
         return core::error_t::no_error();
     }
@@ -240,57 +231,39 @@ namespace components::operators {
             modified_->append(static_cast<size_t>(batch_ids.data<int64_t>()[i]));
         }
 
-        index_old_chunks_.emplace_back(dml_detail::stage_matched(resource_, chunk_left, matched_indexing, index));
-        for (size_t i = 0; i < index; i++) {
-            index_old_row_ids_.push_back(batch_ids.data<int64_t>()[i]);
+        if (!collect_returning) {
+            index_old_chunks_.emplace_back(dml_detail::stage_matched(resource_, chunk_left, matched_indexing, index));
+            for (size_t i = 0; i < index; i++) {
+                index_old_row_ids_.push_back(batch_ids.data<int64_t>()[i]);
+            }
+            return core::error_t::no_error();
         }
-
-        if (collect_returning) {
-            // One slice pair per right chunk the partners come from, in order of first appearance.
-            std::pmr::vector<uint32_t> chunk_order(resource_);
-            std::pmr::vector<std::pmr::vector<uint32_t>> rows_of(right_chunks.size(),
-                                                                 std::pmr::vector<uint32_t>(resource_),
-                                                                 resource_);
-            for (size_t k = 0; k < partners.size(); ++k) {
-                auto& rows = rows_of[partners[k].first];
-                if (rows.empty()) {
-                    chunk_order.push_back(partners[k].first);
-                }
-                rows.push_back(static_cast<uint32_t>(k));
+        // RETURNING reads each deleted row with the USING row it matched: one staged pair per right chunk the
+        // partners come from, in order of first appearance.
+        std::pmr::vector<uint32_t> chunk_order(resource_);
+        std::pmr::vector<std::pmr::vector<uint32_t>> rows_of(right_chunks.size(),
+                                                             std::pmr::vector<uint32_t>(resource_),
+                                                             resource_);
+        for (size_t k = 0; k < partners.size(); ++k) {
+            auto& rows = rows_of[partners[k].first];
+            if (rows.empty()) {
+                chunk_order.push_back(partners[k].first);
             }
-            data_chunk_t& staged = index_old_chunks_.back();
-            for (uint32_t ci : chunk_order) {
-                const auto& rows = rows_of[ci];
-                const auto& source_right = right_chunks[ci];
-                vector::indexing_vector_t left_selection(resource_, rows.size());
-                vector::indexing_vector_t right_selection(resource_, rows.size());
-                for (size_t n = 0; n < rows.size(); ++n) {
-                    left_selection.set_index(n, rows[n]);
-                    right_selection.set_index(n, partners[rows[n]].second);
-                }
-                std::optional<data_chunk_t> left_part;
-                if (rows.size() != index) {
-                    left_part.emplace(dml_detail::sliced_rows(resource_, staged, left_selection, rows.size()));
-                }
-                auto right_part = dml_detail::sliced_rows(resource_, source_right, right_selection, rows.size());
-                auto proj = evaluate_projection(resource_,
-                                                returning_,
-                                                left_part.has_value() ? &*left_part : &staged,
-                                                pipeline_context->parameters,
-                                                pipeline_context->execution_context,
-                                                &returning_graph_,
-                                                &right_part);
-                if (proj.has_error()) {
-                    return proj.error();
-                }
-                // A kept slice would hold the whole right chunk alive inside the cursor.
-                if (dml_detail::references_columns_of(proj.value(), right_part) &&
-                    !dml_detail::returning_keeps_slice(rows.size(), source_right.capacity())) {
-                    returning_staged_.emplace_back(dml_detail::gather_rows(resource_, proj.value()));
-                } else {
-                    returning_staged_.emplace_back(std::move(proj.value()));
-                }
+            rows.push_back(static_cast<uint32_t>(k));
+        }
+        for (uint32_t ci : chunk_order) {
+            const auto& rows = rows_of[ci];
+            vector::indexing_vector_t left_selection(resource_, rows.size());
+            vector::indexing_vector_t right_selection(resource_, rows.size());
+            for (size_t n = 0; n < rows.size(); ++n) {
+                left_selection.set_index(n, matched_indexing.get_index(rows[n]));
+                right_selection.set_index(n, partners[rows[n]].second);
+                index_old_row_ids_.push_back(batch_ids.data<int64_t>()[rows[n]]);
             }
+            index_old_chunks_.emplace_back(
+                dml_detail::stage_matched(resource_, chunk_left, left_selection, rows.size()));
+            returning_from_chunks_.emplace_back(
+                dml_detail::stage_matched(resource_, right_chunks[ci], right_selection, rows.size()));
         }
         return core::error_t::no_error();
     }
@@ -304,6 +277,23 @@ namespace components::operators {
             return consume_join_batch_(ctx, input, right_->output()->chunks());
         }
         return consume_batch_(ctx, input);
+    }
+
+    std::pmr::string operator_delete::explain_label_impl() const {
+        return foreign_label(resource_, address_, "Foreign Delete", name_);
+    }
+
+    actor_zeta::unique_future<core::error_t> operator_delete::open_impl(pipeline::context_t* ctx) {
+        if (oid_col_idx_ >= 0) {
+            co_return core::error_t::no_error();
+        }
+        if (auto refused = dml_detail::check_constant_returning(resource_, returning_, *ctx);
+            refused.contains_error()) {
+            set_error(refused);
+            mark_failed();
+            co_return refused;
+        }
+        co_return core::error_t::no_error();
     }
 
     actor_zeta::unique_future<void> operator_delete::await_async_and_resume(pipeline::context_t* ctx) {
@@ -335,158 +325,178 @@ namespace components::operators {
             co_return;
         }
 
-        if (storage_sink_) {
-            if (modified_ && modified_->size() > 0) {
-                std::size_t next_id = 0;
-                for (auto& matched : index_old_chunks_) {
-                    for (uint64_t row = 0; row < matched.size(); ++row) {
-                        matched.row_ids.data<int64_t>()[row] = index_old_row_ids_[next_id++];
-                    }
-                }
-                auto error = co_await dml_detail::push_in_rounds(resource_,
-                                                                 ctx,
-                                                                 *storage_sink_,
-                                                                 index_old_chunks_,
-                                                                 storage_flush_rows_);
-                modified_ = operators::make_operator_write_data(resource_);
-                index_old_chunks_.clear();
-                index_old_row_ids_.clear();
-                if (error.contains_error()) {
-                    set_error(error);
-                    mark_failed();
-                    co_return;
-                }
-                written_ = storage_sink_->written();
-            }
-        } else if (modified_ && modified_->size() > 0) {
+        if (modified_ && modified_->size() > 0) {
+            components::execution_context_t exec_ctx{ctx->session,
+                                                     ctx->txn,
+                                                     ctx->execution_context.timezone_offset,
+                                                     table_oid_};
             // DELETE writes its own WAL, unlike INSERT where the disk agent owns it.
-            const bool mirror_index = table_has_indexes_ &&
-                                      ctx->index_address != actor_zeta::address_t::empty_address() &&
-                                      !index_old_chunks_.empty();
-
-            auto op = [this, ctx, mirror_index](
-                          std::pmr::memory_resource* res) -> actor_zeta::unique_future<dml_detail::flush_outcome_t> {
-                components::execution_context_t exec_ctx{ctx->session,
-                                                         ctx->txn,
-                                                         ctx->execution_context.timezone_offset,
-                                                         table_oid_};
-                auto& ids = modified_->ids();
-                const size_t modified_size = modified_->size();
-
+            const bool mirror_index =
+                table_has_indexes_ && ctx->index_address != actor_zeta::address_t::empty_address();
+            const bool returning = !returning_.empty();
+            auto rounds = dml_detail::split_parallel_rounds(resource_,
+                                                            {&index_old_chunks_, &returning_from_chunks_},
+                                                            address_.max_rows_per_write());
+            std::size_t next_row_id = 0;
+            for (auto& round : rounds) {
+                auto& old_rows = round[0];
+                auto& from_rows = round[1];
+                uint64_t round_rows = 0;
+                for (const auto& chunk : old_rows) {
+                    round_rows += chunk.size();
+                }
                 // Storage first, then WAL (same order operator_update uses): a mutation's WAL id must never
                 // be allocated before the mutation is applied, or a checkpoint can advance the durable floor
                 // past a delete never folded into the .otbx (test_delete_floor_resurrection).
-                vector_t row_ids(res, types::logical_type::BIGINT, modified_size);
-                for (size_t i = 0; i < modified_size; i++) {
-                    row_ids.data<int64_t>()[i] = static_cast<int64_t>(ids[i]);
+                vector_t row_ids(resource_, types::logical_type::BIGINT, round_rows);
+                std::pmr::vector<int64_t> round_row_ids(resource_);
+                round_row_ids.reserve(round_rows);
+                for (uint64_t i = 0; i < round_rows; i++) {
+                    const auto id = index_old_row_ids_[next_row_id++];
+                    row_ids.data<int64_t>()[i] = id;
+                    round_row_ids.push_back(id);
                 }
-                auto [_d, df] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                            &services::disk::manager_disk_t::storage_delete_rows,
-                                                            exec_ctx,
-                                                            table_oid_,
-                                                            std::move(row_ids),
-                                                            static_cast<uint64_t>(modified_size));
+                ctx->join_transaction(address_, table_oid_, true);
+                auto [_d, df] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_delete_rows>(
+                    address_,
+                    exec_ctx,
+                    table_oid_,
+                    std::move(row_ids),
+                    round_rows,
+                    returning);
                 auto deleted_r = co_await std::move(df);
-                if (deleted_r.has_error()) {
-                    co_return dml_detail::flush_outcome_t{deleted_r.error(), false, 0, 0};
-                }
 
-                // The delete marker recorded before this error check lets the abort tail un-stamp the rows
-                // on a refused WAL record, so no committed delete lacks its journal record.
-                if (ctx->wal_address != actor_zeta::address_t::empty_address()) {
-                    std::pmr::vector<int64_t> wal_row_ids(res);
-                    wal_row_ids.reserve(modified_size);
-                    for (size_t i = 0; i < modified_size; i++) {
-                        wal_row_ids.push_back(static_cast<int64_t>(ids[i]));
+                dml_detail::flush_outcome_t outcome{};
+                bool stamped_deletes = false;
+                if (deleted_r.has_error()) {
+                    outcome.error = deleted_r.error();
+                } else {
+                    auto& receipt = deleted_r.value();
+                    stamped_deletes = receipt.awaits_publish;
+                    // The delete marker recorded below lets the abort tail un-stamp the rows on a refused WAL
+                    // record, so no committed delete lacks its journal record.
+                    if (receipt.awaits_publish && ctx->wal_address != actor_zeta::address_t::empty_address()) {
+                        auto count = static_cast<uint64_t>(round_row_ids.size());
+                        constexpr auto db_oid = components::catalog::well_known_oid::main_database;
+                        auto [_w, wf] =
+                            actor_zeta::otterbrix::send(ctx->wal_address,
+                                                        &services::wal::manager_wal_replicate_t::write_physical_delete,
+                                                        ctx->session,
+                                                        table_oid_,
+                                                        round_row_ids,
+                                                        count,
+                                                        ctx->txn.transaction_id,
+                                                        ctx->txn.sub_id,
+                                                        db_oid);
+                        auto wal_result = co_await std::move(wf);
+                        if (wal_result.has_error()) {
+                            outcome.error = wal_result.error();
+                        }
                     }
-                    auto count = static_cast<uint64_t>(wal_row_ids.size());
-                    constexpr auto db_oid = components::catalog::well_known_oid::main_database;
-                    auto [_w, wf] =
-                        actor_zeta::otterbrix::send(ctx->wal_address,
-                                                    &services::wal::manager_wal_replicate_t::write_physical_delete,
-                                                    ctx->session,
-                                                    table_oid_,
-                                                    std::move(wal_row_ids),
-                                                    count,
-                                                    ctx->txn.transaction_id,
-                                                    ctx->txn.sub_id,
-                                                    db_oid);
-                    auto wal_result = co_await std::move(wf);
-                    if (wal_result.has_error()) {
-                        co_return dml_detail::flush_outcome_t{wal_result.error(), false, 0, 0};
-                    }
-                }
 
 #ifdef DEV_MODE
-                while (auto* gate = dev_delete_wal_apply_gate()) {
-                    if (!gate->hold(table_oid_)) {
-                        break;
+                    while (auto* gate = dev_delete_wal_apply_gate()) {
+                        if (!gate->hold(table_oid_)) {
+                            break;
+                        }
+                        auto [_g, gf] =
+                            actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_total_rows>(
+                                address_,
+                                ctx->session,
+                                table_oid_);
+                        auto ping = co_await std::move(gf);
+                        if (ping.has_error()) {
+                            break;
+                        }
                     }
-                    auto [_g, gf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                                &services::disk::manager_disk_t::storage_total_rows,
-                                                                ctx->session,
-                                                                table_oid_);
-                    auto ping = co_await std::move(gf);
-                    if (ping.has_error()) {
-                        break;
-                    }
-                }
 #endif
 
-                // Both paths stage the matched old rows into index_old_chunks_/index_old_row_ids_, so
-                // delete_rows always gets the matched rows paired with their own ids, never the first-N scan rows.
-                if (mirror_index) {
-                    chunks_vector_t index_old_copy(res);
-                    index_old_copy.reserve(index_old_chunks_.size());
-                    for (const auto& c : index_old_chunks_) {
-                        data_chunk_t owned(res, c.types(), c.size() == 0 ? 1 : c.size());
-                        if (c.size() > 0) {
-                            c.copy(owned, 0);
+                    // Both paths stage the matched old rows into index_old_chunks_/index_old_row_ids_, so
+                    // delete_rows always gets the matched rows paired with their own ids, never the first-N scan rows.
+                    if (!outcome.error.contains_error() && mirror_index && !old_rows.empty()) {
+                        chunks_vector_t index_old_copy(resource_);
+                        index_old_copy.reserve(old_rows.size());
+                        for (const auto& c : old_rows) {
+                            data_chunk_t owned(resource_, c.types(), c.size() == 0 ? 1 : c.size());
+                            if (c.size() > 0) {
+                                c.copy(owned, 0);
+                            }
+                            index_old_copy.emplace_back(std::move(owned));
                         }
-                        index_old_copy.emplace_back(std::move(owned));
+                        auto [_ix, ixf] = actor_zeta::otterbrix::send(ctx->index_address,
+                                                                      &services::index::manager_index_t::delete_rows,
+                                                                      exec_ctx,
+                                                                      table_oid_,
+                                                                      std::move(index_old_copy),
+                                                                      round_row_ids);
+                        if (auto index_error = co_await std::move(ixf); index_error.contains_error()) {
+                            outcome.error = std::move(index_error);
+                        }
                     }
-                    auto [_ix, ixf] = actor_zeta::otterbrix::send(ctx->index_address,
-                                                                  &services::index::manager_index_t::delete_rows,
-                                                                  exec_ctx,
-                                                                  table_oid_,
-                                                                  std::move(index_old_copy),
-                                                                  std::move(index_old_row_ids_));
-                    auto index_error = co_await std::move(ixf);
-                    if (index_error.contains_error()) {
-                        co_return dml_detail::flush_outcome_t{std::move(index_error), false, 0, 0};
+
+                    if (!outcome.error.contains_error()) {
+                        written_ += receipt.count;
+                        uint64_t offset = 0;
+                        for (auto& returned : receipt.returned) {
+                            if (returned.size() == 0) {
+                                continue;
+                            }
+                            auto rows = dml_detail::as_scanned(resource_,
+                                                               vector::adopted(resource_, std::move(returned)),
+                                                               scan_columns_);
+                            std::optional<data_chunk_t> partners;
+                            if (!from_rows.empty()) {
+                                partners.emplace(dml_detail::rows_at(resource_, from_rows, offset, rows.size()));
+                            }
+                            offset += rows.size();
+                            auto proj = evaluate_projection(resource_,
+                                                            returning_,
+                                                            &rows,
+                                                            ctx->parameters,
+                                                            ctx->execution_context,
+                                                            &returning_graph_,
+                                                            partners.has_value() ? &*partners : nullptr);
+                            if (proj.has_error()) {
+                                outcome.error = proj.error();
+                                break;
+                            }
+                            returning_staged_.emplace_back(std::move(proj.value()));
+                        }
                     }
                 }
 
-                written_ += static_cast<uint64_t>(modified_size);
-                co_return dml_detail::flush_outcome_t{core::error_t::no_error(), false, 0, 0};
-            };
-
-            auto outcome = co_await op(resource_);
-            // fk_cascade needs the OLD rows (index_old_chunks_) to find referencing children; record_flush
-            // accumulates them into constraint_input_ only when dml_has_parent_constraint, to bound memory.
-            auto err = dml_detail::record_flush(ctx,
-                                                resource_,
-                                                table_oid_,
-                                                outcome,
-                                                ctx->dml_has_parent_constraint,
-                                                constraint_input_,
-                                                index_old_chunks_);
-            // Recorded once per txn, before the flush-error check, so a late failure still leaves the marker
-            // for the abort tail to un-stamp; COMMIT/ABORT key the MVCC swap/revert on the txn id, not the flush.
-            if (!delete_marker_recorded_) {
-                ctx->dml_deletes.push_back(components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
-                delete_marker_recorded_ = true;
-            }
-
-            if (err.contains_error()) {
-                set_error(err);
-                mark_failed();
-                co_return;
+                // fk_cascade needs the OLD rows (index_old_chunks_) to find referencing children; record_flush
+                // accumulates them into constraint_input_ only when dml_has_parent_constraint, to bound memory.
+                auto err = dml_detail::record_flush(ctx,
+                                                    resource_,
+                                                    table_oid_,
+                                                    outcome,
+                                                    ctx->dml_has_parent_constraint,
+                                                    constraint_input_,
+                                                    old_rows);
+                // Recorded once per txn, before the flush-error check, so a late failure still leaves the marker
+                // for the abort tail to un-stamp; COMMIT/ABORT key the MVCC swap/revert on the txn id, not the flush.
+                if ((stamped_deletes || (deleted_r.has_error() && ctx->is_disk(address_))) &&
+                    !delete_marker_recorded_) {
+                    ctx->dml_deletes.push_back(
+                        components::table::dml_delete_range_t{table_oid_, ctx->txn.transaction_id});
+                    delete_marker_recorded_ = true;
+                }
+                if (err.contains_error()) {
+                    modified_ = operators::make_operator_write_data(resource_);
+                    index_old_chunks_.clear();
+                    index_old_row_ids_.clear();
+                    returning_from_chunks_.clear();
+                    set_error(err);
+                    mark_failed();
+                    co_return;
+                }
             }
 
             modified_ = operators::make_operator_write_data(resource_);
             index_old_chunks_.clear();
             index_old_row_ids_.clear();
+            returning_from_chunks_.clear();
         }
 
         if (!is_final) {
@@ -497,23 +507,7 @@ namespace components::operators {
         if (!returning_.empty()) {
             if (returning_staged_.empty()) {
                 // Nothing matched, but we still have to return correct columns
-                std::pmr::vector<types::complex_logical_type> columns{resource_};
-                if (storage_sink_) {
-                    columns = storage_columns_;
-                } else {
-                    auto [_rt, rtf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                                  &services::disk::manager_disk_t::storage_types,
-                                                                  ctx->session,
-                                                                  table_oid_);
-                    auto returning_types = co_await std::move(rtf);
-                    if (returning_types.has_error()) {
-                        set_error(returning_types.error());
-                        mark_failed();
-                        co_return;
-                    }
-                    columns = std::move(returning_types.value());
-                }
-                data_chunk_t empty(resource_, columns, 0);
+                auto empty = dml_detail::as_scanned(resource_, data_chunk_t(resource_, table_types_, 0), scan_columns_);
                 empty.set_cardinality(0);
                 auto proj = evaluate_projection(resource_,
                                                 returning_,

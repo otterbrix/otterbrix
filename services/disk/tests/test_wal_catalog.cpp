@@ -744,18 +744,23 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("a", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         table_oid = test_create_table(fx, ns_oid, "t_addcol", cols);
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  catalog::well_known_oid::main_database,
-                  cols,
-                  /*is_computed=*/true);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      catalog::well_known_oid::main_database,
+                      qualified_name_t{},
+                      cols,
+                      /*is_computed=*/true)
+                .has_error());
 
         {
             auto r = fx.invoke(&manager_disk_t::storage_append,
                                txn_exec_ctx(88, table_oid),
                                table_oid,
-                               bigint_batch(&fx.resource, {"a"}, 1, 1));
+                               std::pmr::vector<catalog::oid_t>(&fx.resource),
+                               bigint_batch(&fx.resource, {"a"}, 1, 1),
+                               false);
             REQUIRE_FALSE(r.has_error());
             REQUIRE(r.value().count == 1);
         }
@@ -764,7 +769,9 @@ TEST_CASE("services::disk::wal_catalog::a_growth_append_journals_the_add_column_
             auto r = fx.invoke(&manager_disk_t::storage_append,
                                txn_exec_ctx(88, table_oid),
                                table_oid,
-                               bigint_batch(&fx.resource, {"a", "b"}, 1, 2));
+                               std::pmr::vector<catalog::oid_t>(&fx.resource),
+                               bigint_batch(&fx.resource, {"a", "b"}, 1, 2),
+                               false);
             INFO("the drained add-column path must not hang and must not fail the growth append");
             REQUIRE_FALSE(r.has_error());
             REQUIRE(r.value().count == 1);

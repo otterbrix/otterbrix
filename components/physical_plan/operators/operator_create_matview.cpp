@@ -27,16 +27,21 @@ namespace components::operators {
         // Always disk-backed (plan-gen guarantees non-empty inferred columns). is_computed
         // explicitly false — a matview is relkind='m', never a dynamic-schema table.
         {
-            auto [_, f] = actor_zeta::otterbrix::send(
-                ctx->disk_address,
-                &services::disk::manager_disk_t::create_storage_disk,
-                ctx->session,
+            // A materialized view lives in a database of otterbrix's own: its storage is the disk.
+            auto [_, f] = actor_zeta::otterbrix::send<&services::disk::storage_contract::create_storage_disk>(
+                ctx->disk_storage(),
+                components::execution_context_t{ctx->session, ctx->txn, {}},
                 mv_oid_,
                 namespace_oid_,
+                qualified_name_t{},
                 std::vector<table::column_definition_t>(std::make_move_iterator(columns_.begin()),
                                                         std::make_move_iterator(columns_.end())),
                 /*is_computed=*/false);
-            co_await std::move(f);
+            if (auto created = co_await std::move(f); created.has_error()) {
+                set_error(created.error());
+                mark_failed();
+                co_return;
+            }
         }
 
         // CREATE back-channel: record the matview's heap storage oid so COMMIT

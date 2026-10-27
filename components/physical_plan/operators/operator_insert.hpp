@@ -4,6 +4,7 @@
 #include <components/logical_plan/node_insert.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
+#include <components/table/storage_address.hpp>
 
 namespace components::operators {
 
@@ -15,10 +16,14 @@ namespace components::operators {
 
     class operator_insert final : public read_write_operator_t {
     public:
-        // `returning` is the RETURNING projection (empty when absent); read back from storage when set.
+        // `returning` is the RETURNING projection (empty when absent), computed over the rows as the storage wrote
+        // them. `attoids` name the table's columns in their declared order (none for a dynamic-schema table).
         operator_insert(std::pmr::memory_resource* resource,
                         log_t log,
                         catalog::oid_t table_oid,
+                        table::storage_address_t address,
+                        std::pmr::string name,
+                        std::pmr::vector<catalog::oid_t> attoids,
                         std::pmr::vector<projected_column_t> returning);
 
         catalog::oid_t table_oid() const noexcept { return table_oid_; }
@@ -34,18 +39,8 @@ namespace components::operators {
 
         // Stamped by enrich; false skips the index mirror. Defaults to true for unstamped plans.
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
-
-        // A table with external storage: the full rows, in the declared column order, go to the storage's insert
-        // sink instead of the disk, the WAL and the index. `slots` holds each declared column's position in the chunk.
-        void set_storage_sink(operator_ptr sink,
-                              std::pmr::vector<types::complex_logical_type> columns,
-                              std::pmr::vector<uint64_t> slots,
-                              uint64_t flush_rows) {
-            storage_sink_ = std::move(sink);
-            storage_columns_ = std::move(columns);
-            storage_slots_ = std::move(slots);
-            storage_flush_rows_ = flush_rows;
-        }
+        // The table's visible columns, from the catalog: an empty RETURNING has them.
+        void set_table_types(std::pmr::vector<types::complex_logical_type> types) { table_types_ = std::move(types); }
 
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
@@ -62,19 +57,23 @@ namespace components::operators {
         }
 
     private:
+        // Refuses a RETURNING of constants that fails (a division by zero) before any row reaches the storage.
+        actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx) override;
+        bool opens_at_start_impl() const noexcept override {
+            return !components::catalog::is_catalog_table(table_oid_);
+        }
+        // A storage that caps its writes flushes an INSERT on its cap (PostgreSQL 18 batches a foreign INSERT by the
+        // FDW's batch size).
         uint64_t flush_row_threshold_impl(uint64_t engine) const noexcept override {
-            return storage_sink_ ? storage_flush_rows_ : engine;
+            return address_.max_rows_per_write() != 0 ? address_.max_rows_per_write() : engine;
         }
 
-        // EXPLAIN labels a write into external storage the way its sink does, like postgres_fdw's "Foreign Insert on".
-        std::pmr::string explain_label_impl() const override {
-            return storage_sink_ ? storage_sink_->explain_label() : std::pmr::string{resource_};
-        }
-        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
-            return storage_sink_ ? storage_sink_->explain_details() : std::pmr::vector<std::pmr::string>{resource_};
-        }
+        std::pmr::string explain_label_impl() const override;
 
         catalog::oid_t table_oid_;
+        table::storage_address_t address_;
+        std::pmr::string name_;
+        std::pmr::vector<catalog::oid_t> attoids_;
         std::pmr::vector<projected_column_t> returning_;
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;
         // Accumulate the RETURNING rows and the appended-row count until the final drive.
@@ -82,10 +81,7 @@ namespace components::operators {
         logical_plan::insert_column_bindings_t column_bindings_{resource_};
         logical_plan::insert_fill_list_t fill_list_{resource_};
         bool table_has_indexes_{true};
-        operator_ptr storage_sink_;
-        std::pmr::vector<types::complex_logical_type> storage_columns_{resource_};
-        std::pmr::vector<uint64_t> storage_slots_{resource_};
-        uint64_t storage_flush_rows_{0};
+        std::pmr::vector<types::complex_logical_type> table_types_{resource_};
     };
 
 } // namespace components::operators

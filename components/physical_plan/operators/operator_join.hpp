@@ -32,7 +32,8 @@ namespace components::operators {
         operator_join_t(std::pmr::memory_resource* resource,
                         log_t log,
                         type join_type,
-                        const expressions::expression_ptr& expression);
+                        const expressions::expression_ptr& expression,
+                        bool single_match = false);
 
         // SINK on the build side, streaming on the probe side (see class comment).
         // ALL join types stream now, cross included: a cross join is the cartesian
@@ -64,8 +65,12 @@ namespace components::operators {
         }
 
     private:
+        std::pmr::string explain_label_impl() const override;
+
         type join_type_;
         expressions::expression_ptr expression_;
+        // A scalar sub-query's LEFT join: a second match of one probe row is SQL's error.
+        bool single_match_;
         std::vector<size_t> indices_left_;
         std::vector<size_t> indices_right_;
 

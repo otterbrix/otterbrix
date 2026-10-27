@@ -42,6 +42,7 @@ set(SOURCE_${PROJECT_NAME}
     transformer/impl/transform_database.cpp
     transformer/impl/transform_table.cpp
     transformer/impl/transform_select.cpp
+    transformer/impl/pull_up_sublinks.cpp
     transformer/impl/transform_table.cpp
     transformer/impl/transform_types.cpp
     transformer/impl/transfrom_common.cpp

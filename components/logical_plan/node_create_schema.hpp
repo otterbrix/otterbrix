@@ -18,7 +18,7 @@ namespace components::logical_plan {
         components::catalog::oid_t database_oid() const noexcept { return database_oid_; }
         void set_database_oid(components::catalog::oid_t oid) noexcept { database_oid_ = oid; }
 
-        // The oid the planner gave the schema: a connection's schema's connector gets it before its row is written.
+        // The oid the planner gave the schema.
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
 

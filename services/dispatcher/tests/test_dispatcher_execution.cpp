@@ -56,14 +56,6 @@ using components::types::logical_type;
 
 namespace {
 
-    std::atomic<uint64_t> g_host_pass_calls{0};
-
-    components::logical_plan::node_ptr counting_host_pass(std::pmr::memory_resource*,
-                                                          components::logical_plan::node_ptr node) {
-        g_host_pass_calls.fetch_add(1, std::memory_order_relaxed);
-        return node;
-    }
-
     std::string dispatcher_dir(const char* leaf) {
         return "/tmp/test_dispatcher_execution_" + std::to_string(::getpid()) + "/" + leaf;
     }
@@ -110,10 +102,7 @@ namespace {
 } // namespace
 
 struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
-    dispatcher_fixture(std::pmr::memory_resource* resource,
-                       const std::string& disk_path,
-                       std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
-                       bool wire_index = true)
+    dispatcher_fixture(std::pmr::memory_resource* resource, const std::string& disk_path, bool wire_index = true)
         : actor_zeta::actor::actor_mixin<dispatcher_fixture>()
         , resource_(resource)
         , disk_path_(scrubbed(disk_path))
@@ -143,16 +132,16 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
                                                                   wire_index ? manager_index_->address()
                                                                              : components::pipeline::no_mailbox(),
                                                                   configuration::pump_intervals_t{}))
-        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(
-              resource,
-              scheduler_,
-              log_,
-              manager_wal_->address(),
-              manager_disk_->address(),
-              wire_index ? manager_index_->address() : components::pipeline::no_mailbox(),
-              configuration::config_execution{},
-              components::planner::primitives_t{optimizer_rules, {}},
-              services::dispatcher::dispatcher_seed_t{})) {
+        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
+                                                                      scheduler_,
+                                                                      log_,
+                                                                      manager_wal_->address(),
+                                                                      manager_disk_->address(),
+                                                                      wire_index ? manager_index_->address()
+                                                                                 : components::pipeline::no_mailbox(),
+                                                                      configuration::config_execution{},
+                                                                      components::planner::primitives_t{},
+                                                                      services::dispatcher::dispatcher_seed_t{})) {
         const services::bootstrap_token_t token{};
         manager_wal_replicate_t::bootstrap_t wal_boot{*manager_wal_, token};
         manager_disk_t::bootstrap_t disk_boot{*manager_disk_, token};
@@ -334,22 +323,6 @@ TEST_CASE("services::dispatcher::array_equality_subquery_unstamped_schema_is_ref
     REQUIRE(cur->is_error());
 }
 
-// Storing the host rules without forwarding them into optimize() would silently ignore them.
-TEST_CASE("services::dispatcher::host_optimizer_rules_reach_optimize") {
-    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    g_host_pass_calls.store(0, std::memory_order_relaxed);
-    const components::planner::optimizer_rule_t rules[] = {
-        {components::planner::optimizer_stage::last, &counting_host_pass}};
-    dispatcher_fixture test(mr.get(), dispatcher_dir("host_pass"), rules);
-
-    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
-    REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
-    REQUIRE(test.execute_sql("INSERT INTO db.t (b) VALUES (7);")->is_success());
-    REQUIRE(test.execute_sql("SELECT * FROM db.t;")->is_success());
-
-    REQUIRE(g_host_pass_calls.load(std::memory_order_relaxed) > 0);
-}
-
 // The transformer registers the referenced table's resolve under its OWN database, not the child's.
 TEST_CASE("services::dispatcher::cross_db_foreign_key_binds") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
@@ -520,7 +493,6 @@ TEST_CASE("services::dispatcher::create_index_refuses_without_an_index_manager")
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(),
                             dispatcher_dir("create_index_no_index_manager"),
-                            {},
                             /*wire_index=*/false);
 
     REQUIRE(test.execute_sql("CREATE SCHEMA cim;")->is_success());

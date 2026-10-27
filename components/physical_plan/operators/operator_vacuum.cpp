@@ -65,16 +65,14 @@ namespace components::operators {
             uint64_t cursor_id = 0; // 0 == OPEN on the first fetch
             bool scan_failed = false;
             while (true) {
-                auto [_sc, scf] =
-                    actor_zeta::otterbrix::send(ctx->disk_address,
-                                                &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                                ctx->session,
-                                                kPgClass,
-                                                cursor_id,
-                                                std::unique_ptr<components::table::pushed_filter_t>(nullptr),
-                                                /*limit=*/int64_t{-1},
-                                                std::vector<size_t>{},
-                                                ctx->txn);
+                auto [_sc, scf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                              &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                              ctx->session,
+                                                              kPgClass,
+                                                              cursor_id,
+                                                              /*limit=*/int64_t{-1},
+                                                              std::vector<size_t>{},
+                                                              ctx->txn);
                 auto scan_r = co_await std::move(scf);
                 if (scan_r.has_error()) {
                     set_error(scan_r.error());

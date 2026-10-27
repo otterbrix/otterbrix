@@ -25,6 +25,7 @@
 #include <actor-zeta/detail/future.hpp>
 
 #include <components/physical_plan_generator/create_plan.hpp>
+#include <components/planner/host_hooks.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <components/table/transaction.hpp>
@@ -106,6 +107,10 @@ namespace services::collection::executor {
         std::vector<components::table::referenced_delete_t> referenced_deletes{};
         // written() of the plan root; the cursor reports it only for an INSERT / UPDATE / DELETE.
         uint64_t written{0};
+        // Storages that kept state of the statement's transaction (a host's backends it read or wrote).
+        std::vector<components::table::participant_t> participants{};
+        // A host's rows its DDL replies brought, still to be written in the statement's transaction.
+        std::vector<components::host_rows_t> host_rows{};
     };
 
     using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
@@ -147,6 +152,8 @@ namespace services::collection::executor {
         components::catalog::setting_scope_t applied_setting_scope{};
         std::pmr::vector<components::catalog::setting_assignment_t> applied_settings;
         uint64_t written{0};
+        std::vector<components::table::participant_t> participants;
+        std::vector<components::host_rows_t> host_rows;
     };
 
     // Implements subplan_runner_t: an operator inside this executor's coroutine drives a child sub-plan via
@@ -183,9 +190,6 @@ namespace services::collection::executor {
         unique_future<execute_result_t> execute_plan_full(components::session::session_id_t session,
                                                           components::logical_plan::execution_plan_t plan,
                                                           services::dispatcher::txn_session_context_t session_ctx);
-
-        // A connector factory that refused to make this executor's connector refuses the engine's start.
-        [[nodiscard]] const core::error_t& construction_error() const noexcept { return construction_error_; }
 
         // `schema_oid`: the schema the function is registered in.
         unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
@@ -240,14 +244,15 @@ namespace services::collection::executor {
                              components::logical_plan::catalog_resolves_t* resolves,
                              std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes);
 
-        // What the DROPs of the planned statement take of connections' databases (DROP TABLE, SCHEMA, DATABASE, TYPE
-        // ... CASCADE, ALTER TABLE ... DROP COLUMN), found before it runs: the RESTRICT refusal, and the tables,
-        // columns and schemas stamped on the drop for their connectors' operators. Only in autocommit.
-        unique_future<core::error_t> stamp_remote_drops_(components::session::session_id_t session,
-                                                         const services::dispatcher::txn_session_context_t& session_ctx,
-                                                         const services::context_storage_t& statement,
-                                                         components::table::transaction_data txn,
-                                                         components::logical_plan::execution_plan_t& plan);
+        // The tables of connections' databases the DROPs of the planned statement reach (DROP TABLE, SCHEMA,
+        // DATABASE, TYPE ... CASCADE), found before it runs: the RESTRICT refusal, and the tables with their storages
+        // stamped on the drop. Only in autocommit, and only one connection per transaction.
+        unique_future<core::error_t>
+        stamp_storage_targets_(components::session::session_id_t session,
+                               const services::dispatcher::txn_session_context_t& session_ctx,
+                               const services::context_storage_t& statement,
+                               components::table::transaction_data txn,
+                               components::logical_plan::execution_plan_t& plan);
 
         // The functions a view body calls are the ones CREATE bound it to (pg_proc read by the 'f' rows' oids).
         unique_future<core::error_t> pin_functions_(components::session::session_id_t session,
@@ -260,13 +265,32 @@ namespace services::collection::executor {
                                                          const services::dispatcher::txn_session_context_t& session_ctx,
                                                          const components::graph_execution_context& settings);
 
-        // Every table of a connection's database the statement reads or writes gets its storage from the connector,
-        // once per table oid; the entry that met the oid first owns it until the statement ends.
-        core::error_t bind_remote_storages_(components::session::session_id_t session,
-                                            const components::logical_plan::execution_plan_t& plan,
-                                            const services::dispatcher::txn_session_context_t& session_ctx,
-                                            const services::context_storage_t& context,
-                                            components::logical_plan::catalog_resolves_t& resolves);
+        // The storage of a database of `connection`: the disk for otterbrix's own (no connection), else the backend the
+        // host's map gives it; a connection the map lacks has none.
+        core::result_wrapper_t<components::table::storage_address_t>
+        storage_of_connection_(std::string_view connection) const;
+
+        // Every resolved table gets its storage's address. A table of a connection the host's map lacks keeps an
+        // empty one when `catalog_only` (a DROP takes it from the catalog alone), and refuses the statement otherwise.
+        core::error_t bind_storages_(components::logical_plan::catalog_resolves_t& resolves, bool catalog_only) const;
+
+        // A write to a connection's database when the transaction already wrote to another one, or a statement that
+        // writes to two of them, is refused before any backend gets a message.
+        core::error_t check_write_place_(const services::dispatcher::txn_session_context_t& session_ctx,
+                                         std::span<const std::string> written_connections) const;
+
+        // The host's rows its DDL replies brought: written by the statement, in its transaction.
+        unique_future<core::error_t> write_host_rows_(components::session::session_id_t session,
+                                                      const services::dispatcher::txn_session_context_t& session_ctx,
+                                                      std::vector<components::host_rows_t> rows);
+
+        // After optimize: every largest sub-tree that reads only one backend's tables is offered to that backend,
+        // all offers at once; what a backend takes becomes a node_remote_t (docs/embedding-host-api.md, "Pushdown").
+        // The disk is never offered a block.
+        unique_future<core::error_t> offer_blocks_(components::session::session_id_t session,
+                                                   components::logical_plan::execution_plan_t& plan,
+                                                   components::table::transaction_data txn,
+                                                   const components::graph_execution_context& settings);
 
         core::error_t missing_relation_(const qualified_name_t& name) const;
 
@@ -387,11 +411,13 @@ namespace services::collection::executor {
         log_t log_;
         components::compute::function_registry_t function_registry_;
         components::casts::cast_registry_t cast_registry_;
-        // Host customization, copied from the dispatcher's at spawn.
-        std::pmr::vector<components::planner::optimizer_rule_t> optimizer_rules_;
-        // This executor's own connector, made at spawn; only this actor calls it. Null: a host without connections.
-        components::planner::connector_ptr connector_{nullptr, core::pmr::polymorphic_deleter_t{nullptr, 0, 0}};
-        core::error_t construction_error_{core::error_t::no_error()};
+        // The host's map of connections to their backends' actors, this executor's own copy.
+        struct backend_t {
+            std::pmr::string connection;
+            actor_zeta::address_t address;
+            std::uint64_t max_rows_per_write{0};
+        };
+        std::pmr::vector<backend_t> backends_;
         // Bound on buffered rows before the pump forces an incremental flush; 0 disables the gate.
         uint64_t dml_flush_row_threshold_{0};
         static constexpr uint32_t kExplainRendererSlotLimit = 1024;

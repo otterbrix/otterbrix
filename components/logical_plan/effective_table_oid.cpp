@@ -6,7 +6,7 @@ namespace components::logical_plan {
 
     bool reads_owned_table(const node_t& node) {
         return node.table_oid() != catalog::INVALID_OID &&
-               (node.table_metadata() == nullptr || node.table_metadata()->storage == nullptr);
+               (node.table_metadata() == nullptr || !node.table_metadata()->address.is_remote());
     }
 
     catalog::oid_t effective_table_oid(const node_ptr& node) {

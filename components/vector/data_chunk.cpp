@@ -404,6 +404,18 @@ namespace components::vector {
         }
     }
 
+    data_chunk_t adopted(std::pmr::memory_resource* resource, data_chunk_t&& chunk) {
+        if (chunk.resource() == resource) {
+            return std::move(chunk);
+        }
+        data_chunk_t own(resource, chunk.types(), std::clamp<uint64_t>(chunk.size(), 1, DEFAULT_VECTOR_CAPACITY));
+        if (chunk.size() > own.capacity()) {
+            own.resize(chunk.size());
+        }
+        chunk.copy(own, 0);
+        return own;
+    }
+
     core::result_wrapper_t<vector_t> compact_to_bool_value(std::pmr::memory_resource* resource,
                                                            const std::pmr::vector<data_chunk_t>& chunks,
                                                            const types::complex_logical_type&) {

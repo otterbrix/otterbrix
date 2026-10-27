@@ -34,12 +34,10 @@ namespace components::operators {
     operator_check_constraint_t::operator_check_constraint_t(
         std::pmr::memory_resource* resource,
         log_t log,
-        std::vector<std::string> not_null_columns,
         std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates,
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs,
         vector::storage_parameters&& check_params)
         : read_write_operator_t(resource, log, operator_type::check_constraint)
-        , not_null_columns_(std::move(not_null_columns))
         , array_size_reqs_(std::move(array_size_reqs))
         , check_predicates_(std::move(check_predicates))
         , check_params_(std::move(check_params)) {}
@@ -199,32 +197,6 @@ namespace components::operators {
         for (const auto& chunk : data_src->chunks()) {
             if (chunk.size() == 0) {
                 continue;
-            }
-
-            // NOT NULL over the MATERIALISED row: an INSERT omitting the column already expanded it (to
-            // DEFAULT or NULL) before the append, so the validity bit answers directly — including an
-            // omitted PRIMARY KEY column, which pg_attribute never marks attnotnull.
-            for (const auto& col_name : not_null_columns_) {
-                bool found = false;
-                for (uint64_t col = 0; col < chunk.column_count(); ++col) {
-                    if (chunk.data[col].type().alias() != col_name)
-                        continue;
-                    found = true;
-                    for (uint64_t row = 0; row < chunk.size(); ++row) {
-                        if (!chunk.data[col].validity().row_is_valid(row)) {
-                            set_error(core::error_t{
-                                core::error_code_t::other_error,
-                                std::pmr::string{"NOT NULL constraint violated for column: " + col_name, resource_}});
-                            return;
-                        }
-                    }
-                    break;
-                }
-                if (!found) {
-                    // Not a column of this write-set at all (a dynamic-schema table, or a
-                    // path that hands storage ready-made rows). Nothing materialised to judge.
-                    continue;
-                }
             }
 
             // Fixed-ARRAY checks run AFTER padding (casts::array_cast pads short values to the declared size

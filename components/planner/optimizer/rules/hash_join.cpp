@@ -59,11 +59,13 @@ namespace components::planner::optimizer {
             return true;
         }
 
-        // CROSS has no equi-condition; INVALID is rejected during planning. The hash
-        // path implements inner / left / right / full only.
-        bool is_equi_joinable(lp::join_type t) {
+        // CROSS has no equi-condition; INVALID is rejected during planning. A LATERAL join reads its inner per outer
+        // row, so it is never hashed.
+        bool is_equi_joinable(const lp::node_join_t& join) {
             using jt = lp::join_type;
-            return t == jt::inner || t == jt::left || t == jt::right || t == jt::full;
+            const auto t = join.type();
+            return !join.is_lateral() && (t == jt::inner || t == jt::left || t == jt::right || t == jt::full ||
+                                          t == jt::semi || t == jt::anti);
         }
 
         lp::node_ptr try_rewrite_join(const lp::node_ptr& node) {
@@ -71,7 +73,7 @@ namespace components::planner::optimizer {
                 return node;
             }
             auto* join = static_cast<lp::node_join_t*>(node.get());
-            if (!is_equi_joinable(join->type()) || node->expressions().empty()) {
+            if (!is_equi_joinable(*join) || node->expressions().empty()) {
                 return node;
             }
             if (is_hash_condition(node->expressions().front())) {

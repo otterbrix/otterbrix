@@ -152,7 +152,7 @@ the host's (the disk is never offered a block). Every table's operator reaches i
 | `storage_total_rows(session, oid)` | rows | an estimate is an answer: it only orders the sides of a hash join |
 | `storage_append(ctx, oid, attoids, chunks, returning)` | `write_receipt_t` | INSERT; `attoids` name the chunk's columns, the table's declared order |
 | `storage_update(ctx, oid, row_ids, chunks, returning)` | `update_receipt_t` | UPDATE of the rows the backend's scan numbered |
-| `storage_delete_rows(ctx, oid, row_ids, count, returning)` | `write_receipt_t` | DELETE by the same numbers |
+| `storage_delete_rows(ctx, oid, row_ids, returning)` | `write_receipt_t` | DELETE by the same numbers |
 | `create_storage_disk(ctx, oid, database_oid, name, columns, computed)` | `ddl_reply_t` | CREATE TABLE |
 | `mark_storage_dropped_many(ctx, oids, names)` | `ddl_reply_t` | DROP TABLE, in the statement |
 | `add_storage_column(ctx, oid, column)` | `ddl_reply_t` | ALTER TABLE … ADD COLUMN |
@@ -170,6 +170,11 @@ the host's (the disk is never offered a block). Every table's operator reaches i
   otterbrix's MVCC publication at COMMIT. A backend that commits its writes itself answers `false`, and the
   transaction has it as a participant. `returned`, when asked for, holds every column of each written row (of each
   deleted row, as it was), in the order the rows were sent.
+- Every chunk a backend answers (a page, a receipt's `returned`, the `host_rows_t` of a DDL reply) holds at most
+  `vector::DEFAULT_VECTOR_CAPACITY` rows, as every chunk of otterbrix's: a wider one is refused with
+  `invalid_parameter`, `a storage answered a chunk of N rows, more than the 1024 rows of a chunk`, before otterbrix
+  reads it (`chunk_over_vector_capacity`, `returned_rows_wider_than_a_chunk_are_refused`,
+  `host_rows_wider_than_a_chunk_are_refused`); slicing is the backend's job.
 - `ddl_reply_t{awaits_publish, rows}`: `rows` are rows of the host's own otterbrix table (`host_rows_t`: rows to
   insert in its declared order, and keys of a column whose rows to delete), which otterbrix writes in the statement's
   transaction (`the_hosts_parameters_are_rows_of_its_own_table`). That is how a host keeps its parameters of a table
@@ -186,8 +191,7 @@ the host's (the disk is never offered a block). Every table's operator reaches i
 A scan of a connection's table opens in `open_impl`: every source of a plan is opened, its OPEN sent, before any
 reply is awaited, so the scans of a JOIN of several backend tables read at the same time
 (`sources_open_in_parallel`); a LATERAL inner opens on every drive. A page holds the projected columns (all of them
-when none are projected) in projection order, and at most `vector::DEFAULT_VECTOR_CAPACITY` rows: a wider page is
-refused with `invalid_parameter` (`chunk_over_vector_capacity`), slicing a backend page is the backend's job. An
+when none are projected) in projection order, and at most `vector::DEFAULT_VECTOR_CAPACITY` rows (see above). An
 empty page ends the scan: what a backend would send after one is never read (`the_pages_of_a_scan_arrive_whole`).
 Every page is checked against the columns otterbrix planned the scan with (count and types): a page of other columns
 is refused with `invalid_parameter`, `the storage of table "t" answered a page of other columns`
@@ -211,7 +215,9 @@ block (see "Pushdown").
   (`a_storage_without_row_numbers_refuses_the_batch_path`) and takes the statements it can run itself.
 - **Rows per message.** A write message to a connection's table carries at most the connection's
   `max_rows_per_write` rows, set in the map at `open_engine` (0: no limit, as the disk's); the rest of a flush goes in
-  further messages (`the_storage_caps_each_sink_round`, `every_connection_has_its_own_cap`). The backend may run one
+  further messages (`the_storage_caps_each_sink_round`, `every_connection_has_its_own_cap`). A DELETE's `row_ids` are
+  windows of at most `DEFAULT_VECTOR_CAPACITY` numbers (`row_id_batch_t`); the rows of the message are the sum of its
+  windows (at most `max_rows_per_write`) (`a_delete_names_its_rows_in_windows`). The backend may run one
   message as several remote statements of the same transaction: a hard limit of its own in bytes or parameters is
   the backend's to keep, as postgres_fdw sends Min(batch_size, 65535 / parameters per row) rows per statement. An
   INSERT also flushes on the cap instead of the engine's `dml_flush_row_threshold`; an UPDATE / DELETE flushes on the
@@ -304,7 +310,8 @@ function, a CTE scan or a catalog read ends a block. All offers leave before the
 - **A taken read** becomes `node_remote_t`: `storage_run_block` runs the request when the plan opens and again on
   every re-drive (a LATERAL inner gets the values of each drive), `storage_close_block` ends it early. Its pages are
   checked against the types otterbrix planned the taken node with (`the backend of connection "c" answered a block
-  with a page of other columns`) and cut to the engine's batch size. With a residual, the backend reads the table
+  with a page of other columns`) and hold at most `vector::DEFAULT_VECTOR_CAPACITY` rows: a longer answer is more pages
+  of the cursor (`the_pages_of_a_taken_read`). With a residual, the backend reads the table
   with the conjuncts it took and answers the table's columns; the SELECT block keeps the rest over those rows
   (`a_residual_where_stays_with_otterbrix`).
 - **A taken write** runs `storage_run_write` once: its count is the statement's, its receipt's rows feed RETURNING

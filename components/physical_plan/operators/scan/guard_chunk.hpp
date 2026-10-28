@@ -22,4 +22,8 @@ namespace components::operators {
                                   const std::pmr::vector<types::complex_logical_type>& planned,
                                   const vector::data_chunk_t& page);
 
+    // A chunk a storage answers (a page, a receipt's rows, a host's rows) holds at most DEFAULT_VECTOR_CAPACITY rows, as
+    // every chunk does: slicing is the storage's job. Checked before the chunk is read or copied.
+    core::error_t check_chunk_width(std::pmr::memory_resource* resource, const vector::data_chunk_t& chunk);
+
 } // namespace components::operators

@@ -103,9 +103,9 @@ namespace components::table {
 
         [[nodiscard]] virtual core::result_wrapper_t<bool> initialize_append(column_append_state& state);
         [[nodiscard]] virtual core::result_wrapper_t<bool>
-        append(column_append_state& state, vector::vector_t& vector, uint64_t count);
+        append(column_append_state& state, vector::vector_t& vector, uint64_t offset, uint64_t count);
         [[nodiscard]] virtual core::result_wrapper_t<bool>
-        append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t count);
+        append_data(column_append_state& state, vector::unified_vector_format& uvf, uint64_t offset, uint64_t count);
         // Records this column's row count and then its children's, in append order; revert_append takes
         // them back in the same order.
         virtual void snapshot_counts(append_cut_t& cut) const;

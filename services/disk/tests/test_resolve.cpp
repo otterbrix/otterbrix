@@ -232,13 +232,15 @@ TEST_CASE("services::disk::resolve::read_chunks_by_keys_multi_key_parity") {
             keys.set_value(0, i, probe_keys[i]);
         }
         keys.set_cardinality(N);
+        std::pmr::vector<data_chunk_t> key_batch{&fx.resource};
+        key_batch.push_back(std::move(keys));
         std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
         key_cols.emplace_back(0);
         auto res = disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::read_chunks_by_keys,
                                                         fx.ctx(),
                                                         table_oid,
                                                         std::move(key_cols),
-                                                        std::move(keys),
+                                                        std::move(key_batch),
                                                         std::pmr::vector<std::uint64_t>{&fx.resource}));
         REQUIRE(res.size() == N);
         for (auto& entry : res) {
@@ -330,11 +332,13 @@ TEST_CASE("services::disk::resolve::unperformable_keyed_read_is_an_error") {
 
     std::pmr::vector<std::uint64_t> bad_cols_b{&fx.resource};
     bad_cols_b.emplace_back(99);
+    std::pmr::vector<components::vector::data_chunk_t> key_batch_b{&fx.resource};
+    key_batch_b.push_back(test_probe::test_key_chunk(&fx.resource, std::int64_t{10}));
     auto res_b = fx.invoke(&manager_disk_t::read_chunks_by_keys,
                            fx.ctx(),
                            table_oid,
                            std::move(bad_cols_b),
-                           test_probe::test_key_chunk(&fx.resource, std::int64_t{10}),
+                           std::move(key_batch_b),
                            std::pmr::vector<std::uint64_t>{&fx.resource});
     REQUIRE(res_b.has_error());
 }

@@ -73,6 +73,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_address_always_wired.cpp
         test_replay_floor_reopen.cpp
         test_delete_floor_resurrection.cpp
+        test_delete_row_windows.cpp
         test_index_scan_compact_race.cpp
         test_index_stale_window_measure.cpp
         test_index_stale_window_refusal.cpp

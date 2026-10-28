@@ -15,6 +15,7 @@ set(SOURCE_${PROJECT_NAME}
         table_state.cpp
         collection.cpp
         data_table.cpp
+        row_id_batch.cpp
         row_version_manager.cpp
         transaction.cpp
         transaction_manager.cpp

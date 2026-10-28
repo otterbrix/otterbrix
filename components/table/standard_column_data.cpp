@@ -92,12 +92,13 @@ namespace components::table {
 
     core::result_wrapper_t<bool> standard_column_data_t::append_data(column_append_state& state,
                                                                      vector::unified_vector_format& uvf,
+                                                                     uint64_t offset,
                                                                      uint64_t count) {
-        auto base = column_data_t::append_data(state, uvf, count);
+        auto base = column_data_t::append_data(state, uvf, offset, count);
         if (base.has_error()) {
             return base; // out_of_memory: no exceptions across actors
         }
-        return validity.append_data(state.child_appends[0], uvf, count);
+        return validity.append_data(state.child_appends[0], uvf, offset, count);
     }
 
     void standard_column_data_t::snapshot_counts(append_cut_t& cut) const {

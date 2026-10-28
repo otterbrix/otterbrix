@@ -189,7 +189,8 @@ TEST_CASE("integration::cpp::host_pushdown::a_wrong_answer_to_an_offer") {
                           "block without one");
 }
 
-// The pages of a taken read are checked against the columns otterbrix planned, and cut to its batch size.
+// The pages of a taken read are checked against the columns otterbrix planned; a page holds at most
+// DEFAULT_VECTOR_CAPACITY rows, so the backend answers a read of 2500 rows in three pages of one cursor.
 TEST_CASE("integration::cpp::host_pushdown::the_pages_of_a_taken_read") {
     host_t host("test_host_pushdown/pages");
     shop(host);
@@ -204,12 +205,32 @@ TEST_CASE("integration::cpp::host_pushdown::the_pages_of_a_taken_read") {
     for (const auto& chunk : all->chunks()) {
         CHECK(chunk.size() <= components::vector::DEFAULT_VECTOR_CAPACITY);
     }
+    CHECK(host.backend().block_pages() == 3);
+    CHECK(host.backend().journal("run") == strings{"run select m2.shop.public.orders"});
     host.backend().set_take_policy({.whole_select = true, .short_block_pages = true});
     host.db.check_refused(any(),
                           "SELECT * FROM m2.shop.public.orders;",
                           code::invalid_parameter,
                           "the backend of connection \"m2\" answered a block with a page of other columns");
 }
+
+#ifdef NDEBUG
+// A page wider than DEFAULT_VECTOR_CAPACITY rows cannot be built in Debug; release refuses one.
+TEST_CASE("integration::cpp::host_pushdown::a_taken_read_page_wider_than_a_chunk_is_refused") {
+    host_t host("test_host_pushdown/wide_pages");
+    shop(host);
+    rows_t many;
+    for (int64_t i = 0; i < 2500; ++i) {
+        many.push_back({i, i % 7});
+    }
+    host.backend().set_rows(orders, many);
+    host.backend().set_take_policy({.whole_select = true, .wide_block_pages = true});
+    host.db.check_refused(any(),
+                          "SELECT * FROM m2.shop.public.orders;",
+                          code::invalid_parameter,
+                          "a storage answered a chunk of 2500 rows, more than the 1024 rows of a chunk");
+}
+#endif
 
 // A taken read is a part of the transaction: the backend learns of its end; a correlated block runs again with the
 // values of every drive.

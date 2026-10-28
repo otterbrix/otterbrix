@@ -1,5 +1,7 @@
 #include "guard_chunk.hpp"
 
+#include <string>
+
 namespace components::operators {
 
     vector::data_chunk_t make_guard_chunk(std::pmr::memory_resource* resource,
@@ -33,6 +35,18 @@ namespace components::operators {
         std::pmr::string what{"the storage of table \"", resource};
         what += table;
         what += "\" answered a page of other columns";
+        return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
+    }
+
+    core::error_t check_chunk_width(std::pmr::memory_resource* resource, const vector::data_chunk_t& chunk) {
+        if (chunk.size() <= vector::DEFAULT_VECTOR_CAPACITY) {
+            return core::error_t::no_error();
+        }
+        std::pmr::string what{"a storage answered a chunk of ", resource};
+        what += std::to_string(chunk.size());
+        what += " rows, more than the ";
+        what += std::to_string(vector::DEFAULT_VECTOR_CAPACITY);
+        what += " rows of a chunk";
         return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
     }
 

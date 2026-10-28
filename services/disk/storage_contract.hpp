@@ -11,6 +11,7 @@
 #include <components/logical_plan/detached_block.hpp>
 #include <components/session/session.hpp>
 #include <components/table/column_definition.hpp>
+#include <components/table/row_id_batch.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <components/table/storage_address.hpp>
 #include <components/types/types.hpp>
@@ -115,11 +116,11 @@ namespace services::disk {
                        std::pmr::vector<components::vector::data_chunk_t> data,
                        bool returning);
         // A count smaller than requested is legitimate (a row this transaction already deleted).
-        unique_future<core::result_wrapper_t<write_receipt_t>> storage_delete_rows(execution_context_t ctx,
-                                                                                   components::catalog::oid_t table_oid,
-                                                                                   components::vector::vector_t row_ids,
-                                                                                   uint64_t count,
-                                                                                   bool returning);
+        unique_future<core::result_wrapper_t<write_receipt_t>>
+        storage_delete_rows(execution_context_t ctx,
+                            components::catalog::oid_t table_oid,
+                            components::table::row_id_batch_t row_ids,
+                            bool returning);
         unique_future<core::result_wrapper_t<ddl_reply_t>>
         create_storage_disk(execution_context_t ctx,
                             components::catalog::oid_t table_oid,

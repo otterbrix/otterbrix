@@ -185,7 +185,7 @@ namespace {
         table.initialize_scan(state, column_ids, transaction_data::committed(), nullptr);
         auto types = table.copy_types();
         data_chunk_t chunk(&env.resource, types, DEFAULT_VECTOR_CAPACITY);
-        uint64_t seen = 0;
+        std::set<uint64_t> rows;
         while (true) {
             chunk.reset();
             table.scan(chunk, state);
@@ -194,13 +194,14 @@ namespace {
             }
             for (uint64_t i = 0; i < chunk.size(); i++) {
                 const auto& column = chunk.data[0];
+                uint64_t row = 0;
                 switch (kind) {
                     case nested_kind_t::STRUCT: {
                         REQUIRE(column.type().type() == logical_type::STRUCT);
                         const auto cell = resolve_cell(column, i);
                         REQUIRE(cell.vec->entries().size() == 2);
                         const auto stored = cell.vec->entries()[0]->get_value<int64_t>(cell.index);
-                        const auto row = static_cast<uint64_t>(stored) / 7;
+                        row = static_cast<uint64_t>(stored) / 7;
                         REQUIRE(stored == static_cast<int64_t>(row * 7));
                         REQUIRE(cell.vec->entries()[1]->get_value<std::string_view>(cell.index) == row_name(row));
                         break;
@@ -209,7 +210,7 @@ namespace {
                         REQUIRE(column.type().type() == logical_type::LIST);
                         const auto seq = sequence_of(column, i);
                         REQUIRE(seq.length == LIST_LENGTH);
-                        const auto row = seq.child->get_value<uint64_t>(seq.offset) / 100;
+                        row = seq.child->get_value<uint64_t>(seq.offset) / 100;
                         for (uint64_t j = 0; j < LIST_LENGTH; j++) {
                             REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == row * 100 + j);
                         }
@@ -219,17 +220,17 @@ namespace {
                         REQUIRE(column.type().type() == logical_type::ARRAY);
                         const auto seq = sequence_of(column, i);
                         REQUIRE(seq.length == ARRAY_WIDTH);
-                        const auto row = seq.child->get_value<uint64_t>(seq.offset) / 1000;
+                        row = seq.child->get_value<uint64_t>(seq.offset) / 1000;
                         for (uint64_t j = 0; j < ARRAY_WIDTH; j++) {
                             REQUIRE(seq.child->get_value<uint64_t>(seq.offset + j) == row * 1000 + j);
                         }
                         break;
                     }
                 }
-                seen++;
+                REQUIRE(rows.insert(row).second);
             }
         }
-        return seen;
+        return rows.size();
     }
 
     void delete_first_rows(data_table_t& table, nested_env_t& env, uint64_t delete_count) {
@@ -237,19 +238,8 @@ namespace {
         auto session = components::session::session_id_t::generate_uid();
         auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
         auto txn_id = txn.data().transaction_id;
-        std::pmr::vector<complex_logical_type> id_type(&env.resource);
-        id_type.emplace_back(logical_type::BIGINT);
-        uint64_t deleted = 0;
-        while (deleted < delete_count) {
-            uint64_t batch = std::min(delete_count - deleted, uint64_t(DEFAULT_VECTOR_CAPACITY));
-            data_chunk_t row_ids_chunk(&env.resource, id_type, batch);
-            for (uint64_t i = 0; i < batch; i++) {
-                row_ids_chunk.data[0].set_value(i, static_cast<int64_t>(deleted + i));
-            }
-            row_ids_chunk.set_cardinality(batch);
-            REQUIRE_FALSE(table.delete_rows(row_ids_chunk.data[0], batch, txn.data()).has_error());
-            deleted += batch;
-        }
+        auto row_ids = make_row_id_range(&env.resource, 0, delete_count);
+        REQUIRE_FALSE(table.delete_rows(row_ids, txn.data()).has_error());
         auto commit_id = mgr.commit(session);
         mgr.publish(commit_id);
         table.commit_all_deletes(txn_id, commit_id);

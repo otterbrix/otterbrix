@@ -74,11 +74,11 @@ namespace services::disk {
                        std::pmr::vector<components::vector::vector_t> row_ids,
                        std::pmr::vector<components::vector::data_chunk_t> data,
                        bool returning);
-        unique_future<core::result_wrapper_t<write_receipt_t>> storage_delete_rows(execution_context_t ctx,
-                                                                                   components::catalog::oid_t table_oid,
-                                                                                   components::vector::vector_t row_ids,
-                                                                                   uint64_t count,
-                                                                                   bool returning);
+        unique_future<core::result_wrapper_t<write_receipt_t>>
+        storage_delete_rows(execution_context_t ctx,
+                            components::catalog::oid_t table_oid,
+                            components::table::row_id_batch_t row_ids,
+                            bool returning);
         unique_future<core::result_wrapper_t<ddl_reply_t>>
         create_storage_disk(execution_context_t ctx,
                             components::catalog::oid_t table_oid,
@@ -175,7 +175,7 @@ namespace services::disk {
         read_chunks_by_keys(execution_context_t ctx,
                             components::catalog::oid_t table_oid,
                             std::pmr::vector<std::uint64_t> key_col_indices,
-                            components::vector::data_chunk_t keys,
+                            std::pmr::vector<components::vector::data_chunk_t> keys,
                             std::pmr::vector<std::uint64_t> projected_cols);
 
         // A not-owned oid REFUSES rather than answering an empty fold indistinguishable from a real COUNT=0.
@@ -218,8 +218,7 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
-                      components::vector::vector_t row_ids,
-                      uint64_t count,
+                      components::table::row_id_batch_t row_ids,
                       std::vector<size_t> projected_cols,
                       components::table::transaction_data txn,
                       components::table::fetch_visibility_t visibility,

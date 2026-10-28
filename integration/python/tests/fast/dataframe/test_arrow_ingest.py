@@ -42,7 +42,7 @@ def test_pyarrow_backed_pandas_round_trips_through_arrow(conn):
     pytest.importorskip("pyarrow")
 
     # A pyarrow-backed pandas DataFrame (every column is an ArrowDtype) must route through the
-    # core arrow path (components::vector::arrow::data_chunk_from_arrow), not the numpy scanner.
+    # core arrow path (components::vector::arrow::data_chunks_from_arrow), not the numpy scanner.
     pdf = pd.DataFrame(
         {"id": [1, 2, 3], "name": ["x", "y", "z"]}
     ).convert_dtypes(dtype_backend="pyarrow")
@@ -66,3 +66,18 @@ def test_pyarrow_table_round_trips_through_arrow(conn):
     result = rel.df()
     assert list(result["id"]) == [7, 8, 9]
     assert list(result["label"]) == ["p", "q", "r"]
+
+
+def test_pyarrow_record_batch_longer_than_a_vector(conn):
+    pa = pytest.importorskip("pyarrow")
+
+    # One record batch of 3.4 vectors: the engine takes it as several chunks
+    rows = int(1024 * 3.4)
+    ids = list(range(rows))
+    labels = [None if row % 7 == 0 else "label_%d" % row for row in ids]
+    table = pa.table({"id": ids, "label": labels})
+    assert len(table.to_batches()) == 1
+
+    result = conn.from_df(table).df()
+    assert list(result["id"]) == ids
+    assert [None if value is None or value != value else value for value in result["label"]] == labels

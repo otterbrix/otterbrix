@@ -269,6 +269,24 @@ TEST_CASE("integration::cpp::remote_ddl::the_hosts_parameters_are_rows_of_its_ow
     CHECK(relations_named(host, "t5") == 1);
 }
 
+#ifdef NDEBUG
+// The host's rows come in chunks of at most DEFAULT_VECTOR_CAPACITY rows (in Debug a wider chunk cannot be built); a
+// wider one is refused, and nothing of it is written.
+TEST_CASE("integration::cpp::remote_ddl::host_rows_wider_than_a_chunk_are_refused") {
+    host_t host("test_remote_ddl/wide_host_rows");
+    host.db.ok(any(), "CREATE SCHEMA otterstax;");
+    auto created = host.db.ok(any(), "CREATE TABLE otterstax.params (oid BIGINT, name TEXT);");
+    host.backend().set_parameters_table(created->created_oid());
+    host.backend().set_parameters_rows(2500);
+    host.register_shop();
+    host.db.check_refused(any(),
+                          "CREATE TABLE m2.shop.public.t1 (id BIGINT);",
+                          code::invalid_parameter,
+                          "a storage answered a chunk of 2500 rows, more than the 1024 rows of a chunk");
+    CHECK(host.db.strings(any(), "SELECT name FROM otterstax.params;") == strings{});
+}
+#endif
+
 // A column the view does not read comes and goes without making the view stale.
 TEST_CASE("integration::cpp::remote_ddl::a_column_the_view_does_not_read_keeps_it_fresh") {
     host_t host("test_remote_ddl/view_fresh");

@@ -240,16 +240,10 @@ namespace services::disk {
             return no_replay_storage_error("delete_sync", table_oid);
         }
         auto& entry = it->second;
-        components::vector::vector_t ids_vec(
-            resource(),
-            components::types::complex_logical_type(components::types::logical_type::BIGINT),
-            count);
-        for (uint64_t i = 0; i < count; i++) {
-            ids_vec.set_value(i, row_ids[i]);
-        }
+        auto ids_batch = components::table::make_row_id_batch(resource(), row_ids);
         // The storage refuses a row id that names no row group; the count-mismatch check below
         // stays for the case where it deleted fewer than journalled without refusing.
-        VALUE_OR_RETURN(const uint64_t deleted, entry->storage->delete_rows(ids_vec, count, txn));
+        VALUE_OR_RETURN(const uint64_t deleted, entry->storage->delete_rows(ids_batch, txn));
         if (deleted != count) {
             std::pmr::string what{"agent_disk::delete_sync: the storage deleted ", resource()};
             what.append(std::to_string(deleted).c_str());
@@ -1002,12 +996,11 @@ namespace services::disk {
 
     agent_disk_t::unique_future<core::result_wrapper_t<write_receipt_t>>
     agent_disk_t::storage_delete_rows_inner(components::catalog::oid_t table_oid,
-                                            components::vector::vector_t row_ids,
-                                            uint64_t count,
+                                            components::table::row_id_batch_t row_ids,
                                             components::table::transaction_data txn,
                                             bool returning) {
         write_receipt_t receipt{0, 0, true, std::pmr::vector<components::vector::data_chunk_t>{resource()}};
-        if (count == 0) {
+        if (row_ids.empty()) {
             co_return std::move(receipt);
         }
         auto it = storages_.find(table_oid);
@@ -1031,15 +1024,13 @@ namespace services::disk {
             // The rows as they were, read before the delete stamps them, in the order they were named.
             const auto types = entry->storage->read_types(nullptr, txn);
             const std::vector<size_t> every_column;
-            const auto* ids = row_ids.data<int64_t>();
-            for (uint64_t offset = 0; offset < count; offset += components::vector::DEFAULT_VECTOR_CAPACITY) {
-                const uint64_t n = std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, count - offset);
-                components::vector::vector_t window_ids(resource(), components::types::logical_type::BIGINT, n);
-                std::memcpy(window_ids.data(), ids + offset, n * sizeof(int64_t));
-                components::vector::data_chunk_t chunk(resource(), types, n);
+            for (auto& window : row_ids) {
+                assert(window.count <= components::vector::DEFAULT_VECTOR_CAPACITY &&
+                       "storage_delete_rows_inner: a window holds at most DEFAULT_VECTOR_CAPACITY ids");
+                components::vector::data_chunk_t chunk(resource(), types, window.count);
                 auto fetched = entry->storage->fetch(chunk,
-                                                     window_ids,
-                                                     n,
+                                                     window.ids,
+                                                     window.count,
                                                      every_column,
                                                      txn,
                                                      components::table::fetch_visibility_t::SNAPSHOT);
@@ -1052,7 +1043,7 @@ namespace services::disk {
                 }
             }
         }
-        auto deleted = entry->storage->delete_rows(row_ids, count, txn);
+        auto deleted = entry->storage->delete_rows(row_ids, txn);
         if (deleted.has_error()) {
             co_return deleted.convert_error<write_receipt_t>();
         }
@@ -1062,15 +1053,14 @@ namespace services::disk {
 
     agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     agent_disk_t::storage_fetch_inner(components::catalog::oid_t table_oid,
-                                      components::vector::vector_t row_ids,
-                                      uint64_t count,
+                                      components::table::row_id_batch_t row_ids,
                                       std::vector<size_t> projected_cols,
                                       components::table::transaction_data txn,
                                       components::table::fetch_visibility_t visibility,
                                       int64_t limit,
                                       uint64_t expected_compact_epoch) {
         std::pmr::vector<components::vector::data_chunk_t> out{resource()};
-        if (count == 0) {
+        if (row_ids.empty()) {
             co_return std::move(out);
         }
         auto it = storages_.find(table_oid);
@@ -1097,7 +1087,6 @@ namespace services::disk {
         const bool capped = limit >= 0;
         const uint64_t budget = capped ? static_cast<uint64_t>(limit) : 0;
         uint64_t produced = 0;
-        const auto* ids = row_ids.data<int64_t>();
         // An id past the table's frontier is not an invisible row -- the gather skips it silently
         // (components/table/collection.cpp: an id outside every row group is dropped), and the caller
         // reads the short answer as "no such row". For an INDEX answer that is a lie: the index named
@@ -1106,32 +1095,35 @@ namespace services::disk {
         // because it is bounded by ids that DO exist.
         if (expected_compact_epoch != k_fetch_epoch_unchecked) {
             const auto frontier = static_cast<int64_t>(entry->storage->total_rows());
-            for (uint64_t i = 0; i < count; ++i) {
-                if (ids[i] >= 0 && ids[i] < frontier) {
-                    continue;
+            for (const auto& window : row_ids) {
+                const auto* ids = window.ids.data<int64_t>();
+                for (uint64_t i = 0; i < window.count; ++i) {
+                    if (ids[i] >= 0 && ids[i] < frontier) {
+                        continue;
+                    }
+                    std::pmr::string what{"storage_fetch: the index answered row id ", resource()};
+                    what.append(std::to_string(ids[i]).c_str());
+                    what.append(", which the table does not have (it holds ");
+                    what.append(std::to_string(frontier).c_str());
+                    what.append(" rows) -- the index is ahead of its table after a restart; rebuild the "
+                                "index and retry the statement");
+                    co_return core::error_t{core::error_code_t::stale_index, std::move(what)};
                 }
-                std::pmr::string what{"storage_fetch: the index answered row id ", resource()};
-                what.append(std::to_string(ids[i]).c_str());
-                what.append(", which the table does not have (it holds ");
-                what.append(std::to_string(frontier).c_str());
-                what.append(" rows) -- the index is ahead of its table after a restart; rebuild the "
-                            "index and retry the statement");
-                co_return core::error_t{core::error_code_t::stale_index, std::move(what)};
             }
         }
-        for (uint64_t offset = 0; offset < count; offset += components::vector::DEFAULT_VECTOR_CAPACITY) {
+        for (const auto& window : row_ids) {
             if (capped && produced >= budget) {
                 break;
             }
-            const uint64_t n = std::min<uint64_t>(components::vector::DEFAULT_VECTOR_CAPACITY, count - offset);
-            components::vector::vector_t window_ids(resource(), components::types::logical_type::BIGINT, n);
-            std::memcpy(window_ids.data(), ids + offset, n * sizeof(int64_t));
-            components::vector::data_chunk_t chunk(resource(), types, n);
-            auto fetch_r = entry->storage->fetch(chunk, window_ids, n, projected_cols, txn, visibility);
+            assert(window.count <= components::vector::DEFAULT_VECTOR_CAPACITY &&
+                   "storage_fetch_inner: a window holds at most DEFAULT_VECTOR_CAPACITY ids");
+            components::vector::data_chunk_t chunk(resource(), types, window.count);
+            auto fetch_r = entry->storage->fetch(chunk, window.ids, window.count, projected_cols, txn, visibility);
             if (fetch_r.has_error()) {
                 co_return fetch_r.convert_error<std::pmr::vector<components::vector::data_chunk_t>>();
             }
-            assert(chunk.size() <= n && "storage_fetch_inner: a window produced more rows than it was asked for");
+            assert(chunk.size() <= window.count &&
+                   "storage_fetch_inner: a window produced more rows than it was asked for");
             if (capped && produced + chunk.size() > budget) {
                 chunk.set_cardinality(budget - produced);
             }
@@ -1804,6 +1796,57 @@ namespace services::disk {
         return core::error_t::no_error();
     }
 
+    // A projected read appends the key columns it lacks after the answer columns; key_positions index
+    // the scan's output, not the table.
+    struct key_scan_layout_t {
+        std::vector<std::size_t> scan_projection;
+        std::vector<std::size_t> key_positions;
+    };
+
+    static key_scan_layout_t key_scan_layout(const std::pmr::vector<std::uint64_t>& projected_cols,
+                                             const std::pmr::vector<std::uint64_t>& key_col_indices) {
+        key_scan_layout_t layout{{projected_cols.begin(), projected_cols.end()}, {}};
+        layout.key_positions.reserve(key_col_indices.size());
+        for (const auto key_col : key_col_indices) {
+            if (projected_cols.empty()) {
+                layout.key_positions.push_back(static_cast<std::size_t>(key_col));
+                continue;
+            }
+            auto found = std::find(layout.scan_projection.begin(), layout.scan_projection.end(), key_col);
+            if (found == layout.scan_projection.end()) {
+                layout.scan_projection.push_back(static_cast<std::size_t>(key_col));
+                found = std::prev(layout.scan_projection.end());
+            }
+            layout.key_positions.push_back(static_cast<std::size_t>(found - layout.scan_projection.begin()));
+        }
+        return layout;
+    }
+
+    // Drops the key columns key_scan_layout appended past a projected answer.
+    static void trim_to_projection(std::pmr::vector<components::vector::data_chunk_t>& chunks,
+                                   const std::pmr::vector<std::uint64_t>& projected_cols) {
+        if (projected_cols.empty()) {
+            return;
+        }
+        const auto width = static_cast<std::ptrdiff_t>(projected_cols.size());
+        for (auto& chunk : chunks) {
+            chunk.data.erase(chunk.data.begin() + width, chunk.data.end());
+        }
+    }
+
+    static components::expressions::compare_expression_ptr make_key_eq(std::pmr::memory_resource* resource,
+                                                                       const std::vector<std::size_t>& key_positions,
+                                                                       std::size_t col,
+                                                                       core::parameter_id_t param_id) {
+        components::expressions::key_t column{resource};
+        column.set_path(
+            std::pmr::vector<size_t>{{key_positions[col]}, std::pmr::polymorphic_allocator<size_t>{resource}});
+        return components::expressions::make_compare_expression(resource,
+                                                                components::expressions::compare_type::eq,
+                                                                column,
+                                                                param_id);
+    }
+
     agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>>
     agent_disk_t::scan_by_keys_inner(components::catalog::oid_t table_oid,
                                      std::pmr::vector<std::string> key_col_names,
@@ -1830,155 +1873,71 @@ namespace services::disk {
                                            components::vector::data_chunk_t keys,
                                            std::pmr::vector<std::uint64_t> projected_cols,
                                            components::table::transaction_data txn) {
-        // `keys` already IS the 1-row batch read_chunks_by_keys_inner expects; this co_await is a local call.
-        std::pmr::vector<components::vector::data_chunk_t> empty{resource()};
-        auto r = co_await read_chunks_by_keys_inner(table_oid,
-                                                    std::move(key_col_indices),
-                                                    std::move(keys),
-                                                    std::move(projected_cols),
-                                                    txn);
-        if (r.has_error()) {
-            co_return r.error();
+        auto matched_r = read_by_keys_local(table_oid, key_col_indices, std::span{&keys, 1}, projected_cols, txn);
+        if (matched_r.has_error()) {
+            co_return matched_r.error();
         }
-        co_return r.value().empty() ? std::move(empty) : std::move(r.value()[0]);
+        auto matched = std::move(matched_r.value());
+        trim_to_projection(matched, projected_cols);
+        co_return std::move(matched);
     }
 
     agent_disk_t::unique_future<
         core::result_wrapper_t<std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>>>>
     agent_disk_t::read_chunks_by_keys_inner(components::catalog::oid_t table_oid,
                                             std::pmr::vector<std::uint64_t> key_col_indices,
-                                            components::vector::data_chunk_t keys,
+                                            std::pmr::vector<components::vector::data_chunk_t> keys,
                                             std::pmr::vector<std::uint64_t> projected_cols,
                                             components::table::transaction_data txn) {
+        auto matched_r = read_by_keys_local(table_oid, key_col_indices, keys, projected_cols, txn);
+        if (matched_r.has_error()) {
+            co_return matched_r.error();
+        }
+        auto matched = std::move(matched_r.value());
+
+        std::uint64_t nkeys = 0;
+        for (const auto& key_chunk : keys) {
+            nkeys += key_chunk.size();
+        }
         std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> result{resource()};
-        result.reserve(keys.size());
-
-        auto it = storages_.find(table_oid);
-        const collection_storage_entry_t* entry = (it == storages_.end()) ? nullptr : it->second.get();
-        if (auto valid = validate_key_col_indices(entry, key_col_indices, resource()); valid.contains_error()) {
-            co_return valid;
-        }
-
-        const std::uint64_t nkeys = keys.size();
-        if (keys.column_count() != key_col_indices.size()) {
-            co_return core::error_t{
-                core::error_code_t::invalid_parameter,
-                std::pmr::string{"keyed read: key chunk arity does not match key columns", resource()}};
-        }
-        // The key tuple becomes a pushed-WHERE graph (OR'd across keys), so N keys cost one scan.
-        namespace expr = components::expressions;
-        const std::size_t narity = key_col_indices.size();
-
-        if (nkeys * narity > std::numeric_limits<std::uint32_t>::max()) {
-            co_return core::error_t{core::error_code_t::invalid_parameter,
-                                    std::pmr::string{"keyed read: key batch too large to bind", resource()}};
-        }
-
-        std::vector<std::size_t> scan_projection(projected_cols.begin(), projected_cols.end());
-        std::vector<std::size_t> key_positions;
-        key_positions.reserve(narity);
-        for (const auto key_col : key_col_indices) {
-            if (projected_cols.empty()) {
-                key_positions.push_back(static_cast<std::size_t>(key_col));
-                continue;
-            }
-            auto found = std::find(scan_projection.begin(), scan_projection.end(), key_col);
-            if (found == scan_projection.end()) {
-                scan_projection.push_back(static_cast<std::size_t>(key_col));
-                found = std::prev(scan_projection.end());
-            }
-            key_positions.push_back(static_cast<std::size_t>(found - scan_projection.begin()));
-        }
-        auto read_types = entry->storage->read_types(scan_projection.empty() ? nullptr : &scan_projection, txn);
-
-        auto make_eq_child = [&](std::size_t col, std::uint32_t param_id) {
-            expr::key_t column{resource()};
-            column.set_path(
-                std::pmr::vector<size_t>{{key_positions[col]}, std::pmr::polymorphic_allocator<size_t>{resource()}});
-            return expr::make_compare_expression(resource(),
-                                                 expr::compare_type::eq,
-                                                 column,
-                                                 core::parameter_id_t{param_id});
-        };
-
-        std::pmr::vector<std::unique_ptr<components::table::table_filter_t>> key_filters{resource()};
-        key_filters.reserve(nkeys);
-        components::vector::storage_parameters all_parameters{resource()};
-        auto all_predicate = expr::make_compare_union_expression(resource(),
-                                                                 nkeys == 1 ? expr::compare_type::union_and
-                                                                            : expr::compare_type::union_or);
-
-        for (std::uint64_t i = 0; i < nkeys; ++i) {
-            components::vector::storage_parameters key_parameters{resource()};
-            auto key_predicate = expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
-            auto tuple_predicate =
-                nkeys == 1 ? nullptr : expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
-            for (std::size_t ki = 0; ki < narity; ++ki) {
-                [[maybe_unused]] const auto key_id =
-                    key_parameters.add_cell(keys.data[ki], i, components::vector::parameter_kind::literal);
-                assert(key_id == core::parameter_id_t{static_cast<std::uint32_t>(ki)});
-                const auto global_id = static_cast<std::uint32_t>(i * narity + ki);
-                [[maybe_unused]] const auto all_id =
-                    all_parameters.add_cell(keys.data[ki], i, components::vector::parameter_kind::literal);
-                assert(all_id == core::parameter_id_t{global_id});
-                key_predicate->append_child(make_eq_child(ki, static_cast<std::uint32_t>(ki)));
-                if (tuple_predicate) {
-                    tuple_predicate->append_child(make_eq_child(ki, global_id));
-                } else {
-                    all_predicate->append_child(make_eq_child(ki, global_id));
-                }
-            }
-            if (tuple_predicate) {
-                all_predicate->append_child(std::move(tuple_predicate));
-            }
-            auto key_built = expr::build_condition_graph(resource(), key_parameters, key_predicate.get(), read_types);
-            if (key_built.has_error()) {
-                co_return key_built.error();
-            }
-            key_filters.emplace_back(
-                std::make_unique<components::table::table_filter_t>(std::move(key_parameters),
-                                                                    components::graph_execution_context{},
-                                                                    std::move(key_built.value()),
-                                                                    expr::condition_kind::computed));
-            result.emplace_back();
-        }
-
-        std::unique_ptr<components::table::table_filter_t> scan_filter;
+        result.resize(nkeys);
         if (nkeys == 1) {
-            scan_filter = std::move(key_filters.front());
-        } else {
-            auto all_built = expr::build_condition_graph(resource(), all_parameters, all_predicate.get(), read_types);
-            if (all_built.has_error()) {
-                co_return all_built.error();
-            }
-            scan_filter = std::make_unique<components::table::table_filter_t>(std::move(all_parameters),
-                                                                              components::graph_execution_context{},
-                                                                              std::move(all_built.value()),
-                                                                              expr::condition_kind::computed);
-        }
-
-#ifdef DEV_MODE
-        g_catalog_key_scans.fetch_add(1, std::memory_order_relaxed);
-#endif
-        auto scan_r = scan_local(table_oid,
-                                 scan_filter.get(),
-                                 int64_t{-1},
-                                 scan_projection.empty() ? nullptr : &scan_projection,
-                                 txn);
-        if (scan_r.has_error()) {
-            co_return scan_r.error();
-        }
-        auto matched = std::move(scan_r.value());
-        std::size_t answer_width = projected_cols.empty() ? read_types.size() : projected_cols.size();
-
-        if (nkeys == 1) {
-            for (auto& chunk : matched) {
-                chunk.data.erase(chunk.data.begin() + static_cast<std::ptrdiff_t>(answer_width), chunk.data.end());
-            }
+            trim_to_projection(matched, projected_cols);
             result[0] = std::move(matched);
             co_return std::move(result);
         }
 
+        const auto layout = key_scan_layout(projected_cols, key_col_indices);
+        const auto read_types = storages_.find(table_oid)->second->storage->read_types(
+            layout.scan_projection.empty() ? nullptr : &layout.scan_projection,
+            txn);
+        namespace expr = components::expressions;
+        const std::size_t narity = key_col_indices.size();
+        std::pmr::vector<std::unique_ptr<components::table::table_filter_t>> key_filters{resource()};
+        key_filters.reserve(nkeys);
+        for (const auto& key_chunk : keys) {
+            for (std::uint64_t row = 0; row < key_chunk.size(); ++row) {
+                components::vector::storage_parameters key_parameters{resource()};
+                auto key_predicate = expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
+                for (std::size_t ki = 0; ki < narity; ++ki) {
+                    const auto param_id =
+                        key_parameters.add_cell(key_chunk.data[ki], row, components::vector::parameter_kind::literal);
+                    key_predicate->append_child(make_key_eq(resource(), layout.key_positions, ki, param_id));
+                }
+                auto key_built =
+                    expr::build_condition_graph(resource(), key_parameters, key_predicate.get(), read_types);
+                if (key_built.has_error()) {
+                    co_return key_built.error();
+                }
+                key_filters.emplace_back(std::make_unique<components::table::table_filter_t>(
+                    std::move(key_parameters),
+                    components::graph_execution_context{},
+                    std::move(key_built.value()),
+                    components::expressions::condition_kind::computed));
+            }
+        }
+
+        const std::size_t answer_width = projected_cols.empty() ? read_types.size() : projected_cols.size();
         std::pmr::vector<components::types::complex_logical_type> answer_types(
             read_types.begin(),
             read_types.begin() + static_cast<std::ptrdiff_t>(answer_width),
@@ -2018,6 +1977,87 @@ namespace services::disk {
             }
         }
         co_return std::move(result);
+    }
+
+    core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
+    agent_disk_t::read_by_keys_local(components::catalog::oid_t table_oid,
+                                     const std::pmr::vector<std::uint64_t>& key_col_indices,
+                                     std::span<const components::vector::data_chunk_t> keys,
+                                     const std::pmr::vector<std::uint64_t>& projected_cols,
+                                     const components::table::transaction_data& txn) {
+        auto it = storages_.find(table_oid);
+        const collection_storage_entry_t* entry = (it == storages_.end()) ? nullptr : it->second.get();
+        if (auto valid = validate_key_col_indices(entry, key_col_indices, resource()); valid.contains_error()) {
+            return valid;
+        }
+
+        std::uint64_t nkeys = 0;
+        for (const auto& key_chunk : keys) {
+            if (key_chunk.column_count() != key_col_indices.size()) {
+                return core::error_t{
+                    core::error_code_t::invalid_parameter,
+                    std::pmr::string{"keyed read: key chunk arity does not match key columns", resource()}};
+            }
+            nkeys += key_chunk.size();
+        }
+        if (nkeys == 0) {
+            return std::pmr::vector<components::vector::data_chunk_t>{resource()};
+        }
+        // All key tuples combined into 1 expr
+        namespace expr = components::expressions;
+        std::size_t narity = key_col_indices.size();
+
+        if (nkeys * narity > std::numeric_limits<std::uint32_t>::max()) {
+            return core::error_t{core::error_code_t::invalid_parameter,
+                                 std::pmr::string{"keyed read: key batch too large to bind", resource()}};
+        }
+
+        const auto layout = key_scan_layout(projected_cols, key_col_indices);
+        const auto read_types =
+            entry->storage->read_types(layout.scan_projection.empty() ? nullptr : &layout.scan_projection, txn);
+
+        components::vector::storage_parameters all_parameters{resource()};
+        auto all_predicate = expr::make_compare_union_expression(resource(),
+                                                                 nkeys == 1 ? expr::compare_type::union_and
+                                                                            : expr::compare_type::union_or);
+        for (const auto& key_chunk : keys) {
+            for (std::uint64_t row = 0; row < key_chunk.size(); ++row) {
+                auto tuple_predicate =
+                    nkeys == 1 ? nullptr
+                               : expr::make_compare_union_expression(resource(), expr::compare_type::union_and);
+                for (std::size_t ki = 0; ki < narity; ++ki) {
+                    const auto param_id =
+                        all_parameters.add_cell(key_chunk.data[ki], row, components::vector::parameter_kind::literal);
+                    auto eq = make_key_eq(resource(), layout.key_positions, ki, param_id);
+                    if (tuple_predicate) {
+                        tuple_predicate->append_child(std::move(eq));
+                    } else {
+                        all_predicate->append_child(std::move(eq));
+                    }
+                }
+                if (tuple_predicate) {
+                    all_predicate->append_child(std::move(tuple_predicate));
+                }
+            }
+        }
+
+        auto all_built = expr::build_condition_graph(resource(), all_parameters, all_predicate.get(), read_types);
+        if (all_built.has_error()) {
+            return all_built.error();
+        }
+        components::table::table_filter_t scan_filter(std::move(all_parameters),
+                                                      components::graph_execution_context{},
+                                                      std::move(all_built.value()),
+                                                      expr::condition_kind::computed);
+
+#ifdef DEV_MODE
+        g_catalog_key_scans.fetch_add(1, std::memory_order_relaxed);
+#endif
+        return scan_local(table_oid,
+                          &scan_filter,
+                          int64_t{-1},
+                          layout.scan_projection.empty() ? nullptr : &layout.scan_projection,
+                          txn);
     }
 
     agent_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>>

@@ -2,6 +2,7 @@
 
 #include "dml_util.hpp"
 #include "join_utils.hpp"
+#include "scan/guard_chunk.hpp"
 #include <atomic>
 #include <components/vector/vector_operations.hpp>
 #include <optional>
@@ -298,7 +299,6 @@ namespace components::operators {
 
     actor_zeta::unique_future<void> operator_delete::await_async_and_resume(pipeline::context_t* ctx) {
         using components::vector::data_chunk_t;
-        using components::vector::vector_t;
 
         // Called once per buffer-full during the pump and once at finalize (dml_flush_is_final); only the
         // final call emits output and mark_executed. threshold==0 collapses to a single final call.
@@ -348,21 +348,19 @@ namespace components::operators {
                 // Storage first, then WAL (same order operator_update uses): a mutation's WAL id must never
                 // be allocated before the mutation is applied, or a checkpoint can advance the durable floor
                 // past a delete never folded into the .otbx (test_delete_floor_resurrection).
-                vector_t row_ids(resource_, types::logical_type::BIGINT, round_rows);
                 std::pmr::vector<int64_t> round_row_ids(resource_);
                 round_row_ids.reserve(round_rows);
-                for (uint64_t i = 0; i < round_rows; i++) {
+                auto row_ids = table::make_row_id_batch(resource_, round_rows, [&] {
                     const auto id = index_old_row_ids_[next_row_id++];
-                    row_ids.data<int64_t>()[i] = id;
                     round_row_ids.push_back(id);
-                }
+                    return id;
+                });
                 ctx->join_transaction(address_, table_oid_, true);
                 auto [_d, df] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_delete_rows>(
                     address_,
                     exec_ctx,
                     table_oid_,
                     std::move(row_ids),
-                    round_rows,
                     returning);
                 auto deleted_r = co_await std::move(df);
 
@@ -440,6 +438,10 @@ namespace components::operators {
                         for (auto& returned : receipt.returned) {
                             if (returned.size() == 0) {
                                 continue;
+                            }
+                            if (auto refused = check_chunk_width(resource_, returned); refused.contains_error()) {
+                                outcome.error = std::move(refused);
+                                break;
                             }
                             auto rows = dml_detail::as_scanned(resource_,
                                                                vector::adopted(resource_, std::move(returned)),

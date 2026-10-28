@@ -20,8 +20,9 @@ namespace components::vector::arrow {
                                                             const ArrowSchema& arrow_schema);
     core::result_wrapper_t<arrow_table_schema_t> schema_from_arrow(std::pmr::memory_resource* resource,
                                                                    ArrowSchema* schema);
-    core::result_wrapper_t<data_chunk_t> data_chunk_from_arrow(std::pmr::memory_resource* resource,
-                                                               ArrowArray* arrow_array,
-                                                               arrow_table_schema_t converted_schema);
+    core::result_wrapper_t<std::pmr::vector<data_chunk_t>>
+    data_chunks_from_arrow(std::pmr::memory_resource* resource,
+                           ArrowArray* arrow_array,
+                           arrow_table_schema_t converted_schema);
 
 } // namespace components::vector::arrow

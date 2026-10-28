@@ -128,20 +128,20 @@ namespace components::table {
     }
 
     core::result_wrapper_t<bool>
-    array_column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
+    array_column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t offset, uint64_t count) {
         if (vector.get_vector_type() != vector::vector_type::FLAT) {
             vector::vector_t append_vector(vector);
-            append_vector.flatten(count);
-            return append(state, append_vector, count);
+            append_vector.flatten(offset + count);
+            return append(state, append_vector, offset, count);
         }
 
-        auto v = validity.append(state.child_appends[0], vector, count);
+        auto v = validity.append(state.child_appends[0], vector, offset, count);
         if (v.has_error()) {
             return v; // out_of_memory: no exceptions across actors
         }
         auto& child_vec = vector.entry();
         auto size = array_size();
-        auto child = child_column->append(state.child_appends[1], child_vec, count * size);
+        auto child = child_column->append(state.child_appends[1], child_vec, offset * size, count * size);
         if (child.has_error()) {
             return child;
         }

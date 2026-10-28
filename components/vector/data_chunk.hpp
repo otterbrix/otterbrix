@@ -22,6 +22,7 @@ namespace components::vector {
         uint64_t column_count() const { return data.size(); }
         void set_cardinality(uint64_t count) {
             assert(count <= capacity_);
+            assert(count <= DEFAULT_VECTOR_CAPACITY);
             count_ = count;
         }
         void set_capacity(uint64_t capacity) { capacity_ = capacity; }
@@ -98,8 +99,6 @@ namespace components::vector {
         vector_t row_ids;
         std::vector<vector_t> data;
     };
-
-    void validate_chunk_capacity(vector::data_chunk_t& chunk, size_t filled_size);
 
     // The chunk on `resource`: the chunk itself when it is there, else a copy. A storage's reply lives on the
     // storage's resource, which a host's backend does not share with the engine.

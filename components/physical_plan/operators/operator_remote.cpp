@@ -88,7 +88,6 @@ namespace components::operators {
             mark_failed();
             co_return refused;
         }
-        page_offset_ = 0;
         co_return core::error_t::no_error();
     }
 
@@ -102,25 +101,18 @@ namespace components::operators {
             }
             return std::optional<vector::data_chunk_t>{};
         }
-        if (page_offset_ == 0) {
-            if (auto error = check_block_page(resource_, address_, output_types_, *page_); error.contains_error()) {
-                set_error(error);
-                mark_failed();
-                return error;
-            }
+        auto refused = check_chunk_width(resource_, *page_);
+        if (!refused.contains_error()) {
+            refused = check_block_page(resource_, address_, output_types_, *page_);
         }
-        const uint64_t rows = std::min<uint64_t>(page_->size() - page_offset_, vector::DEFAULT_VECTOR_CAPACITY);
-        vector::data_chunk_t batch(resource_, page_->types(), std::max<uint64_t>(rows, 1));
-        const vector::indexing_vector_t these_rows(resource_, page_offset_, rows);
-        page_->copy(batch, these_rows, rows, 0);
-        batch.set_cardinality(rows);
-        page_offset_ += rows;
-        if (page_offset_ == page_->size()) {
-            page_.reset();
-            page_offset_ = 0;
+        if (refused.contains_error()) {
+            set_error(refused);
+            mark_failed();
+            return refused;
         }
+        auto page = std::move(page_);
         emitted_any_ = true;
-        return std::optional<vector::data_chunk_t>{std::move(batch)};
+        return std::optional<vector::data_chunk_t>{vector::adopted(resource_, std::move(*page))};
     }
 
     actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
@@ -145,7 +137,6 @@ namespace components::operators {
             co_return reply.error();
         }
         page_ = std::move(reply.value().batch);
-        page_offset_ = 0;
         co_return take_from_page();
     }
 
@@ -223,6 +214,11 @@ namespace components::operators {
         for (auto& returned : receipt.returned) {
             if (returned.size() == 0) {
                 continue;
+            }
+            if (auto refused = check_chunk_width(resource_, returned); refused.contains_error()) {
+                set_error(refused);
+                mark_failed();
+                co_return;
             }
             auto rows =
                 dml_detail::as_scanned(resource_, vector::adopted(resource_, std::move(returned)), scan_columns_);

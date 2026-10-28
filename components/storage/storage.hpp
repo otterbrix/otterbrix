@@ -5,10 +5,12 @@
 #include <functional>
 #include <memory>
 #include <memory_resource>
+#include <span>
 #include <vector>
 
 #include <components/table/column_definition.hpp>
 #include <components/table/column_state.hpp>
+#include <components/table/row_id_batch.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
@@ -66,61 +68,19 @@ namespace components::storage {
         virtual uint64_t total_rows() const = 0;
         virtual uint64_t calculate_size() = 0;
 
-        virtual void scan(vector::data_chunk_t& output, const table::table_filter_t* filter, int64_t limit) = 0;
-        virtual void scan(vector::data_chunk_t& output,
-                          const table::table_filter_t* filter,
-                          int64_t limit,
-                          table::transaction_data /*txn*/) {
-            scan(output, filter, limit);
-        }
-
-        // output.data[i] receives projected_cols[i]; the filter is bound to those positions too.
-        virtual void scan_projected(vector::data_chunk_t& output,
-                                    const table::table_filter_t* filter,
-                                    int limit,
-                                    const std::vector<size_t>& projected_cols) = 0;
-        virtual void scan_projected(vector::data_chunk_t& output,
-                                    const table::table_filter_t* filter,
-                                    int limit,
-                                    const std::vector<size_t>& projected_cols,
-                                    table::transaction_data txn) = 0;
-
         // `projected_cols == nullptr` means every column; errors surface as buffer-pool OOM / data_corruption.
         [[nodiscard]] virtual core::result_wrapper_t<bool> scan_batched(std::pmr::vector<vector::data_chunk_t>& batches,
                                                                         const table::table_filter_t* filter,
                                                                         int64_t limit,
                                                                         const std::vector<size_t>* projected_cols,
-                                                                        table::transaction_data txn) {
-            vector::data_chunk_t one(resource(), read_types(projected_cols, txn));
-            if (projected_cols) {
-                scan_projected(one, filter, static_cast<int>(limit), *projected_cols, txn);
-            } else {
-                scan(one, filter, limit, txn);
-            }
-            if (one.size() > 0) {
-                batches.push_back(std::move(one));
-            }
-            return true;
-        }
+                                                                        table::transaction_data txn) = 0;
 
         // Advances `pos.next_row`/`pos.drained`; its cursor dies within the call, so ZERO pins survive it.
         [[nodiscard]] virtual core::result_wrapper_t<bool> fetch_next_batch(vector::data_chunk_t& output,
                                                                             scan_position_t& pos,
                                                                             const table::table_filter_t* filter,
                                                                             const std::vector<size_t>* projected_cols,
-                                                                            table::transaction_data txn) {
-            if (pos.drained) {
-                return true;
-            }
-            if (projected_cols) {
-                scan_projected(output, filter, -1, *projected_cols, txn);
-            } else {
-                scan(output, filter, -1, txn);
-            }
-            pos.next_row = pos.max_row;
-            pos.drained = true;
-            return true;
-        }
+                                                                            table::transaction_data txn) = 0;
 
         // `true` alone does NOT mean no error — check output's column_fetch_state::fetch_error. An empty
         // projection fetches every column.
@@ -143,8 +103,8 @@ namespace components::storage {
         // A count alone cannot separate "deleted nothing" from "stopped part-way": a row id that
         // names no row group is a refusal, and it travels here. txn_id 0 marks a write that commits
         // as it lands; there is no separate untransactional form.
-        [[nodiscard]] virtual core::result_wrapper_t<uint64_t>
-        delete_rows(vector::vector_t& row_ids, uint64_t count, const table::transaction_data& txn) = 0;
+        [[nodiscard]] virtual core::result_wrapper_t<uint64_t> delete_rows(std::span<table::row_ids_t> row_ids,
+                                                                           const table::transaction_data& txn) = 0;
         virtual void commit_append(uint64_t /*commit_id*/, int64_t /*row_start*/, uint64_t /*count*/) {}
         // Rolling back an append can itself fail; the caller is on an abort path and can do no
         // more than record it, but it must be told rather than left to guess.

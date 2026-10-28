@@ -4,6 +4,7 @@
 #include <cassert>
 
 #include "dml_util.hpp"
+#include "scan/guard_chunk.hpp"
 
 #include <algorithm>
 #include <components/context/context.hpp>
@@ -224,6 +225,10 @@ namespace components::operators {
                         for (auto& returned : receipt.returned) {
                             if (returned.size() == 0) {
                                 continue;
+                            }
+                            if (auto refused = check_chunk_width(resource_, returned); refused.contains_error()) {
+                                outcome.error = std::move(refused);
+                                break;
                             }
                             auto rows = vector::adopted(resource_, std::move(returned));
                             auto proj = evaluate_projection(resource_,

@@ -21,7 +21,7 @@ namespace otterbrix {
     using components::vector::arrow::arrow_array_wrapper_t;
     using components::vector::arrow::arrow_schema_wrapper_t;
     using components::vector::arrow::arrow_table_schema_t;
-    using components::vector::arrow::data_chunk_from_arrow;
+    using components::vector::arrow::data_chunks_from_arrow;
     using components::vector::arrow::schema_from_arrow;
 
     namespace {
@@ -53,9 +53,8 @@ namespace otterbrix {
             std::unique_ptr<arrow_array_schema_wrapper_t> stream;
             //! Lazily built on the first scan with the plan resource (see ArrowScanFunc).
             std::unique_ptr<arrow_table_schema_t> schema;
-            //! Currently converted record batch and our read offset into it (batches may exceed the
-            //! output vector capacity, so we hand them back windowed across calls).
-            std::unique_ptr<components::vector::data_chunk_t> current;
+            std::unique_ptr<std::pmr::vector<components::vector::data_chunk_t>> converted;
+            size_t converted_index = 0;
             uint64_t current_offset = 0;
             bool done = false;
         };
@@ -155,8 +154,17 @@ namespace otterbrix {
             global_state.schema = std::make_unique<arrow_table_schema_t>(std::move(sr.value()));
         }
 
-        // Make sure we have an in-flight converted batch with rows still to emit.
-        while (!global_state.current || global_state.current_offset >= global_state.current->size()) {
+        // Make sure we have an in-flight converted chunk with rows still to emit.
+        auto has_rows_left = [&global_state]() {
+            return global_state.converted && global_state.converted_index < global_state.converted->size() &&
+                   global_state.current_offset < (*global_state.converted)[global_state.converted_index].size();
+        };
+        while (!has_rows_left()) {
+            if (global_state.converted && global_state.converted_index + 1 < global_state.converted->size()) {
+                ++global_state.converted_index;
+                global_state.current_offset = 0;
+                continue;
+            }
             auto batch_res = global_state.stream->get_next_chunk(resource);
             if (batch_res.has_error()) {
                 throw std::runtime_error(std::string(batch_res.error().what));
@@ -172,23 +180,25 @@ namespace otterbrix {
             }
             if (!batch->arrow_array.release) {
                 global_state.done = true;
-                global_state.current.reset();
+                global_state.converted.reset();
                 output.set_cardinality(0);
                 return;
             }
-            // Convert via the canonical core path. data_chunk_from_arrow takes the schema by value;
+            // Convert via the canonical core path. data_chunks_from_arrow takes the schema by value;
             // its per-column arrow_type metadata is shared_ptr-backed, so the copy is cheap and the
             // cached global_state.schema stays valid for the next batch.
-            auto chunk_res = data_chunk_from_arrow(resource, &batch->arrow_array, *global_state.schema);
-            if (chunk_res.has_error()) {
-                throw std::runtime_error(std::string(chunk_res.error().what));
+            auto chunks_res = data_chunks_from_arrow(resource, &batch->arrow_array, *global_state.schema);
+            if (chunks_res.has_error()) {
+                throw std::runtime_error(std::string(chunks_res.error().what));
             }
-            global_state.current = std::make_unique<components::vector::data_chunk_t>(std::move(chunk_res.value()));
+            global_state.converted =
+                std::make_unique<std::pmr::vector<components::vector::data_chunk_t>>(std::move(chunks_res.value()));
+            global_state.converted_index = 0;
             global_state.current_offset = 0;
         }
 
-        // Emit a window of the current batch no larger than the output capacity.
-        auto& produced = *global_state.current;
+        // Emit a window of the current chunk no larger than the output capacity.
+        auto& produced = (*global_state.converted)[global_state.converted_index];
         uint64_t available = produced.size() - global_state.current_offset;
         uint64_t row_count = std::min<uint64_t>(available, output.capacity());
         output.set_cardinality(row_count);

@@ -1597,6 +1597,19 @@ namespace services::dispatcher {
             if (node->type() == node_type::data_t) {
                 auto* data_node = reinterpret_cast<node_data_t*>(node);
 
+                // A plan's data may come from a host with incorrectly filled data chunks
+                for (const auto& chunk : data_node->chunks()) {
+                    if (chunk.size() > components::vector::DEFAULT_VECTOR_CAPACITY) {
+                        std::pmr::string what{"plan data chunk of ", resource};
+                        what += std::to_string(chunk.size());
+                        what += " rows exceeds the ";
+                        what += std::to_string(components::vector::DEFAULT_VECTOR_CAPACITY);
+                        what += "-row limit per chunk; split it into a batch of chunks";
+                        result = core::error_t(core::error_code_t::invalid_parameter, std::move(what));
+                        return false;
+                    }
+                }
+
                 if (insert_target_relkind == 'g') {
                     for (auto& chunk : data_node->chunks()) {
                         auto& cols = chunk.data;

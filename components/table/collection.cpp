@@ -237,13 +237,15 @@ namespace components::table {
         // The entry row group's counts before this chunk: what a refusal in a later row group cuts it back to.
         append_cut_t entry_cut(resource_);
         entry_row_group->snapshot_counts(entry_cut);
+        // row groups can be misaligned with incoming data
+        uint64_t chunk_offset = 0;
         while (true) {
             auto current_row_group = state.append_state.row_group;
             uint64_t append_count =
                 std::min<uint64_t>(remaining, prev_row_group_size - state.append_state.offset_in_row_group);
             if (append_count > 0) {
                 auto previous_allocation_size = current_row_group->allocation_size();
-                auto appended = current_row_group->append(state.append_state, chunk, append_count);
+                auto appended = current_row_group->append(state.append_state, chunk, chunk_offset, append_count);
                 allocation_size_ += current_row_group->allocation_size() - previous_allocation_size;
                 if (appended.has_error()) {
                     if (current_row_group == entry_row_group) {
@@ -258,13 +260,11 @@ namespace components::table {
                 }
             }
             remaining -= append_count;
+            chunk_offset += append_count;
             if (remaining == 0) {
                 break;
             }
-            assert(chunk.size() == remaining + append_count);
-            if (remaining < chunk.size()) {
-                chunk.slice(resource_, append_count, remaining);
-            }
+            assert(chunk_offset + remaining == chunk.size());
             // No row of this session has landed yet: the session's first row opens the new row group,
             // so its cut is that row group's (empty) counts, not the full entry row group's.
             const bool session_untouched =

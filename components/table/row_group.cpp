@@ -179,7 +179,7 @@ namespace components::table {
                     result.set_vector_type(vector::vector_type::CONSTANT);
                     result.set_null(true);
                 }
-                auto appended = added_column->append(state, result, rows_in_this_vector);
+                auto appended = added_column->append(state, result, 0, rows_in_this_vector);
                 if (appended.has_error()) {
                     return appended.convert_error<std::unique_ptr<row_group_t>>();
                 }
@@ -302,7 +302,7 @@ namespace components::table {
             } else {
                 count = max_count;
             }
-            validate_chunk_capacity(result, result.size() + count);
+            assert(result.size() + count <= result.capacity() && "a scan vector does not fit the result chunk");
 
             if (count == max_count && !filter) {
                 for (uint64_t i = 0; i < column_ids.size(); i++) {
@@ -591,8 +591,10 @@ namespace components::table {
         return true;
     }
 
-    core::result_wrapper_t<bool>
-    row_group_t::append(row_group_append_state& state, vector::data_chunk_t& chunk, uint64_t append_count) {
+    core::result_wrapper_t<bool> row_group_t::append(row_group_append_state& state,
+                                                     vector::data_chunk_t& chunk,
+                                                     uint64_t chunk_offset,
+                                                     uint64_t append_count) {
         assert(chunk.column_count() == get_column_count());
         // The counts before this chunk: what a refused column cuts the row group back to.
         auto& piece_cut = state.parent.piece_cut;
@@ -601,7 +603,7 @@ namespace components::table {
         for (uint64_t i = 0; i < get_column_count(); i++) {
             auto& col_data = get_column(i);
             auto prev_allocation_size = col_data.allocation_size();
-            auto appended = col_data.append(state.states[i], chunk.data[i], append_count);
+            auto appended = col_data.append(state.states[i], chunk.data[i], chunk_offset, append_count);
             allocation_size_ += col_data.allocation_size() - prev_allocation_size;
             if (appended.has_error()) {
                 for (uint64_t c = 0; c <= i; c++) {

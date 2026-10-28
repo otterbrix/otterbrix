@@ -588,6 +588,64 @@ TEST_CASE("integration::cpp::host_names::a_cap_above_the_rows_is_one_round") {
     CHECK(host.backend().write_rounds() == std::vector<std::size_t>{5});
 }
 
+// A DELETE names its rows in windows of at most DEFAULT_VECTOR_CAPACITY numbers: without a cap the flush is still one
+// message, and RETURNING gives every row in the order of the scan.
+TEST_CASE("integration::cpp::host_names::a_delete_names_its_rows_in_windows") {
+    HOST_TEST_BOILERPLATE("test_host_names/delete_windows")
+    declare_orders(host);
+    constexpr int64_t n = 1500;
+    rows_t many;
+    rows_t ids_in_order;
+    for (int64_t id = 1; id <= n; ++id) {
+        many.push_back({id, id * 10});
+        ids_in_order.push_back({id});
+    }
+    host.backend().set_rows(orders, many);
+    host.backend().set_batches(orders, {1000, 500});
+    auto deleted = run(dispatcher, "DELETE FROM m2.shop.public.orders WHERE id >= 1 RETURNING id;");
+    CHECK(host.backend().write_rounds() == std::vector<std::size_t>{static_cast<std::size_t>(n)});
+    const auto windows = host.backend().delete_windows();
+    REQUIRE(windows.size() == 1);
+    CHECK(windows.front().size() >= 2);
+    std::size_t named = 0;
+    for (const auto window : windows.front()) {
+        CHECK(window <= vector::DEFAULT_VECTOR_CAPACITY);
+        named += window;
+    }
+    CHECK(named == static_cast<std::size_t>(n));
+    INFO(error_of(deleted));
+    REQUIRE(deleted->is_success());
+    rows_t returned;
+    for (const auto& chunk : deleted->chunks()) {
+        for (std::uint64_t row = 0; row < chunk.size(); ++row) {
+            returned.push_back(int_row(chunk, row));
+        }
+    }
+    CHECK(returned == ids_in_order);
+    CHECK(host.backend().rows(orders).empty());
+}
+
+#ifdef NDEBUG
+// A receipt's returned rows come in chunks of at most DEFAULT_VECTOR_CAPACITY rows (in Debug a wider chunk cannot be
+// built); a wider one is refused.
+TEST_CASE("integration::cpp::host_names::returned_rows_wider_than_a_chunk_are_refused") {
+    HOST_TEST_BOILERPLATE("test_host_names/wide_returned")
+    declare_orders(host);
+    rows_t many;
+    for (int64_t id = 1; id <= 2500; ++id) {
+        many.push_back({id, id});
+    }
+    host.backend().set_rows(orders, many);
+    host.backend().set_batches(orders, {1000, 1000, 500});
+    host.backend().set_wide_returned(true);
+    auto deleted = run(dispatcher, "DELETE FROM m2.shop.public.orders RETURNING id;");
+    REQUIRE(deleted->is_error());
+    CHECK(deleted->get_error().type == core::error_code_t::invalid_parameter);
+    CHECK(std::string{deleted->get_error().what} ==
+          "a storage answered a chunk of 2500 rows, more than the 1024 rows of a chunk");
+}
+#endif
+
 // Every connection has its own cap, two connections of one actor included; a table of otterbrix's own flushes on the
 // engine's threshold.
 TEST_CASE("integration::cpp::host_names::every_connection_has_its_own_cap") {

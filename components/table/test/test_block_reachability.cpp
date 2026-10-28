@@ -250,21 +250,10 @@ TEST_CASE("block_reachability: delete + compact + checkpoint accounts for freed 
         transaction_manager_t mgr(&env.resource);
         auto session = components::session::session_id_t::generate_uid();
         auto& txn = mgr.begin_transaction(session, transaction_scope_t::statement);
-        std::pmr::vector<complex_logical_type> id_type(&env.resource);
-        id_type.emplace_back(logical_type::BIGINT);
         constexpr uint64_t DELETE_COUNT = 6000;
-        uint64_t deleted = 0;
         auto txn_id = txn.data().transaction_id;
-        while (deleted < DELETE_COUNT) {
-            uint64_t batch = std::min(DELETE_COUNT - deleted, uint64_t(DEFAULT_VECTOR_CAPACITY));
-            auto row_ids_chunk = data_chunk_t(&env.resource, id_type, batch);
-            for (uint64_t i = 0; i < batch; i++) {
-                row_ids_chunk.data[0].set_value(i, static_cast<int64_t>(deleted + i));
-            }
-            row_ids_chunk.set_cardinality(batch);
-            REQUIRE_FALSE(table->delete_rows(row_ids_chunk.data[0], batch, txn.data()).has_error());
-            deleted += batch;
-        }
+        auto row_ids = make_row_id_range(&env.resource, 0, DELETE_COUNT);
+        REQUIRE_FALSE(table->delete_rows(row_ids, txn.data()).has_error());
         auto commit_id = mgr.commit(session);
         mgr.publish(commit_id);
         table->commit_all_deletes(txn_id, commit_id);

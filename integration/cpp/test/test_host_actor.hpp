@@ -102,6 +102,8 @@ namespace host_actor {
         bool short_block_pages{false};
         // A whole SELECT taken with a residual conjunct, though the block has no WHERE.
         bool residual_without_where{false};
+        // Its taken read answers every row in one page, however many.
+        bool wide_block_pages{false};
     };
 
     class backend_t final : public actor_zeta::actor::actor_mixin<backend_t> {
@@ -181,6 +183,8 @@ namespace host_actor {
             calls_.clear();
             oid_calls_.clear();
             write_rounds_.clear();
+            delete_windows_.clear();
+            block_pages_ = 0;
         }
         std::vector<call_t> calls() const {
             std::lock_guard<std::mutex> guard(state_mutex_);
@@ -289,6 +293,26 @@ namespace host_actor {
         std::vector<std::size_t> write_rounds() const {
             std::lock_guard<std::mutex> guard(state_mutex_);
             return write_rounds_;
+        }
+        // The sizes of the windows of row numbers of every storage_delete_rows, in order.
+        std::vector<std::vector<std::size_t>> delete_windows() const {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            return delete_windows_;
+        }
+        // The pages with rows it answered taken reads with.
+        int block_pages() const {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            return block_pages_;
+        }
+        // The returned rows of its receipts come in one chunk, however many.
+        void set_wide_returned(bool wide) {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            wide_returned_ = wide;
+        }
+        // A CREATE's reply brings this many rows of the parameters table, in one chunk.
+        void set_parameters_rows(std::size_t rows) {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            parameters_rows_ = rows;
         }
         void set_prepare_refusal(std::string reason) {
             std::lock_guard<std::mutex> guard(state_mutex_);
@@ -490,7 +514,7 @@ namespace host_actor {
             }
             receipt.count = written.size();
             if (returning) {
-                receipt.returned.push_back(chunk_of(*table, written, 0, written.size(), {}));
+                receipt.returned = returned_of(*table, written);
             }
             co_return std::move(receipt);
         }
@@ -547,7 +571,7 @@ namespace host_actor {
             }
             reply.receipt.count = written.size();
             if (returning) {
-                reply.receipt.returned.push_back(chunk_of(*table, written, 0, written.size(), {}));
+                reply.receipt.returned = returned_of(*table, written);
             }
             co_return std::move(reply);
         }
@@ -555,8 +579,7 @@ namespace host_actor {
         unique_future<core::result_wrapper_t<disk::write_receipt_t>>
         storage_delete_rows(execution_context_t ctx,
                             components::catalog::oid_t oid,
-                            components::vector::vector_t row_ids,
-                            uint64_t count,
+                            components::table::row_id_batch_t row_ids,
                             bool returning) {
             std::lock_guard<std::mutex> guard(state_mutex_);
             auto* table = find(oid);
@@ -567,14 +590,23 @@ namespace host_actor {
                 co_return no_row_numbers_error(table->name);
             }
             auto receipt = start_receipt();
-            if (auto refused = round_refusal(table->name, count); refused.contains_error()) {
+            std::vector<std::size_t> windows;
+            std::vector<int64_t> ids;
+            for (const auto& window : row_ids) {
+                windows.push_back(window.count);
+                for (uint64_t i = 0; i < window.count; ++i) {
+                    ids.push_back(window.ids.data<int64_t>()[i]);
+                }
+            }
+            if (auto refused = round_refusal(table->name, ids.size()); refused.contains_error()) {
                 co_return refused;
             }
-            note("delete " + table->name + " rows " + std::to_string(count), ctx.session.data(), ctx.txn);
+            delete_windows_.push_back(std::move(windows));
+            note("delete " + table->name + " rows " + std::to_string(ids.size()), ctx.session.data(), ctx.txn);
             std::vector<row_t> removed;
-            const auto budget = applied(table->name, count);
-            for (uint64_t i = 0; i < budget; ++i) {
-                const auto id = row_ids.data<int64_t>()[i];
+            const auto budget = applied(table->name, ids.size());
+            for (std::size_t i = 0; i < budget; ++i) {
+                const auto id = ids[i];
                 auto target = std::find_if(table->rows.begin(), table->rows.end(), [id](const row_t& candidate) {
                     return candidate.id == id;
                 });
@@ -588,7 +620,7 @@ namespace host_actor {
             }
             receipt.count = removed.size();
             if (returning) {
-                receipt.returned.push_back(chunk_of(*table, removed, 0, removed.size(), {}));
+                receipt.returned = returned_of(*table, removed);
             }
             co_return std::move(receipt);
         }
@@ -622,11 +654,14 @@ namespace host_actor {
                 std::pmr::vector<complex_logical_type> types{resource_};
                 types.emplace_back(logical_type::BIGINT);
                 types.emplace_back(logical_type::STRING_LITERAL);
-                components::vector::data_chunk_t row(resource_, types, 1);
-                row.set_value(0, 0, static_cast<int64_t>(oid));
-                row.set_value(1, 0, std::string_view{table.name});
-                row.set_cardinality(1);
-                reply.rows.insert.push_back(std::move(row));
+                const std::size_t count = std::max<std::size_t>(parameters_rows_, 1);
+                components::vector::data_chunk_t rows(resource_, types, count);
+                for (std::size_t i = 0; i < count; ++i) {
+                    rows.set_value(0, i, static_cast<int64_t>(oid));
+                    rows.set_value(1, i, std::string_view{table.name});
+                }
+                rows.set_cardinality(count);
+                reply.rows.insert.push_back(std::move(rows));
             }
             co_return std::move(reply);
         }
@@ -642,9 +677,7 @@ namespace host_actor {
                 }
             }
             disk::ddl_reply_t reply{false, components::host_rows_t{}};
-            std::pmr::vector<complex_logical_type> types{resource_};
-            types.emplace_back(logical_type::BIGINT);
-            components::vector::data_chunk_t keys(resource_, types, std::max<std::size_t>(oids.size(), 1));
+            std::vector<int64_t> dropped;
             for (std::size_t i = 0; i < oids.size(); ++i) {
                 auto found = std::find_if(tables_.begin(), tables_.end(), [&oids, i](const table_t& table) {
                     return table.oid == oids[i];
@@ -656,14 +689,25 @@ namespace host_actor {
                 oid_calls_.push_back(oid_call_t{"drop", oids[i], components::catalog::INVALID_OID});
                 remember(ctx, undo_t{undo_t::kind_t::dropped, oids[i], {}, 0, *found});
                 tables_.erase(found);
-                keys.set_value(0, i, static_cast<int64_t>(oids[i]));
+                dropped.push_back(static_cast<int64_t>(oids[i]));
             }
-            keys.set_cardinality(oids.size());
             if (parameters_table_ != components::catalog::INVALID_OID) {
                 reply.rows.table = parameters_table_;
                 reply.rows.delete_column = 0;
                 reply.rows.delete_keys = std::pmr::vector<components::vector::data_chunk_t>{resource_};
-                reply.rows.delete_keys.push_back(std::move(keys));
+                std::pmr::vector<complex_logical_type> types{resource_};
+                types.emplace_back(logical_type::BIGINT);
+                for (std::size_t first = 0; first < dropped.size();
+                     first += components::vector::DEFAULT_VECTOR_CAPACITY) {
+                    const auto count =
+                        std::min<std::size_t>(components::vector::DEFAULT_VECTOR_CAPACITY, dropped.size() - first);
+                    components::vector::data_chunk_t keys(resource_, types, count);
+                    for (std::size_t i = 0; i < count; ++i) {
+                        keys.set_value(0, i, dropped[first + i]);
+                    }
+                    keys.set_cardinality(count);
+                    reply.rows.delete_keys.push_back(std::move(keys));
+                }
             }
             co_return std::move(reply);
         }
@@ -834,12 +878,18 @@ namespace host_actor {
             std::lock_guard<std::mutex> guard(state_mutex_);
             const std::string text{request};
             if (cursor_id != 0) {
-                block_cursors_.erase(cursor_id);
-                co_return disk::fetch_batch_t{std::make_unique<components::vector::data_chunk_t>(
-                                                  resource_,
-                                                  std::pmr::vector<complex_logical_type>{resource_},
-                                                  0),
-                                              cursor_id};
+                auto found = block_cursors_.find(cursor_id);
+                if (found == block_cursors_.end() || found->second.next == found->second.rows.size()) {
+                    block_cursors_.erase(cursor_id);
+                    co_return disk::fetch_batch_t{std::make_unique<components::vector::data_chunk_t>(
+                                                      resource_,
+                                                      std::pmr::vector<complex_logical_type>{resource_},
+                                                      0),
+                                                  cursor_id};
+                }
+                co_return disk::fetch_batch_t{
+                    std::make_unique<components::vector::data_chunk_t>(next_block_page(found->second)),
+                    pages_without_cursor_ ? uint64_t{0} : cursor_id};
             }
             note("run " + text.substr(0, text.find('|')), ctx.session.data(), ctx.txn);
             if (text.rfind("count ", 0) != 0) {
@@ -941,7 +991,7 @@ namespace host_actor {
             }
             receipt.count = changed.size();
             if (returning) {
-                receipt.returned.push_back(chunk_of(*table, changed, 0, changed.size(), {}));
+                receipt.returned = returned_of(*table, changed);
             }
             co_return std::move(receipt);
         }
@@ -1215,7 +1265,12 @@ namespace host_actor {
             std::size_t next{0};
         };
 
-        struct block_cursor_t {};
+        // A taken read's rows not yet answered; a count's cursor has none left.
+        struct block_cursor_t {
+            table_t table;
+            std::vector<row_t> rows;
+            std::size_t next{0};
+        };
 
         // The backend owns what it was offered: it keeps the block past its statement.
         std::unique_ptr<components::logical_plan::detached_block_t>
@@ -1406,13 +1461,26 @@ namespace host_actor {
                 }
             }
             transactions_.try_emplace(ctx.txn.transaction_id);
-            auto page = chunk_of(*table, chosen, 0, chosen.size(), {});
+            const auto id = next_cursor_id_++;
+            auto& cursor = block_cursors_.emplace(id, block_cursor_t{*table, std::move(chosen), 0}).first->second;
+            return disk::fetch_batch_t{std::make_unique<components::vector::data_chunk_t>(next_block_page(cursor)), id};
+        }
+
+        // The next page of a taken read: at most DEFAULT_VECTOR_CAPACITY rows, or the rest with wide_block_pages.
+        components::vector::data_chunk_t next_block_page(block_cursor_t& cursor) {
+            const std::size_t left = cursor.rows.size() - cursor.next;
+            const std::size_t take = take_.wide_block_pages
+                                         ? left
+                                         : std::min<std::size_t>(left, components::vector::DEFAULT_VECTOR_CAPACITY);
+            auto page = chunk_of(cursor.table, cursor.rows, cursor.next, take, {});
+            cursor.next += take;
+            if (page.size() != 0) {
+                ++block_pages_;
+            }
             if (take_.short_block_pages && page.column_count() > 0) {
                 page.data.pop_back();
             }
-            const auto id = next_cursor_id_++;
-            block_cursors_.emplace(id, block_cursor_t{});
-            return disk::fetch_batch_t{std::make_unique<components::vector::data_chunk_t>(std::move(page)), id};
+            return page;
         }
 
         // The request of a whole UPDATE / DELETE the backend runs itself, or empty.
@@ -1698,14 +1766,7 @@ namespace host_actor {
                 type.set_alias(table.columns[column].name);
                 types.push_back(std::move(type));
             }
-            components::vector::data_chunk_t chunk(
-                resource_,
-                types,
-                std::clamp<std::size_t>(count, 1, components::vector::DEFAULT_VECTOR_CAPACITY));
-            // A backend page may be wider than one vector; resize() is how a host grows a chunk past it.
-            if (count > chunk.capacity()) {
-                chunk.resize(count);
-            }
+            components::vector::data_chunk_t chunk(resource_, types, std::max<std::size_t>(count, 1));
             chunk.set_cardinality(count);
             for (std::size_t i = 0; i < count; ++i) {
                 const auto& row = rows[first + i];
@@ -1730,6 +1791,18 @@ namespace host_actor {
                 }
             }
             return chunk;
+        }
+
+        // A receipt's returned rows: chunks of at most DEFAULT_VECTOR_CAPACITY rows, or one with wide_returned.
+        std::pmr::vector<components::vector::data_chunk_t> returned_of(const table_t& table,
+                                                                       const std::vector<row_t>& rows) {
+            std::pmr::vector<components::vector::data_chunk_t> returned{resource_};
+            const std::size_t width =
+                wide_returned_ ? std::max<std::size_t>(rows.size(), 1) : components::vector::DEFAULT_VECTOR_CAPACITY;
+            for (std::size_t first = 0; first < rows.size(); first += width) {
+                returned.push_back(chunk_of(table, rows, first, std::min(width, rows.size() - first), {}));
+            }
+            return returned;
         }
 
         std::pmr::memory_resource* resource_;
@@ -1771,6 +1844,10 @@ namespace host_actor {
         bool pages_without_cursor_{false};
         std::vector<oid_call_t> oid_calls_;
         std::vector<std::size_t> write_rounds_;
+        std::vector<std::vector<std::size_t>> delete_windows_;
+        int block_pages_{0};
+        bool wide_returned_{false};
+        std::size_t parameters_rows_{0};
         std::string prepare_refusal_;
         components::catalog::oid_t parameters_table_{components::catalog::INVALID_OID};
         take_policy_t take_{};

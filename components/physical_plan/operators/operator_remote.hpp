@@ -11,7 +11,7 @@ namespace components::operators {
 
     // A read a backend took: it runs `request` (storage_run_block) when the plan opens, so the reads of a plan run
     // at the same time, and again on every re-drive with the parameters of that drive. Its pages are checked against
-    // the types otterbrix expects and cut to the engine's batch size.
+    // the types otterbrix expects and against the width of a chunk.
     class operator_remote_scan final : public read_only_operator_t {
     public:
         operator_remote_scan(std::pmr::memory_resource* resource,
@@ -31,7 +31,6 @@ namespace components::operators {
             emitted_any_ = false;
             cursor_id_ = 0;
             page_.reset();
-            page_offset_ = 0;
         }
 
         [[nodiscard]] actor_zeta::unique_future<void> release_cursor(pipeline::context_t* ctx) override;
@@ -42,7 +41,7 @@ namespace components::operators {
         std::pmr::string explain_label_impl() const override;
         std::pmr::vector<std::pmr::string> explain_details_impl() const override;
 
-        // The next batch of the current page, or the end when the backend answered an empty page.
+        // The current page as one batch, or the end when the backend answered an empty page.
         core::result_wrapper_t<std::optional<vector::data_chunk_t>> take_from_page();
 
         table::storage_address_t address_;
@@ -55,7 +54,6 @@ namespace components::operators {
         bool emitted_any_{false};
         uint64_t cursor_id_{0};
         std::unique_ptr<vector::data_chunk_t> page_;
-        uint64_t page_offset_{0};
     };
 
     // A write a backend took (storage_run_write): the rows it changed are the statement's count, and RETURNING is

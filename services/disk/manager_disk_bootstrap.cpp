@@ -556,9 +556,9 @@ namespace services::disk {
         return core::error_t::no_error();
     }
 
-    std::uint64_t manager_disk_t::max_persisted_commit_id_sync() const {
+    core::result_wrapper_t<std::uint64_t> manager_disk_t::max_persisted_commit_id_sync() const {
         if (agents_.empty() || agents_[0] == nullptr) {
-            return 0;
+            return std::uint64_t{0};
         }
 
         // pg_attribute is the only system table carrying commit-id columns.
@@ -567,35 +567,44 @@ namespace services::disk {
 
         const collection_storage_entry_t* entry = agents_[0]->storage_entry_sync(pg_attribute_oid);
         if (entry == nullptr || entry->storage == nullptr) {
-            return 0;
+            return std::uint64_t{0};
         }
         auto& storage = *const_cast<collection_storage_entry_t*>(entry)->storage;
         const auto total = storage.total_rows();
         if (total == 0) {
-            return 0;
+            return std::uint64_t{0};
         }
         auto types = storage.types();
         if (types.size() <= kDroppedAtCol) {
-            return 0;
+            return std::uint64_t{0};
         }
 
         core::pmr::otterbrix_resource scan_resource;
         // Reads via the same default-transaction_data path resolve_table takes, folding the backfill's MVCC UPDATE.
-        components::vector::data_chunk_t chunk(&scan_resource, types, total);
-        storage.scan(chunk, /*filter=*/nullptr, /*limit=*/-1, components::table::transaction_data::committed());
+        std::pmr::vector<components::vector::data_chunk_t> batches(&scan_resource);
+        auto scanned = storage.scan_batched(batches,
+                                            /*filter=*/nullptr,
+                                            /*limit=*/-1,
+                                            /*projected_cols=*/nullptr,
+                                            components::table::transaction_data::committed());
+        if (scanned.has_error()) {
+            return scanned.convert_error<std::uint64_t>();
+        }
 
         std::uint64_t max_commit_id = 0;
-        for (uint64_t i = 0; i < chunk.size(); ++i) {
-            if (!chunk.is_null(kAddedAtCol, i)) {
-                const auto v = chunk.get_value<std::int64_t>(kAddedAtCol, i);
-                if (v > 0 && static_cast<std::uint64_t>(v) > max_commit_id) {
-                    max_commit_id = static_cast<std::uint64_t>(v);
+        for (const auto& chunk : batches) {
+            for (uint64_t i = 0; i < chunk.size(); ++i) {
+                if (!chunk.is_null(kAddedAtCol, i)) {
+                    const auto v = chunk.get_value<std::int64_t>(kAddedAtCol, i);
+                    if (v > 0 && static_cast<std::uint64_t>(v) > max_commit_id) {
+                        max_commit_id = static_cast<std::uint64_t>(v);
+                    }
                 }
-            }
-            if (!chunk.is_null(kDroppedAtCol, i)) {
-                const auto v = chunk.get_value<std::int64_t>(kDroppedAtCol, i);
-                if (v > 0 && static_cast<std::uint64_t>(v) > max_commit_id) {
-                    max_commit_id = static_cast<std::uint64_t>(v);
+                if (!chunk.is_null(kDroppedAtCol, i)) {
+                    const auto v = chunk.get_value<std::int64_t>(kDroppedAtCol, i);
+                    if (v > 0 && static_cast<std::uint64_t>(v) > max_commit_id) {
+                        max_commit_id = static_cast<std::uint64_t>(v);
+                    }
                 }
             }
         }

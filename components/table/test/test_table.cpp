@@ -438,11 +438,13 @@ TEST_CASE("components::table::data_table") {
     }
     INFO("Delete");
     {
-        vector_t v(&resource, logical_type::BIGINT, test_size / 2);
-        for (size_t i = 0; i < test_size; i += 2) {
-            v.set_value(i / 2, int64_t(i));
-        }
-        auto deleted_count = deleted_or_fail(data_table->delete_rows(v, test_size / 2, transaction_data::committed()));
+        int64_t even = 0;
+        auto row_ids = make_row_id_batch(&resource, test_size / 2, [&] {
+            const int64_t id = even;
+            even += 2;
+            return id;
+        });
+        auto deleted_count = deleted_or_fail(data_table->delete_rows(row_ids, transaction_data::committed()));
         REQUIRE(deleted_count == test_size / 2);
     }
     INFO("Scan after delete");

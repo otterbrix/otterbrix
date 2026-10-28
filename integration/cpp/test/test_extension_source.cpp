@@ -313,7 +313,9 @@ TEST_CASE("integration::cpp::extension_source::lateral_inner_source_opened_per_d
 }
 
 // The engine takes at most DEFAULT_VECTOR_CAPACITY rows per source batch; slicing a wider backend page is the
-// backend's job, so a wider page is refused whatever the query does with it.
+// backend's job, so a wider page is refused whatever the query does with it. In Debug a page wider than 1024 rows
+// cannot be built (data_chunk_t asserts its cardinality), so only release reaches the refusal.
+#ifdef NDEBUG
 TEST_CASE("integration::cpp::extension_source::chunk_over_vector_capacity") {
     ext_host_t space("test_ext_wide_chunk/base");
     constexpr int64_t n = 2500;
@@ -353,6 +355,7 @@ TEST_CASE("integration::cpp::extension_source::chunk_over_vector_capacity") {
         expect_refused("SELECT w.grp, t.amount FROM widedb.t AS t JOIN ext.remote.public.wide AS w ON t.key = w.key;");
     }
 }
+#endif
 
 // count(*) without WHERE over a backend's table counts the backend's rows: no pushdown turns the aggregate into a
 // disk reduce of a table that has no disk storage.

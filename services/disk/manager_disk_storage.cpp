@@ -483,14 +483,13 @@ namespace services::disk {
     manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
     manager_disk_t::storage_fetch(session_id_t /*session*/,
                                   catalog::oid_t table_oid,
-                                  components::vector::vector_t row_ids,
-                                  uint64_t count,
+                                  components::table::row_id_batch_t row_ids,
                                   std::vector<size_t> projected_cols,
                                   components::table::transaction_data txn,
                                   components::table::fetch_visibility_t visibility,
                                   int64_t limit,
                                   uint64_t expected_compact_epoch) {
-        if (count == 0) {
+        if (row_ids.empty()) {
             co_return std::pmr::vector<components::vector::data_chunk_t>(resource());
         }
         if (agents_.empty()) {
@@ -506,8 +505,7 @@ namespace services::disk {
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                               &agent_disk_t::storage_fetch_inner,
                                                               table_oid,
-                                                              row_ids,
-                                                              count,
+                                                              std::move(row_ids),
                                                               std::move(projected_cols),
                                                               std::move(txn),
                                                               visibility,
@@ -606,8 +604,7 @@ namespace services::disk {
     manager_disk_t::unique_future<core::result_wrapper_t<write_receipt_t>>
     manager_disk_t::storage_delete_rows(execution_context_t ctx,
                                         catalog::oid_t table_oid,
-                                        components::vector::vector_t row_ids,
-                                        uint64_t count,
+                                        components::table::row_id_batch_t row_ids,
                                         bool returning) {
         if (agents_.empty()) {
             co_return core::error_t{core::error_code_t::io_error,
@@ -623,7 +620,6 @@ namespace services::disk {
                                                               &agent_disk_t::storage_delete_rows_inner,
                                                               table_oid,
                                                               std::move(row_ids),
-                                                              count,
                                                               ctx.txn,
                                                               returning);
         if (needs_sched) {

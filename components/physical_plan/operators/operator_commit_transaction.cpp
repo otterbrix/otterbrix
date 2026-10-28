@@ -617,14 +617,12 @@ namespace components::operators {
                                                const std::pmr::vector<int64_t>& row_ids,
                                                components::table::fetch_visibility_t visibility,
                                                chunks_vector_t* rows) {
-        vector::vector_t ids(resource_, types::logical_type::BIGINT, row_ids.size());
-        std::copy(row_ids.begin(), row_ids.end(), ids.data<int64_t>());
+        auto ids = table::make_row_id_batch(resource_, row_ids);
         auto [_fetch, fetch_future] = actor_zeta::otterbrix::send(check_ctx->disk_address,
                                                                   &services::disk::manager_disk_t::storage_fetch,
                                                                   check_ctx->session,
                                                                   table_oid,
                                                                   std::move(ids),
-                                                                  row_ids.size(),
                                                                   std::vector<size_t>{},
                                                                   check_ctx->txn,
                                                                   visibility,

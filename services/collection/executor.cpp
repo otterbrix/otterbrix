@@ -58,6 +58,7 @@
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
+#include <components/physical_plan/operators/scan/guard_chunk.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/planner/optimizer.hpp>
 #include <components/planner/view_expansion.hpp>
@@ -662,6 +663,16 @@ namespace services::collection::executor {
     executor_t::write_host_rows_(components::session::session_id_t session,
                                  const services::dispatcher::txn_session_context_t& session_ctx,
                                  std::vector<components::host_rows_t> rows) {
+        for (const auto& written : rows) {
+            for (const auto* chunks : {&written.insert, &written.delete_keys}) {
+                for (const auto& chunk : *chunks) {
+                    if (auto refused = components::operators::check_chunk_width(resource(), chunk);
+                        refused.contains_error()) {
+                        co_return refused;
+                    }
+                }
+            }
+        }
         for (auto& written : rows) {
             // The host's table, read by its oid: its name for the statements below.
             components::logical_plan::catalog_resolves_t resolves;
@@ -1076,7 +1087,7 @@ namespace services::collection::executor {
                                                       components::execution_context_t{session, txn, {}},
                                                       components::catalog::well_known_oid::pg_proc_table,
                                                       std::move(key_columns),
-                                                      components::operators::make_keys_chunk(resource(), function_oids),
+                                                      components::operators::make_keys_batch(resource(), function_oids),
                                                       std::pmr::vector<std::uint64_t>{resource()});
         auto proc_chunks = co_await std::move(rpf);
         if (proc_chunks.has_error()) {
@@ -3467,7 +3478,9 @@ namespace services::collection::executor {
                     break;
                 }
                 auto batch = std::move(*next.value());
-                // A backend's storage may answer a wider batch than the engine takes: it is held to the limit here.
+                // Every source slices its batches (a storage's answer is held to it when it arrives).
+                assert(batch.size() <= components::vector::DEFAULT_VECTOR_CAPACITY &&
+                       "a source emitted a batch over DEFAULT_VECTOR_CAPACITY");
                 if (batch.size() > components::vector::DEFAULT_VECTOR_CAPACITY) {
                     co_await release_source_cursor(resource());
                     std::pmr::string what{"source batch of ", resource()};
@@ -3922,19 +3935,15 @@ namespace services::collection::executor {
                                                         std::move(ranges));
                         auto missing = co_await std::move(qf);
                         for (const auto& gap : missing) {
-                            components::vector::vector_t fetch_ids(res,
-                                                                   components::types::logical_type::BIGINT,
-                                                                   gap.row_count);
-                            for (uint64_t k = 0; k < gap.row_count; ++k) {
-                                fetch_ids.data<int64_t>()[k] = static_cast<int64_t>(gap.row_start + k);
-                            }
+                            auto fetch_ids = components::table::make_row_id_range(res,
+                                                                                  static_cast<int64_t>(gap.row_start),
+                                                                                  gap.row_count);
                             auto [_f, ff] =
                                 actor_zeta::otterbrix::send(disk_address_,
                                                             &services::disk::manager_disk_t::storage_fetch,
                                                             session,
                                                             oid,
                                                             std::move(fetch_ids),
-                                                            gap.row_count,
                                                             std::vector<size_t>{},
                                                             components::table::transaction_data::committed(),
                                                             components::table::fetch_visibility_t::RAW,

@@ -144,6 +144,9 @@ namespace components::vector {
                 }
                 break;
             case vector_buffer_type::LIST:
+                static_cast<list_vector_buffer_t*>(auxiliary_.get())->set_size(0);
+                entry().reset_string_heap();
+                break;
             case vector_buffer_type::ARRAY:
                 entry().reset_string_heap();
                 break;

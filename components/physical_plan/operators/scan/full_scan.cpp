@@ -230,6 +230,9 @@ namespace components::operators {
             return std::optional<vector::data_chunk_t>{};
         }
 
+        if (auto refused = check_chunk_width(resource_, *batch); refused.contains_error()) {
+            return refused;
+        }
         if (auto refused = check_scan_page(resource_, name_, page_types_, *batch); refused.contains_error()) {
             return refused;
         }

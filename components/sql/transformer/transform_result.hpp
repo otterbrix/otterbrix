@@ -24,7 +24,11 @@ namespace components::sql::transform {
     class transform_result {
     public:
         using parameter_map_t = std::pmr::unordered_map<size_t, core::parameter_id_t>;
-        using insert_location_t = std::pair<size_t, std::string>;
+        struct insert_location_t {
+            size_t chunk_index;
+            size_t row;
+            std::string column;
+        };
         using insert_map_t = std::pmr::unordered_map<size_t, std::pmr::vector<insert_location_t>>;
         using insert_rows_t = std::pmr::vector<vector::data_chunk_t>;
 

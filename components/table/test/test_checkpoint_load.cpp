@@ -1506,7 +1506,7 @@ TEST_CASE("checkpoint_load: a LIST segment is compressed at its PHYSICAL element
         for (uint64_t i = 0; i < NUM_ROWS; i++) {
             input.set_value(0, i, std::vector<uint64_t>{});
         }
-        REQUIRE_FALSE(column->append(append_state, input.data[0], NUM_ROWS).has_error());
+        REQUIRE_FALSE(column->append(append_state, input.data[0], 0, NUM_ROWS).has_error());
         REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
     }
 
@@ -1647,7 +1647,7 @@ namespace {
                     v.set_value(i, spread_value(row));
                 }
             }
-            REQUIRE_FALSE(column.append(state, v, batch).has_error());
+            REQUIRE_FALSE(column.append(state, v, 0, batch).has_error());
         }
         REQUIRE_FALSE(pbm.flush_partial_blocks().has_error());
     }
@@ -1766,7 +1766,7 @@ TEST_CASE("checkpoint_load: a LIST of NULLs persists no empty child segment and 
             for (uint64_t i = 0; i < NULL_ROWS; i++) {
                 input.set_null(i, true);
             }
-            REQUIRE_FALSE(column->append(append_state, input, NULL_ROWS).has_error());
+            REQUIRE_FALSE(column->append(append_state, input, 0, NULL_ROWS).has_error());
             REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
         }
 
@@ -1827,7 +1827,7 @@ TEST_CASE("checkpoint_load: dropping an empty segment keeps every segment's stat
     far.set_value(0, int64_t{5'000'000'000'000});
     far.set_value(1, int64_t{6'000'000'000'000});
     base_statistics_t far_stats(&env.resource, logical_type::BIGINT);
-    far_stats.update(far, 2);
+    far_stats.update(far, 0, 2);
     p.data_pointers.insert(p.data_pointers.begin(), empty);
     p.segment_statistics.insert(p.segment_statistics.begin(), std::move(far_stats));
 
@@ -2021,7 +2021,7 @@ TEST_CASE("checkpoint_load: a HUGEINT segment packed after an 8-byte segment is 
         REQUIRE_FALSE(narrow->initialize_append(narrow_state).has_error());
         vector_t one(&env.resource, logical_type::BIGINT, 1);
         one.set_value(0, int64_t{42});
-        REQUIRE_FALSE(narrow->append(narrow_state, one, 1).has_error());
+        REQUIRE_FALSE(narrow->append(narrow_state, one, 0, 1).has_error());
 
         column_append_state wide_state{&append_pbm};
         REQUIRE_FALSE(wide->initialize_append(wide_state).has_error());
@@ -2029,7 +2029,7 @@ TEST_CASE("checkpoint_load: a HUGEINT segment packed after an 8-byte segment is 
         for (uint64_t i = 0; i < ROWS; i++) {
             values.set_value(i, int128_t(spread_value(i)));
         }
-        REQUIRE_FALSE(wide->append(wide_state, values, ROWS).has_error());
+        REQUIRE_FALSE(wide->append(wide_state, values, 0, ROWS).has_error());
         REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
     }
 
@@ -2112,7 +2112,7 @@ TEST_CASE("checkpoint_load: NULL rows of HUGEINT, UHUGEINT, UUID and DECIMAL(38)
                     write_wide(input, i, i);
                 }
             }
-            REQUIRE_FALSE(column->append(state, input, ROWS).has_error());
+            REQUIRE_FALSE(column->append(state, input, 0, ROWS).has_error());
             REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
         }
 
@@ -2158,7 +2158,7 @@ TEST_CASE("checkpoint_load: a HUGEINT segment placed 8 bytes off a 16-byte bound
         for (uint64_t i = 0; i < ROWS; i++) {
             write_wide(input, i, i);
         }
-        REQUIRE_FALSE(column->append(state, input, ROWS).has_error());
+        REQUIRE_FALSE(column->append(state, input, 0, ROWS).has_error());
         REQUIRE_FALSE(append_pbm.flush_partial_blocks().has_error());
     }
     auto pbm = partial_block_manager_t::for_checkpoint(bm);

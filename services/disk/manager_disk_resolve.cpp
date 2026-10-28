@@ -203,15 +203,19 @@ namespace services::disk {
     manager_disk_t::read_chunks_by_keys(execution_context_t ctx,
                                         components::catalog::oid_t table_oid,
                                         std::pmr::vector<std::uint64_t> key_col_indices,
-                                        components::vector::data_chunk_t keys,
+                                        std::pmr::vector<components::vector::data_chunk_t> keys,
                                         std::pmr::vector<std::uint64_t> projected_cols) {
         // Thin router for the multi-key batch: the caller passes storage column ordinals straight to
-        // read_chunks_by_keys_inner, one mailbox hop for the whole batch. INVARIANT on success:
-        // result.size() == keys.size(), result[i] for keys[i]. A routing failure reported as
-        // keys.size() empty entries is indistinguishable from "every key matched nothing" — which is
-        // how a failed FK attribute read once silently produced empty fk.child_col_names.
+        // read_chunks_by_keys_inner, one mailbox hop for the whole batch. INVARIANT on success: one entry per
+        // key row, in batch order. A routing failure reported as empty entries is indistinguishable
+        // from "every key matched nothing" — which is how a failed FK attribute read once silently
+        // produced empty fk.child_col_names.
         std::pmr::vector<std::pmr::vector<components::vector::data_chunk_t>> out(resource());
-        if (keys.empty()) {
+        std::uint64_t total_keys = 0;
+        for (const auto& chunk : keys) {
+            total_keys += chunk.size();
+        }
+        if (total_keys == 0) {
             co_return out;
         }
         if (key_col_indices.empty()) {

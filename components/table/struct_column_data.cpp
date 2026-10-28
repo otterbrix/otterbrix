@@ -155,22 +155,24 @@ namespace components::table {
         return true;
     }
 
-    core::result_wrapper_t<bool>
-    struct_column_data_t::append(column_append_state& state, vector::vector_t& vector, uint64_t count) {
+    core::result_wrapper_t<bool> struct_column_data_t::append(column_append_state& state,
+                                                              vector::vector_t& vector,
+                                                              uint64_t offset,
+                                                              uint64_t count) {
         if (vector.get_vector_type() != vector::vector_type::FLAT) {
             vector::vector_t append_vector(vector);
-            append_vector.flatten(count);
-            return append(state, append_vector, count);
+            append_vector.flatten(offset + count);
+            return append(state, append_vector, offset, count);
         }
 
-        auto v = validity.append(state.child_appends[0], vector, count);
+        auto v = validity.append(state.child_appends[0], vector, offset, count);
         if (v.has_error()) {
             return v; // out_of_memory: no exceptions across actors
         }
 
         auto& child_entries = vector.entries();
         for (uint64_t i = 0; i < child_entries.size(); i++) {
-            auto child = sub_columns[i]->append(state.child_appends[i + 1], *child_entries[i], count);
+            auto child = sub_columns[i]->append(state.child_appends[i + 1], *child_entries[i], offset, count);
             if (child.has_error()) {
                 return child;
             }

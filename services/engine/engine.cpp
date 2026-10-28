@@ -829,7 +829,7 @@ namespace services::engine {
             seed.settings = disk.stored_settings_sync();
 
             // Both commit-clock halves are raised together, from one frontier, so they never disagree.
-            uint64_t reopen_frontier = disk.max_persisted_commit_id_sync();
+            VALUE_OR_RETURN(uint64_t reopen_frontier, disk.max_persisted_commit_id_sync());
             uint64_t txn_high_water = 0;
             for (const auto& r : parts.wal_records) {
                 if (r.is_commit_marker() && r.commit_id > reopen_frontier) {

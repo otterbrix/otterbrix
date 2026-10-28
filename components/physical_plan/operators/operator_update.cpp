@@ -1,6 +1,7 @@
 #include "operator_update.hpp"
 #include "dml_util.hpp"
 #include "join_utils.hpp"
+#include "scan/guard_chunk.hpp"
 #include <atomic>
 #include <cassert>
 #include <components/vector/vector_operations.hpp>
@@ -403,7 +404,7 @@ namespace components::operators {
             }
             out_chunk.row_ids.data<int64_t>()[index] = dml_detail::row_id_of(chunk, i);
             matched_indexing.set_index(index, i);
-            vector::validate_chunk_capacity(out_chunk, ++index);
+            ++index;
         }
         if (index != 0) {
             for (size_t k = 0; k < chunk.column_count(); ++k) {
@@ -518,8 +519,6 @@ namespace components::operators {
                         vector::vector_ops::copy(chunk_right.data[k], right_chunk.data[k], j + 1, j, index);
                     }
                     ++index;
-                    vector::validate_chunk_capacity(out_chunk, index);
-                    vector::validate_chunk_capacity(right_chunk, index);
                     // Semi-join: a target row updates once, so stop after the first matching FROM row.
                     row_matched = true;
                     break;
@@ -723,6 +722,10 @@ namespace components::operators {
                         for (auto& returned : receipt.returned) {
                             if (returned.size() == 0) {
                                 continue;
+                            }
+                            if (auto refused = check_chunk_width(resource_, returned); refused.contains_error()) {
+                                outcome.error = std::move(refused);
+                                break;
                             }
                             auto rows = vector::adopted(resource_, std::move(returned));
                             std::optional<data_chunk_t> partners;

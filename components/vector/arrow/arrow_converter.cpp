@@ -353,67 +353,82 @@ namespace components::vector::arrow {
         return arrow_table;
     }
 
-    core::result_wrapper_t<data_chunk_t> data_chunk_from_arrow(std::pmr::memory_resource* resource,
-                                                               ArrowArray* arrow_array,
-                                                               arrow_table_schema_t converted_schema) {
+    core::result_wrapper_t<std::pmr::vector<data_chunk_t>>
+    data_chunks_from_arrow(std::pmr::memory_resource* resource,
+                           ArrowArray* arrow_array,
+                           arrow_table_schema_t converted_schema) {
         auto& types = converted_schema.get_types();
-
-        data_chunk_t dchunk(resource, types, static_cast<uint64_t>(arrow_array->length));
-
         auto& arrow_types = converted_schema.get_columns();
-        dchunk.set_cardinality(static_cast<uint64_t>(arrow_array->length));
-        for (uint64_t i = 0; i < dchunk.column_count(); i++) {
-            auto& parent_array = *arrow_array;
-            auto& array = parent_array.children[i];
-            auto arrow_type = arrow_types.at(i);
-            auto array_physical_type = arrow_type->get_physical_type();
-            auto array_state = std::make_unique<arrow_array_scan_state>();
-            array_state->owned_data = arrow_array_wrapper_ptr(new arrow_array_wrapper_t());
-            array_state->owned_data->arrow_array = *arrow_array;
-            arrow_array->release = nullptr;
-            switch (array_physical_type) {
-                case arrow_array_physical_type::DICTIONARY_ENCODED:
-                    if (auto err = scaner::arrow_column_to_dictionary(dchunk.data[i],
-                                                                      *array,
-                                                                      0,
-                                                                      *array_state,
-                                                                      dchunk.size(),
-                                                                      *arrow_type);
-                        err.contains_error()) {
-                        return err;
-                    }
-                    break;
-                case arrow_array_physical_type::RUN_END_ENCODED:
-                    if (auto err = scaner::arrow_column_to_run_end_encoded(dchunk.data[i],
-                                                                           *array,
-                                                                           0,
-                                                                           *array_state,
-                                                                           dchunk.size(),
-                                                                           *arrow_type);
-                        err.contains_error()) {
-                        return err;
-                    }
-                    break;
-                case arrow_array_physical_type::DEFAULT:
-                    scaner::set_validity(dchunk.data[i], *array, 0, dchunk.size(), parent_array.offset, -1);
 
-                    if (auto err = scaner::arrow_column_to_vector(dchunk.data[i],
-                                                                  *array,
-                                                                  0,
-                                                                  *array_state,
-                                                                  dchunk.size(),
-                                                                  *arrow_type);
-                        err.contains_error()) {
-                        return err;
-                    }
-                    break;
-                default:
-                    return core::error_t(
-                        core::error_code_t::unimplemented_yet,
-                        std::pmr::string("Only default physical types are currently supported", resource));
-            }
+        arrow_array_wrapper_ptr owner(new arrow_array_wrapper_t());
+        owner->arrow_array = *arrow_array;
+        arrow_array->release = nullptr;
+        auto& parent_array = owner->arrow_array;
+
+        std::pmr::vector<std::unique_ptr<arrow_array_scan_state>> array_states(resource);
+        array_states.reserve(types.size());
+        for (uint64_t i = 0; i < types.size(); i++) {
+            auto array_state = std::make_unique<arrow_array_scan_state>();
+            array_state->owned_data = owner;
+            array_states.push_back(std::move(array_state));
         }
-        return dchunk;
+
+        std::pmr::vector<data_chunk_t> chunks(resource);
+        auto total = static_cast<uint64_t>(parent_array.length);
+        chunks.reserve((total + DEFAULT_VECTOR_CAPACITY - 1) / DEFAULT_VECTOR_CAPACITY);
+        for (uint64_t offset = 0; offset < total; offset += DEFAULT_VECTOR_CAPACITY) {
+            const uint64_t count = std::min<uint64_t>(DEFAULT_VECTOR_CAPACITY, total - offset);
+            data_chunk_t dchunk(resource, types, count);
+            dchunk.set_cardinality(count);
+            for (uint64_t i = 0; i < dchunk.column_count(); i++) {
+                auto& array = parent_array.children[i];
+                auto arrow_type = arrow_types.at(i);
+                auto& array_state = *array_states[i];
+                switch (arrow_type->get_physical_type()) {
+                    case arrow_array_physical_type::DICTIONARY_ENCODED:
+                        if (auto err = scaner::arrow_column_to_dictionary(dchunk.data[i],
+                                                                          *array,
+                                                                          offset,
+                                                                          array_state,
+                                                                          count,
+                                                                          *arrow_type);
+                            err.contains_error()) {
+                            return err;
+                        }
+                        break;
+                    case arrow_array_physical_type::RUN_END_ENCODED:
+                        if (auto err = scaner::arrow_column_to_run_end_encoded(dchunk.data[i],
+                                                                               *array,
+                                                                               offset,
+                                                                               array_state,
+                                                                               count,
+                                                                               *arrow_type);
+                            err.contains_error()) {
+                            return err;
+                        }
+                        break;
+                    case arrow_array_physical_type::DEFAULT:
+                        scaner::set_validity(dchunk.data[i], *array, offset, count, parent_array.offset, -1);
+
+                        if (auto err = scaner::arrow_column_to_vector(dchunk.data[i],
+                                                                      *array,
+                                                                      offset,
+                                                                      array_state,
+                                                                      count,
+                                                                      *arrow_type);
+                            err.contains_error()) {
+                            return err;
+                        }
+                        break;
+                    default:
+                        return core::error_t(
+                            core::error_code_t::unimplemented_yet,
+                            std::pmr::string("Only default physical types are currently supported", resource));
+                }
+            }
+            chunks.push_back(std::move(dchunk));
+        }
+        return chunks;
     }
 
 } // namespace components::vector::arrow

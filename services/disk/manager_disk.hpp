@@ -338,7 +338,8 @@ namespace services::disk {
                      std::pmr::vector<std::string> key_col_names,
                      components::vector::data_chunk_t keys);
 
-        // Columnar row-data scan for one key-tuple; `keys` stays columnar to avoid a row-major crossing.
+        // Columnar row-data scan: every row matching any key tuple in `keys`; `keys` stays columnar to avoid a
+        // row-major crossing.
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         read_chunks_by_key(execution_context_t ctx,
                            components::catalog::oid_t table_oid,
@@ -350,7 +351,7 @@ namespace services::disk {
         read_chunks_by_keys(execution_context_t ctx,
                             components::catalog::oid_t table_oid,
                             std::pmr::vector<std::uint64_t> key_col_indices,
-                            components::vector::data_chunk_t keys,
+                            std::pmr::vector<components::vector::data_chunk_t> keys,
                             std::pmr::vector<std::uint64_t> projected_cols);
 
         // Drops every relkind='g' column not in `live_attnames` — subtractive, unlike drop_storage_column.
@@ -482,8 +483,7 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_fetch(session_id_t session,
                       components::catalog::oid_t table_oid,
-                      components::vector::vector_t row_ids,
-                      uint64_t count,
+                      components::table::row_id_batch_t row_ids,
                       std::vector<size_t> projected_cols,
                       components::table::transaction_data txn,
                       components::table::fetch_visibility_t visibility,
@@ -503,11 +503,11 @@ namespace services::disk {
                        std::pmr::vector<components::vector::data_chunk_t> data,
                        bool returning);
         // Wrapped so a routing refusal is distinguishable from a legitimate "0 marks set".
-        unique_future<core::result_wrapper_t<write_receipt_t>> storage_delete_rows(execution_context_t ctx,
-                                                                                   components::catalog::oid_t table_oid,
-                                                                                   components::vector::vector_t row_ids,
-                                                                                   uint64_t count,
-                                                                                   bool returning);
+        unique_future<core::result_wrapper_t<write_receipt_t>>
+        storage_delete_rows(execution_context_t ctx,
+                            components::catalog::oid_t table_oid,
+                            components::table::row_id_batch_t row_ids,
+                            bool returning);
         unique_future<void> storage_publish_commits(execution_context_t ctx,
                                                     uint64_t commit_id,
                                                     std::vector<components::pg_catalog_append_range_t> ranges);
@@ -626,7 +626,8 @@ namespace services::disk {
 
         [[nodiscard]] core::error_t restore_oid_generator_sync();
 
-        std::uint64_t max_persisted_commit_id_sync() const;
+        // An unreadable pg_attribute is an error
+        [[nodiscard]] core::result_wrapper_t<std::uint64_t> max_persisted_commit_id_sync() const;
 
         // Most recent value for `name` in pg_settings, empty only if no such row exists (else an error).
         [[nodiscard]] core::result_wrapper_t<std::string> read_setting_sync(std::string_view name);
@@ -788,7 +789,9 @@ namespace services::disk {
         std::pmr::vector<dropped_class_row_t> scan_dropped_oids_sync() { return manager_.scan_dropped_oids_sync(); }
         const std::filesystem::path& path_db() const noexcept { return manager_.path_db(); }
         [[nodiscard]] core::error_t restore_oid_generator_sync() { return manager_.restore_oid_generator_sync(); }
-        std::uint64_t max_persisted_commit_id_sync() const { return manager_.max_persisted_commit_id_sync(); }
+        [[nodiscard]] core::result_wrapper_t<std::uint64_t> max_persisted_commit_id_sync() const {
+            return manager_.max_persisted_commit_id_sync();
+        }
         [[nodiscard]] core::result_wrapper_t<std::string> read_setting_sync(std::string_view name) {
             return manager_.read_setting_sync(name);
         }

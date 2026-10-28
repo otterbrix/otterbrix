@@ -190,10 +190,18 @@ namespace services::disk {
         std::filesystem::create_directories(otbx_path.parent_path(), ec);
         if (ec) {
             warn(log_,
-                 "agent_disk[{}]::create_storage_disk_inner: create_directories {} failed: {}",
+                 "agent_disk[{}]::create_storage_disk_inner: oid {} create_directories {} failed: {}",
                  pool_idx_,
+                 static_cast<unsigned>(oid),
                  otbx_path.parent_path().string(),
                  ec.message());
+            std::pmr::string what{"agent_disk::create_storage_disk_inner: oid ", resource()};
+            what.append(std::to_string(static_cast<unsigned>(oid)).c_str());
+            what.append(": create_directories ");
+            what.append(otbx_path.parent_path().string().c_str());
+            what.append(" failed: ");
+            what.append(ec.message().c_str());
+            co_return core::error_t{core::error_code_t::io_error, std::move(what)};
         }
         auto created = bootstrap_create_disk_inner_sync(oid, std::move(columns), otbx_path, is_computed);
         if (!created.has_error() && created.value() && !relname.empty()) {

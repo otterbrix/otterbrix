@@ -201,11 +201,6 @@ namespace services::disk {
             }
             const auto created = co_await std::move(fut);
             if (created.has_error()) {
-                warn(log_,
-                     "manager_disk_t::create_storage_disk: agent[{}] could not create oid {}: {}",
-                     pool_idx,
-                     static_cast<unsigned>(table_oid),
-                     created.error().what.c_str());
                 co_return created.error();
             }
             if (!created.value()) {

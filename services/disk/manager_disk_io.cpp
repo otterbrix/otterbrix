@@ -246,12 +246,14 @@ namespace services::disk {
                 std::filesystem::remove(otbx_path, stump_ec);
             }
         }
-        error(log_,
-              "manager_disk_t::create_storage_disk_sync: agent[{}] could not create oid {} at {} — no storage "
-              "came up for it",
-              pool_idx_c,
-              static_cast<unsigned>(table_oid),
-              otbx_path.string());
+        if (!created.has_error()) {
+            error(log_,
+                  "manager_disk_t::create_storage_disk_sync: agent[{}] could not create oid {} at {} — no storage "
+                  "came up for it",
+                  pool_idx_c,
+                  static_cast<unsigned>(table_oid),
+                  otbx_path.string());
+        }
         std::pmr::string message{"create_storage_disk_sync: could not create the .otbx for oid " +
                                      std::to_string(static_cast<unsigned>(table_oid)) + " at " + otbx_path.string(),
                                  resource()};

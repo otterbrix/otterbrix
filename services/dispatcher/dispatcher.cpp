@@ -426,10 +426,61 @@ namespace services::dispatcher {
     }
 
     namespace {
+        bool describes(const components::logical_plan::execution_plan_t& plan) {
+            return components::logical_plan::is_describe(plan.explain);
+        }
+
+        // A statement a describe answers no columns for: neither a query nor a write.
+        bool is_utility(const components::logical_plan::node_t& root) {
+            using components::logical_plan::node_type;
+            switch (root.type()) {
+                case node_type::create_collection_t:
+                case node_type::create_database_t:
+                case node_type::create_schema_t:
+                case node_type::create_index_t:
+                case node_type::create_type_t:
+                case node_type::drop_t:
+                case node_type::create_sequence_t:
+                case node_type::create_view_t:
+                case node_type::create_macro_t:
+                case node_type::create_matview_t:
+                case node_type::refresh_matview_t:
+                case node_type::checkpoint_t:
+                case node_type::vacuum_t:
+                case node_type::alter_table_t:
+                case node_type::create_constraint_t:
+                case node_type::register_udf_t:
+                case node_type::unregister_udf_t:
+                case node_type::register_cast_t:
+                case node_type::unregister_cast_t:
+                case node_type::transaction_t:
+                case node_type::set_setting_t:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        // PostgreSQL 18 IsTransactionExitStmt: COMMIT, ROLLBACK, ROLLBACK TO.
+        bool ends_transaction(const components::logical_plan::node_t& root) {
+            if (root.type() != components::logical_plan::node_type::transaction_t) {
+                return false;
+            }
+            switch (static_cast<const components::logical_plan::node_transaction_t&>(root).op()) {
+                case components::logical_plan::transaction_op::commit:
+                case components::logical_plan::transaction_op::abort:
+                case components::logical_plan::transaction_op::rollback_to_savepoint:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         components::table::transaction_control_t
         transaction_control_of(const components::logical_plan::execution_plan_t& plan) {
             const auto* root = plan.sub_queries.back().get();
-            if (root == nullptr || root->type() != components::logical_plan::node_type::transaction_t) {
+            if (describes(plan) || root == nullptr ||
+                root->type() != components::logical_plan::node_type::transaction_t) {
                 return components::table::transaction_control_t::none;
             }
             switch (static_cast<const components::logical_plan::node_transaction_t*>(root)->op()) {
@@ -484,7 +535,27 @@ namespace services::dispatcher {
         if (after_close) {
             co_return refuse_closed_(session);
         }
+        if (describes(plan) && plan.sub_queries.back() && is_utility(*plan.sub_queries.back())) {
+            co_return describe_utility_(session, *plan.sub_queries.back());
+        }
         co_return co_await run_statement_(session, control, std::move(plan));
+    }
+
+    components::cursor::cursor_t_ptr
+    manager_dispatcher_t::describe_utility_(components::session::session_id_t session,
+                                            const components::logical_plan::node_t& root) {
+        if (failed_sessions_.contains(session) && !ends_transaction(root)) {
+            return stamp_transaction_status_(session,
+                                             components::cursor::make_cursor(resource(), failed_transaction_()));
+        }
+        return stamp_transaction_status_(session, components::cursor::make_cursor(resource()));
+    }
+
+    core::error_t manager_dispatcher_t::failed_transaction_() const {
+        return core::error_t{core::error_code_t::transaction_finalized,
+                             std::pmr::string{"the transaction failed; only ROLLBACK, ROLLBACK TO SAVEPOINT or "
+                                              "COMMIT (which rolls back) is accepted until it ends",
+                                              resource()}};
     }
 
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
@@ -1109,10 +1180,7 @@ namespace services::dispatcher {
             const auto control = transaction_control_of(*plan);
             if (control == components::table::transaction_control_t::none ||
                 control == components::table::transaction_control_t::savepoint) {
-                return core::error_t{core::error_code_t::transaction_finalized,
-                                     std::pmr::string{"the transaction failed; only ROLLBACK, ROLLBACK TO SAVEPOINT or "
-                                                      "COMMIT (which rolls back) is accepted until it ends",
-                                                      resource()}};
+                return failed_transaction_();
             }
             // A ROLLBACK TO clears the failure only once it has undone the work (execute_plan).
             if (control != components::table::transaction_control_t::rollback_to) {
@@ -1122,8 +1190,8 @@ namespace services::dispatcher {
         const auto settings = session_settings(session);
         const auto statement = settings_statement_of(*plan);
         // An ALTER SYSTEM opens no implicit transaction of autocommit off (psql's command_no_begin): it runs alone,
-        // or is refused inside the block already open.
-        const auto scope = settings.autocommit || statement.alter_system
+        // or is refused inside the block already open. A describe opens none either: it reads the catalog only.
+        const auto scope = settings.autocommit || statement.alter_system || describes(*plan)
                                ? components::table::transaction_scope_t::statement
                                : components::table::transaction_scope_t::until_commit;
         const bool opens = txn_manager_.find_transaction(session) == nullptr;

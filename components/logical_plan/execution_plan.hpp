@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 #include "node.hpp"
 #include "node_catalog_resolve.hpp"
@@ -38,11 +39,32 @@ namespace components::logical_plan {
     // `analyze` executes with per-operator instrumentation and renders the annotated plan.
     // Set by the transformer's T_ExplainStmt case; read by the executor. Scalar enum, so it
     // copies trivially (no pmr re-anchor).
+    // `describe` answers the statement's result columns and the types of its $n, as PostgreSQL 18's Parse and
+    // Describe do: the statement is analyzed, nothing is planned, nothing reaches a storage of a table.
+    // `describe_explain` is that of an EXPLAIN [ANALYZE] of the statement: its one text column QUERY PLAN.
     enum class explain_type
     {
         none,
         plan,
-        analyze
+        analyze,
+        describe,
+        describe_explain
+    };
+
+    [[nodiscard]] constexpr bool is_describe(explain_type explain) noexcept {
+        return explain == explain_type::describe || explain == explain_type::describe_explain;
+    }
+
+    // A $n of the statement: the slot its other clauses read, the columns of the INSERT's VALUES chunk that hold it,
+    // and the type of the value bound to it (NA while unbound or bound to an untyped NULL).
+    struct external_parameter_t {
+        explicit external_parameter_t(std::pmr::memory_resource* resource)
+            : insert_columns(resource) {}
+
+        std::size_t number{0};
+        std::optional<core::parameter_id_t> slot;
+        std::pmr::vector<std::size_t> insert_columns;
+        types::complex_logical_type bound_type{types::logical_type::NA};
     };
 
     struct execution_plan_t {
@@ -81,6 +103,9 @@ namespace components::logical_plan {
         uint32_t explain_render_id{0};
 
         bool commits_when_done{false};
+
+        // Every $n the statement names, by number. Empty for a plan whose parameters the host wrote itself.
+        std::pmr::vector<external_parameter_t> external_parameters;
     };
 
 } // namespace components::logical_plan

@@ -34,6 +34,7 @@ set(${PROJECT_NAME}_SOURCES
        dispatcher/validate_logical_plan.cpp
        dispatcher/validation/schema.cpp
        dispatcher/validation/resolve_expression.cpp
+       dispatcher/validation/parameter_types.cpp
 
     # engine
         engine/engine.cpp

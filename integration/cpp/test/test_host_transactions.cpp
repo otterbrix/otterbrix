@@ -147,6 +147,24 @@ TEST_CASE("integration::cpp::host_transactions::a_second_connection_written_in_a
     CHECK(host.backend("pg").rows("pg.db.public.t").empty());
 }
 
+// describe writes nothing, so a write it describes to a second connection is no second place.
+TEST_CASE("integration::cpp::host_transactions::a_described_write_to_a_second_connection_is_not_refused") {
+    host_t host("test_host_transactions/describe_place", nullptr, {"pg", "pg2"});
+    tables_of(host, {"pg", "pg2"});
+    const auto session = otterbrix::session_id_t();
+    host.db.ok(session, "BEGIN;");
+    host.db.ok(session, "INSERT INTO pg.db.public.t (id) VALUES (1);");
+    auto described = host.db.dispatcher()->describe_sql(session, "INSERT INTO pg2.db.public.t (id) VALUES ($1);");
+    INFO(session_sql::error_of(described));
+    REQUIRE(described->is_success());
+    REQUIRE(described->parameter_types().size() == 1);
+    CHECK(described->parameter_types().front().type() == components::types::logical_type::BIGINT);
+    CHECK(described->transaction_status() == components::session::transaction_status_t::in_transaction);
+    CHECK(host.backend("pg2").journal().empty());
+    host.db.ok(session, "COMMIT;");
+    CHECK(host.backend("pg").rows("pg.db.public.t") == rows_t{{1}});
+}
+
 // The place of the writes is the transaction's to its end: reads of another connection are free, otterbrix's own
 // tables do not count, and ROLLBACK TO does not free it.
 TEST_CASE("integration::cpp::host_transactions::the_write_place_is_kept_to_the_end") {

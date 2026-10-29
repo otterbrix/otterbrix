@@ -73,6 +73,8 @@ namespace core {
         dependent_objects_still_exist, // PostgreSQL 2BP01: other objects or the database system need it
         schema_already_exists,         // PostgreSQL 42P06
         schema_not_exists,             // PostgreSQL 3F000
+        indeterminate_datatype,        // PostgreSQL 42P18: no clause gives a $n a type
+        ambiguous_parameter,           // PostgreSQL 42P08: two clauses give a $n two types
     };
 
     struct [[nodiscard]] error_t {

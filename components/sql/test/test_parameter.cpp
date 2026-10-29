@@ -508,3 +508,25 @@ TEST_CASE("components::sql::transform_result") {
         REQUIRE(static_cast<logical_plan::node_insert_t*>(node.get())->key_translation() == keys);
     }
 }
+
+TEST_CASE("components::sql::insert_select_bind") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+    const auto* query = R"_(INSERT INTO TestDatabase.TestCollection (id) SELECT $1;)_";
+
+    SECTION("a parameter of the SELECT is bound") {
+        auto binder = transformer.transform(pg_cell_to_node_cast(linitial(parse_ok(&arena_resource, query))));
+        binder.bind(1, make_scalar(&resource, 42l));
+        auto result = binder.finalize();
+        INFO((result.has_error() ? std::string(result.error().what) : std::string("ok")));
+        REQUIRE_FALSE(result.has_error());
+        REQUIRE(parameter_equals(*result.value().parameters, core::parameter_id_t(0u), make_scalar(&resource, 42l)));
+    }
+    SECTION("left unbound it is refused") {
+        auto binder = transformer.transform(pg_cell_to_node_cast(linitial(parse_ok(&arena_resource, query))));
+        auto result = binder.finalize();
+        REQUIRE(result.has_error());
+        REQUIRE(std::string(result.error().what) == "Not all parameters were bound: $1");
+    }
+}

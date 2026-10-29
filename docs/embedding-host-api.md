@@ -495,3 +495,51 @@ Project
 Remote Query on m2
   Request: select m2.shop.public.orders where column 0
 ```
+
+## Describe
+
+`wrapper_dispatcher_t::describe_sql(session, query, params = {})` answers what PostgreSQL 18's Parse and Describe
+answer: a cursor without rows whose `type_data()` are the result columns, named and typed as a run of the same
+statement answers them, and whose `parameter_types()[n-1]` is the type of `$n` (`test_describe.cpp`). `params` are
+values bound as a Bind binds them (Describe of a portal): such a `$n` keeps its value's type. A host's own plan asks
+the same with `execution_plan_t::explain = explain_type::describe` through `execute_plan`.
+
+- The statement is analyzed as a run analyzes it — the catalog resolved, views expanded, validated — and answered
+  right after: nothing is planned or optimized, no OID is taken, no storage of a table gets a message (a backend
+  neither: `describe_sends_the_backend_nothing`), nothing is written or logged. A scalar sub-query is analyzed the
+  same way and stands for a NULL of its column's type.
+- The result of an INSERT / UPDATE / DELETE is its RETURNING list, none without one.
+- DDL, BEGIN / COMMIT / ROLLBACK, SET and the other utilities answer no columns and no parameters and check nothing
+  (`describe CREATE TABLE` of a table that exists is no error), as PostgreSQL answers NoData.
+- EXPLAIN [ANALYZE] answers one text column `QUERY PLAN` and the types of the inner statement's `$n`
+  (`explain_type::describe_explain`); the inner statement is analyzed as above, and ANALYZE runs nothing either.
+- A describe opens no transaction block, also with `autocommit` off, and runs in the open block's snapshot, so it
+  sees the block's own DDL. A failed block refuses a describe with `transaction_finalized`, except the describe of
+  COMMIT, ROLLBACK or ROLLBACK TO; an error of a describe fails the open block as any statement's error does.
+- A `$n` that arrives without a type is typed by its context, by PostgreSQL 18's rules, in a describe and in a run
+  alike (a NULL of NA a host binds is such a `$n`): a comparison, an operator, a function argument, CASE / COALESCE,
+  a cast or a boolean condition gives it the type it coerces it to; `SET col = $n` and `INSERT … VALUES ($n)` the
+  column's type, also for its uses in RETURNING and ON CONFLICT DO UPDATE SET; LIMIT and OFFSET bigint. The first
+  use that coerces a `$n` gives its type, and a later use reads it as a typed value would; an output column that is
+  `$n` alone takes the type a column before it gave, else text, which a later column, WHERE or ORDER BY typing the
+  `$n` otherwise makes 42P08 (`SELECT a = $1, $1` is boolean, bigint; `SELECT $1, a = $1` is refused). Two different
+  types, also one `$n` in two VALUES columns of different types, are `ambiguous_parameter` (42P08) `inconsistent
+  types deduced for parameter $n`; a `$n` nothing types — `$1 IS NULL`, a number the statement skips — is
+  `indeterminate_datatype` (42P18) `could not determine data type of parameter $n`.
+- Not typed yet, PostgreSQL 18 against otterbrix:
+  - a `$n` in a UNION branch, a CTE or a derived table, `INSERT … SELECT $n`, `= ANY($n)`, a table function
+    argument: PostgreSQL types it from the set operation, the select list, the array or the argument; otterbrix
+    answers 42P18;
+  - operands that are all `$n`, `$1 = $2`, `coalesce($1, $2)`: PostgreSQL resolves them as text; otterbrix answers
+    42P18;
+  - an output `$n` a sub-query of WHERE types, `SELECT $1 … WHERE a IN (SELECT a … WHERE a = $1)`: PostgreSQL reads
+    the select list first and answers 42P08; otterbrix runs the sub-query first and gives the column its type;
+  - `SELECT $1 … LIMIT $1`: PostgreSQL reads LIMIT after the select list and answers 42P08; otterbrix types LIMIT's
+    `$n` first and answers bigint;
+  - `UPDATE … SET col = $n RETURNING $n`: PostgreSQL reads RETURNING before SET, the `$n` becomes text there and the
+    assignment is refused with 42804; otterbrix reads SET first and answers the column's type;
+  - a `$n` under a literal of another type in a VALUES of several rows, `VALUES (1, 2), ($1, $2)`: PostgreSQL gives
+    it the type of the target column; otterbrix gives it the literal's type (bigint);
+  - `describe CREATE MATERIALIZED VIEW … AS SELECT`: PostgreSQL analyzes the inner query at Parse; otterbrix
+    answers no columns and checks nothing.
+- Bindings: C++ only; the C ABI, Rust, C# and Python have no describe yet.

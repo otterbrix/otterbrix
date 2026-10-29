@@ -121,39 +121,12 @@ namespace otterbrix {
 
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
         core::pmr::arena_resource_t parser_arena(resource());
-        auto parsed = raw_parser(&parser_arena, query.c_str(), parser_extensions_);
+        auto parsed = parse_statement_(&parser_arena, query);
         if (parsed.has_error()) {
-            // error_on: the message lives on parser_arena, which ends with this call
-            return send_failed_plan(session, core::error_on(resource(), parsed.error()));
-        }
-        List* parse_tree = parsed.value();
-
-        // parser.h: the list may be EMPTY (no statement, not an error) or hold MORE than one --
-        // linitial() alone reads past the end on empty and silently drops all but the first.
-        if (list_length(parse_tree) == 0) {
-            return send_failed_plan(
-                session,
-                core::error_t(core::error_code_t::sql_parse_error,
-                              std::pmr::string{"the query contains no statement to execute (empty "
-                                               "input, a comment, or a bare ';') — nothing was executed",
-                                               resource()}));
-        }
-        if (list_length(parse_tree) > 1) {
-            std::pmr::string msg{"the query contains ", resource()};
-            msg += std::to_string(list_length(parse_tree));
-            msg += " statements; one statement per call is supported — nothing was executed";
-            return send_failed_plan(session, core::error_t(core::error_code_t::unimplemented_yet, std::move(msg)));
-        }
-        void* parse_result = linitial(parse_tree);
-        if (!parse_result) {
-            return send_failed_plan(
-                session,
-                core::error_t(core::error_code_t::sql_parse_error,
-                              std::pmr::string{"the parser produced a statement with no node in it", resource()}));
+            return send_failed_plan(session, parsed.error());
         }
         transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
-        if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
-            result.has_error()) {
+        if (auto result = local_transformer.transform(*parsed.value()).finalize(); result.has_error()) {
             return send_failed_plan(session, result.error());
         } else {
             // Stamp the host-selected EXPLAIN renderer slot onto the plan before send; it rides the
@@ -162,6 +135,65 @@ namespace otterbrix {
             plan.explain_render_id = render_id;
             return execute_plan(session, std::move(plan));
         }
+    }
+
+    cursor_t_ptr
+    wrapper_dispatcher_t::describe_sql(const components::session::session_id_t& session,
+                                       const std::string& query,
+                                       const std::vector<std::pair<size_t, components::vector::vector_t>>& params) {
+        using namespace components::sql::transform;
+
+        trace(log_, "wrapper_dispatcher_t::describe sql session: {}", session.data());
+        core::pmr::arena_resource_t parser_arena(resource());
+        auto parsed = parse_statement_(&parser_arena, query);
+        if (parsed.has_error()) {
+            return send_failed_plan(session, parsed.error());
+        }
+        transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
+        auto binder = local_transformer.transform(*parsed.value());
+        for (const auto& [id, value] : params) {
+            binder.bind(id, value);
+        }
+        auto finalized = binder.finalize_for_describe();
+        if (finalized.has_error()) {
+            return send_failed_plan(session, finalized.error());
+        }
+        auto plan = std::move(finalized.value());
+        plan.explain = plan.explain == components::logical_plan::explain_type::none
+                           ? components::logical_plan::explain_type::describe
+                           : components::logical_plan::explain_type::describe_explain;
+        return execute_plan(session, std::move(plan));
+    }
+
+    core::result_wrapper_t<Node*> wrapper_dispatcher_t::parse_statement_(std::pmr::memory_resource* arena,
+                                                                         const std::string& query) {
+        auto parsed = raw_parser(arena, query.c_str(), parser_extensions_);
+        if (parsed.has_error()) {
+            // error_on: the message lives on the arena, which ends with the caller
+            return core::error_on(resource(), parsed.error());
+        }
+        List* parse_tree = parsed.value();
+
+        // parser.h: the list may be EMPTY (no statement, not an error) or hold MORE than one --
+        // linitial() alone reads past the end on empty and silently drops all but the first.
+        if (list_length(parse_tree) == 0) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"the query contains no statement to execute (empty "
+                                                  "input, a comment, or a bare ';') — nothing was executed",
+                                                  resource()});
+        }
+        if (list_length(parse_tree) > 1) {
+            std::pmr::string msg{"the query contains ", resource()};
+            msg += std::to_string(list_length(parse_tree));
+            msg += " statements; one statement per call is supported — nothing was executed";
+            return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
+        }
+        void* parse_result = linitial(parse_tree);
+        if (!parse_result) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"the parser produced a statement with no node in it", resource()});
+        }
+        return &components::sql::transform::pg_cell_to_node_cast(parse_result);
     }
 
     cursor_t_ptr wrapper_dispatcher_t::execute_sql_with_params(
@@ -173,37 +205,12 @@ namespace otterbrix {
 
         trace(log_, "wrapper_dispatcher_t::execute sql (params) session: {}", session.data());
         core::pmr::arena_resource_t parser_arena(resource());
-        auto parsed = raw_parser(&parser_arena, query.c_str(), parser_extensions_);
+        auto parsed = parse_statement_(&parser_arena, query);
         if (parsed.has_error()) {
-            // error_on: the message lives on parser_arena, which ends with this call
-            return send_failed_plan(session, core::error_on(resource(), parsed.error()));
-        }
-        List* parse_tree = parsed.value();
-
-        // Same seam as execute_sql above.
-        if (list_length(parse_tree) == 0) {
-            return send_failed_plan(
-                session,
-                core::error_t(core::error_code_t::sql_parse_error,
-                              std::pmr::string{"the query contains no statement to execute (empty "
-                                               "input, a comment, or a bare ';') — nothing was executed",
-                                               resource()}));
-        }
-        if (list_length(parse_tree) > 1) {
-            std::pmr::string msg{"the query contains ", resource()};
-            msg += std::to_string(list_length(parse_tree));
-            msg += " statements; one statement per call is supported — nothing was executed";
-            return send_failed_plan(session, core::error_t(core::error_code_t::unimplemented_yet, std::move(msg)));
-        }
-        void* parse_result = linitial(parse_tree);
-        if (!parse_result) {
-            return send_failed_plan(
-                session,
-                core::error_t(core::error_code_t::sql_parse_error,
-                              std::pmr::string{"the parser produced a statement with no node in it", resource()}));
+            return send_failed_plan(session, parsed.error());
         }
         transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
-        auto binder = local_transformer.transform(pg_cell_to_node_cast(parse_result));
+        auto binder = local_transformer.transform(*parsed.value());
         for (const auto& [id, value] : params) {
             binder.bind(id, value);
         }

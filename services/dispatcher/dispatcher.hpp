@@ -226,6 +226,11 @@ namespace services::dispatcher {
         unique_future<components::cursor::cursor_t_ptr> run_statement_(components::session::session_id_t session,
                                                                        components::table::transaction_control_t control,
                                                                        components::logical_plan::execution_plan_t plan);
+        // A describe of a statement that is no query (DDL, a transaction's control, SET, a utility): no columns and
+        // no check, as PostgreSQL 18 answers NoData. A failed block admits only the describe of its end.
+        components::cursor::cursor_t_ptr describe_utility_(components::session::session_id_t session,
+                                                           const components::logical_plan::node_t& root);
+        core::error_t failed_transaction_() const;
         bool is_closed_(components::session::session_id_t session) const;
         core::error_t session_closed_() const;
         components::cursor::cursor_t_ptr refuse_closed_(components::session::session_id_t session);

@@ -21,6 +21,7 @@
 #include <components/expressions/aggregate_expression.hpp>
 #include <components/expressions/cast_expression.hpp>
 #include <components/expressions/expression_equivalence.hpp>
+#include <components/expressions/projected_name.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 #include <components/index/binary_codec.hpp>
@@ -116,7 +117,8 @@ namespace services::dispatcher {
                                                                      context.function_registry,
                                                                      context.execution_context,
                                                                      check_expr_allowed_functions(),
-                                                                     context.column_uses};
+                                                                     context.column_uses,
+                                                                     nullptr};
             for (auto& [name, predicate] : node->check_predicates()) {
                 if (auto error = validation::resolve_expression(predicate, predicate_context); error.contains_error()) {
                     return error;
@@ -234,6 +236,7 @@ namespace services::dispatcher {
                                                                       context.execution_context,
                                                                       allowed_function_types,
                                                                       context.column_uses,
+                                                                      context.parameter_types,
                                                                       schema_right};
             expression_ptr expression{expr};
             if (auto error = validation::resolve_expression(expression, expression_context); error.contains_error()) {
@@ -313,6 +316,24 @@ namespace services::dispatcher {
                         const named_schema* schema_left,
                         const named_schema* schema_right = nullptr);
 
+        // An output column of the statement that is a $n alone: the type an earlier clause gave the $n, else text
+        // (PostgreSQL 18 resolveTargetListUnknowns), which a later clause typing it otherwise makes 42P08.
+        core::error_t type_output_parameter(const validation::validation_context_t& context,
+                                            const node_t* node,
+                                            scalar_expression_t* constant,
+                                            core::parameter_id_t slot) {
+            auto* types = context.parameter_types;
+            if (types == nullptr || !types->holds(slot)) {
+                return core::error_t::no_error();
+            }
+            if (!types->is_output(node)) {
+                types->note_read(slot);
+                return core::error_t::no_error();
+            }
+            constant->set_result_type(types->output_column(slot));
+            return core::error_t::no_error();
+        }
+
         core::error_t resolve_scalar_output_type(const validation::validation_context_t& context,
                                                  components::expressions::scalar_expression_t* scalar_expr,
                                                  const named_schema& schema,
@@ -328,6 +349,7 @@ namespace services::dispatcher {
                                                                       context.execution_context,
                                                                       allowed_functions,
                                                                       context.column_uses,
+                                                                      context.parameter_types,
                                                                       schema_right};
             expression_ptr expression{scalar_expr};
             return validation::resolve_expression(expression, expression_context, saw_reduction);
@@ -348,6 +370,7 @@ namespace services::dispatcher {
                 context.execution_context,
                 components::compute::create_mask(components::compute::function_type_t::vector),
                 context.column_uses,
+                context.parameter_types,
                 schema_right};
             expression_ptr expression{expr};
             if (auto error = validation::resolve_expression(expression, expression_context); error.contains_error()) {
@@ -410,6 +433,7 @@ namespace services::dispatcher {
                         context.execution_context,
                         components::compute::create_mask(components::compute::function_type_t::vector),
                         context.column_uses,
+                        context.parameter_types,
                         schema_right};
                     predicate_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
                     if (auto error = validation::resolve_expression(node->expressions()[0], predicate_context);
@@ -723,7 +747,8 @@ namespace services::dispatcher {
                 context.function_registry,
                 context.execution_context,
                 components::compute::create_mask(components::compute::function_type_t::vector),
-                context.column_uses};
+                context.column_uses,
+                context.parameter_types};
 
             auto input_path_of = [&](const components::expressions::key_t& read,
                                      components::expressions::key_t& out) -> core::error_t {
@@ -1044,6 +1069,7 @@ namespace services::dispatcher {
                 components::compute::create_mask(components::compute::function_type_t::vector,
                                                  components::compute::function_type_t::aggregate),
                 context.column_uses,
+                context.parameter_types,
                 nullptr,
                 &keys};
             auto bind_aggregate = [&](const expression_ptr& aggregate_expr,
@@ -1258,6 +1284,7 @@ namespace services::dispatcher {
                         context.execution_context,
                         components::compute::create_mask(components::compute::function_type_t::vector),
                         context.column_uses,
+                        context.parameter_types,
                         schema_right};
                     if (auto error = validation::resolve_expression(exprs[idx], expression_context);
                         error.contains_error()) {
@@ -1336,6 +1363,119 @@ namespace services::dispatcher {
                     }
                 }
             }
+            return core::error_t::no_error();
+        }
+
+        // The column a resolved RETURNING column read reads, through its path.
+        complex_logical_type returned_column_type(const components::expressions::key_t& key,
+                                                  const named_schema* schema_left,
+                                                  const named_schema* schema_right) {
+            const named_schema* schema =
+                key.side() == side_t::right && schema_right != nullptr ? schema_right : schema_left;
+            if (key.path().empty() || key.path().front() >= schema->size()) {
+                return complex_logical_type{logical_type::INVALID};
+            }
+            complex_logical_type type = (*schema)[key.path().front()].type;
+            for (size_t depth = 1; depth < key.path().size(); depth++) {
+                type = type.type() == logical_type::STRUCT ? type.child_types()[key.path()[depth]] : type.child_type();
+            }
+            return type;
+        }
+
+        // The columns a resolved RETURNING list answers, as the DML operator projects them: a bare `*` is the
+        // columns of the written table, an output $n alone is text.
+        [[nodiscard]] core::result_wrapper_t<named_schema>
+        returning_schema(const validation::validation_context_t& context,
+                         const node_t* node,
+                         const std::pmr::vector<expression_ptr>& returning,
+                         const named_schema* schema_left,
+                         const named_schema* schema_right,
+                         const components::logical_plan::storage_parameters& parameters) {
+            named_schema schema(context.resource);
+            for (const auto& expression : returning) {
+                if (!expression) {
+                    continue;
+                }
+                complex_logical_type type{logical_type::INVALID};
+                if (expression->group() == expression_group::scalar) {
+                    auto* scalar = static_cast<scalar_expression_t*>(expression.get());
+                    if (scalar->type() == scalar_type::star_expand) {
+                        for (const auto& column : *schema_left) {
+                            schema.push_back(column);
+                        }
+                        continue;
+                    }
+                    if (scalar->type() == scalar_type::get_field) {
+                        const auto* key = read_column(expression);
+                        if (key == nullptr) {
+                            return column_read_without_a_column(context.resource);
+                        }
+                        type = returned_column_type(*key, schema_left, schema_right);
+                    } else if (scalar->type() == scalar_type::constant && !scalar->params().empty() &&
+                               components::expressions::is_parameter(scalar->params().front())) {
+                        const auto slot = components::expressions::as_parameter(scalar->params().front());
+                        RETURN_IF_ERROR(type_output_parameter(context, node, scalar, slot));
+                        type = validation::is_stamped(scalar->result_type()) ? scalar->result_type()
+                                                                             : parameters.type(slot);
+                    } else {
+                        type = expression->result_type();
+                    }
+                } else {
+                    type = expression->result_type();
+                }
+                type.set_alias(components::expressions::projected_name(expression));
+                schema.push_back(type_from_t{std::string{}, std::move(type)});
+            }
+            return schema;
+        }
+
+        // Each VALUES column of the INSERT gives its $n its type: its own, or the target column's while it holds
+        // only untyped $n (PostgreSQL 18 transformInsertRow).
+        [[nodiscard]] core::error_t type_values_parameters(const validation::validation_context_t& context,
+                                                           const node_insert_t* insert) {
+            auto* types = context.parameter_types;
+            if (types == nullptr || insert->children().empty() ||
+                insert->children().front()->type() != node_type::data_t) {
+                return core::error_t::no_error();
+            }
+            const auto* data = static_cast<const node_data_t*>(insert->children().front().get());
+            if (data->chunks().empty()) {
+                return core::error_t::no_error();
+            }
+            const auto& columns = data->chunks().front().data;
+            for (std::size_t column = 0; column < columns.size(); ++column) {
+                auto type = columns[column].type();
+                if (type.type() == logical_type::NA && column < insert->column_bindings().size()) {
+                    type = insert->column_bindings()[column].target_type;
+                }
+                if (type.type() != logical_type::NA) {
+                    RETURN_IF_ERROR(types->values_column(column, type));
+                }
+            }
+            return core::error_t::no_error();
+        }
+
+        // SET column = $n: a $n without a type takes the column's (PostgreSQL 18 transformAssignedExpr).
+        [[nodiscard]] core::error_t assign_parameter(const validation::validation_context_t& context,
+                                                     expression_ptr& value,
+                                                     const complex_logical_type& target) {
+            auto* types = context.parameter_types;
+            if (types == nullptr || !value || value->group() != expression_group::scalar) {
+                return core::error_t::no_error();
+            }
+            auto* scalar = static_cast<scalar_expression_t*>(value.get());
+            if (scalar->type() != scalar_type::constant || scalar->params().empty() ||
+                !components::expressions::is_parameter(scalar->params().front())) {
+                return core::error_t::no_error();
+            }
+            const auto slot = components::expressions::as_parameter(scalar->params().front());
+            if (!types->is_untyped(slot)) {
+                return core::error_t::no_error();
+            }
+            RETURN_IF_ERROR(types->give(slot, target));
+            auto typed = target;
+            typed.set_alias(std::string{});
+            scalar->set_result_type(std::move(typed));
             return core::error_t::no_error();
         }
 
@@ -1823,7 +1963,8 @@ namespace services::dispatcher {
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector,
                                                              components::compute::function_type_t::aggregate),
-                            context.column_uses};
+                            context.column_uses,
+                            context.parameter_types};
                         for (auto& expr : node_group->expressions()) {
                             if (expr->group() == expression_group::aggregate) {
                                 reduces = true;
@@ -1863,6 +2004,8 @@ namespace services::dispatcher {
                     for (auto& e : node_match->expressions()) {
                         e = impl::rewrite_multitype_null_checks(resource, e, incoming_schema);
                     }
+                    // PostgreSQL 18 reads WHERE after the select list: what WHERE gives a $n comes too late for it.
+                    const validation::later_clause_t where{context.parameter_types};
                     auto res = impl::validate_schema(context, node_match, parameters, &table_schema, source_schema);
                     if (res.has_error()) {
                         return res;
@@ -2213,10 +2356,10 @@ namespace services::dispatcher {
                                 bool from_null = false;
                                 if (scalar_expr->type() == scalar_type::constant && !scalar_expr->params().empty() &&
                                     components::expressions::is_parameter(scalar_expr->params().front())) {
-                                    from_null =
-                                        parameters
-                                            .type(components::expressions::as_parameter(scalar_expr->params().front()))
-                                            .type() == components::types::logical_type::NA;
+                                    const auto slot =
+                                        components::expressions::as_parameter(scalar_expr->params().front());
+                                    from_null = parameters.type(slot).type() == components::types::logical_type::NA;
+                                    RETURN_IF_ERROR(impl::type_output_parameter(context, node, scalar_expr, slot));
                                 }
                                 complex_logical_type out_type = expr->result_type();
                                 if (!expr->key().is_null()) {
@@ -2340,7 +2483,8 @@ namespace services::dispatcher {
                             context.function_registry,
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector),
-                            context.column_uses};
+                            context.column_uses,
+                            context.parameter_types};
                         if (!components::expressions::is_expr(scalar_expr->params().front()) ||
                             !components::expressions::as_expr(scalar_expr->params().front())) {
                             return core::error_t(
@@ -2378,6 +2522,7 @@ namespace services::dispatcher {
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector),
                             context.column_uses,
+                            context.parameter_types,
                             nullptr,
                             keys};
                         expression_ptr expression{scalar_expr};
@@ -2404,6 +2549,7 @@ namespace services::dispatcher {
                                                          components::compute::function_type_t::aggregate,
                                                          components::compute::function_type_t::expand),
                         context.column_uses,
+                        context.parameter_types,
                         nullptr,
                         &group_keys};
                     for (auto& expr : node_group->expressions()) {
@@ -2500,8 +2646,11 @@ namespace services::dispatcher {
                                         std::pmr::string{"constant in a grouped projection carries no parameter",
                                                          resource});
                                 }
-                                complex_logical_type constant_type = parameters.type(
-                                    components::expressions::as_parameter(scalar_expr->params().front()));
+                                const auto slot = components::expressions::as_parameter(scalar_expr->params().front());
+                                RETURN_IF_ERROR(impl::type_output_parameter(context, node, scalar_expr, slot));
+                                complex_logical_type constant_type = validation::is_stamped(scalar_expr->result_type())
+                                                                         ? scalar_expr->result_type()
+                                                                         : parameters.type(slot);
                                 if (!scalar_expr->key().is_null()) {
                                     constant_type.set_alias(scalar_expr->key().as_string());
                                 }
@@ -2537,7 +2686,8 @@ namespace services::dispatcher {
                                 context.function_registry,
                                 context.execution_context,
                                 components::compute::create_mask(components::compute::function_type_t::aggregate),
-                                context.column_uses};
+                                context.column_uses,
+                                context.parameter_types};
                             if (auto error = validation::resolve_expression(expr, aggregate_context);
                                 error.contains_error()) {
                                 return error;
@@ -2880,16 +3030,6 @@ namespace services::dispatcher {
                         table_schema.emplace_back(type_from_t{target_relname_ins, column.type});
                     }
                 }
-                if (!insert_node->returning().empty() && !table_schema.empty()) {
-                    auto ret_err = impl::resolve_returning_columns(context,
-                                                                   &insert_node->returning(),
-                                                                   &table_schema,
-                                                                   nullptr,
-                                                                   parameters);
-                    if (ret_err.contains_error()) {
-                        return ret_err;
-                    }
-                }
                 // ARRAY/STRUCT/UNION/LIST/MAP crash table_storage_t::adopt_schema (SIGSEGV).
                 auto is_simple_chunk = [&]() {
                     for (const auto& nt : incoming_schema.value()) {
@@ -3111,6 +3251,28 @@ namespace services::dispatcher {
                         cell.cast = std::move(*cast);
                     }
                 }
+                // PostgreSQL 18 transforms VALUES before RETURNING and ON CONFLICT: a $n of a VALUES column has
+                // its type there (analyze.c:830-984, then :1040 and :1237).
+                RETURN_IF_ERROR(impl::type_values_parameters(context, insert_node));
+                if (!insert_node->returning().empty() && !table_schema.empty()) {
+                    auto ret_err = impl::resolve_returning_columns(context,
+                                                                   &insert_node->returning(),
+                                                                   &table_schema,
+                                                                   nullptr,
+                                                                   parameters);
+                    if (ret_err.contains_error()) {
+                        return ret_err;
+                    }
+                    if (context.returning != nullptr) {
+                        VALUE_OR_RETURN(*context.returning,
+                                        impl::returning_schema(context,
+                                                               node,
+                                                               insert_node->returning(),
+                                                               &table_schema,
+                                                               nullptr,
+                                                               parameters));
+                    }
+                }
             }
                 return result;
             case node_type::delete_t:
@@ -3232,6 +3394,7 @@ namespace services::dispatcher {
                             context.execution_context,
                             components::compute::create_mask(components::compute::function_type_t::vector),
                             context.column_uses,
+                            context.parameter_types,
                             source_schema};
                         if (auto error = validation::resolve_expression(expr, assignment_context);
                             error.contains_error()) {
@@ -3239,6 +3402,7 @@ namespace services::dispatcher {
                         }
 
                         const auto& target_type = target_res.value().front().type;
+                        RETURN_IF_ERROR(impl::assign_parameter(context, expr, target_type));
 
                         const auto& value_type = expr->result_type();
                         if (value_type.type() != logical_type::INVALID && value_type != target_type) {
@@ -3281,6 +3445,15 @@ namespace services::dispatcher {
                                                                    parameters);
                     if (ret_err.contains_error()) {
                         return ret_err;
+                    }
+                    if (context.returning != nullptr) {
+                        VALUE_OR_RETURN(*context.returning,
+                                        impl::returning_schema(context,
+                                                               node,
+                                                               *returning,
+                                                               &table_schema,
+                                                               has_join ? &incoming_schema : nullptr,
+                                                               parameters));
                     }
                 }
                 return result;
@@ -3361,7 +3534,8 @@ namespace services::dispatcher {
                                                                     context.function_registry,
                                                                     context.execution_context,
                                                                     check_expr_allowed_functions(),
-                                                                    context.column_uses};
+                                                                    context.column_uses,
+                                                                    context.parameter_types};
                 constraint_context.required_type = components::types::complex_logical_type{logical_type::BOOLEAN};
                 bool saw_reduction = false;
                 if (auto error = validation::resolve_expression(expression, constraint_context, &saw_reduction);

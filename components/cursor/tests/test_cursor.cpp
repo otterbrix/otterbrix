@@ -182,6 +182,30 @@ TEST_CASE("components::cursor::locate on a cursor without rows") {
     fails(typed->locate(0), core::error_code_t::invalid_parameter);
 }
 
+TEST_CASE("components::cursor::a cursor of column types only holds no rows") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto typed = components::cursor::make_cursor(
+        &resource,
+        std::pmr::vector<complex_logical_type>{
+            {complex_logical_type{logical_type::BIGINT}, complex_logical_type{logical_type::STRING_LITERAL}},
+            &resource});
+    CHECK(typed->size() == 0);
+    CHECK(typed->column_count() == 2);
+    CHECK_FALSE(typed->has_next());
+}
+
+TEST_CASE("components::cursor::a cursor of column types only finds a column by name") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto typed = components::cursor::make_cursor(
+        &resource,
+        std::pmr::vector<complex_logical_type>{
+            {complex_logical_type{logical_type::BIGINT, "a"}, complex_logical_type{logical_type::STRING_LITERAL, "b"}},
+            &resource});
+    CHECK(ok(typed->column_index("b")) == 1);
+    CHECK(ok(typed->column_index("a")) == 0);
+    fails(typed->column_index("c"), core::error_code_t::field_not_exists);
+}
+
 TEST_CASE("components::cursor::is_null and get on a NULL cell") {
     auto resource = core::pmr::otterbrix_resource();
     auto chunk = bigint_chunk(&resource, 10, 5);

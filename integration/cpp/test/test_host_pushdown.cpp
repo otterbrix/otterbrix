@@ -4,6 +4,8 @@
 
 #include "host_fixture.hpp"
 
+#include <components/vector/vector_builders.hpp>
+
 #include <algorithm>
 #include <string>
 #include <vector>
@@ -86,6 +88,47 @@ TEST_CASE("integration::cpp::host_pushdown::explain_shows_the_remote_query") {
           strings{"Remote Query on m2", "  Request: select " + orders + " where column 0"});
     CHECK(host.backend().journal("run").empty());
     CHECK(host.backend().offers() == 1);
+}
+
+// describe answers the columns and the $n types from the catalog alone: the backend gets no message at all.
+TEST_CASE("integration::cpp::host_pushdown::describe_sends_the_backend_nothing") {
+    host_t host("test_host_pushdown/describe", nullptr, {"m2"});
+    shop(host);
+    host.db.ok(any(), "CREATE TABLE m2.shop.public.items (id BIGINT, qty BIGINT);");
+    host.backend().set_rows("m2.shop.public.items", {{1, 5}, {3, 7}});
+    host.backend().set_take_policy({.whole_select = true});
+    host.backend().clear_journal();
+    auto* dispatcher = host.db.dispatcher();
+    const std::vector<std::string> queries{
+        "SELECT * FROM m2.shop.public.orders WHERE id = $1;",
+        "SELECT o.amount, i.qty FROM m2.shop.public.orders AS o JOIN m2.shop.public.items AS i ON o.id = i.id "
+        "WHERE o.id = $1;"};
+    for (const auto& sql : queries) {
+        INFO(sql);
+        const auto messages_before = host.backend().messages();
+        const auto offers_before = host.backend().offers();
+        auto described = dispatcher->describe_sql(any(), sql);
+        INFO(session_sql::error_of(described));
+        REQUIRE(described->is_success());
+        CHECK(host.backend().messages() == messages_before);
+        CHECK(host.backend().offers() == offers_before);
+        CHECK(host.backend().journal().empty());
+        REQUIRE(described->parameter_types().size() == 1);
+        CHECK(described->parameter_types().front().type() == components::types::logical_type::BIGINT);
+
+        auto run = dispatcher->execute_sql_with_params(
+            any(),
+            sql,
+            {{1, components::vector::make_scalar(host.resource(), std::int64_t{1})}});
+        INFO(session_sql::error_of(run));
+        REQUIRE(run->is_success());
+        REQUIRE(described->type_data().size() == run->type_data().size());
+        for (std::size_t column = 0; column < run->type_data().size(); ++column) {
+            CHECK(described->type_data()[column].type() == run->type_data()[column].type());
+            CHECK(described->type_data()[column].alias() == run->type_data()[column].alias());
+        }
+        host.backend().clear_journal();
+    }
 }
 
 // A join of two tables of one backend is offered as one block; a join with otterbrix's own table offers the

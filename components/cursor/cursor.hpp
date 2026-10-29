@@ -95,6 +95,10 @@ namespace components::cursor {
         [[nodiscard]] session::transaction_status_t transaction_status() const noexcept;
         void set_transaction_status(session::transaction_status_t status) noexcept;
 
+        // A describe's answer: the type of $n at index n-1. Empty for every other result.
+        [[nodiscard]] const std::pmr::vector<components::types::complex_logical_type>& parameter_types() const noexcept;
+        void set_parameter_types(const std::pmr::vector<components::types::complex_logical_type>& types);
+
     private:
         struct cell_t {
             const vector::vector_t* vec;
@@ -119,6 +123,7 @@ namespace components::cursor {
         // chunk_starts_[i] = rows before chunks_[i]; empty chunks repeat the next start.
         std::pmr::vector<uint64_t> chunk_starts_;
         std::pmr::vector<components::types::complex_logical_type> type_data_;
+        std::pmr::vector<components::types::complex_logical_type> parameter_types_;
         core::error_t error_;
         std::uint64_t affected_rows_ = 0;
         bool is_write_ = false;

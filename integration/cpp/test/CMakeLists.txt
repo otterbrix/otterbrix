@@ -137,6 +137,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_not_null.cpp
         test_host_transactions.cpp
         test_close_session.cpp
+        test_describe.cpp
         test_host_pushdown.cpp
         test_decorrelation.cpp
         test_long_string_literal.cpp

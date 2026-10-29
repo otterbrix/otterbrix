@@ -1037,6 +1037,9 @@ namespace host_actor {
             return offers_;
         }
 
+        // Every message that reached the backend, of any kind.
+        int messages() const { return messages_.load(); }
+
         using dispatch_traits = actor_zeta::implements<disk::storage_contract,
                                                        &backend_t::storage_fetch_next_batch,
                                                        &backend_t::storage_close_cursor,
@@ -1057,6 +1060,7 @@ namespace host_actor {
                                                        &backend_t::storage_run_write>;
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg) {
+            ++messages_;
             switch (msg->command()) {
                 case actor_zeta::msg_id<backend_t, &backend_t::storage_fetch_next_batch>:
                     co_await answer_when_awaited<&backend_t::storage_fetch_next_batch>(msg);
@@ -1816,6 +1820,7 @@ namespace host_actor {
         std::list<std::pair<actor_zeta::mailbox::message_ptr, actor_zeta::behavior_t>> in_flight_;
         std::atomic<bool> answer_when_awaited_{false};
         std::atomic<int> answers_dropped_unawaited_{0};
+        std::atomic<int> messages_{0};
         int cursor_closes_{0};
         // Touched by the loop thread only.
         std::list<std::unique_ptr<held_answer_i>> held_;

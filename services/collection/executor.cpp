@@ -47,6 +47,7 @@
 #include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_function.hpp>
 #include <components/logical_plan/node_insert.hpp>
+#include <components/logical_plan/node_insert_on_conflict.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_refresh_matview.hpp>
@@ -1948,11 +1949,117 @@ namespace services::collection::executor {
         }
     } // namespace
 
+    core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>
+    executor_t::parameter_types_of_(const components::logical_plan::execution_plan_t& plan) const {
+        using components::logical_plan::node_type;
+        using components::types::complex_logical_type;
+        using components::types::logical_type;
+        const auto* root = services::dispatcher::validation::output_node_of(plan.sub_queries.back().get());
+        const components::logical_plan::node_insert_t* insert = nullptr;
+        if (root != nullptr && root->type() == node_type::insert_t) {
+            insert = static_cast<const components::logical_plan::node_insert_t*>(root);
+        } else if (root != nullptr && root->type() == node_type::insert_on_conflict_t) {
+            insert = static_cast<const components::logical_plan::node_insert_on_conflict_t*>(root)->insert();
+        }
+
+        // A VALUES column of the INSERT: its own type, or the target column's while it holds only untyped $n
+        // (PostgreSQL 18 transformInsertRow coerces each one to its column).
+        auto insert_column_type = [&](std::size_t column) {
+            if (insert == nullptr || insert->children().empty() ||
+                insert->children().front()->type() != node_type::data_t) {
+                return complex_logical_type{logical_type::NA};
+            }
+            const auto* data =
+                static_cast<const components::logical_plan::node_data_t*>(insert->children().front().get());
+            if (data->chunks().empty() || column >= data->chunks().front().column_count()) {
+                return complex_logical_type{logical_type::NA};
+            }
+            auto type = data->chunks().front().data[column].type();
+            if (type.type() == logical_type::NA && column < insert->column_bindings().size()) {
+                type = insert->column_bindings()[column].target_type;
+            }
+            return type;
+        };
+        auto undetermined = [&](std::size_t number) {
+            return core::error_t{
+                core::error_code_t::indeterminate_datatype,
+                std::pmr::string{"could not determine data type of parameter $" + std::to_string(number), resource()}};
+        };
+
+        std::pmr::vector<complex_logical_type> parameters{resource()};
+        for (const auto& parameter : plan.external_parameters) {
+            // PostgreSQL 18 pg_analyze_and_rewrite_varparams: a number the statement skips has no type.
+            if (parameters.size() + 1 < parameter.number) {
+                return undetermined(parameters.size() + 1);
+            }
+            std::optional<complex_logical_type> type;
+            auto take = [&](complex_logical_type candidate) {
+                if (candidate.type() == logical_type::NA) {
+                    return true;
+                }
+                candidate.set_alias(std::string{});
+                if (type && !(*type == candidate)) {
+                    return false;
+                }
+                type = std::move(candidate);
+                return true;
+            };
+            bool consistent = true;
+            if (parameter.bound_type.type() != logical_type::NA) {
+                consistent = take(parameter.bound_type);
+            } else {
+                if (parameter.slot) {
+                    consistent = take(plan.parameters->parameters().type(*parameter.slot));
+                }
+                for (const auto column : parameter.insert_columns) {
+                    consistent = consistent && take(insert_column_type(column));
+                }
+            }
+            if (!consistent) {
+                return core::error_t{
+                    core::error_code_t::ambiguous_parameter,
+                    std::pmr::string{"inconsistent types deduced for parameter $" + std::to_string(parameter.number),
+                                     resource()}};
+            }
+            if (!type) {
+                return undetermined(parameter.number);
+            }
+            parameters.push_back(std::move(*type));
+        }
+        return parameters;
+    }
+
+    cursor_t_ptr
+    executor_t::describe_(const components::logical_plan::execution_plan_t& plan,
+                          const services::dispatcher::validation::named_schema& returning,
+                          const std::pmr::vector<components::types::complex_logical_type>& parameters) const {
+        using components::logical_plan::node_type;
+        using components::types::complex_logical_type;
+        using components::types::logical_type;
+        const auto* root = services::dispatcher::validation::output_node_of(plan.sub_queries.back().get());
+        std::pmr::vector<complex_logical_type> columns{resource()};
+        const node_type kind = root ? root->type() : node_type::unused;
+        if (plan.explain == components::logical_plan::explain_type::describe_explain) {
+            columns.emplace_back(logical_type::STRING_LITERAL, "QUERY PLAN");
+        } else if (kind == node_type::insert_t || kind == node_type::insert_on_conflict_t ||
+                   kind == node_type::update_t || kind == node_type::delete_t) {
+            for (const auto& column : returning) {
+                columns.push_back(column.type);
+            }
+        } else if (root != nullptr && root->has_output_types()) {
+            columns.assign(root->output_types().begin(), root->output_types().end());
+        }
+        auto described = make_cursor(resource(), std::move(columns));
+        described->set_parameter_types(parameters);
+        return described;
+    }
+
     executor_t::unique_future<execute_result_t>
     executor_t::execute_statement_(components::session::session_id_t session,
                                    components::logical_plan::execution_plan_t plan,
                                    services::dispatcher::txn_session_context_t session_ctx,
-                                   std::pmr::vector<expanded_view_t> expanded_views) {
+                                   std::pmr::vector<expanded_view_t> expanded_views,
+                                   bool sub_query) {
         using node_type = components::logical_plan::node_type;
         using components::logical_plan::node_aggregate_t;
         using components::logical_plan::node_catalog_resolve_t;
@@ -1963,11 +2070,12 @@ namespace services::collection::executor {
         using components::logical_plan::node_t;
         using components::logical_plan::resolve_kind;
 
-        const bool run_sub_queries = plan.explain != components::logical_plan::explain_type::plan;
         const bool plan_only = plan.explain == components::logical_plan::explain_type::plan;
         const bool capture_ir = plan.explain == components::logical_plan::explain_type::analyze;
+        const bool describe = components::logical_plan::is_describe(plan.explain);
+        const bool run_sub_queries = !plan_only && !describe;
         std::pmr::vector<explain_plan_node> captured_subplans{resource()};
-        for (std::size_t i = 0; (run_sub_queries || plan_only) && i + 1 < plan.sub_queries.size(); ++i) {
+        for (std::size_t i = 0; (run_sub_queries || plan_only || describe) && i + 1 < plan.sub_queries.size(); ++i) {
             auto* sub_root = plan.sub_queries[i].get();
             const node_type sub_type = sub_root ? sub_root->type() : node_type::unused;
             if (sub_type == node_type::insert_t || sub_type == node_type::insert_on_conflict_t ||
@@ -1978,7 +2086,10 @@ namespace services::collection::executor {
                                   std::pmr::string{"DML statement is not allowed in a sub-query", resource()}})};
             }
             components::logical_plan::execution_plan_t sub_plan{resource(), plan.sub_queries[i], plan.parameters};
-            if (plan_only) {
+            sub_plan.external_parameters = plan.external_parameters;
+            if (describe) {
+                sub_plan.explain = components::logical_plan::explain_type::describe;
+            } else if (plan_only) {
                 sub_plan.explain = components::logical_plan::explain_type::plan;
                 sub_plan.explain_capture_ir = true;
             } else if (capture_ir) {
@@ -1988,7 +2099,8 @@ namespace services::collection::executor {
             auto sub_result = co_await execute_statement_(session,
                                                           std::move(sub_plan),
                                                           session_ctx,
-                                                          std::pmr::vector<expanded_view_t>{resource()});
+                                                          std::pmr::vector<expanded_view_t>{resource()},
+                                                          true);
             if (sub_result.cursor->is_error()) {
                 co_return execute_result_t{std::move(sub_result.cursor)};
             }
@@ -2020,7 +2132,7 @@ namespace services::collection::executor {
                 sub_result.captured_explain_ir->subplan_returns = static_cast<uint32_t>(mapping.id);
                 captured_subplans.push_back(std::move(*sub_result.captured_explain_ir));
             }
-            if (plan_only) {
+            if (plan_only || describe) {
                 // Nothing runs: a NULL of the result's type stands for it in the plan the EXPLAIN renders.
                 plan.parameters->set_parameter(mapping.id, components::vector::make_null(resource(), result_type));
                 continue;
@@ -2311,12 +2423,20 @@ namespace services::collection::executor {
                     written = table->connection;
                 }
             }
-            if (auto refused = check_write_place_(session_ctx, std::span<const std::string>{&written, 1});
+            // A describe writes nothing.
+            if (auto refused = describe ? core::error_t::no_error()
+                                        : check_write_place_(session_ctx, std::span<const std::string>{&written, 1});
                 refused.contains_error()) {
                 co_return execute_result_t{make_cursor(resource(), std::move(refused))};
             }
         }
         cursor_t_ptr error;
+        services::dispatcher::validation::parameter_types_t parameter_types{
+            resource(),
+            plan.external_parameters,
+            plan.parameters->parameters(),
+            services::dispatcher::validation::output_node_of(plan.sub_queries.back().get())};
+        services::dispatcher::validation::named_schema returning{resource()};
         // A CREATE never writes into a schema the catalog does not hold: its rows would have no namespace. IF NOT
         // EXISTS does not cover it, since what is missing is the schema, not the object.
         const bool creates_in_a_schema =
@@ -2550,11 +2670,17 @@ namespace services::collection::executor {
                         cast_registry_,
                         function_registry_,
                         context_storage.execution_context};
+                    validation_context.parameter_types = &parameter_types;
+                    validation_context.returning = &returning;
                     auto schema_res = services::dispatcher::validate_schema(validation_context,
                                                                             plan.sub_queries.back().get(),
                                                                             plan.parameters->parameters());
                     if (schema_res.has_error()) {
                         error = make_cursor(resource(), schema_res.error());
+                    } else if (auto untyped = parameter_types.check_all_typed(); untyped.contains_error()) {
+                        error = make_cursor(resource(), std::move(untyped));
+                    } else {
+                        parameter_types.type_slots(*plan.parameters);
                     }
                 }
             }
@@ -2573,6 +2699,15 @@ namespace services::collection::executor {
         if (error) {
             trace(log_, "executor::execute_plan_full: validation error: {}", error->get_error().what);
             co_return execute_result_t{std::move(error)};
+        }
+        if (sub_query) {
+            if (describe) {
+                co_return execute_result_t{make_cursor(resource())};
+            }
+        } else if (auto parameters = parameter_types_of_(plan); parameters.has_error()) {
+            co_return execute_result_t{make_cursor(resource(), parameters.error())};
+        } else if (describe) {
+            co_return execute_result_t{describe_(plan, returning, parameters.value())};
         }
 
         components::catalog::oid_t create_index_table_oid = components::catalog::INVALID_OID;

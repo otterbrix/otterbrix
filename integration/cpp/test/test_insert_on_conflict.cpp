@@ -2,6 +2,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/vector/vector_builders.hpp>
 
 #include <cstdint>
 #include <map>
@@ -524,5 +525,57 @@ TEST_CASE("integration::cpp::insert_on_conflict") {
                        "INSERT INTO ocdb.items (id, v) VALUES (5, 5) ON CONFLICT (id) DO UPDATE SET v = excluded.v "
                        "RETURNING id, v;") == items_t{{5, 5}});
         CHECK(read_items(dispatcher) == items_t{{1, 10}, {2, 20}, {3, 33}, {4, 40}, {5, 5}, {6, 60}});
+    }
+}
+
+TEST_CASE("integration::cpp::insert_on_conflict::a parameter of DO UPDATE SET") {
+    auto config = test_create_config(integration_fixture_path("insert_on_conflict/set_parameter"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    seed_items(dispatcher);
+    auto* resource = dispatcher->resource();
+    using components::vector::make_scalar;
+
+    SECTION("is bound, and takes the column's type") {
+        auto cursor = dispatcher->execute_sql_with_params(
+            otterbrix::session_id_t(),
+            "INSERT INTO ocdb.items (id, v) VALUES ($1, 0) ON CONFLICT (id) DO "
+            "UPDATE SET v = $2;",
+            {{1, make_scalar(resource, std::int64_t{2})}, {2, make_scalar(resource, std::int32_t{77})}});
+        INFO(why(*cursor));
+        REQUIRE(cursor->is_success());
+        CHECK(read_items(dispatcher) == items_t{{1, 10}, {2, 77}, {3, 30}});
+    }
+    SECTION("used in VALUES and in SET") {
+        auto cursor = dispatcher->execute_sql_with_params(
+            otterbrix::session_id_t(),
+            "INSERT INTO ocdb.items (id, v) VALUES ($1, $2) ON CONFLICT (id) DO "
+            "UPDATE SET v = $2 + 1;",
+            {{1, make_scalar(resource, std::int64_t{3})}, {2, make_scalar(resource, std::int64_t{40})}});
+        INFO(why(*cursor));
+        REQUIRE(cursor->is_success());
+        CHECK(read_items(dispatcher) == items_t{{1, 10}, {2, 20}, {3, 41}});
+    }
+    SECTION("beside VALUES of literals only") {
+        auto cursor = dispatcher->execute_sql_with_params(
+            otterbrix::session_id_t(),
+            "INSERT INTO ocdb.items (id, v) VALUES (1, 0), (4, 40) ON CONFLICT (id) "
+            "DO UPDATE SET v = $1;",
+            {{1, make_scalar(resource, std::int64_t{11})}});
+        INFO(why(*cursor));
+        REQUIRE(cursor->is_success());
+        CHECK(read_items(dispatcher) == items_t{{1, 11}, {2, 20}, {3, 30}, {4, 40}});
+    }
+    SECTION("left unbound, refuses the statement") {
+        auto cursor =
+            dispatcher->execute_sql_with_params(otterbrix::session_id_t(),
+                                                "INSERT INTO ocdb.items (id, v) VALUES ($1, 0) ON CONFLICT (id) DO "
+                                                "UPDATE SET v = $2;",
+                                                {{1, make_scalar(resource, std::int64_t{2})}});
+        REQUIRE(cursor->is_error());
+        CHECK(std::string{cursor->get_error().what.begin(), cursor->get_error().what.end()} ==
+              "Not all parameters were bound: $2");
+        CHECK(read_items(dispatcher) == SEEDED_ITEMS);
     }
 }

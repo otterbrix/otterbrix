@@ -14,6 +14,7 @@
 #include <components/vector/operations/apply_quantified.hpp>
 
 #include <algorithm>
+#include <optional>
 #include <source_location>
 #include <span>
 #include <string>
@@ -28,8 +29,6 @@ namespace services::dispatcher::validation {
     namespace {
         const complex_logical_type invalid_type{logical_type::INVALID};
         const complex_logical_type boolean_type{logical_type::BOOLEAN};
-
-        bool is_stamped(const complex_logical_type& type) noexcept { return type.type() != logical_type::INVALID; }
 
         template<typename... Args>
         std::pmr::string message(std::pmr::memory_resource* resource, const Args&... args) {
@@ -49,24 +48,6 @@ namespace services::dispatcher::validation {
                 expression_ptr{make_cast_expression(resource, slot, target, cast, components::casts::cast_kind::cast)}};
         }
 
-        [[nodiscard]] complex_logical_type unify_operands(std::pmr::memory_resource* resource,
-                                                          const components::casts::cast_registry_t& cast_registry,
-                                                          std::span<param_storage* const> operands,
-                                                          std::span<complex_logical_type> types,
-                                                          core::error_t* error,
-                                                          std::string_view what) {
-            auto common = cast_registry.find_best_common_type(types);
-            if (!common.has_value()) {
-                *error = core::error_t(core::error_code_t::invalid_parameter,
-                                       message(resource, "no type is common to every ", what));
-                return invalid_type;
-            }
-            for (size_t index = 0; index < operands.size(); index++) {
-                splice_cast(resource, *operands[index], common->type, common->casts[index]);
-            }
-            return common->type;
-        }
-
         class resolver_t {
         public:
             resolver_t(const expression_context_t& context, bool* saw_reduction)
@@ -83,7 +64,7 @@ namespace services::dispatcher::validation {
                 }
                 if (is_parameter(operand)) {
                     last_cardinality_ = cardinality_t::constant;
-                    return context_.parameters.type(as_parameter(operand));
+                    return parameter_type(as_parameter(operand));
                 }
                 if (std::holds_alternative<components::expressions::key_t>(operand)) {
                     return column(components::expressions::as_key(operand), inside_aggregate);
@@ -138,6 +119,83 @@ namespace services::dispatcher::validation {
             }
 
         private:
+            complex_logical_type parameter_type(core::parameter_id_t id) {
+                if (context_.parameter_types != nullptr && context_.parameter_types->holds(id)) {
+                    return context_.parameter_types->type_of(id);
+                }
+                return context_.parameters.type(id);
+            }
+
+            // The slot of the $n without a type that `operand` is, alone or as a constant.
+            std::optional<core::parameter_id_t> untyped_parameter(const param_storage& operand) const {
+                if (context_.parameter_types == nullptr) {
+                    return std::nullopt;
+                }
+                std::optional<core::parameter_id_t> slot;
+                if (is_parameter(operand)) {
+                    slot = as_parameter(operand);
+                } else if (components::expressions::is_expr(operand) && as_expr(operand) &&
+                           as_expr(operand)->group() == expression_group::scalar) {
+                    const auto* scalar = static_cast<const scalar_expression_t*>(as_expr(operand).get());
+                    if (scalar->type() == scalar_type::constant && !scalar->params().empty() &&
+                        is_parameter(scalar->params().front())) {
+                        slot = as_parameter(scalar->params().front());
+                    }
+                }
+                if (slot && context_.parameter_types->is_untyped(*slot)) {
+                    return slot;
+                }
+                return std::nullopt;
+            }
+
+            // A coercion of an untyped $n gives it the target type instead of a cast (PostgreSQL 18
+            // variable_coerce_param_hook). True when `operand` was such a $n.
+            bool type_parameter(param_storage& operand, const complex_logical_type& target) {
+                const auto wanted = target.type();
+                if (wanted == logical_type::NA || wanted == logical_type::ANY || wanted == logical_type::INVALID ||
+                    wanted == logical_type::UNKNOWN) {
+                    return false;
+                }
+                const auto slot = untyped_parameter(operand);
+                if (!slot) {
+                    return false;
+                }
+                if (auto refused = context_.parameter_types->give(*slot, target); refused.contains_error()) {
+                    error_ = std::move(refused);
+                    return true;
+                }
+                if (!is_parameter(operand)) {
+                    as_expr(operand)->set_result_type(target);
+                }
+                return true;
+            }
+
+            void
+            conform(param_storage& operand, const complex_logical_type& target, const components::casts::cast_t& cast) {
+                if (type_parameter(operand, target)) {
+                    return;
+                }
+                splice_cast(context_.resource, operand, target, cast);
+            }
+
+            [[nodiscard]] complex_logical_type unify_operands(std::span<param_storage* const> operands,
+                                                              std::span<complex_logical_type> types,
+                                                              std::string_view what) {
+                auto common = context_.cast_registry.find_best_common_type(types);
+                if (!common.has_value()) {
+                    error_ = core::error_t(core::error_code_t::invalid_parameter,
+                                           message(context_.resource, "no type is common to every ", what));
+                    return invalid_type;
+                }
+                for (size_t index = 0; index < operands.size(); index++) {
+                    conform(*operands[index], common->type, common->casts[index]);
+                }
+                if (error_.contains_error()) {
+                    return invalid_type;
+                }
+                return common->type;
+            }
+
             complex_logical_type
             fail(core::error_code_t code,
                  std::pmr::string text,
@@ -361,7 +419,10 @@ namespace services::dispatcher::validation {
                     no_operator(probe, element);
                     return;
                 }
-                splice_cast(context_.resource, comparison->left(), common->type, common->left_cast);
+                conform(comparison->left(), common->type, common->left_cast);
+                if (error_.contains_error()) {
+                    return;
+                }
                 if (common->type == element) {
                     return;
                 }
@@ -484,11 +545,8 @@ namespace services::dispatcher::validation {
                     side_types.push_back(left_type);
                     side_types.push_back(right_type);
                     if (!is_stamped(
-                            unify_operands(context_.resource,
-                                           context_.cast_registry,
-                                           std::span<param_storage* const>{sides},
+                            unify_operands(std::span<param_storage* const>{sides},
                                            std::span<complex_logical_type>{side_types},
-                                           &error_,
                                            message(context_.resource, "side of ", to_string(comparison->type()))))) {
                         return;
                     }
@@ -528,6 +586,13 @@ namespace services::dispatcher::validation {
                     return;
                 }
                 conversion->set_cast(std::move(*resolved));
+                // `$1::int` types $1 too; the NULL-cast resolved above serves whatever type the slot then holds.
+                if (const auto parameter = untyped_parameter(conversion->child()); parameter) {
+                    if (auto refused = context_.parameter_types->give(*parameter, conversion->result_type());
+                        refused.contains_error()) {
+                        error_ = std::move(refused);
+                    }
+                }
             }
 
             void resolve_aggregate(aggregate_expression_t* aggregate, bool inside_aggregate) {
@@ -563,10 +628,9 @@ namespace services::dispatcher::validation {
                 }
                 for (size_t index = 0; index < aggregate->params().size() && index < resolved.value().arguments.size();
                      index++) {
-                    splice_cast(context_.resource,
-                                aggregate->params()[index],
-                                resolved.value().arguments[index].target,
-                                resolved.value().arguments[index].cast);
+                    conform(aggregate->params()[index],
+                            resolved.value().arguments[index].target,
+                            resolved.value().arguments[index].cast);
                 }
                 aggregate->set_pin(resolved.value().pin);
                 aggregate->set_function(resolved_copy(resolved.value().pin));
@@ -627,10 +691,9 @@ namespace services::dispatcher::validation {
                 // carry them: without this the runtime re-dispatches on the ORIGINAL argument types.
                 for (size_t index = 0; index < call->args().size() && index < resolved.value().arguments.size();
                      index++) {
-                    splice_cast(context_.resource,
-                                call->args()[index],
-                                resolved.value().arguments[index].target,
-                                resolved.value().arguments[index].cast);
+                    conform(call->args()[index],
+                            resolved.value().arguments[index].target,
+                            resolved.value().arguments[index].cast);
                 }
 
                 call->set_pin(resolved.value().pin);
@@ -766,11 +829,8 @@ namespace services::dispatcher::validation {
                         return;
                     }
                 }
-                const auto blend = unify_operands(context_.resource,
-                                                  context_.cast_registry,
-                                                  std::span<param_storage* const>{arms},
+                const auto blend = unify_operands(std::span<param_storage* const>{arms},
                                                   std::span<complex_logical_type>{arm_types},
-                                                  &error_,
                                                   message(context_.resource, "branch of ", to_string(scalar->type())));
                 if (!is_stamped(blend)) {
                     return;
@@ -802,7 +862,7 @@ namespace services::dispatcher::validation {
                     return;
                 }
                 scalar->set_result_type(resolved.op.result);
-                splice_cast(context_.resource, scalar->params()[0], resolved.lhs_target, resolved.lhs_cast);
+                conform(scalar->params()[0], resolved.lhs_target, resolved.lhs_cast);
                 last_cardinality_ = cardinality;
             }
 
@@ -840,8 +900,8 @@ namespace services::dispatcher::validation {
                     return;
                 }
                 scalar->set_result_type(resolved.op.result);
-                splice_cast(context_.resource, scalar->params()[0], resolved.lhs_target, resolved.lhs_cast);
-                splice_cast(context_.resource, scalar->params()[1], resolved.rhs_target, resolved.rhs_cast);
+                conform(scalar->params()[0], resolved.lhs_target, resolved.lhs_cast);
+                conform(scalar->params()[1], resolved.rhs_target, resolved.rhs_cast);
                 last_cardinality_ = combined;
             }
 
@@ -859,6 +919,9 @@ namespace services::dispatcher::validation {
                               std::string_view what) {
                 if (wanted.type() == logical_type::ANY || actual.type() == wanted.type()) {
                     return true;
+                }
+                if (type_parameter(operand, wanted)) {
+                    return !error_.contains_error();
                 }
                 auto cast = context_.cast_registry.resolve(actual, wanted, components::casts::cast_type::implicit);
                 if (!cast.has_value()) {

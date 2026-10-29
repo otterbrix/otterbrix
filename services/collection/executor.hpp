@@ -32,6 +32,7 @@
 #include <core/date/date_types.hpp>
 #include <services/collection/context_storage.hpp>
 #include <services/collection/explain/explain_renderer.hpp>
+#include <services/dispatcher/validation/schema.hpp>
 #include <span>
 #include <stack>
 #include <string>
@@ -232,10 +233,13 @@ namespace services::collection::executor {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
+        // `sub_query`: a flattened sub-plan of the statement, whose describe answers its columns only (the
+        // statement's $n are the main plan's to list).
         unique_future<execute_result_t> execute_statement_(components::session::session_id_t session,
                                                            components::logical_plan::execution_plan_t plan,
                                                            services::dispatcher::txn_session_context_t session_ctx,
-                                                           std::pmr::vector<expanded_view_t> expanded_views);
+                                                           std::pmr::vector<expanded_view_t> expanded_views,
+                                                           bool sub_query = false);
 
         unique_future<execute_result_t>
         run_resolve_subplan_(components::session::session_id_t session,
@@ -278,6 +282,17 @@ namespace services::collection::executor {
         // writes to two of them, is refused before any backend gets a message.
         core::error_t check_write_place_(const services::dispatcher::txn_session_context_t& session_ctx,
                                          std::span<const std::string> written_connections) const;
+
+        // The type of each $n of the validated main plan, by number: the lowest one nothing types is 42P18, one given
+        // two types 42P08 (PostgreSQL 18 pg_analyze_and_rewrite_varparams, variable_coerce_param_hook).
+        core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>
+        parameter_types_of_(const components::logical_plan::execution_plan_t& plan) const;
+        // A describe's answer: the result columns (the RETURNING ones of a write, QUERY PLAN of an EXPLAIN) and the
+        // types of the $n.
+        components::cursor::cursor_t_ptr
+        describe_(const components::logical_plan::execution_plan_t& plan,
+                  const services::dispatcher::validation::named_schema& returning,
+                  const std::pmr::vector<components::types::complex_logical_type>& parameters) const;
 
         // The host's rows its DDL replies brought: written by the statement, in its transaction.
         unique_future<core::error_t> write_host_rows_(components::session::session_id_t session,

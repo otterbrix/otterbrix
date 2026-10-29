@@ -189,6 +189,46 @@ TEST_CASE("integration::cpp::close_session::the_horizon_moves_past_a_closed_sess
     CHECK(test_helpers::wait_until(drained));
 }
 
+// A describe sent after close is refused as a statement is, a describe of a utility too.
+TEST_CASE("integration::cpp::close_session::a_describe_sent_after_close_is_refused") {
+    host_t host("test_close_session/describe");
+    shop(host);
+    const auto session = any();
+    host.db.ok(session, "BEGIN;");
+    host.backend().answer_opens_together(2);
+
+    components::cursor::cursor_t_ptr running;
+    std::thread reader([&] { running = host.db.run(session, "SELECT id FROM m2.shop.public.orders;"); });
+    REQUIRE(test_helpers::wait_until([&] { return host.backend().opens() == 1; }));
+
+    const auto waited = services::dispatcher::dev_statements_waited_turn();
+    std::thread closer([&] { close_session(host, session); });
+    REQUIRE(waited_beyond(waited));
+
+    components::cursor::cursor_t_ptr query;
+    std::thread describer([&] {
+        query = host.db.dispatcher()->describe_sql(session, "SELECT id FROM m2.shop.public.orders WHERE id = $1;");
+    });
+    REQUIRE(waited_beyond(waited + 1));
+    components::cursor::cursor_t_ptr utility;
+    std::thread utility_describer([&] { utility = host.db.dispatcher()->describe_sql(session, "BEGIN;"); });
+    REQUIRE(waited_beyond(waited + 2));
+
+    host.db.ok(any(), "SELECT id FROM m2.shop.public.orders;");
+    reader.join();
+    closer.join();
+    describer.join();
+    utility_describer.join();
+
+    INFO(session_sql::error_of(running));
+    CHECK(running->is_success());
+    for (const auto* described : {&query, &utility}) {
+        REQUIRE((*described)->is_error());
+        CHECK((*described)->get_error().type == code::connection_closed);
+        CHECK(std::string{(*described)->get_error().what} == "the session is closed");
+    }
+}
+
 // The statement running when close arrives and the one waiting before it end first; a statement sent after close is
 // refused, as PostgreSQL 18 reads nothing after Terminate.
 TEST_CASE("integration::cpp::close_session::a_close_waits_for_the_statements_sent_before_it") {

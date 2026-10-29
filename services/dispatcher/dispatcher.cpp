@@ -77,6 +77,7 @@ namespace services::dispatcher {
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_drop_resource_marked>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::on_subscriber_empty>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::begin_shutdown>,
+            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::close_session>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -359,6 +360,10 @@ namespace services::dispatcher {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::begin_shutdown, msg);
                 break;
             }
+            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::close_session>: {
+                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::close_session, msg);
+                break;
+            }
             default:
                 break;
         }
@@ -473,9 +478,20 @@ namespace services::dispatcher {
                         std::pmr::string{"the engine is shutting down: only CHECKPOINT is admitted", resource()}}));
         }
         const auto control = transaction_control_of(plan);
-        const auto settings_statement = settings_statement_of(plan);
+        const bool after_close = is_closed_(session);
         co_await take_turn_(session, control);
         session_turn_t turn{this, session, control};
+        if (after_close) {
+            co_return refuse_closed_(session);
+        }
+        co_return co_await run_statement_(session, control, std::move(plan));
+    }
+
+    manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
+    manager_dispatcher_t::run_statement_(components::session::session_id_t session,
+                                         components::table::transaction_control_t control,
+                                         components::logical_plan::execution_plan_t plan) {
+        const auto settings_statement = settings_statement_of(plan);
         // A failed transaction's writes wait for its end; a COMMIT ends it as a ROLLBACK.
         bool commits_failed =
             control == components::table::transaction_control_t::commit && failed_sessions_.contains(session);
@@ -487,7 +503,7 @@ namespace services::dispatcher {
         auto session_ctx = std::move(resolved.value());
         const uint64_t statement_txn_id = session_ctx.txn.transaction_id;
         const std::size_t pool_idx = next_executor_index();
-        trace(log_, "manager_dispatcher_t::execute_plan: routing to executor[{}]", pool_idx);
+        trace(log_, "manager_dispatcher_t::run_statement_: routing to executor[{}]", pool_idx);
         auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                                  &collection::executor::executor_t::execute_plan_full,
                                                                  session,
@@ -499,7 +515,7 @@ namespace services::dispatcher {
         auto exec_result = co_await std::move(future);
 
         trace(log_,
-              "manager_dispatcher_t::execute_plan: result received, success: {}",
+              "manager_dispatcher_t::run_statement_: result received, success: {}",
               exec_result.cursor->is_success());
         if (exec_result.cursor && exec_result.cursor->is_error()) {
             co_await finish_failed_statement_(session, statement_txn_id);
@@ -521,17 +537,64 @@ namespace services::dispatcher {
     manager_dispatcher_t::refuse_statement(components::session::session_id_t session, core::error_t error) {
         trace(log_, "manager_dispatcher_t::refuse_statement session: {}, {}", session.data(), error.what);
         const auto control = components::table::transaction_control_t::none;
+        const bool after_close = is_closed_(session);
         co_await take_turn_(session, control);
         session_turn_t turn{this, session, control};
+        if (after_close) {
+            co_return refuse_closed_(session);
+        }
         if (const auto* txn = txn_manager_.find_transaction(session); txn != nullptr) {
             co_await finish_failed_statement_(session, txn->transaction_id());
         }
         co_return stamp_transaction_status_(session, components::cursor::make_cursor(resource(), std::move(error)));
     }
 
+    bool manager_dispatcher_t::is_closed_(components::session::session_id_t session) const {
+        const auto order = session_order_.find(session);
+        return order != session_order_.end() && order->second.closed;
+    }
+
+    core::error_t manager_dispatcher_t::session_closed_() const {
+        return core::error_t{core::error_code_t::connection_closed,
+                             std::pmr::string{"the session is closed", resource()}};
+    }
+
+    components::cursor::cursor_t_ptr manager_dispatcher_t::refuse_closed_(components::session::session_id_t session) {
+        return stamp_transaction_status_(session, components::cursor::make_cursor(resource(), session_closed_()));
+    }
+
+    manager_dispatcher_t::unique_future<void>
+    manager_dispatcher_t::close_session(components::session::session_id_t session) {
+        trace(log_, "manager_dispatcher_t::close_session session: {}", session.data());
+        const auto control = components::table::transaction_control_t::rollback;
+        session_order_.try_emplace(session, resource()).first->second.closed = true;
+        co_await take_turn_(session, control);
+        session_turn_t turn{this, session, control};
+        if (txn_manager_.find_transaction(session) != nullptr) {
+            auto cursor = co_await run_statement_(session, control, make_rollback_plan(resource()));
+            if (cursor->is_error()) {
+                error(log_,
+                      "manager_dispatcher_t::close_session: the rollback of session {} failed: {}",
+                      session.data(),
+                      cursor->get_error().what);
+            }
+            if (txn_manager_.find_transaction(session) != nullptr) {
+                std::fprintf(stderr,
+                             "dispatcher: session %llu still has a transaction after the ROLLBACK of its close\n",
+                             static_cast<unsigned long long>(session.data()));
+                assert(false && "dispatcher: a closed session still has a transaction");
+                std::abort();
+            }
+        }
+        session_settings_.erase(session);
+    }
+
     manager_dispatcher_t::unique_future<core::error_t>
     manager_dispatcher_t::register_udf(components::session::session_id_t session,
                                        components::compute::function_ptr function) {
+        if (is_closed_(session)) {
+            co_return session_closed_();
+        }
         if (!function) {
             co_return core::error_t{core::error_code_t::invalid_parameter,
                                     std::pmr::string{"register_udf: no function to register", resource()}};
@@ -734,6 +797,9 @@ namespace services::dispatcher {
                                          std::pmr::vector<components::types::complex_logical_type> inputs,
                                          components::catalog::drop_behavior_t behavior) {
         trace(log_, "dispatcher_t::unregister_udf: session {}, {}", session.data(), function_name);
+        if (is_closed_(session)) {
+            co_return session_closed_();
+        }
 
         // A builtin is required by the system, as in PostgreSQL, which refuses to drop one.
         const auto named = function_registry_.find_functions(function_name);
@@ -844,8 +910,12 @@ namespace services::dispatcher {
         auto leaf =
             boost::intrusive_ptr(new components::logical_plan::node_register_cast_t(resource(), source, target, entry));
         auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
+        const bool after_close = is_closed_(session);
         co_await take_turn_(session, components::table::transaction_control_t::none);
         session_turn_t turn{this, session, components::table::transaction_control_t::none};
+        if (after_close) {
+            co_return session_closed_();
+        }
         auto resolved = create_session_context(session, &plan);
         if (resolved.has_error()) {
             co_return resolved.error();
@@ -939,8 +1009,12 @@ namespace services::dispatcher {
         auto leaf =
             boost::intrusive_ptr(new components::logical_plan::node_unregister_cast_t(resource(), source, target));
         auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
+        const bool after_close = is_closed_(session);
         co_await take_turn_(session, components::table::transaction_control_t::none);
         session_turn_t turn{this, session, components::table::transaction_control_t::none};
+        if (after_close) {
+            co_return session_closed_();
+        }
         auto resolved = create_session_context(session, &plan);
         if (resolved.has_error()) {
             co_return resolved.error();

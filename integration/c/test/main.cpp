@@ -6,6 +6,9 @@
 
 #include <climits>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -71,6 +74,20 @@ namespace {
         REQUIRE(cur != nullptr);
         REQUIRE(cursor_is_success(cur));
         release_cursor(cur);
+    }
+
+    // How many times the log files under `directory` hold `needle`.
+    std::size_t log_mentions(const std::string& directory, const std::string& needle) {
+        std::size_t count = 0;
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it{directory, ec}, end; !ec && it != end; it.increment(ec)) {
+            std::ifstream in(it->path());
+            const std::string text{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+            for (auto at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) {
+                ++count;
+            }
+        }
+        return count;
     }
 
 } // namespace
@@ -990,6 +1007,21 @@ TEST_CASE("c-api: an error inside BEGIN fails the handle's block until ROLLBACK"
     REQUIRE(cursor_is_success(after));
     CHECK(cursor_transaction_status(after) == TRANSACTION_STATUS_IDLE);
     release_cursor(after);
+}
+
+// Rust Database and C# OtterbrixWrapper end their session through this too.
+TEST_CASE("c-api: otterbrix_destroy closes the session of its handle", "[c-api][session][lifecycle]") {
+    test_db_t t("destroy_closes_session");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE SCHEMA s;");
+    run_ok(t.ptr, "CREATE TABLE s.t (a BIGINT);");
+    run_ok(t.ptr, "BEGIN;");
+    run_ok(t.ptr, "INSERT INTO s.t (a) VALUES (1);");
+    otterbrix_destroy(t.ptr);
+    t.ptr = nullptr;
+
+    CHECK(log_mentions(t.log_path, "manager_dispatcher_t::close_session session:") == 1);
 }
 
 TEST_CASE("c-api: ALTER SYSTEM inside a transaction block answers active_sql_transaction", "[c-api][errors]") {

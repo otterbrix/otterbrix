@@ -7,6 +7,8 @@
 #include <connection_environment/expression/expression_factory.hpp>
 #include <connection_environment/relation/relation_factory.hpp>
 
+#include <boost/smart_ptr/intrusive_ptr.hpp>
+#include <boost/smart_ptr/intrusive_ref_counter.hpp>
 #include <common/string_util/case_insensitive.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/logical_plan/node.hpp>
@@ -26,6 +28,34 @@ namespace otterbrix {
     using result_t = components::cursor::cursor_t_ptr;
     using pyconnection_ptr = std::shared_ptr<py_connection_t>;
     using pycursor_ptr = std::shared_ptr<py_connection_t>;
+
+    // The session of a connect() connection, held by it and its cursor() copies: it ends when the last of them goes.
+    class py_session_t final : public boost::intrusive_ref_counter<py_session_t> {
+    public:
+        explicit py_session_t(boost::intrusive_ptr<otterbrix_t> space);
+        ~py_session_t();
+        py_session_t(const py_session_t&) = delete;
+        py_session_t& operator=(const py_session_t&) = delete;
+
+        const session_id_t& id() const noexcept { return session_; }
+        // Blocks until the engine ends the session, then lets the engine go: the caller lets the GIL go.
+        void close();
+
+    private:
+        boost::intrusive_ptr<otterbrix_t> space_;
+        const session_id_t session_{};
+        bool closed_{false};
+    };
+
+    // Closed with its connection or cursor() copy, or with what that was copied from; held by the results it answered.
+    struct py_connection_state_t final : boost::intrusive_ref_counter<py_connection_state_t> {
+        explicit py_connection_state_t(boost::intrusive_ptr<py_connection_state_t> copied_from);
+        bool is_closed() const noexcept;
+        void refuse_if_closed() const;
+
+        bool closed{false};
+        const boost::intrusive_ptr<py_connection_state_t> parent;
+    };
 
     struct default_connection_holder_t {
     public:
@@ -66,12 +96,6 @@ namespace otterbrix {
     // Main class. py_connection_t IS the engine connection for the Python layer:
     // it inherits the expression / relation factories directly and delegates
     // execution to space->dispatcher() (execute_sql / execute_plan).
-    // Base order is load-bearing: bases destroy in reverse declaration order, and close()
-    // nulls expression_factory_t's space while leaving relation_factory_t's alive, so
-    // relation_factory_t (still holding the arena) must be declared first and destroyed
-    // last. Declared the other way once: expression_factory_t::values freed pmr strings
-    // into an arena relation_factory_t had already dropped -- EXC_BAD_ACCESS. Pinned by
-    // tests/test_constant_outlives_its_arena.py (see also expression_factory_t::space).
     class py_connection_t
         : public relation_factory_t
         , public expression_factory_t
@@ -79,14 +103,16 @@ namespace otterbrix {
     private:
         cursors_t cursors;
         boost::intrusive_ptr<otterbrix_t> space;
-        const session_id_t session_{};
+        const boost::intrusive_ptr<py_session_t> session_;
+        // A cursor() copy shares the session and does not close it.
+        const bool closes_session_{true};
+        const boost::intrusive_ptr<py_connection_state_t> state_;
 
     public:
         py_connection_t(const boost::intrusive_ptr<otterbrix_t>& space);
         py_connection_t(const py_connection_t& other);
-        // `arena` (the module's arena, main.cpp) is not stored: everything a connection
-        // keeps is allocated from the engine's arena (a member of `space` below), which
-        // this object already holds. `arena` only backs a refused open's message
+        // `arena` (the module's arena, main.cpp) is not stored: everything a connection keeps is allocated from the
+        // engine's arena, which this object already holds. `arena` only backs a refused open's message
         // (connection_environment_t::make_space), turned into a Python exception here.
         static pyconnection_ptr connect(const module_arena_ptr& arena,
                                         const py::object& database_p,
@@ -106,14 +132,12 @@ namespace otterbrix {
         static void cleanup();
 
     public:
-        // The space a result must keep alive: the result batch is pmr-allocated
-        // from its memory resource, and `close()` can drop the last reference.
-        const boost::intrusive_ptr<otterbrix_t>& space_ptr() const noexcept { return space; }
+        const boost::intrusive_ptr<py_connection_state_t>& state() const noexcept { return state_; }
+        bool is_closed() const noexcept { return state_->is_closed(); }
 
     public:
-        // Throws unless this connection still holds its space (every method below
-        // dereferences it). Public because py_relation_t asks the same question when
-        // chaining, so a closed connection refuses the same way from either door.
+        // Throws once this connection, or what it was copied from, is closed. Public because py_relation_t asks the
+        // same question when chaining, so a closed connection refuses the same way from either door.
         void refuse_if_closed() const;
 
     public:

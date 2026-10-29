@@ -95,10 +95,9 @@ def test_execute_refuses_a_query_that_is_not_a_string(conn):
         conn.execute(["SELECT 1;"])
 
 
-def test_a_result_outlives_the_connection_that_produced_it(tmp_path):
-    """The rows must still be readable after the connection is closed: the
-    result owns the batch it was handed, not a borrowed view into a space that
-    `close()` may have been the last reference to."""
+def test_a_result_of_a_closed_connection_is_refused(tmp_path):
+    """close() ends what the connection answered, as DuckDB's does: reading a result
+    afterwards is refused, and the refusal does not touch memory the close released."""
     connection = otterbrix.connect(str(tmp_path / "outlive_db"))
     connection.execute("CREATE SCHEMA ol;")
     connection.execute("CREATE TABLE ol.rows (id INTEGER);")
@@ -106,7 +105,8 @@ def test_a_result_outlives_the_connection_that_produced_it(tmp_path):
     result = connection.execute("SELECT id FROM ol.rows ORDER BY id;")
     connection.close()
     del connection
-    assert result.fetchall() == [(11,), (12,)]
+    with pytest.raises(RuntimeError, match="the connection is closed"):
+        result.fetchall()
 
 
 def _run_probe(body, database):

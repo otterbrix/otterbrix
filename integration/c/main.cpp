@@ -119,7 +119,11 @@ extern "C" otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error
     return reinterpret_cast<otterbrix_ptr>(new handle_storage_t{engine.value(), otterbrix::session_id_t{}});
 }
 
-extern "C" void otterbrix_destroy(otterbrix_ptr ptr) noexcept { delete live_otterbrix(ptr); }
+extern "C" void otterbrix_destroy(otterbrix_ptr ptr) noexcept {
+    handle_storage_t* handle = live_otterbrix(ptr);
+    handle->engine->dispatcher()->close_session(handle->session);
+    delete handle;
+}
 
 extern "C" cursor_ptr execute_sql(otterbrix_ptr ptr, string_view_t query) noexcept {
     const handle_storage_t* handle = live_otterbrix(ptr);

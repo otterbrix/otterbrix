@@ -34,10 +34,12 @@ namespace otterbrix {
 
     class relation_factory_t {
     public:
-        relation_factory_t(const boost::intrusive_ptr<otterbrix_t>& space);
+        explicit relation_factory_t(engine_arena_ptr arena);
         relation_factory_t(const relation_factory_t& other) = default;
         relation_factory_t& operator=(const relation_factory_t&) = delete;
         virtual ~relation_factory_t();
+
+        const engine_arena_ptr& arena() const noexcept { return arena_; }
 
         // Chaining operations: each takes the source node + its column schema
         // and returns the new node + its (eagerly recomputed) column schema.
@@ -70,7 +72,7 @@ namespace otterbrix {
                             components::logical_plan::node_select_ptr select,
                             components::logical_plan::node_limit_ptr limit = nullptr);
 
-        boost::intrusive_ptr<otterbrix_t> space;
+        engine_arena_ptr arena_;
     };
 
 } // namespace otterbrix

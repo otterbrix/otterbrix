@@ -1,4 +1,5 @@
 #include "wrapper_cursor.hpp"
+#include "wrapper_client.hpp"
 #include <components/vector/vector.hpp>
 #include <util/util.hpp>
 
@@ -119,14 +120,12 @@ namespace {
     }
 } // namespace
 
-wrapper_cursor::wrapper_cursor(pointer cursor,
-                               otterbrix::wrapper_dispatcher_t* dispatcher,
-                               otterbrix::spaces_ptr space,
-                               otterbrix::session_id_t session)
-    : space_(std::move(space))
+wrapper_cursor::wrapper_cursor(pointer cursor, boost::intrusive_ptr<otterbrix::wrapper_client> client)
+    : arena_(client->arena())
     , ptr_(std::move(cursor))
-    , dispatcher_(dispatcher)
-    , session_(session) {}
+    , client_(std::move(client)) {}
+
+wrapper_cursor::~wrapper_cursor() = default;
 
 void wrapper_cursor::close() { close_ = true; }
 
@@ -230,7 +229,7 @@ std::string wrapper_cursor::print() {
 
 wrapper_cursor& wrapper_cursor::sort(py::object /*sorter*/, py::object /*order*/) { return *this; }
 
-void wrapper_cursor::execute(std::string& query) { ptr_ = dispatcher_->execute_sql(session_, query); }
+void wrapper_cursor::execute(std::string& query) { ptr_ = client_->execute_sql(query); }
 
 py::object wrapper_cursor::get_(const std::string& key) const {
     if (ptr_->is_write() || ptr_->size() == 0) {

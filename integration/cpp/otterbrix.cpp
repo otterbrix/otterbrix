@@ -22,10 +22,4 @@ namespace otterbrix {
         return std::move(made.value());
     }
 
-    auto execute_sql(const otterbrix_ptr& ptr, const std::string& query) -> components::cursor::cursor_t_ptr {
-        assert(ptr.get() != nullptr);
-        assert(!query.empty());
-        return ptr->dispatcher()->execute_sql(session_id_t(), query);
-    }
-
 } // namespace otterbrix

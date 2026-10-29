@@ -47,18 +47,23 @@ namespace otterbrix {
         }
     } // namespace
 
+    // The connection replaced here is destroyed after the lock is released: its destructor lets the GIL go.
     pyconnection_ptr default_connection_holder_t::get(const module_arena_ptr& arena) {
+        pyconnection_ptr replaced;
         std::lock_guard<std::mutex> guard(l);
-        if (!connection) {
+        if (!connection || connection->is_closed()) {
             auto default_path = std::filesystem::absolute(connection_environment_t::DEFAULT_FOLDER);
+            replaced = std::move(connection);
             connection = std::make_shared<py_connection_t>(open_space_or_raise(arena, default_path));
         }
         return connection;
     }
 
     void default_connection_holder_t::set(pyconnection_ptr conn) {
+        pyconnection_ptr replaced;
         std::lock_guard<std::mutex> guard(l);
-        connection = conn;
+        replaced = std::move(connection);
+        connection = std::move(conn);
     }
 
     cursors_t::cursors_t() = default;
@@ -110,17 +115,56 @@ namespace otterbrix {
         return default_connection_.set(std::move(conn));
     }
 
+    py_session_t::py_session_t(boost::intrusive_ptr<otterbrix_t> space)
+        : space_(std::move(space)) {}
+
+    py_session_t::~py_session_t() {
+        py::gil_scoped_release release;
+        close();
+    }
+
+    void py_session_t::close() {
+        if (closed_) {
+            return;
+        }
+        closed_ = true;
+        space_->dispatcher()->close_session(session_);
+        space_ = nullptr;
+    }
+
+    py_connection_state_t::py_connection_state_t(boost::intrusive_ptr<py_connection_state_t> copied_from)
+        : parent(std::move(copied_from)) {}
+
+    bool py_connection_state_t::is_closed() const noexcept {
+        for (const auto* state = this; state != nullptr; state = state->parent.get()) {
+            if (state->closed) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void py_connection_state_t::refuse_if_closed() const {
+        if (is_closed()) {
+            throw std::runtime_error("the connection is closed");
+        }
+    }
+
     py_connection_t::py_connection_t(const boost::intrusive_ptr<otterbrix_t>& space)
-        : relation_factory_t(space)
-        , expression_factory_t(space)
-        , space(space) {}
+        : relation_factory_t(space->arena())
+        , expression_factory_t(space->arena())
+        , space(space)
+        , session_(new py_session_t(space))
+        , state_(new py_connection_state_t(nullptr)) {}
 
     py_connection_t::py_connection_t(const py_connection_t& other)
         : relation_factory_t(other)
         , expression_factory_t(other)
         , std::enable_shared_from_this<py_connection_t>(other)
         , space(other.space)
-        , session_(other.session_) {}
+        , session_(other.session_)
+        , closes_session_(false)
+        , state_(new py_connection_state_t(other.state_)) {}
 
     pyconnection_ptr py_connection_t::connect(const module_arena_ptr& arena,
                                               const py::object& database_p,
@@ -171,31 +215,22 @@ namespace otterbrix {
         connection_environment_t::cleanup();
     }
 
-    void py_connection_t::set_null_connection() {
-        space = nullptr;
-        expression_factory_t::set_null_space();
-    }
+    void py_connection_t::set_null_connection() { space = nullptr; }
 
     void py_connection_t::create_database(const std::string& name) {
-        space->dispatcher()->execute_sql(session_, "CREATE DATABASE " + name + ";");
+        space->dispatcher()->execute_sql(session_->id(), "CREATE DATABASE " + name + ";");
     }
 
-    // A closed connection has a null space; calling `space->dispatcher()` on it relies on an assert that
-    // NDEBUG removes, leaving a plain null dereference. Guards every road into the engine, including building
-    // a relation (from_df/from_object, py_relation_t::live_env), which never dereferences this `space`
-    // directly but would otherwise return a relation with none.
-    void py_connection_t::refuse_if_closed() const {
-        if (!space) {
-            throw std::runtime_error("the connection is closed");
-        }
-    }
+    // Guards every road into the engine: a closed connection has no space, and under NDEBUG a dereference of it is a
+    // plain null dereference. Building a relation (from_df/from_object, py_relation_t::live_env) is refused the same.
+    void py_connection_t::refuse_if_closed() const { state_->refuse_if_closed(); }
 
     result_t py_connection_t::execute_internal(const std::string& query) {
         refuse_if_closed();
         // Delegates rather than re-implementing wrapper_dispatcher_t::execute_sql, which
         // already turns raw_parser's error into an error cursor, guards `linitial` against an empty parse list,
         // and passes the registered parser extensions and query text to the transformer.
-        return space->dispatcher()->execute_sql(session_, query);
+        return space->dispatcher()->execute_sql(session_->id(), query);
     }
 
     result_t py_connection_t::execute(const components::logical_plan::node_ptr& node_in, bool optimize) {
@@ -206,14 +241,14 @@ namespace otterbrix {
                 components::planner::optimize(node->resource(), node, nullptr, components::graph_execution_context{});
         }
         return space->dispatcher()->execute_plan(
-            session_,
+            session_->id(),
             components::logical_plan::execution_plan_t{node->resource(), node, expression_factory_t::get_params()});
     }
 
     cursor::cursor_t_ptr py_connection_t::query_relation(const components::logical_plan::node_ptr& rel) {
         refuse_if_closed();
         return space->dispatcher()->execute_plan(
-            session_,
+            session_->id(),
             components::logical_plan::execution_plan_t{space->dispatcher()->resource(),
                                                        rel,
                                                        expression_factory_t::get_params()});
@@ -231,9 +266,13 @@ namespace otterbrix {
 
     void py_connection_t::close() {
         assert(py::gil_check());
+        state_->closed = true;
         py::gil_scoped_release release;
-        set_null_connection();
         cursors.clear_cursors();
+        if (closes_session_) {
+            session_->close();
+        }
+        set_null_connection();
     }
 
     pycursor_ptr py_connection_t::cursor() {
@@ -252,14 +291,10 @@ namespace otterbrix {
         }
         auto cursor = execute_internal(std::string(py::str(query)));
         raise_if_error("execute", cursor);
-        return std::make_unique<py_result_t>(this, cursor, py_result_t::columns_of(cursor));
+        return std::make_unique<py_result_t>(*this, cursor, py_result_t::columns_of(cursor));
     }
 
     std::unique_ptr<py_relation_t> py_connection_t::from_df(const py::object& value) {
-        // Building is a road into the engine too, not just `execute`: create_df_relation allocates from
-        // relation_factory_t's own (undying) copy of the space, but py_relation_t frees them via the same copy
-        // that close() nulls -- without this refusal, a closed connection would return a relation with live
-        // memory and no arena to free it.
         refuse_if_closed();
         std::string name = "df_no_idea";
         auto tableref = scan_t::replacement_object(value, name);

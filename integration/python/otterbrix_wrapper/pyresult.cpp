@@ -23,10 +23,11 @@ namespace otterbrix {
         return defs;
     }
 
-    py_result_t::py_result_t(py_connection_t* env,
+    py_result_t::py_result_t(const py_connection_t& env,
                              components::cursor::cursor_t_ptr result_p,
                              const std::vector<components::table::column_definition_t>& defs)
-        : space(env ? env->space_ptr() : boost::intrusive_ptr<otterbrix_t>{})
+        : arena_(env.arena())
+        , state_(env.state())
         , result(std::move(result_p)) {
         if (!result) {
             throw std::runtime_error("PyResult created without a result object");
@@ -48,6 +49,7 @@ namespace otterbrix {
     }
 
     py_optional_t<py::tuple> py_result_t::fetchone() {
+        state_->refuse_if_closed();
         if (!result) {
             throw std::runtime_error("result closed");
         }
@@ -76,6 +78,7 @@ namespace otterbrix {
     }
 
     py::list py_result_t::fetchmany(idx_t size) {
+        state_->refuse_if_closed();
         py::list res;
         for (idx_t i = 0; i < size; i++) {
             auto fres = fetchone();
@@ -100,6 +103,7 @@ namespace otterbrix {
     }
 
     pandas_data_frame_t py_result_t::fetch_df() {
+        state_->refuse_if_closed();
         if (!result) {
             throw std::runtime_error("result closed");
         }
@@ -128,9 +132,13 @@ namespace otterbrix {
         return df;
     }
 
-    std::size_t py_result_t::size() const { return result && !result->is_write() ? result->size() : 0u; }
+    std::size_t py_result_t::size() const {
+        state_->refuse_if_closed();
+        return result && !result->is_write() ? result->size() : 0u;
+    }
 
     int64_t py_result_t::rowcount() const {
+        state_->refuse_if_closed();
         if (!result) {
             return -1;
         }
@@ -138,6 +146,7 @@ namespace otterbrix {
     }
 
     py::object py_result_t::created_oid() const {
+        state_->refuse_if_closed();
         if (!result) {
             return py::none();
         }
@@ -145,6 +154,7 @@ namespace otterbrix {
     }
 
     std::optional<components::session::transaction_status_t> py_result_t::transaction_status() const {
+        state_->refuse_if_closed();
         if (!result) {
             return std::nullopt;
         }

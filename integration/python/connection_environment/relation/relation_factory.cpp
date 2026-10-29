@@ -169,8 +169,8 @@ namespace otterbrix {
         }
     } // namespace
 
-    relation_factory_t::relation_factory_t(const boost::intrusive_ptr<otterbrix_t>& space)
-        : space(space) {}
+    relation_factory_t::relation_factory_t(engine_arena_ptr arena)
+        : arena_(std::move(arena)) {}
 
     relation_factory_t::~relation_factory_t() = default;
 
@@ -180,7 +180,7 @@ namespace otterbrix {
                                                      node_sort_ptr sort,
                                                      node_select_ptr select,
                                                      node_limit_ptr limit) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         auto aggregator = make_node_aggregate(resource, qualified_name_t{});
         aggregator->append_child(from);
         if (group) {
@@ -203,7 +203,7 @@ namespace otterbrix {
 
     built_relation_t relation_factory_t::filter_relation(const built_relation_t& relation,
                                                          const expression_wrapper_t& condition) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         node_match_ptr match_node;
         if (condition.is_expression()) {
             if (condition.expression()->group() == expressions::expression_group::compare) {
@@ -215,7 +215,7 @@ namespace otterbrix {
             throw std::runtime_error("The method supports only condition expression");
         }
         auto node = make_aggregate_node(relation.node, nullptr, match_node, nullptr, nullptr);
-        return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
+        return {node, passthrough_schema(&arena_->resource, relation.columns)};
     }
 
     built_relation_t relation_factory_t::sort_relation(const built_relation_t& relation,
@@ -223,7 +223,7 @@ namespace otterbrix {
         if (exprs.empty()) {
             throw std::runtime_error("Please provide at least one expression to sort on");
         }
-        std::pmr::vector<expressions::expression_ptr> sort_exprs(space->dispatcher()->resource());
+        std::pmr::vector<expressions::expression_ptr> sort_exprs(&arena_->resource);
         sort_exprs.reserve(exprs.size());
         for (const auto& expr : exprs) {
             if (expr.is_expression()) {
@@ -238,15 +238,15 @@ namespace otterbrix {
                 throw std::runtime_error("Implementation Error. Undefined expression type for sort relation");
             }
         }
-        auto sort = make_node_sort(space->dispatcher()->resource(), std::move(sort_exprs));
+        auto sort = make_node_sort(&arena_->resource, std::move(sort_exprs));
 
         auto node = make_aggregate_node(relation.node, nullptr, nullptr, sort, nullptr);
-        return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
+        return {node, passthrough_schema(&arena_->resource, relation.columns)};
     }
 
     built_relation_t relation_factory_t::group_relation(const built_relation_t& relation,
                                                         const std::vector<expression_wrapper_t>& exprs) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         // A grouped column enters the node twice, exactly as the SQL transformer
         std::vector<expressions::expression_ptr> keys;
         std::vector<expressions::expression_ptr> outputs;
@@ -278,16 +278,16 @@ namespace otterbrix {
         std::vector<expressions::expression_ptr> fields = std::move(keys);
         fields.reserve(fields.size() + outputs.size());
         fields.insert(fields.end(), outputs.begin(), outputs.end());
-        auto group = make_node_group(space->dispatcher()->resource(), std::move(fields));
+        auto group = make_node_group(&arena_->resource, std::move(fields));
 
-        auto schema = group_schema(space->dispatcher()->resource(), group, relation.columns);
+        auto schema = group_schema(&arena_->resource, group, relation.columns);
         auto node = make_aggregate_node(relation.node, group, nullptr, nullptr, nullptr);
         return {node, std::move(schema)};
     }
 
     built_relation_t relation_factory_t::select_relation(const built_relation_t& relation,
                                                          const std::vector<expression_wrapper_t>& exprs) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         auto select = make_node_select(resource);
         for (const auto& expr : exprs) {
             expressions::expression_ptr scalar;
@@ -318,7 +318,7 @@ namespace otterbrix {
                                                        const built_relation_t& other,
                                                        const std::vector<expression_wrapper_t>& exprs,
                                                        components::logical_plan::join_type type) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         std::pmr::vector<expressions::expression_ptr> conditions(resource);
         for (const auto& expr : exprs) {
             if (expr.is_expression()) {
@@ -355,14 +355,14 @@ namespace otterbrix {
     }
 
     built_relation_t relation_factory_t::limit_relation(const built_relation_t& relation, int64_t count) {
-        auto limit_node = make_node_limit(space->dispatcher()->resource(), limit_t(count));
+        auto limit_node = make_node_limit(&arena_->resource, limit_t(count));
         auto node = make_aggregate_node(relation.node, nullptr, nullptr, nullptr, nullptr, limit_node);
-        return {node, passthrough_schema(space->dispatcher()->resource(), relation.columns)};
+        return {node, passthrough_schema(&arena_->resource, relation.columns)};
     }
 
     // should be protected because don\'t send external data
     built_relation_t relation_factory_t::create_df_relation(std::unique_ptr<components::tableref::table_ref_t> ref) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         auto tableData = scan_t::fetch_object_data(resource, std::move(ref));
 
         // Data leaf: the column schema is the data table's own columns.

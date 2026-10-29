@@ -23,13 +23,20 @@ namespace otterbrix {
         wrapper_client(spaces_ptr space);
         ~wrapper_client();
         auto execute(const std::string& query) -> wrapper_cursor_ptr;
+        // Runs in the client's session; once the client is closed it answers connection_closed.
+        auto execute_sql(const std::string& query) -> components::cursor::cursor_t_ptr;
+        // Ends the session and lets the engine go; a second call does nothing.
+        void close();
+        const engine_arena_ptr& arena() const noexcept { return arena_; }
 
     private:
-        friend class wrapper_connection;
-
         const std::string name_;
         spaces_ptr ptr_;
+        const engine_arena_ptr arena_;
         const session_id_t session_{};
+        bool closed_{false};
         mutable log_t log_;
     };
+
+    using wrapper_client_ptr = boost::intrusive_ptr<wrapper_client>;
 } // namespace otterbrix

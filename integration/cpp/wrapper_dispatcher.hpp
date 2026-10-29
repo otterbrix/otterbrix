@@ -73,6 +73,8 @@ namespace otterbrix {
                                      const std::vector<std::pair<size_t, components::vector::vector_t>>& params,
                                      uint32_t render_id = 0) -> components::cursor::cursor_t_ptr;
         auto set_timezone(const session_id_t& session, std::string timezone_name) -> components::cursor::cursor_t_ptr;
+        // Ends the session (manager_dispatcher_t::close_session); a failed rollback reaches only the log.
+        void close_session(const session_id_t& session);
 
         auto add_parser_extension(components::sql::parser::parser_extension_t extension)
             -> core::result_wrapper_t<const components::sql::parser::parser_extension_t*>;

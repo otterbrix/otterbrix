@@ -155,8 +155,12 @@ namespace services::dispatcher {
         unique_future<void> on_drop_resource_marked(uint8_t subscriber_kind);
         unique_future<void> on_subscriber_empty(uint8_t subscriber_kind);
 
-        // Shutdown: every statement arriving after this is refused, except CHECKPOINT.
+        // Shutdown: every statement arriving after this is refused, except CHECKPOINT and close_session.
         unique_future<void> begin_shutdown();
+
+        // After the statements sent before it: rolls the open transaction back, then forgets the session's settings.
+        // Statements sent after it, while it waits or runs, are refused with connection_closed.
+        unique_future<void> close_session(components::session::session_id_t session);
 
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
                                                             &manager_dispatcher_t::refuse_statement,
@@ -177,7 +181,8 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::txn_compact_watermark_msg,
                                                             &manager_dispatcher_t::on_drop_resource_marked,
                                                             &manager_dispatcher_t::on_subscriber_empty,
-                                                            &manager_dispatcher_t::begin_shutdown>;
+                                                            &manager_dispatcher_t::begin_shutdown,
+                                                            &manager_dispatcher_t::close_session>;
 
     private:
         // Member coroutine, not a lambda, so `this` supplies the frame memory_resource.
@@ -216,6 +221,15 @@ namespace services::dispatcher {
             bool alter_system{false};
         };
         settings_statement_t settings_statement_of(const components::logical_plan::execution_plan_t& plan) const;
+
+        // A statement in its session's turn: through the executor, then the end of its transaction and settings.
+        unique_future<components::cursor::cursor_t_ptr> run_statement_(components::session::session_id_t session,
+                                                                       components::table::transaction_control_t control,
+                                                                       components::logical_plan::execution_plan_t plan);
+        bool is_closed_(components::session::session_id_t session) const;
+        core::error_t session_closed_() const;
+        components::cursor::cursor_t_ptr refuse_closed_(components::session::session_id_t session);
+
         void finish_settings_(components::session::session_id_t session,
                               const settings_statement_t& statement,
                               bool commit_rolled_back,
@@ -243,6 +257,8 @@ namespace services::dispatcher {
                 : waiting(resource) {}
             std::size_t running{0};
             bool closing{false};
+            // close_session arrived: the statements sent after it are refused while this entry lives.
+            bool closed{false};
             // list for pointer stability
             std::pmr::list<waiting_statement_t> waiting;
         };

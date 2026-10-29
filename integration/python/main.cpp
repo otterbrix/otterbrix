@@ -81,15 +81,16 @@ PYBIND11_MODULE(OTTERBRIX_PYTHON_LIB_NAME, m) {
     auto clean_default_connection = []() { py_connection_t::cleanup(); };
     m.add_object("_clean_default_connection", pybind11::capsule(clean_default_connection));
 
-    pybind11::class_<wrapper_client>(m, "Client")
+    pybind11::class_<wrapper_client, boost::intrusive_ptr<wrapper_client>>(m, "Client")
         .def(pybind11::init([]() { return new wrapper_client(space_or_raise(spaces::get_instance())); }))
         .def(pybind11::init([](const pybind11::str& s) {
             return new wrapper_client(space_or_raise(spaces::get_instance(std::string(s))));
         }))
-        .def("execute", &wrapper_client::execute, pybind11::arg("query"));
+        .def("execute", &wrapper_client::execute, pybind11::arg("query"))
+        .def("close", &wrapper_client::close);
 
     pybind11::class_<wrapper_connection>(m, "Connection")
-        .def(pybind11::init([](wrapper_client* client) { return new wrapper_connection(client); }))
+        .def(pybind11::init([](wrapper_client* client) { return new wrapper_connection(wrapper_client_ptr{client}); }))
         .def("execute", &wrapper_connection::execute, pybind11::arg("query"))
         .def("cursor", &wrapper_connection::cursor)
         .def("close", &wrapper_connection::close)

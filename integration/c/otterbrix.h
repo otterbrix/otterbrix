@@ -55,10 +55,11 @@ typedef struct error_message {
 // A refused start answers nullptr and fills *out_error; the caller frees out_error->message with
 // otterbrix_free_string. On success out_error->code is 0 and out_error->message is nullptr.
 otterbrix_ptr otterbrix_create(config_t cfg, error_message* out_error) OTTERBRIX_NOEXCEPT;
-// Every cursor and value holds the engine it came from. otterbrix_destroy gives up the caller's handle: the engine
-// (its threads, its memory, the lock on main_path) goes when the last cursor or value is released too, on whichever
-// thread releases it, so they may be released in any order and from any thread. After otterbrix_destroy the handle
-// itself must not be passed to any call again.
+// Every cursor and value holds the engine it came from. otterbrix_destroy closes the handle's session (its open
+// transaction rolls back, its settings go) and gives up the caller's handle: the engine (its threads, its memory, the
+// lock on main_path) goes when the last cursor or value is released too, on whichever thread releases it, so they may
+// be released in any order and from any thread. After otterbrix_destroy the handle itself must not be passed to any
+// call again.
 void otterbrix_destroy(otterbrix_ptr) OTTERBRIX_NOEXCEPT;
 
 // A handle is one session: a BEGIN sent through it stays open for its next statement (execute_sql_params included).

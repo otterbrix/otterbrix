@@ -235,6 +235,14 @@ namespace otterbrix {
                                                        components::logical_plan::make_parameter_node(resource())});
     }
 
+    void wrapper_dispatcher_t::close_session(const session_id_t& session) {
+        trace(log_, "wrapper_dispatcher_t::close_session session: {}", session.data());
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
+                                                       &services::dispatcher::manager_dispatcher_t::close_session,
+                                                       session);
+        actor_zeta::otterbrix::wait_ready(future);
+    }
+
     cursor_t_ptr wrapper_dispatcher_t::send_plan(const session_id_t& session,
                                                  components::logical_plan::execution_plan_t plan) {
         // Guarded at the CALL SITE, not inside trace(): the argument is evaluated before

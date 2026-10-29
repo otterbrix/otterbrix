@@ -144,11 +144,11 @@ namespace otterbrix {
         }
     }
 
-    otterbrix_py_type_t::otterbrix_py_type_t(boost::intrusive_ptr<otterbrix_t> space, complex_logical_type value)
-        : space_(std::move(space))
+    otterbrix_py_type_t::otterbrix_py_type_t(engine_arena_ptr engine_arena, complex_logical_type value)
+        : engine_arena_(std::move(engine_arena))
         , type_(std::move(value)) {
-        // Same rule, other arena: a schema type's child vector lives in the space's pool.
-        if (!space_) {
+        // Same rule, other arena: a schema type's child vector lives in the engine arena's pool.
+        if (!engine_arena_) {
             throw std::runtime_error("OtterBrixPyType: the connection is closed");
         }
     }
@@ -157,7 +157,7 @@ namespace otterbrix {
     // allocator, so the derived type stands on the same arena and exactly one slot stays set.
     std::shared_ptr<otterbrix_py_type_t> otterbrix_py_type_t::derive(complex_logical_type value) const {
         return arena_ ? std::make_shared<otterbrix_py_type_t>(arena_, std::move(value))
-                      : std::make_shared<otterbrix_py_type_t>(space_, std::move(value));
+                      : std::make_shared<otterbrix_py_type_t>(engine_arena_, std::move(value));
     }
 
     bool otterbrix_py_type_t::equals(const std::shared_ptr<otterbrix_py_type_t>& other) const {

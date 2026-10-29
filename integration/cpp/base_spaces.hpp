@@ -4,12 +4,25 @@
 
 #include <components/configuration/configuration.hpp>
 #include <components/log/log.hpp>
+#include <core/pmr.hpp>
 #include <core/result_wrapper.hpp>
 #include <services/engine/engine.hpp>
+
+#include <boost/smart_ptr/intrusive_ptr.hpp>
+#include <boost/smart_ptr/intrusive_ref_counter.hpp>
 
 #include <memory>
 
 namespace otterbrix {
+
+    // The memory the engine allocates from: what a host keeps of the engine's answers holds it, not the engine.
+    struct engine_arena_t final : boost::intrusive_ref_counter<engine_arena_t> {
+        ~engine_arena_t();
+        core::pmr::otterbrix_resource resource;
+        log_t log;
+    };
+
+    using engine_arena_ptr = boost::intrusive_ptr<engine_arena_t>;
 
     // A complete host over services::engine: owns the memory resource, the logger, the three pools,
     // the engine and the blocking wrapper_dispatcher_t.
@@ -32,6 +45,7 @@ namespace otterbrix {
 
         log_t& get_log();
         wrapper_dispatcher_t* dispatcher();
+        const engine_arena_ptr& arena() const noexcept;
 
     protected:
         explicit base_otterbrix_t(host_ptr host);

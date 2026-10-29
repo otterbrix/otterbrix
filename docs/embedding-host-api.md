@@ -27,6 +27,7 @@ loop thread and a journal of what reached it) with `integration/cpp/test/host_fi
 | What a backend took (`node_remote_t`) | `components/logical_plan/node_remote.hpp` |
 | A database of a connection (plan) | `components/logical_plan/node_create_database.hpp`, `node_drop.hpp` |
 | Row count on the cursor | `components/cursor/cursor.hpp` |
+| Closing a session | `services/dispatcher/dispatcher.hpp` (`close_session`), `integration/cpp/wrapper_dispatcher.hpp` |
 
 ## Opening the engine
 
@@ -387,8 +388,35 @@ A binding handle is one session, so a `BEGIN` sent through it stays open for its
 (`execute_sql` and `execute_sql_params`; Rust `Database` and C# `OtterbrixWrapper` through it), Python `connect()`'s
 connection with its `cursor()` copies and the relations built from it, Python `Client` with the cursors it answered.
 Statements sent through one handle from several threads are ordered as one session's: an autocommit statement waits
-for the one before it to end. The free C++ `otterbrix::execute_sql(ptr, query)` opens a new session per call; a C++
-caller that needs one session uses `otterbrix::connection_t` (`integration/cpp/connection.hpp`).
+for the one before it to end. The C++ handle is `otterbrix::connection_t` (`integration/cpp/connection.hpp`).
+
+`manager_dispatcher_t::close_session(session)` ends a session, as PostgreSQL 18 ends a backend at Terminate
+(`test_close_session.cpp`); `wrapper_dispatcher_t::close_session` waits for it:
+
+- It takes its place in the session's order: the statement running when it arrives and the ones sent before it run to
+  their end first. A statement of the session sent after it, while it waits or runs, is refused with
+  `connection_closed`, `the session is closed`, and answers `idle`. Once it is done the session has no state left in
+  the engine, and the same id names a new, empty session.
+- An open transaction, a failed block included, rolls back as a ROLLBACK does: `abort_transaction(ctx, 0, tables)`
+  reaches every participant once, a backend the transaction only read included, and the horizon moves on. A refused
+  rollback reaches only the log; close_session answers nothing.
+- Then the session's own settings go: `SET`, `search_path` and `autocommit`, which ROLLBACK keeps.
+- A session the engine does not know, or one closed already, is a no-op. It is accepted during shutdown, after
+  `begin_shutdown`, so a host closing its connections while the engine stops reaches its backends.
+
+Closing a handle closes its session: C `otterbrix_destroy` (and Rust `Database`'s drop and C# `OtterbrixWrapper`'s
+dispose through it), C++ `connection_t::close()` and its destructor. Python has one rule for `connect()`'s connection
+and for `Client`: what the handle answered holds it — a `cursor()` copy its connection, a `Cursor` its `Client` — so
+the session closes on the handle's `close()`, or once the handle and the last of them are dropped; closing or dropping
+a copy or a cursor alone does not close it (`test_close_session.py`). `close()` also lets the engine go, and with it
+the lock on its directory: the same path opens again while the closed objects live. A relation and an expression hold
+their connection (its session and engine) until it is closed or while they live; results, cursors, types and constants
+hold only the engine's memory, `base_otterbrix_t::arena()`. After `close()` a `connect()` copy and every result of the
+connection or of a copy made from it, a dropped one included, raise `RuntimeError` "the connection is closed", as the
+connection does; `connect("default")` opens a new default connection. A `Client`'s
+cursors keep their rows readable; `Client.execute` and the `execute` of its cursors answer a cursor with the error
+`connection_closed`, "the session is closed". `Connection(client)` holds its client: `close()` closes it, `commit()`
+and `rollback()` run COMMIT and ROLLBACK in its session and answer as `execute` does.
 
 ## Settings
 
@@ -411,8 +439,8 @@ caller that needs one session uses `otterbrix::connection_t` (`integration/cpp/c
   `ALTER SYSTEM RESET ALL` store the built-in value. Inside a transaction block it is refused with
   `active_sql_transaction` (PostgreSQL 25001), `ALTER SYSTEM cannot run inside a transaction block`; while
   `autocommit` is off and no block is open it runs as its own statement, as psql sends it.
-- A session's own values stay in the dispatcher as long as the engine runs; the executor of a statement gets a copy
-  of the values in effect (`context_storage_t::execution_context`).
+- A session's own values stay in the dispatcher until the session is closed (Sessions); the executor of a statement
+  gets a copy of the values in effect (`context_storage_t::execution_context`).
 
 ## Error position
 

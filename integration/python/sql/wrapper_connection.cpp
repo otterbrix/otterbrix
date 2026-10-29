@@ -7,12 +7,9 @@ PYBIND11_DECLARE_HOLDER_TYPE(T, boost::intrusive_ptr<T>)
 
 namespace otterbrix {
 
-    wrapper_connection::wrapper_connection(wrapper_client* client)
-        : client_(client)
-        , cursor_store_(new wrapper_cursor{new components::cursor::cursor_t(client_->ptr_->dispatcher()->resource()),
-                                           client_->ptr_->dispatcher(),
-                                           client_->ptr_,
-                                           client_->session_}) {}
+    wrapper_connection::wrapper_connection(wrapper_client_ptr client)
+        : client_(std::move(client))
+        , cursor_store_(new wrapper_cursor{new components::cursor::cursor_t(&client_->arena()->resource), client_}) {}
 
     wrapper_cursor_ptr wrapper_connection::execute(const std::string& query) {
         cursor_store_ = client_->execute(query);
@@ -20,10 +17,10 @@ namespace otterbrix {
     }
     wrapper_cursor_ptr wrapper_connection::cursor() const { return cursor_store_; }
     void wrapper_connection::close() {
-        client_->ptr_ = nullptr;
+        client_->close();
         cursor_store_ = nullptr;
     }
-    void wrapper_connection::commit() {}
-    void wrapper_connection::rollback() {}
+    wrapper_cursor_ptr wrapper_connection::commit() { return execute("COMMIT;"); }
+    wrapper_cursor_ptr wrapper_connection::rollback() { return execute("ROLLBACK;"); }
 
 } // namespace otterbrix

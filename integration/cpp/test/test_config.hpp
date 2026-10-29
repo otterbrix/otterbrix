@@ -106,6 +106,8 @@ class test_spaces final : public otterbrix::base_otterbrix_t {
 public:
     explicit test_spaces(const configuration::config& config, components::planner::primitives_t primitives = {})
         : otterbrix::base_otterbrix_t(test_open_engine(config, primitives)) {}
+
+    actor_zeta::address_t dispatcher_address() const noexcept { return engine().dispatcher_address(); }
 };
 
 // A test reads the catalog through SQL; only one that corrupts it on purpose writes through the disk actor.

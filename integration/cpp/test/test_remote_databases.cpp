@@ -3,6 +3,8 @@
 
 #include "host_fixture.hpp"
 
+#include <components/logical_plan/node_create_collection.hpp>
+
 #include <filesystem>
 #include <initializer_list>
 #include <string>
@@ -398,4 +400,30 @@ TEST_CASE("integration::cpp::remote_databases::a_schema_needs_no_backend") {
     CHECK(refused.type == code::do_not_exists);
     CHECK(std::string{refused.what} == "connection \"m3\" does not exist");
     CHECK(host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_database WHERE datconnection = 'm3';") == ints{0});
+}
+
+// A host's CREATE plan for a table of a connection's database sends the backend create_storage_disk, then the prepare
+// and the release of the statement's transaction, in this order, and nothing else.
+TEST_CASE("integration::cpp::remote_databases::a_host_create_sends_the_backend_create_prepare_and_release") {
+    host_t host("test_remote_databases/host_create_messages");
+    host.register_shop();
+    host.backend().clear_journal();
+    const auto before = host.backend().messages();
+
+    std::vector<components::table::column_definition_t> columns;
+    columns.emplace_back("id", components::types::complex_logical_type(components::types::logical_type::BIGINT));
+    columns.emplace_back("amount", components::types::complex_logical_type(components::types::logical_type::BIGINT));
+    auto create = components::logical_plan::make_node_create_collection(host.resource(),
+                                                                        core::relname_t{"orders"},
+                                                                        std::move(columns),
+                                                                        {});
+    create->set_target(qualified_name_t{core::connection_name_t{"m2"},
+                                        core::dbname_t{"shop"},
+                                        core::schema_t{"public"},
+                                        core::relname_t{"orders"}});
+    host.ok(host.plan_of(create));
+
+    CHECK(host.backend().messages() - before == 3);
+    CHECK(host.backend().journal() == strings{"create m2.shop.public.orders id amount", "prepare 1", "release"});
+    CHECK(host.db.strings(any(), "SELECT relkind FROM pg_catalog.pg_class WHERE relname = 'orders';") == strings{"r"});
 }

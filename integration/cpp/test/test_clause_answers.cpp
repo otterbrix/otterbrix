@@ -275,15 +275,29 @@ TEST_CASE("integration::cpp::clause_answers::order_by_a_grouping_key_the_select_
     seed_ob(dispatcher);
     const std::string from = " FROM ob.c JOIN ob.o ON c.id = o.cid ";
 
-    SECTION("A1 a qualified grouping key outside the select list orders the groups and is not returned") {
+    SECTION("A1 (OtterStax 4.22) a qualified grouping key outside the select list orders the groups and is not returned") {
         auto cur = exec(dispatcher, "SELECT c.name, count(*)" + from + "GROUP BY c.name, o.name ORDER BY o.name;");
         CHECK(strings_at(cur, 0) == names{"c", "b", "a"});
         CHECK(width_of(cur) == 2);
     }
-    SECTION("A2 the same under an alias of the shown column") {
+    SECTION("A2 (OtterStax 4.22) the same under an alias of the shown column") {
         auto cur =
             exec(dispatcher, "SELECT c.name AS cn, count(*)" + from + "GROUP BY c.name, o.name ORDER BY o.name;");
         CHECK(strings_at(cur, 0) == names{"c", "b", "a"});
+        CHECK(width_of(cur) == 2);
+    }
+    SECTION("A2a (OtterStax 4.22) ordering by the shown column c.name sorts by the output") {
+        auto cur = exec(dispatcher,
+                        "SELECT c.name, count(*) FROM ob.c JOIN ob.o ON c.id = o.cid GROUP BY c.name, o.name ORDER BY "
+                        "c.name");
+        CHECK(strings_at(cur, 0) == names{"a", "b", "c"});
+        CHECK(width_of(cur) == 2);
+    }
+    SECTION("A2b (OtterStax 4.22) ordering by the only output of that name sorts by the output") {
+        auto cur = exec(dispatcher,
+                        "SELECT c.name, count(*) FROM ob.c JOIN ob.o ON c.id = o.cid GROUP BY c.name, o.name ORDER BY "
+                        "name");
+        CHECK(strings_at(cur, 0) == names{"a", "b", "c"});
         CHECK(width_of(cur) == 2);
     }
     SECTION("A3 two shown columns of one name: the qualifier picks the sort column") {
@@ -342,16 +356,16 @@ TEST_CASE("integration::cpp::clause_answers::order_by_an_output_name") {
     auto* dispatcher = space.dispatcher();
     seed_ob(dispatcher);
 
-    SECTION("B1 the alias of a computed column") {
+    SECTION("B1 (OtterStax 4.23) the alias of a computed column") {
         CHECK(column_of(exec(dispatcher, "SELECT a + 1 AS x FROM ob.t ORDER BY x;")) == values{2, 3, 4});
     }
-    SECTION("B2 the alias of a column") {
+    SECTION("B2 (OtterStax 4.23) the alias of a column") {
         CHECK(column_of(exec(dispatcher, "SELECT a AS x FROM ob.t ORDER BY x;")) == values{1, 2, 3});
     }
-    SECTION("B3 the position of a computed column") {
+    SECTION("B3 (OtterStax 4.23) the position of a computed column") {
         CHECK(column_of(exec(dispatcher, "SELECT a + 1 AS x FROM ob.t ORDER BY 1;")) == values{2, 3, 4});
     }
-    SECTION("B4 an output name wins over the input column of the same name") {
+    SECTION("B4 (OtterStax 4.23) an output name wins over the input column of the same name") {
         auto cur = exec(dispatcher, "SELECT a AS b, b AS a FROM ob.t ORDER BY a;");
         CHECK(ints_at(cur, 0) == values{3, 2, 1});
         CHECK(ints_at(cur, 1) == values{10, 20, 30});
@@ -359,7 +373,7 @@ TEST_CASE("integration::cpp::clause_answers::order_by_an_output_name") {
     SECTION("B5 guard: the position of swapped names") {
         CHECK(column_of(exec(dispatcher, "SELECT a AS b, b AS a FROM ob.t ORDER BY 1;")) == values{1, 2, 3});
     }
-    SECTION("B6 guard: an input column outside the select list is not returned") {
+    SECTION("B6 (OtterStax 4.23) guard: an input column outside the select list is not returned") {
         auto cur = exec(dispatcher, "SELECT a FROM ob.t ORDER BY b;");
         CHECK(column_of(cur) == values{3, 2, 1});
         CHECK(width_of(cur) == 1);
@@ -661,6 +675,13 @@ TEST_CASE("integration::cpp::clause_answers::select_list_is_evaluated_once_and_a
         INFO("r: " << shown[0] << ", " << shown[1] << ", " << shown[2]);
         CHECK(std::is_sorted(shown.begin(), shown.end()));
         CHECK(flip_rows.load() == 3);
+    }
+    SECTION("E14 a sort key the select list does not show: the select list is computed for the LIMIT rows only") {
+        CHECK(probe_calls_of(dispatcher, "SELECT probe(v) FROM ob.big ORDER BY id LIMIT 10;", cur) == 10);
+        CHECK(column_of(cur) == values{2, 3, 4, 5, 6, 7, 8, 9, 10, 11});
+        CHECK(width_of(cur) == 1);
+        CHECK(probe_calls_of(dispatcher, "SELECT probe(v) FROM ob.big ORDER BY id DESC LIMIT 10;", cur) == 10);
+        CHECK(column_of(cur) == values{1001, 1000, 999, 998, 997, 996, 995, 994, 993, 992});
     }
 }
 

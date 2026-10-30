@@ -7,6 +7,7 @@
 #include <components/catalog/settings.hpp>
 #include <components/compute/function.hpp>
 #include <components/configuration/configuration.hpp>
+#include <components/context/execution_context.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/context/subplan_runner.hpp>
 #include <components/logical_plan/execution_plan.hpp>
@@ -220,6 +221,12 @@ namespace services::collection::executor {
         services::dispatcher::registry_changes_t registry_changes{};
     };
 
+    // A take a storage answered an offer with (storage_offer): the portal of its statement holds it until it ends.
+    struct held_take_t {
+        components::table::storage_address_t address;
+        std::pmr::string request;
+    };
+
     // A statement's run, between its start and its finish (PostgreSQL 18's portal): its plan and everything that
     // points into it, the opened sources, the state of the root piece, and the rows it ran ahead of its client in
     // `carry`. Never moved once its run started: the operators and the opens point into it.
@@ -247,6 +254,8 @@ namespace services::collection::executor {
         std::pmr::vector<components::types::complex_logical_type> columns;
         // A host's window ends with its last row; a cursor lives until CLOSE or its transaction's end.
         bool closes_when_drained{false};
+        // Released when the statement finishes (finish_statement_), a cursor's at its CLOSE.
+        std::pmr::vector<held_take_t> held_takes;
 
         components::operators::operator_ptr explain_root;
         explain_name_map_t explain_names;
@@ -446,13 +455,16 @@ namespace services::collection::executor {
                                                       statement_registries_t registries,
                                                       std::vector<components::host_rows_t> rows);
 
-        // After optimize: every largest sub-tree that reads only one backend's tables is offered to that backend,
-        // all offers at once; what a backend takes becomes a node_remote_t (docs/embedding-host-api.md, "Pushdown").
-        // The disk is never offered a block.
+        // After optimize: every largest sub-tree that reads only one storage's tables (the disk's too) is offered to
+        // that storage, all offers at once; what it takes becomes a node_remote_t and joins `held`, refused or not
+        // (docs/embedding-host-api.md, "Pushdown").
         unique_future<core::error_t> offer_blocks_(components::session::session_id_t session,
                                                    components::logical_plan::execution_plan_t& plan,
                                                    components::table::transaction_data txn,
-                                                   const components::graph_execution_context& settings);
+                                                   const components::graph_execution_context& settings,
+                                                   std::pmr::vector<held_take_t>& held);
+        // The statement ended: each storage forgets what it took (storage_release_block); no reply is awaited.
+        void release_takes_(const components::execution_context_t& ctx, std::pmr::vector<held_take_t>& held);
 
         core::error_t missing_relation_(const qualified_name_t& name) const;
 

@@ -201,10 +201,10 @@ TEST_CASE("integration::cpp::clause_answers::group_having_order_limit_over_a_tab
     seed(dispatcher);
 
     INFO("GROUP BY ... ORDER BY, the aggregate answered by the owning agent");
-    services::disk::reset_pushdown_reply_rows();
+    services::disk::reset_disk_block_rows();
     CHECK(pairs_of(exec(dispatcher, "SELECT g, SUM(v) AS s FROM cl.t GROUP BY g ORDER BY g;")) ==
           pairs{{1, 30}, {2, 120}, {3, 5}});
-    CHECK(services::disk::pushdown_reply_rows() > 0);
+    CHECK(services::disk::disk_block_rows() > 0);
 
     INFO("HAVING keeps the groups it admits, ORDER BY DESC orders them");
     CHECK(
@@ -327,11 +327,11 @@ TEST_CASE("integration::cpp::clause_answers::order_by_a_grouping_key_the_select_
         CHECK(mentions(what, "GROUP BY clause or be used in an aggregate function"));
     }
     SECTION("A8 a hidden grouping key with the aggregate answered by the owning agent") {
-        services::disk::reset_pushdown_reply_rows();
+        services::disk::reset_disk_block_rows();
         auto cur = exec(dispatcher, "SELECT SUM(v) FROM ob.d GROUP BY k ORDER BY k DESC;");
         CHECK(column_of(cur) == values{41, 21});
         CHECK(width_of(cur) == 1);
-        CHECK(services::disk::pushdown_reply_rows() > 0);
+        CHECK(services::disk::disk_block_rows() > 0);
     }
     SECTION("A9 the same with HAVING") {
         auto cur = exec(dispatcher, "SELECT SUM(v) FROM ob.d GROUP BY k HAVING count(*) > 1 ORDER BY k DESC;");
@@ -837,7 +837,7 @@ TEST_CASE("integration::cpp::clause_answers::order_by_an_expression_over_groups"
         const std::string sql = "SELECT k FROM ob.d GROUP BY k ORDER BY count(*) DESC, sum(v) LIMIT 1 OFFSET 2;";
         const auto plan = plan_of(dispatcher, sql);
         INFO("plan:\n" << plan);
-        CHECK(plan.find("Pushed Aggregate Scan") != std::string::npos);
+        CHECK(plan.find("Pushed Aggregate") != std::string::npos);
         auto cur = exec(dispatcher, sql);
         CHECK(column_of(cur) == values{2});
         CHECK(width_of(cur) == 1);

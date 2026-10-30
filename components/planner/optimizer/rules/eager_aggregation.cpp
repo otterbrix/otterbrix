@@ -125,8 +125,7 @@ namespace components::planner::optimizer {
             std::vector<size_t> key_merged;
             // A group emits its target list, so a key it names appears twice: `SELECT g, MIN(x)
             // GROUP BY g` has a group_field for the reduction and a get_field that reduces nothing
-            // but moves with the splice, so its path is rewritten too rather than refusing the rule;
-            // build_pushed_spec treats a repeated key the same way.
+            // but moves with the splice, so its path is rewritten too rather than refusing the rule.
             std::vector<ce::key_t*> key_outputs;
             std::vector<size_t> key_output_merged;
             std::vector<ce::aggregate_expression_t*> aggs;
@@ -323,8 +322,8 @@ namespace components::planner::optimizer {
             pushed->append_child(partial_group);
 
             // Re-stamps the pushed node's output to the true partial layout: it still carries the base
-            // table's full column list, and both lowerings (create_plan_aggregate/operator_hash_group,
-            // the pushed reduce spec) treat that stamp as authoritative, mistyping columns otherwise.
+            // table's full column list, and the lowering (create_plan_aggregate/operator_hash_group, here or
+            // on the disk that takes the GROUP BY) treats that stamp as authoritative, mistyping columns otherwise.
             {
                 const auto& base_types = pushed->output_types();
                 std::pmr::vector<components::types::complex_logical_type> partial_types{resource};

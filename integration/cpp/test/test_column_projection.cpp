@@ -675,7 +675,7 @@ TEST_CASE("integration::cpp::column_projection::empty_input_scalar_aggregate_gua
                  "(2, 20, 200, 2000, 20000);")
                 ->is_success());
 
-    INFO("pruned filtered scan (full_scan) + WHERE filtering everything + scalar aggregate");
+    INFO("pruned scan with the disk's WHERE + WHERE filtering everything + scalar aggregate");
     {
         // projected_cols = {c, e}; the COUNT arg reads e at position 1 of the 0-row guard
         // chunk the drained scan emits.

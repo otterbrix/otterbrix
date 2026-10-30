@@ -57,8 +57,10 @@ namespace components::logical_plan {
                                    std::pmr::vector<detached_column_t>{target}};
             table.columns.reserve(md->columns.size());
             for (const auto& column : md->columns) {
-                table.columns.push_back(
-                    detached_column_t{column.attoid, std::pmr::string{column.attname, target}, column.type});
+                table.columns.push_back(detached_column_t{column.attoid,
+                                                          std::pmr::string{column.attname, target},
+                                                          column.type,
+                                                          column.chunk_position});
             }
             tables.push_back(std::move(table));
         }
@@ -139,7 +141,6 @@ namespace components::logical_plan {
                 case node_type::group_t: {
                     const auto& group = static_cast<const node_group_t&>(from);
                     auto node = make_node_group(target);
-                    node->set_pushdown(group.pushdown());
                     node->set_input_types(std::pmr::vector<types::complex_logical_type>{group.input_types().begin(),
                                                                                         group.input_types().end(),
                                                                                         target});
@@ -265,6 +266,28 @@ namespace components::logical_plan {
         }
         block.root = std::move(copy.value());
         return block;
+    }
+
+    detached_table_t copy_table(std::pmr::memory_resource* target, const detached_table_t& table) {
+        detached_table_t copy{table.oid, table.name, std::pmr::vector<detached_column_t>{target}};
+        copy.columns.reserve(table.columns.size());
+        for (const auto& column : table.columns) {
+            copy.columns.push_back(detached_column_t{column.attoid,
+                                                     std::pmr::string{column.name, target},
+                                                     column.type,
+                                                     column.chunk_position});
+        }
+        return copy;
+    }
+
+    core::result_wrapper_t<detached_block_t>
+    copy_block(std::pmr::memory_resource* target, const node_t& node, const detached_table_t& table) {
+        auto copy = detach_block(target, node);
+        if (copy.has_error()) {
+            return copy;
+        }
+        copy.value().tables.push_back(copy_table(target, table));
+        return copy;
     }
 
 } // namespace components::logical_plan

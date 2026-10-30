@@ -242,8 +242,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_bounded_dml_flush.cpp
         test_aggregate_pushdown_e2e.cpp
         test_clause_answers.cpp
+        test_disk_pushdown.cpp
         test_pushdown_traffic.cpp
-        test_pushed_reduce_scan_lateral.cpp
         test_jsonb_support.cpp
         test_select_intermediate.cpp
         test_empty_result_schema.cpp

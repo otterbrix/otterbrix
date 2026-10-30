@@ -11,21 +11,17 @@ namespace components::operators {
         // empty/batch/unused are never rendered) share one "?".
         std::string_view default_explain_label(operator_type type) {
             switch (type) {
-                case operator_type::full_scan:
                 case operator_type::transfer_scan:
+                case operator_type::remote_scan:
                     return "Seq Scan";
                 case operator_type::index_scan:
                     return "Index Scan";
-                case operator_type::pushed_reduce_scan:
-                    return "Pushed Aggregate Scan";
                 case operator_type::hash_join:
                     return "Hash Join";
                 case operator_type::join:
                     return "Nested Loop";
                 case operator_type::aggregate:
                     return "Aggregate";
-                case operator_type::group_merge:
-                    return "Finalize Aggregate";
                 case operator_type::sort:
                     return "Sort";
                 case operator_type::match:
@@ -66,7 +62,6 @@ namespace components::operators {
                     return "FK Cascade";
                 case operator_type::computed_field_register:
                     return "Computed Fields";
-                case operator_type::remote_scan:
                 case operator_type::remote_write:
                     return "Remote Query";
                 case operator_type::unused:

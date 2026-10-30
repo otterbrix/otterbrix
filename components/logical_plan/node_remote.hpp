@@ -9,10 +9,10 @@
 
 namespace components::logical_plan {
 
-    // A part of the plan a backend took when otterbrix offered it a block (storage_offer): the backend runs `request`
-    // and otterbrix reads its rows (a read) or its receipt (a write: the rows changed, and their values for
-    // RETURNING, which otterbrix computes). It stands where the taken node stood; a read's output_types() are the
-    // taken node's.
+    // A part of the plan a table's storage (a host's backend, otterbrix's disk) took when otterbrix offered it a block
+    // (storage_offer): the storage runs `request` and otterbrix reads its rows (a read) or its receipt (a write: the
+    // rows changed, and their values for RETURNING, which otterbrix computes). It stands where the taken node stood; a
+    // read's output_types() are the taken node's, or, for a taken WHERE, the columns its SELECT block reads.
     class node_remote_t final : public node_t {
     public:
         enum class kind_t : uint8_t

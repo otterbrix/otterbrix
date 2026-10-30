@@ -26,6 +26,10 @@ namespace components::table {
         // A table of a connection that is no longer in the host's map: only the catalog knows it.
         bool empty() const noexcept { return !actor_; }
         bool is_remote() const noexcept { return !connection_.empty(); }
+        // Who keeps the rows, as an error names it: otterbrix's disk, or the backend of connection "c".
+        std::string owner() const {
+            return connection_.empty() ? std::string{"the disk"} : "the backend of connection \"" + connection_ + "\"";
+        }
         // One participant of a transaction: the same actor and the same connection.
         bool same_storage(const storage_address_t& other) const noexcept {
             return actor_ == other.actor_ && connection_ == other.connection_;

@@ -371,6 +371,16 @@ TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
         return t;
     };
     auto has = [](const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; };
+    // The disk groups a's rows: the line under "Seq Scan on a" is its Pushed Aggregate.
+    auto pushed_on_a = [](const std::string& plan) {
+        const std::string scan = "Seq Scan on a\n";
+        const auto at = plan.find(scan);
+        if (at == std::string::npos) {
+            return false;
+        }
+        const auto next = at + scan.size();
+        return plan.substr(next, plan.find('\n', next) - next).find("Pushed Aggregate") != std::string::npos;
+    };
 
     const std::string min_sql =
         "SELECT g, MIN(x) AS m FROM " + edb + ".a JOIN " + edb + ".b ON a.k = b.k GROUP BY g ORDER BY g";
@@ -382,12 +392,12 @@ TEST_CASE("integration::cpp::eager_aggregation::min_max_pushed_sum_not") {
     const std::string min_plan = plan_text(min_sql);
     INFO(min_plan);
     CHECK(has(min_plan, "Hash Join"));
-    CHECK(has(min_plan, "Pushed Aggregate Scan on a"));
-    CHECK(has(plan_text(max_sql), "Pushed Aggregate Scan on a"));
+    CHECK(pushed_on_a(min_plan));
+    CHECK(pushed_on_a(plan_text(max_sql)));
     const std::string sum_plan = plan_text(sum_sql);
     INFO(sum_plan);
     CHECK(has(sum_plan, "Hash Join"));
-    CHECK_FALSE(has(sum_plan, "Pushed Aggregate Scan"));
+    CHECK_FALSE(has(sum_plan, "Pushed Aggregate"));
 
     auto mn = run(min_sql);
     REQUIRE(mn->is_success());
@@ -461,6 +471,16 @@ TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_sa
         return t;
     };
     auto has = [](const std::string& hay, const std::string& needle) { return hay.find(needle) != std::string::npos; };
+    // The disk groups a's rows: the line under "Seq Scan on a" is its Pushed Aggregate.
+    auto pushed_on_a = [](const std::string& plan) {
+        const std::string scan = "Seq Scan on a\n";
+        const auto at = plan.find(scan);
+        if (at == std::string::npos) {
+            return false;
+        }
+        const auto next = at + scan.size();
+        return plan.substr(next, plan.find('\n', next) - next).find("Pushed Aggregate") != std::string::npos;
+    };
 
     const std::string min_sql =
         "SELECT g, MIN(x) AS m FROM " + edb + ".a JOIN " + edb + ".b ON a.k = b.k GROUP BY g ORDER BY g";
@@ -469,9 +489,9 @@ TEST_CASE("integration::cpp::eager_aggregation::duplicating_dimension_min_max_sa
     const std::string sum_sql =
         "SELECT g, SUM(x) AS s FROM " + edb + ".a JOIN " + edb + ".b ON a.k = b.k GROUP BY g ORDER BY g";
 
-    CHECK(has(plan_text(min_sql), "Pushed Aggregate Scan on a"));
-    CHECK(has(plan_text(max_sql), "Pushed Aggregate Scan on a"));
-    CHECK_FALSE(has(plan_text(sum_sql), "Pushed Aggregate Scan"));
+    CHECK(pushed_on_a(plan_text(min_sql)));
+    CHECK(pushed_on_a(plan_text(max_sql)));
+    CHECK_FALSE(has(plan_text(sum_sql), "Pushed Aggregate"));
 
     auto mn = run(min_sql);
     REQUIRE(mn->is_success());

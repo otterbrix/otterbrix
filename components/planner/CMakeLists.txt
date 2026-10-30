@@ -13,7 +13,6 @@ set(SOURCE_${PROJECT_NAME}
         optimizer/rules/pushdown_filter.cpp
         optimizer/rules/hash_join.cpp
         optimizer/rules/index_selection.cpp
-        optimizer/rules/pushdown_aggregate.cpp
         optimizer/rules/pushdown_limit.cpp
 )
 

@@ -8,7 +8,7 @@
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator_delete.hpp>
 #include <components/physical_plan/operators/operator_match.hpp>
-#include <components/physical_plan/operators/scan/full_scan.hpp>
+#include <components/physical_plan/operators/scan/transfer_scan.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 
 namespace services::planner::impl {
@@ -108,15 +108,13 @@ namespace services::planner::impl {
             create_plan(context, function_registry, node_source, components::logical_plan::limit_t::all(), params));
         auto scan_columns = scan_columns_of(context, table_oid, node_delete->projected_cols());
         VALUE_OR_RETURN(auto scan_types, page_types_of(context, table_oid, scan_columns));
-        auto scan =
-            boost::intrusive_ptr(new components::operators::full_scan(context.resource,
-                                                                      context.log.clone(),
-                                                                      table_oid,
-                                                                      std::move(address),
-                                                                      std::move(name),
-                                                                      nullptr,
-                                                                      components::logical_plan::row_cap_t::uncapped(),
-                                                                      std::move(scan_columns)));
+        auto scan = boost::intrusive_ptr(
+            new components::operators::transfer_scan(context.resource,
+                                                     table_oid,
+                                                     std::move(address),
+                                                     std::move(name),
+                                                     components::logical_plan::row_cap_t::uncapped(),
+                                                     std::move(scan_columns)));
         scan->set_page_types(std::move(scan_types));
         plan->set_children(std::move(scan), std::move(source_op));
         return plan;

@@ -72,9 +72,11 @@ namespace services::disk {
         host_rows_t rows;
     };
 
-    // One relation node of an offered block the storage takes: its preorder position in the block, the storage's
-    // own description of how to run it, the lines EXPLAIN prints under it, and the WHERE conjuncts (by their position
-    // in the node's WHERE) the storage leaves to otterbrix.
+    // One node of an offered block the storage takes: its preorder position in the block, the storage's own
+    // description of how to run it, the lines EXPLAIN prints under it, and the WHERE conjuncts (by their position in
+    // the WHERE) the storage leaves to otterbrix. The node is a relation (a SELECT block, a join, an UPDATE / DELETE),
+    // or the WHERE or the GROUP BY of a SELECT block of one table: the storage then reads that table with the WHERE
+    // (and groups its rows), and the block's other clauses stay otterbrix's.
     struct block_take_t {
         uint32_t preorder{0};
         std::pmr::string request;
@@ -152,9 +154,8 @@ namespace services::disk {
                                                        uint64_t from_sub_id,
                                                        std::pmr::set<components::catalog::oid_t> tables);
 
-        // The host's part: the disk is never offered a block.
-        // Which relation nodes of `block` the storage takes; `parameters` are the statement's, a correlated one
-        // (kind execution) is known only when the node runs.
+        // Which nodes of `block` the storage takes; `parameters` are the statement's, a correlated one (kind execution)
+        // is known only when the node runs.
         unique_future<core::result_wrapper_t<std::pmr::vector<block_take_t>>>
         storage_offer(execution_context_t ctx,
                       components::logical_plan::detached_block_t block,
@@ -167,7 +168,11 @@ namespace services::disk {
                           uint64_t cursor_id,
                           components::vector::storage_parameters parameters);
         unique_future<void> storage_close_block(execution_context_t ctx, uint64_t cursor_id);
-        // A taken UPDATE / DELETE: the receipt counts the rows it changed.
+        // The portal of the statement that took `request` finished (a cursor's at its CLOSE, a LATERAL inner's after
+        // its last re-drive): the storage forgets the take. Sent once per take; nothing awaits the reply.
+        unique_future<void> storage_release_block(execution_context_t ctx, std::pmr::string request);
+        // The host's part: a taken UPDATE / DELETE, the receipt counts the rows it changed. The disk takes no write:
+        // otterbrix's own path writes its tables (WAL, undo, publication at COMMIT).
         unique_future<core::result_wrapper_t<write_receipt_t>>
         storage_run_write(execution_context_t ctx,
                           std::pmr::string request,
@@ -192,10 +197,11 @@ namespace services::disk {
                                                             &storage_contract::storage_offer,
                                                             &storage_contract::storage_run_block,
                                                             &storage_contract::storage_close_block,
+                                                            &storage_contract::storage_release_block,
                                                             &storage_contract::storage_run_write>;
 
         // The methods the disk shares: positions 0 .. prefix_size - 1.
-        static constexpr std::size_t prefix_size = 13;
+        static constexpr std::size_t prefix_size = 17;
 
         storage_contract() = delete;
     };

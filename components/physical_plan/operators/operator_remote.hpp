@@ -9,9 +9,10 @@
 
 namespace components::operators {
 
-    // A read a backend took: it runs `request` (storage_run_block) when the plan opens, so the reads of a plan run
-    // at the same time, and again on every re-drive with the parameters of that drive. Its pages are checked against
-    // the types otterbrix expects and against the width of a chunk.
+    // A read a table's storage took: it runs `request` (storage_run_block) when the plan opens, so the reads of a plan
+    // run at the same time, and again on every re-drive with the parameters of that drive. Its pages are checked
+    // against the types otterbrix expects and against the width of a chunk. EXPLAIN names a connection's read
+    // "Remote Query on <connection>", and the disk's "Seq Scan" of its table.
     class operator_remote_scan final : public read_only_operator_t {
     public:
         operator_remote_scan(std::pmr::memory_resource* resource,
@@ -38,6 +39,7 @@ namespace components::operators {
 
     private:
         actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx) override;
+        void explain_impl(const explain_sink& s) const override;
         std::pmr::string explain_label_impl() const override;
         std::pmr::vector<std::pmr::string> explain_details_impl() const override;
 

@@ -63,8 +63,9 @@ namespace services::disk {
     using execution_context_t = components::execution_context_t;
 
 #ifdef DEV_MODE
-    uint64_t pushdown_reply_rows() noexcept;
-    void reset_pushdown_reply_rows() noexcept;
+    // The rows of every page the disk answered of a taken block (storage_run_block).
+    uint64_t disk_block_rows() noexcept;
+    void reset_disk_block_rows() noexcept;
 
     uint64_t catalog_key_scans() noexcept;
     void reset_catalog_key_scans() noexcept;
@@ -220,7 +221,6 @@ namespace services::disk {
 
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
         storage_scan_inner(components::catalog::oid_t table_oid,
-                           std::unique_ptr<components::table::pushed_filter_t> filter,
                            int64_t limit,
                            std::vector<size_t> projected_cols,
                            components::table::transaction_data txn);
@@ -231,7 +231,6 @@ namespace services::disk {
         storage_fetch_next_batch_inner(session_id_t session,
                                        components::catalog::oid_t table_oid,
                                        uint64_t cursor_id,
-                                       std::unique_ptr<components::table::pushed_filter_t> filter,
                                        int64_t limit,
                                        std::vector<size_t> projected_cols,
                                        components::table::transaction_data txn);
@@ -247,15 +246,19 @@ namespace services::disk {
         unique_future<core::result_wrapper_t<uint64_t>>
         storage_compact_epoch_inner(session_id_t session, components::catalog::oid_t table_oid);
 
-        // Replies ALL final GROUP BY rows in one reply; refuses rather than folding empty input
-        // into a false "COUNT=0".
-        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-        storage_reduce_inner(session_id_t session,
-                             components::catalog::oid_t table_oid,
-                             std::unique_ptr<components::table::pushed_filter_t> filter,
-                             std::vector<size_t> projected_cols,
-                             components::table::transaction_data txn,
-                             components::operators::pushed_aggregate_spec_t spec);
+        // A block the disk took (manager_disk_t::storage_offer), as a SELECT block of one table with only the clauses
+        // the disk runs: a WHERE, and a GROUP BY. Its first page; a missing storage refuses with internal_error.
+        // A GROUP BY is reduced whole in this one call (no compact can move a row under it), its rows answered page
+        // by page; a WHERE reads under a cursor gated like a scan's. The cursor carries this agent's pool index in its
+        // top 8 bits.
+        unique_future<core::result_wrapper_t<fetch_batch_t>>
+        storage_run_block_inner(execution_context_t ctx,
+                                components::logical_plan::detached_block_t block,
+                                components::vector::storage_parameters parameters);
+        // The next page of a taken block; a drained cursor answers an empty chunk.
+        unique_future<core::result_wrapper_t<fetch_batch_t>> storage_block_page_inner(execution_context_t ctx,
+                                                                                      uint64_t cursor_id);
+        unique_future<void> storage_close_block_inner(uint64_t cursor_id);
 
         unique_future<core::result_wrapper_t<std::pmr::vector<std::pmr::vector<std::int64_t>>>>
         scan_by_keys_inner(components::catalog::oid_t table_oid,
@@ -387,7 +390,6 @@ namespace services::disk {
                                                             &agent_disk_t::storage_scan_inner,
                                                             &agent_disk_t::storage_fetch_next_batch_inner,
                                                             &agent_disk_t::storage_close_cursor_inner,
-                                                            &agent_disk_t::storage_reduce_inner,
                                                             &agent_disk_t::scan_by_keys_inner,
                                                             &agent_disk_t::read_chunks_by_key_inner,
                                                             &agent_disk_t::read_chunks_by_keys_inner,
@@ -417,7 +419,10 @@ namespace services::disk {
                                                             &agent_disk_t::revert_column_stamps_inner,
                                                             &agent_disk_t::storage_prepare_inner,
                                                             &agent_disk_t::storage_release_prepared_inner,
-                                                            &agent_disk_t::storage_set_not_null_inner>;
+                                                            &agent_disk_t::storage_set_not_null_inner,
+                                                            &agent_disk_t::storage_run_block_inner,
+                                                            &agent_disk_t::storage_block_page_inner,
+                                                            &agent_disk_t::storage_close_block_inner>;
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
@@ -438,11 +443,21 @@ namespace services::disk {
 
         void drop_storage_one_local(components::catalog::oid_t oid);
 
-        // The agent's own filter: built on its resource, for the column types of the storage it
-        // filters. No pushed filter builds none.
-        core::result_wrapper_t<std::unique_ptr<components::table::table_filter_t>>
-        build_filter_(const components::table::pushed_filter_t* filter,
-                      const std::pmr::vector<components::types::complex_logical_type>& types);
+        // A cursor of `entry`'s table at its first row, under txn's snapshot; `limit` caps the rows `filter` keeps.
+        void open_scan_(uint64_t cursor_id,
+                        components::catalog::oid_t table_oid,
+                        collection_storage_entry_t& entry,
+                        std::unique_ptr<components::table::table_filter_t> filter,
+                        int64_t limit,
+                        std::vector<size_t> projected_cols,
+                        components::table::transaction_data txn);
+        // The cursor's next page; a drained or unknown cursor answers an empty chunk and is forgotten.
+        core::result_wrapper_t<fetch_batch_t> advance_scan_(uint64_t cursor_id);
+        // Every cursor of the agent (a scan's, a hold's, a taken block's): its pool index in the top 8 bits, by which
+        // the manager routes it, then one counter; never 0, never a live one.
+        uint64_t mint_cursor_();
+        // The next page of a taken block: of its GROUP BY's rows, or of its WHERE's cursor.
+        core::result_wrapper_t<fetch_batch_t> next_block_page_(uint64_t cursor_id);
 
         void mark_storage_dropped_one_local(components::catalog::oid_t table_oid, uint64_t dropped_at_commit_id);
 
@@ -472,7 +487,14 @@ namespace services::disk {
             std::vector<components::types::complex_logical_type> open_types;
         };
         std::pmr::unordered_map<uint64_t, active_scan_t> active_scans_;
-        uint64_t next_scan_cursor_id_{1}; // (session, counter); 0 is the OPEN-request sentinel
+
+        // The rows of a taken GROUP BY not yet answered.
+        struct block_pages_t {
+            std::pmr::vector<components::vector::data_chunk_t> pages;
+            std::size_t next{0};
+        };
+        std::pmr::unordered_map<uint64_t, block_pages_t> block_pages_;
+        uint64_t next_cursor_{1};
 
         std::pmr::vector<dropped_storage_entry_t> dropped_storages_;
 

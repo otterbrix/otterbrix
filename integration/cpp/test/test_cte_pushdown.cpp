@@ -3,8 +3,8 @@
 // A non-recursive CTE reference is INLINED by the SQL transformer as a table-scan
 // aggregate (the CTE body) directly below the consumer aggregate that carries the
 // outer WHERE. The optimizer (pushdown_filter) pushes the consumer's pushable WHERE
-// conjuncts INTO that body so the filter reaches the base scan: `create_plan_match`
-// then lowers a plain compare to a full_scan predicate (Seq Scan) = disk pushdown +
+// conjuncts INTO that body so the filter reaches the base scan: the disk then takes a
+// plain compare as the WHERE of the body's read (Seq Scan, storage_offer) = disk pushdown +
 // column pruning, instead of a Filter above a Project above a Seq Scan.
 //
 // EXPLAIN signal used below:

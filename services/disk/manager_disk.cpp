@@ -41,14 +41,16 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_total_rows>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch_next_batch>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_close_cursor>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_reduce>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_append>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_update>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_delete_rows>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_commits>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_deletes>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_open_filtered_scan>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_offer>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_run_block>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_close_block>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_release_block>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::undo_appends_and_storages>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function_by_name>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::find_cast_oid>,
@@ -526,8 +528,20 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_set_not_null, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_open_filtered_scan>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_open_filtered_scan, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_offer>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_offer, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_run_block>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_run_block, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_close_block>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_close_block, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_release_block>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_release_block, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_prepare>: {
@@ -536,10 +550,6 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_release_prepared>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_release_prepared, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_reduce>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_reduce, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>: {

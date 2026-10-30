@@ -222,7 +222,7 @@ TEST_CASE("integration::cpp::join_key_width::cast_key_eager_aggregation") {
     const auto plan = plan_text(d, sql);
     INFO(plan);
     CHECK(contains(plan, "Hash Join"));
-    CHECK(contains(plan, "Pushed Aggregate Scan"));
+    CHECK(contains(plan, "Pushed Aggregate"));
 }
 
 // A comma-join star whose dimension keys are narrower than the fact's: every boundary is hashed.

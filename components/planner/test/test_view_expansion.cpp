@@ -4,7 +4,7 @@
 //    disables filter pushdown into the body (pushdown_cte_filter reads children()[0] as the source, see
 //    components/planner/optimizer/rules/pushdown_filter.cpp);
 //  * leaving the reference's name/oid in place lets the next bind re-stamp the view's oid, after which
-//    create_plan_match hands back a bare full_scan over a view with no storage — zero rows, no error.
+//    the plan reads the view's oid as a table with no storage — zero rows, no error.
 
 #include <catch2/catch_test_macros.hpp>
 #include <components/vector/vector_builders.hpp>

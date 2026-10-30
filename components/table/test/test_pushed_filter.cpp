@@ -9,11 +9,10 @@
 
 using namespace components;
 
-// The filter crosses from the executor to a disk agent in a mailbox, so nothing it carries may share a
-// buffer with the sender's parameters.
-TEST_CASE("components::table::pushed_filter::parameters are a deep copy on the arena of the receiver") {
+// The disk builds its filter of a taken WHERE on its own arena: nothing the filter holds shares a buffer with the
+// parameters it was built from.
+TEST_CASE("components::table::pushed_filter::the_parameters_of_a_built_filter_are_copies_on_its_arena") {
     resource_tracer_t sender;
-    resource_tracer_t target;
     resource_tracer_t builder;
 
     std::optional<vector::storage_parameters> params;
@@ -25,19 +24,11 @@ TEST_CASE("components::table::pushed_filter::parameters are a deep copy on the a
     column.set_path(std::pmr::vector<size_t>{{0}, std::pmr::polymorphic_allocator<size_t>{&sender}});
     auto predicate = expressions::make_compare_expression(&sender, expressions::compare_type::eq, column, id);
 
-    auto filter = table::make_pushed_filter(&target, predicate, *params, graph_execution_context{});
-    REQUIRE(filter != nullptr);
-    CHECK(filter->parameters.resource() == &target);
-    CHECK(filter->parameters.at(id).resource() == &target);
-    CHECK(filter->parameters.at(id).data() != params->at(id).data());
-
-    params.reset();
-    CHECK(filter->parameters.at(id).get_value<std::string_view>(0) == "a string past the inline buffer");
-
     std::pmr::vector<types::complex_logical_type> types(&builder);
     types.emplace_back(types::complex_logical_type{types::logical_type::STRING_LITERAL});
-    auto built = table::build_table_filter(&builder, *filter, types);
+    auto built = table::build_table_filter(&builder, predicate, *params, graph_execution_context{}, types);
     REQUIRE_FALSE(built.has_error());
+    params.reset();
     CHECK(built.value()->parameters.resource() == &builder);
     CHECK(built.value()->parameters.at(id).resource() == &builder);
     CHECK(built.value()->parameters.at(id).get_value<std::string_view>(0) == "a string past the inline buffer");

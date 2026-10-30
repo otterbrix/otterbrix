@@ -6,10 +6,11 @@
 namespace services::disk {
 
     static_assert(mailbox::owns_its_arguments<&manager_disk_t::storage_fetch_next_batch>);
-    static_assert(mailbox::owns_its_arguments<&manager_disk_t::storage_reduce>);
+    static_assert(mailbox::owns_its_arguments<&manager_disk_t::storage_offer>);
+    static_assert(mailbox::owns_its_arguments<&manager_disk_t::storage_run_block>);
     static_assert(mailbox::owns_its_arguments<&agent_disk_t::storage_fetch_next_batch_inner>);
     static_assert(mailbox::owns_its_arguments<&agent_disk_t::storage_scan_inner>);
-    static_assert(mailbox::owns_its_arguments<&agent_disk_t::storage_reduce_inner>);
+    static_assert(mailbox::owns_its_arguments<&agent_disk_t::storage_run_block_inner>);
 
     using namespace core::filesystem;
     namespace catalog = components::catalog;
@@ -385,39 +386,6 @@ namespace services::disk {
                                              int64_t limit,
                                              std::vector<size_t> projected_cols,
                                              components::table::transaction_data txn) {
-        co_return co_await fetch_from_agent(session,
-                                            table_oid,
-                                            cursor_id,
-                                            std::unique_ptr<components::table::pushed_filter_t>{},
-                                            limit,
-                                            std::move(projected_cols),
-                                            txn);
-    }
-
-    manager_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
-    manager_disk_t::storage_open_filtered_scan(session_id_t session,
-                                               catalog::oid_t table_oid,
-                                               std::unique_ptr<components::table::pushed_filter_t> filter,
-                                               int64_t limit,
-                                               std::vector<size_t> projected_cols,
-                                               components::table::transaction_data txn) {
-        co_return co_await fetch_from_agent(session,
-                                            table_oid,
-                                            0,
-                                            std::move(filter),
-                                            limit,
-                                            std::move(projected_cols),
-                                            txn);
-    }
-
-    manager_disk_t::unique_future<core::result_wrapper_t<fetch_batch_t>>
-    manager_disk_t::fetch_from_agent(session_id_t session,
-                                     catalog::oid_t table_oid,
-                                     uint64_t cursor_id,
-                                     std::unique_ptr<components::table::pushed_filter_t> filter,
-                                     int64_t limit,
-                                     std::vector<size_t> projected_cols,
-                                     components::table::transaction_data txn) {
         if (agents_.empty()) {
             co_return core::error_t{core::error_code_t::io_error,
                                     std::pmr::string{"storage_fetch_next_batch: no disk agents", resource()}};
@@ -434,41 +402,9 @@ namespace services::disk {
                                                               session,
                                                               table_oid,
                                                               cursor_id,
-                                                              std::move(filter),
                                                               limit,
                                                               projected_cols,
                                                               txn);
-        if (needs_sched) {
-            scheduler_disk_->enqueue(agent.get());
-        }
-        co_return co_await std::move(fut);
-    }
-
-    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-    manager_disk_t::storage_reduce(session_id_t session,
-                                   catalog::oid_t table_oid,
-                                   std::unique_ptr<components::table::pushed_filter_t> filter,
-                                   std::vector<size_t> projected_cols,
-                                   components::table::transaction_data txn,
-                                   components::operators::pushed_aggregate_spec_t spec) {
-        if (agents_.empty()) {
-            co_return core::error_t{core::error_code_t::io_error,
-                                    std::pmr::string{"storage_reduce: no disk agents", resource()}};
-        }
-        const std::size_t pool_idx = pool_idx_for_oid(table_oid, agents_.size());
-        auto& agent = agents_[pool_idx];
-        if (agent == nullptr) {
-            co_return core::error_t{core::error_code_t::io_error,
-                                    std::pmr::string{"storage_reduce: owning disk agent is null", resource()}};
-        }
-        auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
-                                                              &agent_disk_t::storage_reduce_inner,
-                                                              session,
-                                                              table_oid,
-                                                              std::move(filter),
-                                                              projected_cols,
-                                                              txn,
-                                                              std::move(spec));
         if (needs_sched) {
             scheduler_disk_->enqueue(agent.get());
         }

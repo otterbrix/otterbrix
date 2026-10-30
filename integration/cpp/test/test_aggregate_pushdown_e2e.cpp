@@ -6,7 +6,7 @@
 #include <core/operations_helper.hpp>
 #include <services/disk/agent_disk.hpp>
 
-// The value REQUIREs pass whichever path runs, so pushdown_reply_rows() > 0 is the only
+// The value REQUIREs pass whichever path runs, so disk_block_rows() > 0 is the only
 // thing proving the aggregate reached the owning agent.
 
 using namespace test_helpers;
@@ -38,7 +38,7 @@ namespace {
 
         INFO("SUM/COUNT/MIN/MAX/AVG over the whole table");
         {
-            services::disk::reset_pushdown_reply_rows();
+            services::disk::reset_disk_block_rows();
             auto cur = exec(dispatcher,
                             "SELECT SUM(v) AS s, COUNT(*) AS c_all, COUNT(v) AS c_v, "
                             "MIN(v) AS mn, MAX(v) AS mx, AVG(v) AS av FROM " +
@@ -65,12 +65,12 @@ namespace {
             auto cell5 = cur->get<double>(5, 0);
             REQUIRE_FALSE(cell5.has_error());
             REQUIRE(cell5.value() == Catch::Approx(30.0));      // 150 / 5
-            REQUIRE(services::disk::pushdown_reply_rows() > 0); // was-actually-pushed proof
+            REQUIRE(services::disk::disk_block_rows() > 0);     // was-actually-pushed proof
         }
 
         INFO("scalar aggregates WITH a builtin WHERE (v >= 30 -> rows 30,50,40)");
         {
-            services::disk::reset_pushdown_reply_rows();
+            services::disk::reset_disk_block_rows();
             auto cur = exec(dispatcher,
                             "SELECT SUM(v) AS s, COUNT(*) AS c, MIN(v) AS mn, MAX(v) AS mx, AVG(v) AS av "
                             "FROM " +
@@ -93,7 +93,7 @@ namespace {
             auto cell10 = cur->get<double>(4, 0);
             REQUIRE_FALSE(cell10.has_error());
             REQUIRE(cell10.value() == Catch::Approx(40.0)); // 120 / 3, AVG over BIGINT answers DOUBLE
-            REQUIRE(services::disk::pushdown_reply_rows() > 0);
+            REQUIRE(services::disk::disk_block_rows() > 0);
         }
 
         INFO("empty slice (WHERE matches nothing): SUM/MIN/MAX/AVG NULL, COUNT 0");
@@ -134,7 +134,7 @@ namespace {
 
         INFO("GROUP BY g with SUM/COUNT/MIN/MAX/AVG, ORDER BY g");
         {
-            services::disk::reset_pushdown_reply_rows();
+            services::disk::reset_disk_block_rows();
             auto cur = exec(dispatcher,
                             "SELECT g, SUM(v) AS s, COUNT(*) AS c, MIN(v) AS mn, MAX(v) AS mx, AVG(v) AS av "
                             "FROM " +
@@ -181,12 +181,12 @@ namespace {
             auto cell28 = cur->get<double>(5, 1);
             REQUIRE_FALSE(cell28.has_error());
             REQUIRE(cell28.value() == Catch::Approx(40.0)); // 120 / 3
-            REQUIRE(services::disk::pushdown_reply_rows() > 0);
+            REQUIRE(services::disk::disk_block_rows() > 0);
         }
 
         INFO("GROUP BY g with a builtin WHERE (v >= 20) -> g=1 {20}, g=2 {30,50,40}");
         {
-            services::disk::reset_pushdown_reply_rows();
+            services::disk::reset_disk_block_rows();
             auto cur = exec(dispatcher,
                             "SELECT g, SUM(v) AS s, COUNT(*) AS c "
                             "FROM " +
@@ -212,7 +212,7 @@ namespace {
             auto cell34 = cur->get<uint64_t>(2, 1);
             REQUIRE_FALSE(cell34.has_error());
             REQUIRE(cell34.value() == 3);
-            REQUIRE(services::disk::pushdown_reply_rows() > 0);
+            REQUIRE(services::disk::disk_block_rows() > 0);
         }
     }
 

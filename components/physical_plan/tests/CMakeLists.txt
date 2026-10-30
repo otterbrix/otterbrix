@@ -14,13 +14,11 @@ set(${PROJECT_NAME}_SOURCES
         test_operator_match_residency.cpp
         test_operator_raw_data_resource.cpp
         test_nested_compare.cpp
-        test_operator_group_merge.cpp
         test_operator_sort_columns.cpp
         ../operators/sort/sort.cpp
         ../operators/operator_sort.cpp
         ../operators/operator.cpp
         ../operators/operator_match.cpp
-        ../operators/operator_group_merge.cpp
         ../operators/operator_data.cpp
         ../operators/operator_raw_data.cpp
         ../operators/operator_write_data.cpp

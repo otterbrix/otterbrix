@@ -7,6 +7,7 @@
 #include <components/types/types.hpp>
 #include <core/result_wrapper.hpp>
 
+#include <cstdint>
 #include <memory_resource>
 
 namespace components::logical_plan {
@@ -15,6 +16,8 @@ namespace components::logical_plan {
         catalog::oid_t attoid{catalog::INVALID_OID};
         std::pmr::string name;
         types::complex_logical_type type;
+        // Where the column sits in the table's storage; -1 for a column of a computed table no row carries yet.
+        std::int32_t chunk_position{-1};
     };
 
     struct detached_table_t {
@@ -42,5 +45,11 @@ namespace components::logical_plan {
 
     // Refused for a node class a block may not hold.
     core::result_wrapper_t<detached_block_t> detach_block(std::pmr::memory_resource* target, const node_t& root);
+
+    detached_table_t copy_table(std::pmr::memory_resource* target, const detached_table_t& table);
+
+    // A copy of `node`, a node of a block that reads `table` alone, on `target`: the block of that sub-tree.
+    core::result_wrapper_t<detached_block_t>
+    copy_block(std::pmr::memory_resource* target, const node_t& node, const detached_table_t& table);
 
 } // namespace components::logical_plan

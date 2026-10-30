@@ -16,8 +16,4 @@ namespace components::logical_plan {
     // so every side with a backing relation gets a live count.
     catalog::oid_t effective_table_oid(const node_ptr& node);
 
-    // A node over one table otterbrix's disk keeps: what an aggregate pushdown (storage_reduce, the disk's own
-    // message) may read. A connection's table has an oid too, but its rows are its backend's.
-    bool reads_owned_table(const node_t& node);
-
 } // namespace components::logical_plan

@@ -12,6 +12,7 @@
 #include <core/pmr.hpp>
 #include <core/tests/wait_ready.hpp>
 #include <services/collection/executor.hpp>
+#include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 
 #include <algorithm>
@@ -1046,4 +1047,71 @@ TEST_CASE("integration::cpp::streaming_cursor::a_declare_that_ends_after_the_shu
     REQUIRE(declared->is_success());
     CHECK(host.backend().open_cursors() == 0);
     host.db.check_refused(session, "CLOSE c;", code::undefined_cursor, "cursor \"c\" does not exist");
+}
+
+// A cursor keeps what the storages took until it closes (CLOSE, the end of its transaction or of its savepoint, the
+// end of the session), a window until the next statement; each take is released once (storage_release_block).
+TEST_CASE("integration::cpp::streaming_cursor::a_cursor_holds_its_takes_until_close") {
+    host_t host("test_streaming_cursor/takes");
+    big(host);
+    orders_of(host, 10);
+    host.backend().set_take_policy({.whole_select = true});
+    const auto none_held = [] {
+        return test_helpers::wait_until([] { return services::disk::disk_held_takes() == 0; });
+    };
+    REQUIRE(none_held());
+    for (const std::string end : {"CLOSE c;", "COMMIT;", "ROLLBACK;", "close"}) {
+        INFO(end);
+        const auto session = any();
+        host.db.ok(session, "BEGIN;");
+        host.db.ok(session, "DECLARE c CURSOR FOR SELECT a FROM s.big WHERE a >= 10;");
+        CHECK(column_a(host.db.ok(session, "FETCH 1 FROM c;")) == range(10, 11));
+        CHECK(services::disk::disk_held_takes() == 1);
+        if (end == "close") {
+            host.db.dispatcher()->close_session(session);
+        } else {
+            host.db.ok(session, end);
+        }
+        CHECK(none_held());
+        if (end == "CLOSE c;") {
+            host.db.ok(session, "COMMIT;");
+        }
+    }
+    INFO("ROLLBACK TO the savepoint before the cursor");
+    {
+        const auto session = any();
+        host.db.ok(session, "BEGIN;");
+        host.db.ok(session, "SAVEPOINT p;");
+        host.db.ok(session, "DECLARE c CURSOR FOR SELECT a FROM s.big WHERE a >= 10;");
+        CHECK(column_a(host.db.ok(session, "FETCH 1 FROM c;")) == range(10, 11));
+        CHECK(services::disk::disk_held_takes() == 1);
+        host.db.ok(session, "ROLLBACK TO p;");
+        CHECK(none_held());
+        host.db.ok(session, "ROLLBACK;");
+    }
+    INFO("a window the next statement closes");
+    {
+        const auto session = any();
+        auto first = window(host, session, "SELECT a FROM s.big WHERE a >= 0;", 100);
+        REQUIRE(first->is_success());
+        CHECK(first->has_more());
+        CHECK(services::disk::disk_held_takes() == 1);
+        host.db.ok(session, "SELECT 1;");
+        CHECK(none_held());
+    }
+    INFO("a backend's take: released once, at CLOSE");
+    {
+        const auto session = any();
+        const auto taken_before = host.backend().taken_requests().size();
+        host.db.ok(session, "BEGIN;");
+        host.db.ok(session, "DECLARE c CURSOR FOR SELECT * FROM m2.shop.public.orders WHERE id = 2;");
+        CHECK(host.db.ok(session, "FETCH 1 FROM c;")->size() == 1);
+        REQUIRE(host.backend().taken_requests().size() == taken_before + 1);
+        CHECK(host.backend().released_requests().size() == taken_before);
+        host.db.ok(session, "CLOSE c;");
+        host.db.ok(session, "COMMIT;");
+        CHECK(test_helpers::wait_until(
+            [&] { return host.backend().released_requests().size() == host.backend().taken_requests().size(); }));
+        CHECK(host.backend().released_requests() == host.backend().taken_requests());
+    }
 }

@@ -124,7 +124,7 @@ Inside a connection's database:
 
 ## The backend actor
 
-A backend is an actor-zeta actor that `implements<services::disk::storage_contract, …>` (all seventeen methods, in
+A backend is an actor-zeta actor that `implements<services::disk::storage_contract, …>` (all eighteen methods, in
 the contract's order: actor-zeta numbers messages by position) and answers its messages without blocking the sender.
 
 - **Schedules itself.** otterbrix only enqueues messages to it, from its executors' threads. The test backend is an
@@ -141,9 +141,10 @@ the contract's order: actor-zeta numbers messages by position) and answers its m
 
 ## The storage contract
 
-`services/disk/storage_contract.hpp`. Its first thirteen methods are the prefix otterbrix's disk shares, number for
-number (`disk_contract` repeats them first, and a `static_assert` per method keeps them identical); the last four are
-the host's (the disk is never offered a block). Every table's operator reaches its storage only by
+`services/disk/storage_contract.hpp`. Its first seventeen methods are the prefix otterbrix's disk shares, number for
+number (`disk_contract` repeats them first, and a `static_assert` per method keeps them identical); the last one,
+`storage_run_write`, is the host's: the disk takes no write, otterbrix's own path writes its tables (WAL, undo,
+publication at COMMIT). Every table's operator reaches its storage only by
 `actor_zeta::otterbrix::send<&storage_contract::m>(table.address, …)`.
 
 | Message | Reply | What |
@@ -161,9 +162,10 @@ the host's (the disk is never offered a block). Every table's operator reaches i
 | `storage_prepare(ctx, tables)` | `error_t` | COMMIT of the backend's part: the last step that may refuse |
 | `storage_release_prepared(ctx, tables)` | — | the transaction ended: whatever it kept goes |
 | `abort_transaction(ctx, from_sub_id, tables)` | `error_t` | ROLLBACK (from_sub_id 0) or ROLLBACK TO the savepoint `from_sub_id` |
-| `storage_offer(ctx, block, parameters)` | `block_take_t[]` | which nodes of a block the backend takes (pushdown) |
+| `storage_offer(ctx, block, parameters)` | `block_take_t[]` | which nodes of a block the storage takes (pushdown) |
 | `storage_run_block(ctx, request, cursor, parameters)` | `fetch_batch_t` | a taken read; cursor 0 runs it (again, on a rescan) |
 | `storage_close_block(ctx, cursor)` | — | a taken read left before its end |
+| `storage_release_block(ctx, request)` | — | the portal that took `request` finished: the storage forgets the take |
 | `storage_run_write(ctx, request, parameters, returning)` | `write_receipt_t` | a taken UPDATE / DELETE |
 
 - `write_receipt_t{start_row, count, awaits_publish, returned}`: `count` is what the backend applied (a short write
@@ -173,7 +175,7 @@ the host's (the disk is never offered a block). Every table's operator reaches i
   deleted row, as it was), in the order the rows were sent.
 - Every chunk a backend answers (a page, a receipt's `returned`, the `host_rows_t` of a DDL reply) holds at most
   `vector::DEFAULT_VECTOR_CAPACITY` rows, as every chunk of otterbrix's: a wider one is refused with
-  `invalid_parameter`, `a storage answered a chunk of N rows, more than the 1024 rows of a chunk`, before otterbrix
+  `protocol_violation`, `a storage answered a chunk of N rows, more than the 1024 rows of a chunk`, before otterbrix
   reads it (`chunk_over_vector_capacity`, `returned_rows_wider_than_a_chunk_are_refused`,
   `host_rows_wider_than_a_chunk_are_refused`); slicing is the backend's job.
 - `ddl_reply_t{awaits_publish, rows}`: `rows` are rows of the host's own otterbrix table (`host_rows_t`: rows to
@@ -181,7 +183,7 @@ the host's (the disk is never offered a block). Every table's operator reaches i
   transaction (`the_hosts_parameters_are_rows_of_its_own_table`). That is how a host keeps its parameters of a table
   with otterbrix's oids, rolled back with the statement.
 - `fetch_batch_t::cursor_id`: the cursor the OPEN (cursor 0) minted, never 0, as the disk's and PostgreSQL 18's
-  portals; a non-empty page that comes with cursor 0 is refused with `invalid_parameter`, `the storage of table "t"
+  portals; a non-empty page that comes with cursor 0 is refused with `protocol_violation`, `the storage of table "t"
   answered a page without a cursor` (`the backend of connection "c" …` for a taken read).
 - One write message is one write: otterbrix's disk checks every chunk of a `storage_append` / `storage_update` before
   it journals any, and a chunk that fails to land takes the ones before it back, so a refused message leaves no row
@@ -195,7 +197,7 @@ reply is awaited, so the scans of a JOIN of several backend tables read at the s
 when none are projected) in projection order, and at most `vector::DEFAULT_VECTOR_CAPACITY` rows (see above). An
 empty page ends the scan: what a backend would send after one is never read (`the_pages_of_a_scan_arrive_whole`).
 Every page is checked against the columns otterbrix planned the scan with (count and types): a page of other columns
-is refused with `invalid_parameter`, `the storage of table "t" answered a page of other columns`
+is refused with `protocol_violation`, `the storage of table "t" answered a page of other columns`
 (`a_page_of_other_columns_errors_not_crash`). A row id is the backend's own number for a row it
 gave out in the scan (`row_ids`, BIGINT); UPDATE and DELETE send it back. Which remote row a number stands for
 (`ctid`, a key) is the backend's to remember.
@@ -293,32 +295,48 @@ published and reverted by the transaction's own steps. An autocommit statement i
 
 ## Pushdown
 
-After the whole of `optimize()`, the executor offers every backend the largest parts of the plan that read only its
-tables (`collect_remote_blocks`): a relation node (a SELECT block, a join, an UPDATE / DELETE) whose sub-tree holds
-only the classes a block may hold — aggregate, group, match, sort, limit, having, select, join, update, delete; a
-function, a CTE scan or a catalog read ends a block. All offers leave before the first reply is awaited.
+After the whole of `optimize()`, the executor offers every storage — a backend and otterbrix's disk alike — the
+largest parts of the plan that read only its tables (`collect_remote_blocks`): a relation node (a SELECT block, a join,
+an UPDATE / DELETE) whose sub-tree holds only the classes a block may hold — aggregate, group, match, sort, limit,
+having, select, join, update, delete; a function, a CTE scan or a catalog read ends a block, and so does a WHERE the
+optimizer gave an index (`index_selection`: the index answers it, `an_indexed_where_is_not_offered`). All offers leave
+before the first reply is awaited.
 
 - **The block** is `detached_block_t`: a copy of the sub-tree on the backend's resource made of the plan's own node
   classes, which points nowhere into otterbrix's plan (`table_metadata()` is null) and carries the slice of its tables
-  the backend reads — oid, full name, columns with attoid, name, type. The backend owns it and may keep it until it
-  runs (`the_offered_block_is_the_backends`). The parameters come along; a correlated one (kind `execution`) gets its
-  value only when the node runs.
+  the backend reads — oid, full name, columns with attoid, name, type. The backend owns it and may keep what it
+  takes until the take's release (`the_offered_block_is_the_backends`). The parameters come along; a correlated one
+  (kind `execution`) gets its value only when the node runs.
 - **The answer** is a list of `block_take_t{preorder, request, explain, residual}`: the preorder position of each
-  relation node the backend takes (taken nodes never overlap; an UPDATE / DELETE only as the block itself), the
-  backend's own description of how to run it, the lines EXPLAIN prints under it, and the WHERE conjuncts it leaves to
-  otterbrix. A take otterbrix cannot place is refused with `invalid_parameter`, `the backend of connection "c" took a
+  node the backend takes (taken nodes never overlap; an UPDATE / DELETE only as the block itself), the backend's own
+  description of how to run it, the lines EXPLAIN prints under it, and the WHERE conjuncts it leaves to otterbrix.
+  A taken node is a relation node, or the WHERE or the GROUP BY of a SELECT block of one table: the storage then reads
+  the table with that WHERE (and groups its rows), and the block's other clauses — ORDER BY, LIMIT, the projection,
+  DISTINCT — stay otterbrix's over its answer; a taken GROUP BY takes the block's WHERE with it. A take otterbrix cannot place is refused with `protocol_violation`, `the backend of connection "c" took a
   block wrongly: …`; the backend's error is the statement's.
 - **A taken read** becomes `node_remote_t`: `storage_run_block` runs the request when the plan opens and again on
   every re-drive (a LATERAL inner gets the values of each drive), `storage_close_block` ends it early. Its pages are
   checked against the types otterbrix planned the taken node with (`the backend of connection "c" answered a block
   with a page of other columns`) and hold at most `vector::DEFAULT_VECTOR_CAPACITY` rows: a longer answer is more pages
-  of the cursor (`the_pages_of_a_taken_read`). With a residual, the backend reads the table
-  with the conjuncts it took and answers the table's columns; the SELECT block keeps the rest over those rows
-  (`a_residual_where_stays_with_otterbrix`).
+  of the cursor (`the_pages_of_a_taken_read`). A read of a table with a WHERE (a residual of a taken SELECT block, or a
+  taken WHERE) answers the columns the block reads — those of the SELECT block's `projected_cols()`, every column
+  when it is empty — and its keys name them by position in that list; the SELECT block keeps the rest over those rows
+  (`a_residual_where_stays_with_otterbrix`, `a_residual_where_over_a_pruned_scan`). A taken GROUP BY answers the
+  group's columns.
+- **A take lives as long as its portal.** When the statement's portal finishes — the statement ran, was only
+  explained or was refused; a cursor's at its CLOSE, COMMIT, ROLLBACK or the session's end — the executor sends
+  `storage_release_block(request)` once for every take the offers answered, and awaits no reply; until then a take
+  may run again (a LATERAL inner's re-drive) and a cursor fetches from it. The storage forgets it then: the disk
+  refuses a released request with `internal_error` (`every_take_is_released_once`, `a_statement_releases_its_takes`,
+  `a_cursor_holds_its_takes_until_close`).
 - **A taken write** runs `storage_run_write` once: its count is the statement's, its receipt's rows feed RETURNING
   (`a_simple_update_or_delete_is_one_remote_statement`).
-- The optimizer's rules are the same for every storage; only the aggregate pushdown to the disk (`storage_reduce`,
-  the disk's own message) reads otterbrix's tables alone.
+- The optimizer's rules are the same for every storage. The disk decides by the block's shape alone: it takes the
+  WHERE of a SELECT block of one of its tables when it is pure comparisons, and the GROUP BY with it when its keys and
+  arguments are columns and every aggregate is mergeable and not DISTINCT (no HAVING, no DISTINCT ON). It reads a
+  computed table's columns where its rows carry them, whatever the block's projection. EXPLAIN shows its read as
+  `Seq Scan on t` with no `Filter:` line for the taken WHERE, a taken GROUP BY with a `Pushed Aggregate: …` line under
+  it (`test_disk_pushdown.cpp`).
 
 ## Column names and their case
 

@@ -93,7 +93,8 @@ namespace host_actor {
         bool simple_modify{false};
         // SELECT * of one table whose WHERE is `column = value` (or none).
         bool whole_select{false};
-        // Of `WHERE a = value AND ...`, the backend reads the table with the first conjunct and leaves the rest.
+        // Of `WHERE a = value AND ...`, the backend reads the table with the first conjunct and leaves the rest, and
+        // the block's other clauses, to otterbrix; it answers the columns the block reads.
         bool first_conjunct{false};
         // What the backend answers instead of a take.
         bool refuse_offer{false};
@@ -823,6 +824,7 @@ namespace host_actor {
             if (take_.take_a_missing_node) {
                 auto take = take_of("nothing", "nothing");
                 take.preorder = 99;
+                taken_requests_.emplace_back(take.request);
                 takes.push_back(std::move(take));
                 co_return std::move(takes);
             }
@@ -852,7 +854,7 @@ namespace host_actor {
                     }
                 }
                 if ((take_.whole_select || take_.first_conjunct) && select_block) {
-                    auto where = where_of(node);
+                    auto where = where_of(node, take_.first_conjunct);
                     if (where.fits && (take_.whole_select ? where.conjuncts.size() <= 1 : where.conjuncts.size() > 1)) {
                         std::string request = std::string{take_.whole_select ? "select " : "scan "} + name;
                         std::string parameter = "-";
@@ -863,6 +865,10 @@ namespace host_actor {
                         request += "|" + parameter;
                         auto take = take_of(request, "Request: " + request.substr(0, request.find('|')));
                         take.preorder = position;
+                        if (take_.first_conjunct) {
+                            block_columns_[request] =
+                                static_cast<const components::logical_plan::node_aggregate_t&>(node).projected_cols();
+                        }
                         for (uint32_t rest = 1; rest < where.conjuncts.size(); ++rest) {
                             take.residual.push_back(rest);
                         }
@@ -874,6 +880,9 @@ namespace host_actor {
                 }
             }
             kept_blocks_.push_back(block_of(block));
+            for (const auto& take : takes) {
+                taken_requests_.emplace_back(take.request);
+            }
             co_return std::move(takes);
         }
 
@@ -936,6 +945,12 @@ namespace host_actor {
         unique_future<void> storage_close_block(execution_context_t, uint64_t cursor_id) {
             std::lock_guard<std::mutex> guard(state_mutex_);
             block_cursors_.erase(cursor_id);
+            co_return;
+        }
+
+        unique_future<void> storage_release_block(execution_context_t, std::pmr::string request) {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            released_requests_.emplace_back(request);
             co_return;
         }
 
@@ -1044,6 +1059,16 @@ namespace host_actor {
             return offers_;
         }
 
+        // The request of every take the backend answered, and of every take otterbrix released, in their order.
+        std::vector<std::string> taken_requests() const {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            return taken_requests_;
+        }
+        std::vector<std::string> released_requests() const {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            return released_requests_;
+        }
+
         // Every message that reached the backend, of any kind.
         int messages() const { return messages_.load(); }
 
@@ -1064,6 +1089,7 @@ namespace host_actor {
                                                        &backend_t::storage_offer,
                                                        &backend_t::storage_run_block,
                                                        &backend_t::storage_close_block,
+                                                       &backend_t::storage_release_block,
                                                        &backend_t::storage_run_write>;
 
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg) {
@@ -1116,6 +1142,9 @@ namespace host_actor {
                     break;
                 case actor_zeta::msg_id<backend_t, &backend_t::storage_close_block>:
                     co_await answer_when_awaited<&backend_t::storage_close_block>(msg);
+                    break;
+                case actor_zeta::msg_id<backend_t, &backend_t::storage_release_block>:
+                    co_await actor_zeta::dispatch(this, &backend_t::storage_release_block, msg);
                     break;
                 case actor_zeta::msg_id<backend_t, &backend_t::storage_run_write>:
                     co_await actor_zeta::dispatch(this, &backend_t::storage_run_write, msg);
@@ -1281,6 +1310,8 @@ namespace host_actor {
             table_t table;
             std::vector<row_t> rows;
             std::size_t next{0};
+            // The columns the block reads; empty: every column.
+            std::vector<size_t> columns;
         };
 
         // The backend owns what it was offered: it keeps the block past its statement.
@@ -1393,7 +1424,8 @@ namespace host_actor {
             std::vector<std::pair<std::size_t, core::parameter_id_t>> conjuncts;
         };
 
-        static where_t where_of(const components::logical_plan::node_t& root) {
+        // `clauses_stay`: the SELECT block keeps its projection and its order in otterbrix.
+        static where_t where_of(const components::logical_plan::node_t& root, bool clauses_stay) {
             using components::expressions::compare_expression_t;
             using components::expressions::compare_type;
             using components::logical_plan::node_type;
@@ -1417,6 +1449,9 @@ namespace host_actor {
             for (const auto& child : root.children()) {
                 if (child->type() == node_type::limit_t &&
                     !static_cast<const components::logical_plan::node_limit_t&>(*child).limit().is_effective()) {
+                    continue;
+                }
+                if (clauses_stay && (child->type() == node_type::select_t || child->type() == node_type::sort_t)) {
                     continue;
                 }
                 if (child->type() != node_type::match_t || child->expressions().empty()) {
@@ -1464,6 +1499,14 @@ namespace host_actor {
                 return core::error_t{core::error_code_t::invalid_parameter,
                                      std::pmr::string{"the test backend has no such table", resource_}};
             }
+            // The block's keys name the columns it reads, by position.
+            std::vector<size_t> columns;
+            if (const auto read = block_columns_.find(text); read != block_columns_.end()) {
+                columns = read->second;
+            }
+            if (where_column && !columns.empty()) {
+                where_column = columns[*where_column];
+            }
             const auto value = where_column ? value_of(parameters, text.substr(bar + 1)) : std::optional<int64_t>{};
             std::vector<row_t> chosen;
             for (const auto& row : table->rows) {
@@ -1473,7 +1516,8 @@ namespace host_actor {
             }
             transactions_.try_emplace(ctx.txn.transaction_id);
             const auto id = next_cursor_id_++;
-            auto& cursor = block_cursors_.emplace(id, block_cursor_t{*table, std::move(chosen), 0}).first->second;
+            auto& cursor = block_cursors_.emplace(id, block_cursor_t{*table, std::move(chosen), 0, std::move(columns)})
+                               .first->second;
             return disk::fetch_batch_t{std::make_unique<components::vector::data_chunk_t>(next_block_page(cursor)), id};
         }
 
@@ -1483,7 +1527,7 @@ namespace host_actor {
             const std::size_t take = take_.wide_block_pages
                                          ? left
                                          : std::min<std::size_t>(left, components::vector::DEFAULT_VECTOR_CAPACITY);
-            auto page = chunk_of(cursor.table, cursor.rows, cursor.next, take, {});
+            auto page = chunk_of(cursor.table, cursor.rows, cursor.next, take, cursor.columns);
             cursor.next += take;
             if (page.size() != 0) {
                 ++block_pages_;
@@ -1843,8 +1887,11 @@ namespace host_actor {
         std::vector<std::size_t> open_cursors_at_abort_;
         std::map<uint64_t, block_cursor_t> block_cursors_;
         std::map<std::string, std::vector<complex_logical_type>> block_types_;
+        std::map<std::string, std::vector<size_t>> block_columns_;
         int offers_{0};
         std::vector<std::string> offered_;
+        std::vector<std::string> taken_requests_;
+        std::vector<std::string> released_requests_;
         std::vector<std::unique_ptr<components::logical_plan::detached_block_t>> kept_blocks_;
         uint64_t next_cursor_id_{1};
         int64_t next_row_id_{1};

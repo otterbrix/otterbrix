@@ -601,7 +601,7 @@ TEST_CASE("integration::cpp::test_udfs::a_udf_in_a_pushable_aggregate_is_pushed_
         const std::string sql = "SELECT sum(v) AS s FROM udfagg.t WHERE modulo(v, 7) <= 2;";
         const auto plan = explain_text(dispatcher, sql);
         INFO(plan);
-        CHECK(plan.find("Pushed Aggregate Scan") != std::string::npos);
+        CHECK(plan.find("Pushed Aggregate") != std::string::npos);
         int64_t expected = 0;
         for (int i = 1; i <= kNumInserts; ++i) {
             if (i % 7 <= 2) {
@@ -621,7 +621,7 @@ TEST_CASE("integration::cpp::test_udfs::a_udf_in_a_pushable_aggregate_is_pushed_
         const std::string sql = "SELECT g, total(v) AS t FROM udfagg.t GROUP BY g ORDER BY g;";
         const auto plan = explain_text(dispatcher, sql);
         INFO(plan);
-        CHECK(plan.find("Pushed Aggregate Scan") != std::string::npos);
+        CHECK(plan.find("Pushed Aggregate") != std::string::npos);
         int64_t expected[3] = {0, 0, 0};
         for (int i = 1; i <= kNumInserts; ++i) {
             expected[i % 3] += i;

@@ -841,7 +841,7 @@ TEST_CASE("integration::cpp::test_collection::sql::udt") {
 
     INFO("compare on enum column");
     {
-        // TODO: push-down filter for ENUM is broken — the planner pushes the WHERE into full_scan as a
+        // TODO: push-down filter for ENUM is broken — the disk takes the WHERE (storage_offer) as a
         // constant_filter_t, and storage segments hand the comparator a raw int32_t (fixed_size_check_row<int32_t>)
         // wrapped as a typeless INTEGER value. The ENUM extension is gone by then. Fix needs the column's logical_type
         // threaded into constant_filter_t at construction so the literal is pre-resolved into the ordinal once.

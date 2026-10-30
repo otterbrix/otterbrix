@@ -1,6 +1,6 @@
-// operator_match_t is the filter operator the planner builds for a non-pure-compare WHERE
-// predicate (e.g. LIKE); a pure compare is pushed into the scan instead, giving a
-// match(streaming)->full_scan(source) chain that streams one batch at a time. Tests check
+// operator_match_t is the filter operator the planner builds for a WHERE the disk does not take
+// (e.g. LIKE); a pure compare the disk takes while it reads (storage_offer). A LIKE gives a
+// match(streaming)->transfer_scan(source) chain that streams one batch at a time. Tests check
 // streaming_pipeline_runs() bumps (stubbing role() back to none makes that RED).
 
 #include "integration_fixture_path.hpp"

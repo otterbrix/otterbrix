@@ -171,7 +171,7 @@ namespace components::operators {
             co_return;
         }
         const uint64_t id = hold_id_;
-        // Clear first so a re-entry cannot double-send (same discipline as full_scan).
+        // Clear first so a re-entry cannot double-send (same discipline as transfer_scan).
         hold_id_ = 0;
         auto [_c, cf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                     &services::disk::manager_disk_t::storage_close_cursor,

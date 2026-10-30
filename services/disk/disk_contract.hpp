@@ -18,12 +18,10 @@
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/physical_plan/operators/operator_write_data.hpp>
-#include <components/physical_plan/pushed_aggregate_spec.hpp> // aggregate-pushdown reduce spec
 #include <components/session/session.hpp>
 #include <components/storage/storage.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/table/column_state.hpp>
-#include <components/table/pushed_filter.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <components/table/transaction.hpp>
 #include <components/types/types.hpp>
@@ -108,15 +106,23 @@ namespace services::disk {
                                                        uint64_t from_sub_id,
                                                        std::pmr::set<components::catalog::oid_t> tables);
 
-        // The disk's own messages.
+        // Takes the WHERE of a SELECT block of one table, or its GROUP BY of the reduce form (keys and arguments are
+        // columns, every aggregate mergeable and not DISTINCT, no HAVING, no DISTINCT ON); a WHERE only when it is
+        // pure comparisons. Decided by the block's shape alone: no agent is asked.
+        unique_future<core::result_wrapper_t<std::pmr::vector<block_take_t>>>
+        storage_offer(execution_context_t ctx,
+                      components::logical_plan::detached_block_t block,
+                      components::vector::storage_parameters parameters);
+        // A taken read runs under ctx.txn's snapshot; a released take is refused with invalid_parameter.
         unique_future<core::result_wrapper_t<fetch_batch_t>>
-        storage_open_filtered_scan(session_id_t session,
-                                   components::catalog::oid_t table_oid,
-                                   std::unique_ptr<components::table::pushed_filter_t> filter,
-                                   int64_t limit,
-                                   std::vector<size_t> projected_cols,
-                                   components::table::transaction_data txn);
+        storage_run_block(execution_context_t ctx,
+                          std::pmr::string request,
+                          uint64_t cursor_id,
+                          components::vector::storage_parameters parameters);
+        unique_future<void> storage_close_block(execution_context_t ctx, uint64_t cursor_id);
+        unique_future<void> storage_release_block(execution_context_t ctx, std::pmr::string request);
 
+        // The disk's own messages.
         // compact_watermark (below): the dispatcher's visible-to-all horizon; a stamp above it no-ops the compact.
         unique_future<services::wal::id_t>
         checkpoint_all(session_id_t session, services::wal::id_t current_wal_id, uint64_t compact_watermark);
@@ -177,15 +183,6 @@ namespace services::disk {
                             std::pmr::vector<std::uint64_t> key_col_indices,
                             std::pmr::vector<components::vector::data_chunk_t> keys,
                             std::pmr::vector<std::uint64_t> projected_cols);
-
-        // A not-owned oid REFUSES rather than answering an empty fold indistinguishable from a real COUNT=0.
-        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-        storage_reduce(session_id_t session,
-                       components::catalog::oid_t table_oid,
-                       std::unique_ptr<components::table::pushed_filter_t> filter,
-                       std::vector<size_t> projected_cols,
-                       components::table::transaction_data txn,
-                       components::operators::pushed_aggregate_spec_t spec);
 
         // See manager_disk_t::compact_relkind_g_storage for the mechanism.
         unique_future<core::result_wrapper_t<std::uint64_t>>
@@ -271,7 +268,10 @@ namespace services::disk {
                                                             &disk_contract::storage_prepare,
                                                             &disk_contract::storage_release_prepared,
                                                             &disk_contract::abort_transaction,
-                                                            &disk_contract::storage_open_filtered_scan,
+                                                            &disk_contract::storage_offer,
+                                                            &disk_contract::storage_run_block,
+                                                            &disk_contract::storage_close_block,
+                                                            &disk_contract::storage_release_block,
                                                             &disk_contract::checkpoint_all,
                                                             &disk_contract::vacuum_all,
                                                             &disk_contract::maybe_cleanup_many,
@@ -285,7 +285,6 @@ namespace services::disk {
                                                             &disk_contract::scan_by_keys,
                                                             &disk_contract::read_chunks_by_key,
                                                             &disk_contract::read_chunks_by_keys,
-                                                            &disk_contract::storage_reduce,
                                                             &disk_contract::compact_relkind_g_storage,
                                                             &disk_contract::publish_column_stamps,
                                                             &disk_contract::rename_storage_column,
@@ -337,8 +336,14 @@ namespace services::disk {
     static_assert(
         detail::same_message<&disk_contract::storage_release_prepared, &storage_contract::storage_release_prepared>());
     static_assert(detail::same_message<&disk_contract::abort_transaction, &storage_contract::abort_transaction>());
+    static_assert(detail::same_message<&disk_contract::storage_offer, &storage_contract::storage_offer>());
+    static_assert(detail::same_message<&disk_contract::storage_run_block, &storage_contract::storage_run_block>());
+    static_assert(detail::same_message<&disk_contract::storage_close_block, &storage_contract::storage_close_block>());
+    static_assert(
+        detail::same_message<&disk_contract::storage_release_block, &storage_contract::storage_release_block>());
+    static_assert(storage_contract::prefix_size == 17, "storage_run_write, the host's alone, follows the prefix");
     static_assert(actor_zeta::action_id_impl<disk_contract,
-                                             &disk_contract::storage_open_filtered_scan,
+                                             &disk_contract::checkpoint_all,
                                              disk_contract::dispatch_traits::methods>::value ==
                       storage_contract::prefix_size,
                   "the disk's own messages start right after storage_contract's prefix");

@@ -5,6 +5,7 @@
 #include "host_fixture.hpp"
 
 #include <components/vector/vector_builders.hpp>
+#include <core/tests/wait_ready.hpp>
 
 #include <algorithm>
 #include <string>
@@ -77,6 +78,20 @@ TEST_CASE("integration::cpp::host_pushdown::a_residual_where_stays_with_otterbri
     CHECK(host.backend().journal("scan").empty());
     CHECK(host.backend().journal("run") ==
           strings{"run scan " + orders + " where column 0", "run scan " + orders + " where column 0"});
+}
+
+// The residual and the projection read the columns the pruned block names: c is the second column the block reads.
+TEST_CASE("integration::cpp::host_pushdown::a_residual_where_over_a_pruned_scan") {
+    host_t host("test_host_pushdown/residual_pruned");
+    host.register_shop();
+    host.db.ok(any(), "CREATE TABLE m2.shop.public.items (a BIGINT, b BIGINT, c BIGINT);");
+    host.backend().set_rows("m2.shop.public.items", {{1, 10, 100}, {2, 20, 200}, {1, 30, 300}});
+    host.backend().clear_journal();
+    host.backend().set_take_policy({.first_conjunct = true});
+    auto found = host.db.ok(any(), "SELECT c FROM m2.shop.public.items WHERE a = 1 AND c = 300;");
+    CHECK(sorted_rows(found) == rows_t{{300}});
+    CHECK(host.backend().journal("scan").empty());
+    CHECK(host.backend().journal("run") == strings{"run scan m2.shop.public.items where column 0"});
 }
 
 // EXPLAIN shows what the backend took, under the backend's own lines, and runs nothing.
@@ -206,6 +221,22 @@ TEST_CASE("integration::cpp::host_pushdown::a_block_page_without_a_cursor_is_ref
                           "SELECT * FROM m2.shop.public.orders WHERE id = 2;",
                           code::protocol_violation,
                           "the backend of connection \"m2\" answered a page without a cursor");
+}
+
+// A take lives one statement: whether the statement ran it, explained it, or failed running it, the backend is told
+// once, when the statement ends, that otterbrix is done with it (storage_release_block).
+TEST_CASE("integration::cpp::host_pushdown::every_take_is_released_once") {
+    host_t host("test_host_pushdown/release");
+    shop(host);
+    host.backend().set_take_policy({.whole_select = true});
+    host.db.ok(any(), "SELECT * FROM m2.shop.public.orders WHERE id = 2;");
+    host.db.ok(any(), "EXPLAIN SELECT * FROM m2.shop.public.orders WHERE id = 3;");
+    host.backend().set_pages_without_cursor(true);
+    CHECK(host.db.refused(any(), "SELECT * FROM m2.shop.public.orders WHERE id = 1;").type == code::protocol_violation);
+    REQUIRE(host.backend().taken_requests().size() == 3);
+    CHECK(test_helpers::wait_until(
+        [&] { return host.backend().released_requests().size() >= host.backend().taken_requests().size(); }));
+    CHECK(host.backend().released_requests() == host.backend().taken_requests());
 }
 
 // A backend's refusal to plan a block is the statement's error; a take of a node the block does not have is refused.

@@ -51,6 +51,7 @@
 #include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_execute.hpp>
 #include <components/logical_plan/node_function.hpp>
+#include <components/logical_plan/node_group.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_insert_on_conflict.hpp>
 #include <components/logical_plan/node_join.hpp>
@@ -769,9 +770,14 @@ namespace services::collection::executor {
             if (!components::logical_plan::may_be_in_a_block(node.type())) {
                 return {false, nullptr};
             }
+            // A WHERE an index answers is read through the index, never offered.
+            if (node.type() == node_type::match_t &&
+                static_cast<const components::logical_plan::node_match_t&>(node).index().has_value()) {
+                return {false, nullptr};
+            }
             block_reach_t reach;
             if (const auto* table = node.table_metadata(); table != nullptr) {
-                if (!table->address.is_remote() || table->address.empty()) {
+                if (table->address.empty()) {
                     return {false, nullptr};
                 }
                 reach.address = &table->address;
@@ -817,18 +823,78 @@ namespace services::collection::executor {
             }
         }
 
-        // The slots of `slot`'s sub-tree in preorder, with the size of each one's sub-tree.
-        void preorder_of(node_ptr& slot, std::pmr::vector<node_ptr*>& order, std::pmr::vector<std::size_t>& sizes) {
+        // The slots of `slot`'s sub-tree in preorder, with the size of each one's sub-tree and the position of its
+        // parent (the root's is its own).
+        void preorder_of(node_ptr& slot,
+                         std::size_t parent,
+                         std::pmr::vector<node_ptr*>& order,
+                         std::pmr::vector<std::size_t>& sizes,
+                         std::pmr::vector<std::size_t>& parents) {
             const auto position = order.size();
             order.push_back(&slot);
             sizes.push_back(1);
+            parents.push_back(parent);
             if (!slot) {
                 return;
             }
             for (auto& child : slot->children()) {
-                preorder_of(child, order, sizes);
+                preorder_of(child, position, order, sizes, parents);
             }
             sizes[position] = order.size() - position;
+        }
+
+        // A SELECT block of one table: it reads the table itself, through no other relation.
+        bool is_table_block(const components::logical_plan::node_t& node) noexcept {
+            if (node.type() != node_type::aggregate_t || node.table_metadata() == nullptr) {
+                return false;
+            }
+            for (const auto& child : node.children()) {
+                if (!child) {
+                    return false;
+                }
+                switch (child->type()) {
+                    case node_type::match_t:
+                    case node_type::group_t:
+                    case node_type::sort_t:
+                    case node_type::select_t:
+                    case node_type::limit_t:
+                    case node_type::having_t:
+                        break;
+                    default:
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        // The columns a storage answers for a read of `table` that the block narrowed to `projected` (empty: every
+        // column); a computed table is read whole, its columns that rows carry.
+        std::pmr::vector<components::types::complex_logical_type>
+        read_columns(std::pmr::memory_resource* resource,
+                     const components::logical_plan::resolved_table_metadata_t& table,
+                     const std::vector<size_t>& projected) {
+            std::pmr::vector<components::types::complex_logical_type> columns{resource};
+            const auto add = [&columns](const components::logical_plan::resolved_column_metadata_t& column) {
+                auto type = column.type;
+                type.set_alias(column.attname);
+                columns.push_back(std::move(type));
+            };
+            if (table.relkind == components::catalog::relkind::computed) {
+                for (const auto& column : table.columns) {
+                    if (column.chunk_position >= 0) {
+                        add(column);
+                    }
+                }
+            } else if (projected.empty()) {
+                for (const auto& column : table.columns) {
+                    add(column);
+                }
+            } else {
+                for (const auto position : projected) {
+                    add(table.columns[position]);
+                }
+            }
+            return columns;
         }
 
         void tables_of(const components::logical_plan::node_t& node,
@@ -862,36 +928,131 @@ namespace services::collection::executor {
         core::error_t take_refused(std::pmr::memory_resource* resource,
                                    const components::table::storage_address_t& address,
                                    std::string_view why) {
-            std::pmr::string what{"the backend of connection \"", resource};
-            what += address.connection();
-            what += "\" took a block wrongly: ";
+            std::pmr::string what{resource};
+            what += address.owner();
+            what += " took a block wrongly: ";
             what.append(why.data(), why.size());
             return core::error_t{core::error_code_t::protocol_violation, std::move(what)};
         }
 
-        // What a backend took of one offered block, put in the plan: a taken node becomes a node_remote_t; a SELECT
-        // block taken with a residual WHERE keeps its clauses above a node_remote_t that reads its table's rows.
+        // The WHERE of `where` keeps the conjuncts at `residual`, which the storage left to otterbrix.
+        core::error_t keep_conjuncts(std::pmr::memory_resource* resource,
+                                     const block_candidate_t& candidate,
+                                     components::logical_plan::node_t& where,
+                                     const std::pmr::vector<uint32_t>& residual) {
+            const auto conjuncts = conjuncts_of(resource, where.expressions().front());
+            std::pmr::vector<components::expressions::expression_ptr> kept{resource};
+            for (const auto position : residual) {
+                if (position >= conjuncts.size()) {
+                    return take_refused(resource, candidate.address, "a residual conjunct is not in the WHERE");
+                }
+                kept.push_back(conjuncts[position]);
+            }
+            if (kept.size() == 1) {
+                where.expressions().front() = kept.front();
+                return core::error_t::no_error();
+            }
+            auto both = components::expressions::make_compare_union_expression(
+                resource,
+                components::expressions::compare_type::union_and);
+            for (const auto& conjunct : kept) {
+                both->append_child(conjunct);
+            }
+            where.expressions().front() = both;
+            return core::error_t::no_error();
+        }
+
+        // A taken WHERE or GROUP BY of a SELECT block of one table: the storage reads the table with the WHERE (and
+        // groups the rows), the block's other clauses run over its answer. The block keeps its table, whose rows the
+        // answer still are (a hash join sizes its sides by it).
+        core::error_t take_clause(std::pmr::memory_resource* resource,
+                                  const block_candidate_t& candidate,
+                                  components::logical_plan::node_aggregate_t& block,
+                                  const node_ptr& clause,
+                                  const services::disk::block_take_t& take,
+                                  components::logical_plan::node_remote_ptr remote) {
+            auto& children = block.children();
+            auto at = std::find_if(children.begin(), children.end(), [&clause](const node_ptr& child) {
+                return child.get() == clause.get();
+            });
+            remote->tables().push_back(block.table_oid());
+            if (clause->type() == node_type::group_t) {
+                const components::logical_plan::node_t& typed = clause->has_output_types() ? *clause : block;
+                if (!typed.has_output_types()) {
+                    return take_refused(resource, candidate.address, "the block's columns are not known");
+                }
+                remote->set_output_types(
+                    std::pmr::vector<components::types::complex_logical_type>{typed.output_types().begin(),
+                                                                              typed.output_types().end(),
+                                                                              resource});
+                *at = remote;
+                children.erase(
+                    std::remove_if(children.begin(),
+                                   children.end(),
+                                   [](const node_ptr& child) { return child->type() == node_type::match_t; }),
+                    children.end());
+            } else {
+                remote->set_output_types(read_columns(resource, *block.table_metadata(), block.projected_cols()));
+                if (take.residual.empty()) {
+                    children.erase(at);
+                } else if (auto kept = keep_conjuncts(resource, candidate, *clause, take.residual);
+                           kept.contains_error()) {
+                    return kept;
+                }
+                children.insert(children.begin(), remote);
+            }
+            block.set_projected_cols({});
+            return core::error_t::no_error();
+        }
+
+        // What a storage took of one offered block, put in the plan: a taken node becomes a node_remote_t; a SELECT
+        // block taken with a residual WHERE keeps its clauses above a node_remote_t that reads its table's rows; a
+        // taken WHERE or GROUP BY of a SELECT block of one table becomes the node_remote_t its other clauses read.
         core::error_t apply_takes(std::pmr::memory_resource* resource,
                                   block_candidate_t& candidate,
                                   std::pmr::vector<services::disk::block_take_t>& takes) {
             using components::logical_plan::node_remote_t;
             std::pmr::vector<node_ptr*> order{resource};
             std::pmr::vector<std::size_t> sizes{resource};
-            preorder_of(*candidate.slot, order, sizes);
+            std::pmr::vector<std::size_t> parents{resource};
+            preorder_of(*candidate.slot, 0, order, sizes, parents);
             std::pmr::vector<bool> taken(order.size(), false, resource);
+            std::pmr::vector<bool> clause_taken(order.size(), false, resource);
             for (const auto& take : takes) {
                 if (take.preorder >= order.size()) {
                     return take_refused(resource, candidate.address, "no node of the block has that position");
                 }
                 const node_ptr& node = *order[take.preorder];
-                if (!node || !is_relation(node->type())) {
-                    return take_refused(resource, candidate.address, "a taken node is a relation");
+                const bool clause = node && (node->type() == node_type::match_t || node->type() == node_type::group_t);
+                if (!node || !(is_relation(node->type()) || clause)) {
+                    return take_refused(resource,
+                                        candidate.address,
+                                        "a taken node is a relation, or the WHERE or the GROUP BY of a SELECT block");
+                }
+                if (clause) {
+                    const auto parent = parents[take.preorder];
+                    if (take.preorder == 0 || !is_table_block(**order[parent])) {
+                        return take_refused(resource,
+                                            candidate.address,
+                                            "a taken WHERE or GROUP BY is of a SELECT block of one table");
+                    }
+                    if (clause_taken[parent]) {
+                        return take_refused(resource, candidate.address, "two clauses of one block are taken");
+                    }
+                    clause_taken[parent] = true;
+                    if (node->type() == node_type::group_t && !take.residual.empty()) {
+                        return take_refused(resource, candidate.address, "a taken GROUP BY leaves no residual WHERE");
+                    }
+                    if (node->type() == node_type::match_t && node->expressions().empty()) {
+                        return take_refused(resource, candidate.address, "a taken WHERE has a condition");
+                    }
                 }
                 if ((node->type() == node_type::update_t || node->type() == node_type::delete_t) &&
                     take.preorder != 0) {
                     return take_refused(resource, candidate.address, "an UPDATE / DELETE is taken only as the block");
                 }
-                if (!take.residual.empty() && node->type() != node_type::aggregate_t) {
+                if (!take.residual.empty() && node->type() != node_type::aggregate_t &&
+                    node->type() != node_type::match_t) {
                     return take_refused(resource, candidate.address, "only a SELECT block leaves a residual WHERE");
                 }
                 for (std::size_t inside = take.preorder; inside < take.preorder + sizes[take.preorder]; ++inside) {
@@ -906,7 +1067,8 @@ namespace services::collection::executor {
                 }
                 taken[take.preorder] = true;
             }
-            // Deepest first: replacing a node never frees a slot still to be replaced (taken nodes do not overlap).
+            // Deepest first: replacing a node never frees a slot still to be replaced (taken nodes do not overlap, and
+            // a block's clause is its only one taken).
             std::sort(takes.begin(), takes.end(), [](const auto& a, const auto& b) { return a.preorder > b.preorder; });
             for (auto& take : takes) {
                 node_ptr& slot = *order[take.preorder];
@@ -921,6 +1083,15 @@ namespace services::collection::executor {
                                       candidate.address,
                                       std::pmr::string{take.request, resource},
                                       std::move(explain))};
+                if (slot->type() == node_type::match_t || slot->type() == node_type::group_t) {
+                    auto& block =
+                        static_cast<components::logical_plan::node_aggregate_t&>(**order[parents[take.preorder]]);
+                    if (auto clause = take_clause(resource, candidate, block, slot, take, std::move(remote));
+                        clause.contains_error()) {
+                        return clause;
+                    }
+                    continue;
+                }
                 tables_of(*slot, remote->tables());
                 if (write) {
                     const auto& returning =
@@ -948,8 +1119,8 @@ namespace services::collection::executor {
                     slot = remote;
                     continue;
                 }
-                // The backend reads the table with the WHERE conjuncts it took; the SELECT block keeps the rest
-                // over the table's rows.
+                // The backend reads the table with the WHERE conjuncts it took, answering the columns the block
+                // reads; the SELECT block keeps the rest over those rows.
                 if (slot->type() != node_type::aggregate_t) {
                     return take_refused(resource, candidate.address, "a residual WHERE is left of a node of no WHERE");
                 }
@@ -958,37 +1129,15 @@ namespace services::collection::executor {
                 if (table == nullptr) {
                     return take_refused(resource, candidate.address, "a residual WHERE is left of a table's block");
                 }
-                std::pmr::vector<components::types::complex_logical_type> columns{resource};
-                for (const auto& column : table->columns) {
-                    auto type = column.type;
-                    type.set_alias(column.attname);
-                    columns.push_back(std::move(type));
-                }
-                remote->set_output_types(std::move(columns));
+                remote->set_output_types(read_columns(resource, *table, aggregate.projected_cols()));
                 bool has_where = false;
                 for (auto& child : aggregate.children()) {
                     if (!child || child->type() != node_type::match_t || child->expressions().empty()) {
                         continue;
                     }
                     has_where = true;
-                    const auto conjuncts = conjuncts_of(resource, child->expressions().front());
-                    std::pmr::vector<components::expressions::expression_ptr> kept{resource};
-                    for (const auto position : take.residual) {
-                        if (position >= conjuncts.size()) {
-                            return take_refused(resource, candidate.address, "a residual conjunct is not in the WHERE");
-                        }
-                        kept.push_back(conjuncts[position]);
-                    }
-                    if (kept.size() == 1) {
-                        child->expressions().front() = kept.front();
-                    } else {
-                        auto both = components::expressions::make_compare_union_expression(
-                            resource,
-                            components::expressions::compare_type::union_and);
-                        for (const auto& conjunct : kept) {
-                            both->append_child(conjunct);
-                        }
-                        child->expressions().front() = both;
+                    if (auto kept = keep_conjuncts(resource, candidate, *child, take.residual); kept.contains_error()) {
+                        return kept;
                     }
                 }
                 if (!has_where) {
@@ -1007,7 +1156,8 @@ namespace services::collection::executor {
     executor_t::offer_blocks_(components::session::session_id_t session,
                               components::logical_plan::execution_plan_t& plan,
                               components::table::transaction_data txn,
-                              const components::graph_execution_context& settings) {
+                              const components::graph_execution_context& settings,
+                              std::pmr::vector<held_take_t>& held) {
         // The statement's own tree: each sub-query was offered when it ran as a statement of its own.
         std::pmr::vector<block_candidate_t> candidates{resource()};
         collect_remote_blocks(plan.sub_queries.back(), candidates);
@@ -1032,17 +1182,37 @@ namespace services::collection::executor {
             offers.push_back(std::move(of));
         }
         // Every offer left before the first reply is awaited; candidates never overlap, so each reply is applied as
-        // it comes.
+        // it comes. Every reply is awaited, so a take after a refusal is held too.
+        core::error_t refused = core::error_t::no_error();
         for (std::size_t i = 0; i < candidates.size(); ++i) {
             auto reply = co_await std::move(offers[i]);
             if (reply.has_error()) {
-                co_return reply.error();
+                if (!refused.contains_error()) {
+                    refused = reply.error();
+                }
+                continue;
             }
-            if (auto applied = apply_takes(resource(), candidates[i], reply.value()); applied.contains_error()) {
-                co_return applied;
+            for (const auto& take : reply.value()) {
+                held.push_back(held_take_t{candidates[i].address, std::pmr::string{take.request, resource()}});
             }
+            if (refused.contains_error()) {
+                continue;
+            }
+            refused = apply_takes(resource(), candidates[i], reply.value());
         }
-        co_return core::error_t::no_error();
+        co_return refused;
+    }
+
+    void executor_t::release_takes_(const components::execution_context_t& ctx,
+                                    std::pmr::vector<held_take_t>& held) {
+        for (const auto& take : held) {
+            [[maybe_unused]] auto [_r, released] =
+                actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_release_block>(
+                    take.address,
+                    ctx,
+                    std::pmr::string{take.request, take.address.actor().resource()});
+        }
+        held.clear();
     }
 
     executor_t::unique_future<core::error_t>
@@ -3545,34 +3715,37 @@ namespace services::collection::executor {
                 }
             }
         }
-        const bool can_push_to_agent = disk_address_ != actor_zeta::address_t::empty_address();
         plan.sub_queries.back() = components::planner::optimize(resource(),
                                                                 std::move(plan.sub_queries.back()),
                                                                 plan.parameters.get(),
                                                                 context_storage.execution_context,
-                                                                context_storage.indexes,
-                                                                can_push_to_agent);
-        if (auto offered = co_await offer_blocks_(session, plan, resolve_txn, context_storage.execution_context);
+                                                                context_storage.indexes);
+        const components::execution_context_t statement_ctx{session,
+                                                            resolve_txn,
+                                                            context_storage.execution_context.timezone_offset};
+        std::pmr::vector<held_take_t> held{resource()};
+        if (auto offered =
+                co_await offer_blocks_(session, plan, resolve_txn, context_storage.execution_context, held);
             offered.contains_error()) {
+            release_takes_(statement_ctx, held);
             co_return execute_result_t{make_cursor(resource(), std::move(offered))};
         }
 
-        if (can_push_to_agent) {
-            std::pmr::set<components::catalog::oid_t> inner_hash_join_oids{resource()};
-            collect_inner_hash_join_oids(plan.sub_queries.back(), inner_hash_join_oids);
-            for (auto oid : inner_hash_join_oids) {
-                auto address = services::planner::storage_address_of(context_storage, oid);
-                if (address.has_error()) {
-                    co_return execute_result_t{make_cursor(resource(), address.error())};
-                }
-                auto [_tr, trf] =
-                    actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_total_rows>(address.value(),
-                                                                                                       session,
-                                                                                                       oid);
-                auto rows_r = co_await std::move(trf);
-                if (!rows_r.has_error()) {
-                    context_storage.row_counts[oid] = rows_r.value();
-                }
+        std::pmr::set<components::catalog::oid_t> inner_hash_join_oids{resource()};
+        collect_inner_hash_join_oids(plan.sub_queries.back(), inner_hash_join_oids);
+        for (auto oid : inner_hash_join_oids) {
+            auto address = services::planner::storage_address_of(context_storage, oid);
+            if (address.has_error()) {
+                release_takes_(statement_ctx, held);
+                co_return execute_result_t{make_cursor(resource(), address.error())};
+            }
+            auto [_tr, trf] =
+                actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_total_rows>(address.value(),
+                                                                                                   session,
+                                                                                                   oid);
+            auto rows_r = co_await std::move(trf);
+            if (!rows_r.has_error()) {
+                context_storage.row_counts[oid] = rows_r.value();
             }
         }
 
@@ -3597,6 +3770,7 @@ namespace services::collection::executor {
             std::pmr::string what{"cursor \"", resource()};
             what.append(cursor_name);
             what.append("\" already exists");
+            release_takes_(statement_ctx, held);
             co_return execute_result_t{
                 make_cursor(resource(), core::error_t{core::error_code_t::duplicate_cursor, std::move(what)})};
         }
@@ -3632,6 +3806,8 @@ namespace services::collection::executor {
             portal.registries.casts = &portal.own_casts.emplace(*registries.casts, resource());
         }
         portal.columns = std::move(portal_columns);
+        // What the storages took lives as long as the portal: a cursor's until its CLOSE (finish_statement_).
+        portal.held_takes = std::move(held);
         portal.closes_when_drained = window > 0;
         // A portal that outlives its statement reads the block's own writes as of it (PostgreSQL 18's curcid).
         if (keeps) {
@@ -3748,6 +3924,8 @@ namespace services::collection::executor {
         const auto& settings = portal.tail.settings;
         auto& statement_changes = portal.tail.registry_changes;
         const auto registries = portal.registries;
+        release_takes_(components::execution_context_t{session, resolve_txn, settings.timezone_offset},
+                       portal.held_takes);
 
         auto revert_failed_txn = [this, session, resolve_txn, &session_ctx](
                                      [[maybe_unused]] executor_t* self,
@@ -4590,6 +4768,7 @@ namespace services::collection::executor {
         , session_ctx(std::move(session_ctx))
         , registries(registries)
         , columns(resource)
+        , held_takes(resource)
         , explain_names(resource)
         , captured_subplans(resource)
         , opened(resource)

@@ -15,15 +15,11 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_sort.hpp>
 #include <components/physical_plan/operators/operator_distinct.hpp>
-#include <components/physical_plan/operators/operator_group_merge.hpp>
 #include <components/physical_plan/operators/operator_hash_group.hpp>
 #include <components/physical_plan/operators/operator_limit.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
 #include <components/physical_plan/operators/operator_sort.hpp>
-#include <components/physical_plan/operators/scan/full_scan.hpp>
-#include <components/physical_plan/operators/scan/pushed_reduce_scan.hpp>
 #include <components/physical_plan/operators/scan/transfer_scan.hpp>
-#include <components/physical_plan/pushed_aggregate_spec.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 
 namespace services::planner::impl {
@@ -36,129 +32,8 @@ namespace services::planner::impl {
         namespace ops = components::operators;
     } // namespace
 
-    // Falls back to the coordinator aggregate (byte-identical result) whenever the shape is not POD-
-    // representable: a computed/arithmetic group key, a HAVING, or a distinct/multi-arg/UDF aggregate arg.
-    bool build_pushed_spec(const lp::node_group_t* group,
-                           const lp::node_ptr& agg_node,
-                           std::pmr::memory_resource* resource,
-                           ops::pushed_aggregate_spec_t& out) {
-        {
-            // Defense-in-depth: the optimizer already skips any aggregate with a having_t child.
-            bool has_having_child = false;
-            for (const auto& child : agg_node->children()) {
-                if (child && child->type() == node_type::having_t) {
-                    has_having_child = true;
-                    break;
-                }
-            }
-            if (has_having_child || group->internal_aggregate_count != 0) {
-                return false;
-            }
-            // Pass 1: the GROUP BY keys; output_key_of[i] is SIZE_MAX for a key the target list never names.
-            std::pmr::vector<size_t> output_key_of(group->expressions().size(), SIZE_MAX, resource);
-            for (size_t i = 0; i < group->expressions().size(); i++) {
-                const auto& expr = group->expressions()[i];
-                if (expr->group() != ce::expression_group::scalar) {
-                    continue;
-                }
-                const auto* s = static_cast<const ce::scalar_expression_t*>(expr.get());
-                const ce::key_t* field = nullptr;
-                bool emits_output = true;
-                switch (s->type()) {
-                    case ce::scalar_type::group_field:
-                        // A pushed_group_key_t is a name plus a resolved column-index path, and the
-                        // agent rebuilds operator_group by that path. A key that computes something
-                        // has no path so we can not push it
-                        if (!s->params().empty()) {
-                            return false;
-                        }
-                        field = &s->key();
-                        emits_output = false;
-                        break;
-                    case ce::scalar_type::get_field:
-                        if (!s->params().empty() && !std::holds_alternative<ce::key_t>(s->params().front())) {
-                            return false;
-                        }
-                        field = s->params().empty() ? &s->key() : &components::expressions::as_key(s->params().front());
-                        break;
-                    default:
-                        return false;
-                }
-                if (s->key().storage().empty()) {
-                    return false;
-                }
-                const auto& path = field->path();
-                bool reused = false;
-                for (size_t k = 0; emits_output && !path.empty() && k < out.group_keys.size(); k++) {
-                    const auto& existing = out.group_keys[k].path;
-                    if (existing.size() == path.size() && std::equal(existing.begin(), existing.end(), path.begin())) {
-                        output_key_of[i] = k;
-                        reused = true;
-                        break;
-                    }
-                }
-                if (reused) {
-                    continue;
-                }
-                if (emits_output) {
-                    output_key_of[i] = out.group_keys.size();
-                }
-                ops::pushed_group_key_t gk{resource};
-                const auto& name = s->key().storage().back();
-                gk.name.assign(name.data(), name.size());
-                gk.path.assign(path.begin(), path.end());
-                out.group_keys.push_back(std::move(gk));
-            }
-
-            // Pass 2: the aggregates sit at group_keys.size() + their index, which pass 1 has now settled.
-            for (size_t i = 0; i < group->expressions().size(); i++) {
-                const auto& expr = group->expressions()[i];
-                if (expr->group() == ce::expression_group::scalar) {
-                    if (output_key_of[i] != SIZE_MAX) {
-                        out.outputs.push_back(
-                            ce::detached_expression_t::detach(resource, expr)); // the target list naming this key
-                    }
-                    continue; // the key itself was added in pass 1
-                }
-                if (expr->group() == ce::expression_group::aggregate) {
-                    const auto* a = static_cast<const ce::aggregate_expression_t*>(expr.get());
-                    // The agent builds the reduction from the function the output carries.
-                    if (a->is_distinct() || a->function() == nullptr) {
-                        return false;
-                    }
-                    ops::pushed_aggregate_t pa{resource};
-                    pa.function_name.assign(a->function_name().data(), a->function_name().size());
-                    pa.distinct = false;
-                    pa.result_type = a->result_type();
-                    const auto alias = a->key().as_pmr_string();
-                    pa.alias.assign(alias.data(), alias.size());
-                    // A multi-arg/expression argument (SUM(a+b)) is not representable.
-                    if (a->params().empty()) {
-                    } else if (a->params().size() == 1 && std::holds_alternative<ce::key_t>(a->params().front())) {
-                        const auto& kp = components::expressions::as_key(a->params().front()).path();
-                        pa.arg_col_path.assign(kp.begin(), kp.end());
-                    } else {
-                        return false;
-                    }
-                    out.outputs.push_back(ce::detached_expression_t::detach(resource, expr));
-                    out.aggregates.push_back(std::move(pa));
-                } else {
-                    return false;
-                }
-            }
-            if (!out.active()) {
-                return false;
-            }
-            if (group->has_output_types()) {
-                out.output_types.assign(group->output_types().begin(), group->output_types().end());
-            }
-            out.input_types.assign(group->input_types().begin(), group->input_types().end());
-            return true;
-        }
-    }
-
     namespace {
-        // Factored so pushed_reduce_scan and the coordinator transfer_scan derive the same projection.
+        // A computed table is read whole: its live columns, whatever the projection.
         std::vector<size_t> relkind_projected_cols(const context_storage_t& context,
                                                    const lp::node_ptr& node,
                                                    const std::vector<size_t>& base_projected_cols) {
@@ -176,89 +51,6 @@ namespace services::planner::impl {
                 }
             }
             return projected_cols;
-        }
-
-        // pushed_reduce_scan replaces the implicit table scan; an explicit source child (host extension,
-        // join, sub-aggregate, ...) means there is none to replace, whatever an optimizer pass stamped.
-        bool reads_implicit_table_scan(const lp::node_ptr& node) noexcept {
-            for (const auto& child : node->children()) {
-                switch (child->type()) {
-                    case node_type::limit_t:
-                    case node_type::match_t:
-                    case node_type::group_t:
-                    case node_type::sort_t:
-                    case node_type::select_t:
-                    case node_type::having_t:
-                        break;
-                    default:
-                        return false;
-                }
-            }
-            return true;
-        }
-
-        // Returns nullptr unless the WHERE lowers to a plain full_scan via create_plan_match.
-        // SINGLE-OWNER INVARIANT: correct only while ONE agent owns the whole table (pool_idx_for_oid
-        // routing) — do not extend this lowering past that assumption.
-        ops::operator_ptr build_pushdown_scan(const context_storage_t& context,
-                                              const lp::node_ptr& node,
-                                              const lp::node_group_t* group,
-                                              const std::vector<size_t>& base_projected_cols) {
-            auto* resource = context.resource;
-
-            ops::pushed_aggregate_spec_t spec{resource};
-            if (!build_pushed_spec(group, node, resource, spec)) {
-                return nullptr;
-            }
-
-            const lp::node_ptr* match_child = nullptr;
-            for (const lp::node_ptr& child : node->children()) {
-                if (child->type() == node_type::match_t) {
-                    match_child = &child;
-                    break;
-                }
-            }
-
-            ce::compare_expression_ptr where_expr; // null == no WHERE
-            std::vector<size_t> projected_cols;
-            if (match_child != nullptr) {
-                auto m = create_plan_match(context, *match_child, lp::row_cap_t::uncapped(), base_projected_cols);
-                // A refused WHERE is reported by the coordinator chain, which lowers it again.
-                if (m.has_error() || m.value()->type() != ops::operator_type::full_scan) {
-                    return nullptr; // index_scan / operator_match / transfer_scan — not pushable
-                }
-                const auto* fs = static_cast<const ops::full_scan*>(m.value().get());
-                where_expr = fs->expression();
-                projected_cols = fs->projected_cols();
-            } else {
-                projected_cols = relkind_projected_cols(context, node, base_projected_cols);
-            }
-
-            // Merge ctor inputs, taken from the spec BEFORE it moves onto the scan.
-            const bool scalar = spec.group_keys.empty();
-            std::pmr::vector<components::types::complex_logical_type> merge_types{spec.output_types.begin(),
-                                                                                  spec.output_types.end(),
-                                                                                  resource};
-            std::vector<std::pair<std::string, std::string>> merge_aggs;
-            merge_aggs.reserve(spec.aggregates.size());
-            for (const auto& a : spec.aggregates) {
-                merge_aggs.emplace_back(std::string(a.alias.begin(), a.alias.end()),
-                                        std::string(a.function_name.begin(), a.function_name.end()));
-            }
-
-            auto scan = boost::intrusive_ptr(new ops::pushed_reduce_scan(resource,
-                                                                         context.log.clone(),
-                                                                         node->table_oid(),
-                                                                         where_expr,
-                                                                         std::move(projected_cols),
-                                                                         std::move(spec)));
-            auto merge = boost::intrusive_ptr(new ops::operator_group_merge_t(resource,
-                                                                              context.log.clone(),
-                                                                              scalar,
-                                                                              std::move(merge_types),
-                                                                              std::move(merge_aggs)));
-            merge->set_children(std::move(scan));
-            return merge;
         }
     } // namespace
 
@@ -292,56 +84,6 @@ namespace services::planner::impl {
             limit_op->set_children(std::move(op));
             return limit_op;
         };
-
-        // Aggregate-pushdown: coordinator group/aggregate are dropped for a group_merge over a pushed scan.
-        const components::logical_plan::node_group_t* pushdown_group = nullptr;
-        for (const components::logical_plan::node_ptr& child : node->children()) {
-            if (child->type() == node_type::group_t) {
-                const auto* g = static_cast<const components::logical_plan::node_group_t*>(child.get());
-                if (g->pushdown()) {
-                    pushdown_group = g;
-                }
-                break;
-            }
-        }
-        if (pushdown_group != nullptr && reads_implicit_table_scan(node)) {
-            if (auto pushdown_scan = build_pushdown_scan(context, node, pushdown_group, agg_node->projected_cols())) {
-                components::operators::operator_ptr executor = std::move(pushdown_scan);
-                components::operators::operator_ptr push_sort_op;
-                components::operators::operator_ptr push_select_op;
-                for (const components::logical_plan::node_ptr& child : node->children()) {
-                    if (child->type() == node_type::sort_t) {
-                        VALUE_OR_RETURN(
-                            push_sort_op,
-                            create_plan_sort(
-                                context,
-                                child,
-                                static_cast<const components::logical_plan::node_sort_t*>(child.get())->read_cap()));
-                    } else if (child->type() == node_type::select_t) {
-                        push_select_op = create_plan_select(context, child);
-                    }
-                }
-                if (push_sort_op) {
-                    if (!push_select_op && agg_node->output_width() > 0) {
-                        static_cast<components::operators::operator_sort_t*>(push_sort_op.get())
-                            ->set_expected_output_count(agg_node->output_width());
-                    }
-                    push_sort_op->set_children(std::move(executor));
-                    executor = std::move(push_sort_op);
-                }
-                if (push_select_op) {
-                    push_select_op->set_children(std::move(executor));
-                    executor = std::move(push_select_op);
-                }
-                if (agg_node->is_distinct()) {
-                    auto distinct_op = boost::intrusive_ptr(
-                        new components::operators::operator_distinct_t(context.resource, context.log.clone()));
-                    distinct_op->set_children(std::move(executor));
-                    executor = std::move(distinct_op);
-                }
-                return wrap_limit(std::move(executor));
-            }
-        }
 
         components::operators::operator_ptr match_op;
         components::operators::operator_ptr group_op;

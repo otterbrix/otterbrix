@@ -11,8 +11,6 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_function.cpp
         operators/operator_lateral_join.cpp
 
-        operators/scan/full_scan.cpp
-        operators/scan/pushed_reduce_scan.cpp
         operators/scan/index_scan.cpp
         operators/scan/transfer_scan.cpp
         operators/scan/guard_chunk.cpp
@@ -27,7 +25,6 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_having.cpp
         operators/operator_distinct.cpp
         operators/operator_hash_group.cpp
-        operators/operator_group_merge.cpp
         operators/operator_select.cpp
         operators/operator_limit.cpp
         operators/operator_sort.cpp

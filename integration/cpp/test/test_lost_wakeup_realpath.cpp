@@ -74,7 +74,7 @@
 // THE DEEPER-NESTING MODEL (validated here) AND WHY IT STILL DOES NOT REPRODUCE STANDALONE
 // ---------------------------------------------------------------------------------------
 // To faithfully model the production nesting this harness adds a SEPARATE operator object
-// (scan_operator_t, == full_scan / transfer_scan) whose source_next() is its OWN
+// (scan_operator_t, == transfer_scan / operator_remote_scan) whose source_next() is its OWN
 // unique_future coroutine, co_awaited by the executor's pump_pipeline_, and which itself
 // performs TWO SEQUENTIAL cross-actor sub-awaits (co_await sf, then co_await
 // emit_or_advance(...) which awaits AGAIN one frame deeper). The full nesting modeled is:
@@ -103,9 +103,9 @@
 // the guard in a standalone harness.
 //
 // CONCLUSION — this is a BEST-EFFORT SPEC, not a RED reproducer. The definitive reproducer
-// is the PRODUCTION per-batch fetch-next path (the fetch-next cursor infra in full_scan /
-// transfer_scan, currently DORMANT — whole-scan buffering replaced it precisely to dodge
-// this lost-wakeup; see full_scan::source_next), which lost-woke ~11000 watchdog pokes in
+// is the PRODUCTION per-batch fetch-next path (the fetch-next cursor infra in transfer_scan /
+// operator_remote_scan, currently DORMANT — whole-scan buffering replaced it precisely to dodge
+// this lost-wakeup; see transfer_scan::source_next), which lost-woke ~11000 watchdog pokes in
 // the full SELECT suite only because the dispatcher watchdog masks it. The standalone
 // harness lacks the real production load: concurrent unrelated actors contending the
 // mailbox, real batch materialization timing (column reads + chunk build) widening the park
@@ -231,7 +231,7 @@ namespace {
     };
 
     // ------------------------------------------------------------------
-    // SCAN OPERATOR == full_scan / transfer_scan: a SEPARATE object (NOT an actor) whose
+    // SCAN OPERATOR == transfer_scan / operator_remote_scan: a SEPARATE object (NOT an actor) whose
     // source_next() is its OWN unique_future coroutine, co_awaited by the executor's
     // pump_pipeline_. This is the DEEPER-NESTING element the simplified models lack:
     //
@@ -265,7 +265,7 @@ namespace {
 
         // actor-zeta requires a unique_future coroutine's `this` to expose resource()
         // (the promise extracts its memory_resource from it, exactly as the real operators
-        // — full_scan / transfer_scan — do for their source_next coroutine).
+        // — transfer_scan / operator_remote_scan — do for their source_next coroutine).
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
         // == the SECOND sub-await: emit_or_advance — its own unique_future coroutine that

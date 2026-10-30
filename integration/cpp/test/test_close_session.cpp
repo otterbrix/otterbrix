@@ -7,6 +7,7 @@
 #include <components/casts/cast_registry.hpp>
 #include <components/compute/function.hpp>
 #include <core/tests/wait_ready.hpp>
+#include <services/disk/manager_disk.hpp>
 #include <services/dispatcher/dispatcher.hpp>
 #include <services/index/manager_index.hpp>
 
@@ -140,6 +141,25 @@ TEST_CASE("integration::cpp::close_session::a_failed_block_rolls_back_and_the_se
 }
 
 // SET outside a transaction block is not undone by ROLLBACK; the session's id after close is a session of its own.
+// A closed session leaves no take behind, at the disk nor at a backend: every statement released its own.
+TEST_CASE("integration::cpp::close_session::no_take_outlives_the_session") {
+    host_t host("test_close_session/takes");
+    shop(host);
+    host.db.ok(any(), "INSERT INTO loc.t (id) VALUES (1), (2), (3);");
+    host.backend().set_take_policy({.whole_select = true});
+    const auto session = otterbrix::session_id_t();
+    host.db.ok(session, "BEGIN;");
+    host.db.ok(session, "SELECT * FROM m2.shop.public.orders WHERE id = 2;");
+    host.db.ok(session, "SELECT id FROM loc.t WHERE id > 1;");
+    host.db.ok(session, "SELECT g FROM (SELECT id AS g FROM loc.t WHERE id < 3) AS s;");
+    close_session(host, session);
+    CHECK(test_helpers::wait_until([] { return services::disk::disk_held_takes() == 0; }));
+    CHECK(test_helpers::wait_until(
+        [&] { return host.backend().released_requests().size() >= host.backend().taken_requests().size(); }));
+    CHECK_FALSE(host.backend().taken_requests().empty());
+    CHECK(host.backend().released_requests() == host.backend().taken_requests());
+}
+
 TEST_CASE("integration::cpp::close_session::an_idle_sessions_own_settings_go") {
     host_t host("test_close_session/settings");
     host.db.ok(any(), "CREATE SCHEMA s;");

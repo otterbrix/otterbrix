@@ -32,7 +32,6 @@ namespace services::disk {
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                               &agent_disk_t::storage_scan_inner,
                                                               table_oid,
-                                                              std::unique_ptr<components::table::pushed_filter_t>{},
                                                               int64_t{-1},
                                                               std::move(projected_cols),
                                                               txn);

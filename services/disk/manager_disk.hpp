@@ -54,6 +54,11 @@ namespace services::disk {
 
     using session_id_t = components::session::session_id_t;
 
+#ifdef DEV_MODE
+    // The takes the disk holds now: storage_offer keeps one until its storage_release_block.
+    uint64_t disk_held_takes() noexcept;
+#endif
+
     /// Owns a table's data_table_t and the storage stack behind its table.otbx.
     class table_storage_t {
     public:
@@ -452,13 +457,6 @@ namespace services::disk {
                                  int64_t limit,
                                  std::vector<size_t> projected_cols,
                                  components::table::transaction_data txn);
-        unique_future<core::result_wrapper_t<fetch_batch_t>>
-        storage_open_filtered_scan(session_id_t session,
-                                   components::catalog::oid_t table_oid,
-                                   std::unique_ptr<components::table::pushed_filter_t> filter,
-                                   int64_t limit,
-                                   std::vector<size_t> projected_cols,
-                                   components::table::transaction_data txn);
         unique_future<void>
         storage_close_cursor(session_id_t session, components::catalog::oid_t table_oid, uint64_t cursor_id);
         unique_future<core::result_wrapper_t<uint64_t>> storage_open_scan_hold(session_id_t session,
@@ -470,14 +468,19 @@ namespace services::disk {
         unique_future<core::error_t> storage_set_not_null(execution_context_t ctx,
                                                           components::catalog::oid_t table_oid,
                                                           components::catalog::oid_t attoid);
-        // Aggregate-pushdown REDUCE: one reply carries ALL final rows (see disk_contract's single-owner invariant).
-        unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
-        storage_reduce(session_id_t session,
-                       components::catalog::oid_t table_oid,
-                       std::unique_ptr<components::table::pushed_filter_t> filter,
-                       std::vector<size_t> projected_cols,
-                       components::table::transaction_data txn,
-                       components::operators::pushed_aggregate_spec_t spec);
+        // disk_contract: the disk's answer to an offered block, by its shape alone; a take is kept here until its
+        // storage_release_block.
+        unique_future<core::result_wrapper_t<std::pmr::vector<block_take_t>>>
+        storage_offer(execution_context_t ctx,
+                      components::logical_plan::detached_block_t block,
+                      components::vector::storage_parameters parameters);
+        unique_future<core::result_wrapper_t<fetch_batch_t>>
+        storage_run_block(execution_context_t ctx,
+                          std::pmr::string request,
+                          uint64_t cursor_id,
+                          components::vector::storage_parameters parameters);
+        unique_future<void> storage_close_block(execution_context_t ctx, uint64_t cursor_id);
+        unique_future<void> storage_release_block(execution_context_t ctx, std::pmr::string request);
         // Fetched rows as chunks, or buffer-pool OOM/data_corruption, or a routing refusal (check
         // has_error() first); under SNAPSHOT the reply is paired by row_ids, never by position.
         unique_future<core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>>
@@ -530,7 +533,10 @@ namespace services::disk {
                                                        &manager_disk_t::storage_prepare,
                                                        &manager_disk_t::storage_release_prepared,
                                                        &manager_disk_t::abort_transaction,
-                                                       &manager_disk_t::storage_open_filtered_scan,
+                                                       &manager_disk_t::storage_offer,
+                                                       &manager_disk_t::storage_run_block,
+                                                       &manager_disk_t::storage_close_block,
+                                                       &manager_disk_t::storage_release_block,
                                                        &manager_disk_t::checkpoint_all,
                                                        &manager_disk_t::vacuum_all,
                                                        &manager_disk_t::maybe_cleanup_many,
@@ -544,7 +550,6 @@ namespace services::disk {
                                                        &manager_disk_t::scan_by_keys,
                                                        &manager_disk_t::read_chunks_by_key,
                                                        &manager_disk_t::read_chunks_by_keys,
-                                                       &manager_disk_t::storage_reduce,
                                                        &manager_disk_t::compact_relkind_g_storage,
                                                        &manager_disk_t::publish_column_stamps,
                                                        &manager_disk_t::rename_storage_column,
@@ -570,14 +575,6 @@ namespace services::disk {
         unique_future<void> revert_column_stamps(execution_context_t ctx,
                                                  uint64_t from_sub_id,
                                                  std::pmr::set<components::catalog::oid_t> tables);
-        unique_future<core::result_wrapper_t<fetch_batch_t>>
-        fetch_from_agent(session_id_t session,
-                         components::catalog::oid_t table_oid,
-                         uint64_t cursor_id,
-                         std::unique_ptr<components::table::pushed_filter_t> filter,
-                         int64_t limit,
-                         std::vector<size_t> projected_cols,
-                         components::table::transaction_data txn);
         bool has_storage(components::catalog::oid_t table_oid) const noexcept {
             if (agents_.empty())
                 return false;
@@ -715,6 +712,15 @@ namespace services::disk {
         loop_thread_t loop_thread_;
 
         // dropped_storages_ per-agent slices are the sole owner of GC state — no manager-side mirror.
+
+        // A take of the disk by its request: the offered SELECT block of one table with only the clauses the disk runs
+        // (its WHERE, and a GROUP BY), and that table; kept from storage_offer to storage_release_block.
+        struct kept_take_t {
+            components::logical_plan::node_ptr select;
+            components::logical_plan::detached_table_t table;
+        };
+        std::pmr::unordered_map<uint64_t, kept_take_t> kept_takes_{resource_};
+        uint64_t next_take_{1};
 
         void create_agent(int count_agents);
 

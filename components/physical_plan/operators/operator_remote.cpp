@@ -4,6 +4,9 @@
 #include "scan/guard_chunk.hpp"
 
 #include <services/disk/storage_contract.hpp>
+#ifdef DEV_MODE
+#include <services/disk/agent_disk.hpp>
+#endif
 
 #include <algorithm>
 
@@ -30,9 +33,9 @@ namespace components::operators {
             if (fits) {
                 return core::error_t::no_error();
             }
-            std::pmr::string what{"the backend of connection \"", resource};
-            what += address.connection();
-            what += "\" answered a block with a page of other columns";
+            std::pmr::string what{resource};
+            what += address.owner();
+            what += " answered a block with a page of other columns";
             return core::error_t{core::error_code_t::protocol_violation, std::move(what)};
         }
 
@@ -53,7 +56,14 @@ namespace components::operators {
         , tables_(std::move(tables), resource) {}
 
     std::pmr::string operator_remote_scan::explain_label_impl() const {
-        return remote_query_label(resource_, address_);
+        return foreign_label(resource_, address_, "Remote Query", address_.connection());
+    }
+
+    void operator_remote_scan::explain_impl(const explain_sink& s) const {
+        // The disk's read is of one table, named after the line as for every scan.
+        const bool of_a_table = address_.connection().empty() && tables_.size() == 1;
+        explain_begin(s, of_a_table ? tables_.front() : catalog::INVALID_OID);
+        s.end();
     }
 
     std::pmr::vector<std::pmr::string> operator_remote_scan::explain_details_impl() const {
@@ -80,9 +90,9 @@ namespace components::operators {
         cursor_id_ = reply.value().cursor_id;
         page_ = std::move(reply.value().batch);
         if (cursor_id_ == 0 && page_ && page_->size() != 0) {
-            std::pmr::string what{"the backend of connection \"", resource_};
-            what += address_.connection();
-            what += "\" answered a page without a cursor";
+            std::pmr::string what{resource_};
+            what += address_.owner();
+            what += " answered a page without a cursor";
             core::error_t refused{core::error_code_t::protocol_violation, std::move(what)};
             set_error(refused);
             mark_failed();
@@ -123,6 +133,23 @@ namespace components::operators {
         if (drained_) {
             co_return std::optional<vector::data_chunk_t>{};
         }
+#ifdef DEV_MODE
+        // Between-pages pause gate (services::disk::scan_advance_gate_t), polled by one round-trip per ask so no
+        // actor thread blocks while it holds.
+        while (!tables_.empty()) {
+            auto* gate = services::disk::dev_scan_advance_gate();
+            if (gate == nullptr || !gate->hold(tables_.front(), cursor_id_)) {
+                break;
+            }
+            auto [_g, gf] =
+                actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_total_rows>(address_,
+                                                                                                   ctx->session,
+                                                                                                   tables_.front());
+            if (auto ping = co_await std::move(gf); ping.has_error()) {
+                break;
+            }
+        }
+#endif
         const components::execution_context_t exec_ctx{ctx->session, ctx->txn, ctx->execution_context.timezone_offset};
         auto [_r, rf] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_run_block>(
             address_,

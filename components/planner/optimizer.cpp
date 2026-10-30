@@ -7,7 +7,6 @@
 #include "optimizer/rules/hash_join.hpp"
 #include "optimizer/rules/index_selection.hpp"
 #include "optimizer/rules/promote_cross_join.hpp"
-#include "optimizer/rules/pushdown_aggregate.hpp"
 #include "optimizer/rules/pushdown_filter.hpp"
 #include "optimizer/rules/pushdown_limit.hpp"
 
@@ -17,8 +16,7 @@ namespace components::planner {
                                     logical_plan::node_ptr node,
                                     logical_plan::parameter_node_t* parameters,
                                     const graph_execution_context& ctx,
-                                    const logical_plan::index_facts_t& indexes,
-                                    bool can_push_to_agent) {
+                                    const logical_plan::index_facts_t& indexes) {
         if (!node) {
             return nullptr;
         }
@@ -62,32 +60,18 @@ namespace components::planner {
         // MIN/MAX partial reduce onto the single join side that owns every group key
         // and aggregate argument, leaving a FINAL merge above the join. Runs AFTER
         // rewrite_hash_joins (needs the settled single equi-key to re-stamp) and
-        // BEFORE pushdown_aggregate + column_pruning, so the synthesized partial gets
-        // the ordinary single-table lowering (and, when an agent is reachable, the
-        // agent-side reduce) and the join frame-split stays consistent. Only fires on
+        // BEFORE column_pruning, so the synthesized partial gets the ordinary
+        // single-table lowering (a block its table's storage may take) and the join
+        // frame-split stays consistent. Only fires on
         // the provably-sound MIN/MAX shape (see eager_aggregation.hpp) — a false
         // negative (missed push) is the only failure mode, never a wrong result.
         node = optimizer::eager_aggregation(resource, std::move(node));
 
         // Stamp a pure COUNT read-cap on the cardinality-preserving source under an
         // effective LIMIT/OFFSET (create_plan_aggregate reads it; the authoritative
-        // operator_limit still windows on top). UNGATED — unlike pushdown_aggregate
-        // this is a local scan/sort hint with no owning-agent precondition, so it runs
-        // even where there is none. AFTER pushdown_filter/rewrite_hash_joins so it sees the
-        // settled match/join shape.
+        // operator_limit still windows on top). A local scan/sort hint. AFTER
+        // pushdown_filter/rewrite_hash_joins so it sees the settled match/join shape.
         node = optimizer::pushdown_limit(resource, std::move(node));
-
-        // Annotate pushable single-owned-table aggregates. Runs LAST — it only
-        // reads node types + table_oid() + the group child, so ordering vs. the
-        // other rules is immaterial. The rule decides purely by shape (single
-        // owned table, mergeable kinds, no HAVING/DISTINCT — exactly like
-        // hash-join selection). The sole gate here is a hard CAPABILITY
-        // precondition, NOT a fallback/rollout flag: `can_push_to_agent` is false when
-        // the executor was handed no disk-manager address, so there is NO owning agent
-        // to push to and pushable aggregates must stay coordinator-side.
-        if (can_push_to_agent) {
-            node = optimizer::pushdown_aggregate(resource, std::move(node));
-        }
 
         // The index is chosen here, before the executor offers blocks to the tables' storages: a stamped WHERE
         // ends a block. Before prune_columns, which only rebases the key's path, never its name.
@@ -99,7 +83,6 @@ namespace components::planner {
         // race those restructurings, which shift merged schemas and the per-side
         // column indices this rule rewrites. At this point key.side()/key.path() are
         // final, so the narrowed scans and the keys rebased onto them stay consistent.
-        // UNGATED: it needs no owning agent, only the resolved paths.
         optimizer::prune_columns(node);
 
         return node;

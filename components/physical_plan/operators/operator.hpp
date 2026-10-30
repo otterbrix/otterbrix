@@ -32,10 +32,8 @@ namespace components::operators {
         match,
         // Placed above the group operator (never over a scan), unlike `match`; rendered "Having".
         having,
-        full_scan,
         transfer_scan,
         index_scan,
-        pushed_reduce_scan,
         insert,
         insert_on_conflict,
         remove,
@@ -44,14 +42,12 @@ namespace components::operators {
         select,
         // Whole-row dedup layered outermost (under limit); rendered "Unique", not "Filter".
         distinct,
-        // Wraps a terminal whose source can't apply a merged outer limit itself (UNION, pushed GROUP BY).
+        // Wraps a terminal whose source can't apply a merged outer limit itself (UNION, a taken GROUP BY).
         limit,
         join,
         // Substituted for `join` by create_plan_join when the ON condition is a single eq(left.key, right.key).
         hash_join,
         aggregate,
-        // Coordinator terminal above pushed_reduce_scan; owns the empty-input scalar row a sharded slice lacks.
-        group_merge,
         raw_data,
         function,
         union_op,
@@ -106,10 +102,6 @@ namespace components::operators {
         portal_fetch,
         portal_close
     };
-
-    inline bool is_scan(operator_type t) {
-        return t == operator_type::full_scan || t == operator_type::transfer_scan || t == operator_type::index_scan;
-    }
 
     enum class operator_state
     {

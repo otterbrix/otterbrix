@@ -2,6 +2,8 @@
 
 #include <core/file/list_dir.hpp>
 
+#include <cassert>
+
 namespace services::disk {
 
     using namespace core::filesystem;
@@ -19,6 +21,8 @@ namespace services::disk {
 
     void manager_disk_t::create_agent(int count_agents) {
         // Roles align with pool_idx_for_oid: slot 0 = CATALOG, slots 1..N-1 = USER_POOL.
+        // A cursor names its agent in its top 8 bits (agent_disk_t::mint_cursor_).
+        assert(count_agents < 256 && "a disk has at most 256 agents");
         for (int i = 0; i < count_agents; i++) {
             const std::size_t slot = agents_.size();
             auto name_agent = "agent_disk_" + std::to_string(slot + 1);

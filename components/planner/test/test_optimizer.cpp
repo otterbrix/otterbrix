@@ -37,8 +37,6 @@
 #include <components/vector/vector_builders.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 
-#include "pushdown_plan_builders.hpp"
-
 namespace {
     const components::casts::cast_registry_t* test_cast_registry() {
         static const components::casts::cast_registry_t& registry = []() -> components::casts::cast_registry_t& {
@@ -75,8 +73,6 @@ namespace {
 using namespace components::logical_plan;
 using namespace components::expressions;
 using key = components::expressions::key_t;
-
-using planner_test::make_agg_group;
 
 namespace {
     // The column the left / right ON operand reads: rewrite_hash_joins puts the left side's operand first.
@@ -1205,150 +1201,6 @@ TEST_CASE("optimizer::param_copy_survives") {
 
     storage_parameters moved = std::move(copy2);
     REQUIRE(moved.at(id0).get_value<int64_t>(0) == 5);
-}
-
-namespace {
-    constexpr auto pushable_oid = components::catalog::oid_t{4242};
-
-    static node_aggregate_ptr make_agg(std::pmr::memory_resource* r, const node_group_ptr& group) {
-        return planner_test::make_agg(r, group, pushable_oid);
-    }
-
-    static bool run_and_get_pushdown(std::pmr::memory_resource* r, const node_ptr& plan, bool enable) {
-        auto params = make_parameter_node(r);
-        auto root =
-            components::planner::optimize(r, plan, params.get(), test_execution_context(), no_indexes(), enable);
-        for (const auto& child : root->children()) {
-            if (child && child->type() == node_type::group_t) {
-                return static_cast<node_group_t*>(child.get())->pushdown();
-            }
-        }
-        return false;
-    }
-} // namespace
-
-TEST_CASE("optimizer::pushdown_aggregate::scalar_mergeable_is_stamped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::grouped_mergeable_is_stamped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/true, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::no_agent_capability_does_not_stamp") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*can_push=*/false) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::count_distinct_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/true);
-    auto agg = make_agg(&resource, group);
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::having_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto having = make_scalar_expression(&resource, scalar_type::get_field, key(&resource, "h"));
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = planner_test::make_agg(&resource, group, pushable_oid, expression_ptr(having));
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::join_child_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    agg->append_child(make_node_join(&resource, join_type::inner));
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::nested_aggregate_child_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    auto nested =
-        make_node_aggregate(&resource,
-                            qualified_name_t{core::schema_t{database_name}, core::relname_t{collection_name}});
-    agg->append_child(std::move(nested));
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::union_child_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    agg->append_child(make_node_union(&resource,
-                                      make_node_cte_scan(&resource, std::pmr::string("l")),
-                                      make_node_cte_scan(&resource, std::pmr::string("r")),
-                                      /*all=*/false));
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::cte_scan_child_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    auto group = make_agg_group(&resource, /*with_group_key=*/false, /*distinct=*/false);
-    auto agg = make_agg(&resource, group);
-    agg->append_child(make_node_cte_scan(&resource, std::pmr::string("cte")));
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::non_mergeable_kind_is_skipped") {
-    auto resource = core::pmr::otterbrix_resource();
-    std::vector<expression_ptr> exprs;
-    auto agg_expr = make_aggregate_expression(&resource, "stddev", key(&resource, "s"));
-    agg_expr->append_param(key(&resource, "v"));
-    exprs.push_back(expression_ptr(agg_expr));
-    auto group = make_node_group(&resource, exprs);
-    auto agg = make_agg(&resource, group);
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::mergeable_capability_gates_stamp") {
-    auto resource = core::pmr::otterbrix_resource();
-    {
-        std::vector<expression_ptr> exprs;
-        auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
-        sum->append_param(key(&resource, "v"));
-        sum->set_mergeable(true);
-        exprs.push_back(expression_ptr(sum));
-        auto group = make_node_group(&resource, exprs);
-        auto agg = make_agg(&resource, group);
-        REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
-    }
-    {
-        std::vector<expression_ptr> exprs;
-        auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
-        sum->append_param(key(&resource, "v"));
-        sum->set_mergeable(true);
-        sum->set_distinct(true);
-        exprs.push_back(expression_ptr(sum));
-        auto group = make_node_group(&resource, exprs);
-        auto agg = make_agg(&resource, group);
-        REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == false);
-    }
-}
-
-TEST_CASE("optimizer::pushdown_aggregate::a_udf_reference_is_stamped_like_a_builtin") {
-    auto resource = core::pmr::otterbrix_resource();
-    std::vector<expression_ptr> exprs;
-    auto sum = make_aggregate_expression(&resource, "sum", key(&resource, "s"));
-    sum->set_mergeable(true);
-    auto udf = make_function_expression(&resource, function_qualified_name_t{core::function_name_t{"my_udf"}});
-    udf->set_pin(components::compute::function_pin_t{components::compute::DEFAULT_FUNCTIONS.size()});
-    sum->append_param(expression_ptr(udf));
-    exprs.push_back(expression_ptr(sum));
-    auto group = make_node_group(&resource, exprs);
-    auto agg = make_agg(&resource, group);
-    REQUIRE(run_and_get_pushdown(&resource, agg, /*enable=*/true) == true);
 }
 
 // Unqualified comma-join columns get merged with ambiguous side=left stamps that detect_equi_columns can't

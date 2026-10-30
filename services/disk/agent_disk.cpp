@@ -2559,6 +2559,13 @@ namespace services::disk {
     void agent_disk_t::register_dropped_storage_inner_sync(components::catalog::oid_t oid,
                                                            uint64_t dropped_at_commit_id,
                                                            std::filesystem::path path) {
+        storages_.erase(oid);
+        register_dropped_local(oid, dropped_at_commit_id, std::move(path));
+    }
+
+    void agent_disk_t::register_dropped_local(components::catalog::oid_t oid,
+                                              uint64_t dropped_at_commit_id,
+                                              std::filesystem::path path) {
         std::pmr::vector<std::filesystem::path> sidecars{resource()};
         if (!path.empty()) {
             sidecars.push_back(checkpoint_sidecar_path(path));
@@ -3392,7 +3399,7 @@ namespace services::disk {
         if (auto it = storages_.find(table_oid); it != storages_.end() && it->second != nullptr) {
             otbx_path = it->second->otbx_path;
         }
-        register_dropped_storage_inner_sync(table_oid, dropped_at_commit_id, std::move(otbx_path));
+        register_dropped_local(table_oid, dropped_at_commit_id, std::move(otbx_path));
     }
 
     agent_disk_t::unique_future<void>

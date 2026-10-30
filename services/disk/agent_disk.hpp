@@ -300,7 +300,7 @@ namespace services::disk {
         unique_future<void> storage_drop_aborted_inner(uint64_t txn_id,
                                                        std::pmr::vector<components::catalog::oid_t> oids);
 
-        // The checkpoint sidecars to sweep are derived from `path` here, the one place both DROP paths share.
+        // Bootstrap: the user-table load runs before replay knows of the drop, so a loaded entry is closed here.
         void register_dropped_storage_inner_sync(components::catalog::oid_t oid,
                                                  uint64_t dropped_at_commit_id,
                                                  std::filesystem::path path);
@@ -459,6 +459,10 @@ namespace services::disk {
         core::result_wrapper_t<fetch_batch_t> next_block_page_(uint64_t cursor_id);
 
         void mark_storage_dropped_one_local(components::catalog::oid_t table_oid, uint64_t dropped_at_commit_id);
+        // The checkpoint sidecars to sweep are derived from `path` here, the one place both DROP paths share.
+        void register_dropped_local(components::catalog::oid_t oid,
+                                    uint64_t dropped_at_commit_id,
+                                    std::filesystem::path path);
 
         log_t log_;
         path_t path_;

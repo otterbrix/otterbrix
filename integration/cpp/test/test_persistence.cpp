@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include <chrono>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/log/test/test_log.hpp>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -2059,6 +2060,82 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_after_reopen_removes
         CHECK_FALSE(std::filesystem::exists(victim_dir));
         CHECK_FIND_SQL("SELECT * FROM TestDatabase.GcSurvivor;", 1);
     }
+}
+
+// A crash between a DROP's catalog commit and its file removal leaves the dropped table's .otbx on disk. The
+// reopen must not take that file into a disk agent's slice: pg_class says the table is gone.
+TEST_CASE("integration::cpp::test_persistence::a_dropped_tables_file_left_by_a_crash_is_not_loaded") {
+    auto config = test_create_config(integration_fixture_path("test_persistence/dropped_file_src"));
+    test_clear_directory(config);
+    const auto crash_dir = integration_fixture_path("test_persistence/dropped_file_crash");
+    const auto saved_dir = integration_fixture_path("test_persistence/dropped_file_saved");
+
+    std::filesystem::path victim_relative;
+    INFO("phase 1: a checkpointed table's files are saved, then it is dropped and the crash image is taken");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        auto run = [&](const std::string& sql) {
+            auto session = otterbrix::session_id_t();
+            return dispatcher->execute_sql(session, sql);
+        };
+        REQUIRE(run("CREATE SCHEMA " + database_name.t + ";")->is_success());
+        REQUIRE(run("CREATE TABLE TestDatabase.Survivor (val bigint);")->is_success());
+        REQUIRE(run("CHECKPOINT;")->is_success());
+        const auto baseline_files = scan_otbx_files(config.disk.path);
+
+        REQUIRE(run("CREATE TABLE TestDatabase.Victim (val bigint);")->is_success());
+        REQUIRE(run("INSERT INTO TestDatabase.Victim (val) VALUES (1), (2);")->is_success());
+        REQUIRE(run("CHECKPOINT;")->is_success());
+        for (const auto& f : scan_otbx_files(config.disk.path)) {
+            if (baseline_files.find(f) == baseline_files.end()) {
+                victim_relative = std::filesystem::relative(f.parent_path(), config.main_path);
+            }
+        }
+        REQUIRE_FALSE(victim_relative.empty());
+        test_helpers::copy_crash_image(config.main_path / victim_relative, saved_dir);
+
+        REQUIRE(run("DROP TABLE TestDatabase.Victim;")->is_success());
+        test_helpers::copy_crash_image(config.main_path, crash_dir);
+    }
+
+    auto crash_config = test_create_config(crash_dir);
+    crash_config.log.level = log_t::level::warn;
+    std::filesystem::remove_all(crash_config.log.path);
+    const auto victim_dir = crash_config.main_path / victim_relative;
+    INFO("crash leftovers: the dropped table's directory exactly as its last checkpoint wrote it");
+    test_helpers::copy_crash_image(saved_dir, victim_dir);
+
+    INFO("phase 2: reopen the crash image");
+    {
+        test_spaces space(crash_config);
+        auto* dispatcher = space.dispatcher();
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(
+                dispatcher->execute_sql(session, "INSERT INTO TestDatabase.Survivor (val) VALUES (7);")->is_success());
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (std::filesystem::exists(victim_dir) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        CHECK_FALSE(std::filesystem::exists(victim_dir));
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "CHECKPOINT;")->is_success());
+        }
+    }
+
+    INFO("a loaded phantom would be checkpointed into its swept directory and warn every round");
+    std::istringstream lines(log_text(crash_config.log.path));
+    std::size_t mentions = 0;
+    for (std::string line; std::getline(lines, line);) {
+        if (line.find(victim_dir.string()) != std::string::npos) {
+            ++mentions;
+            UNSCOPED_INFO(line);
+        }
+    }
+    CHECK(mentions == 0);
 }
 
 // A DROP TABLE inside an explicit transaction is revertible until COMMIT: the catalog delete is

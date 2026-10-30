@@ -145,7 +145,8 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
             session,
             components::expressions::compare_type::eq,
             make_scalar(&resource, int64_t{42}),
-            /*txn_id=*/uint64_t{0});
+            /*txn_id=*/uint64_t{0},
+            true);
     REQUIRE_FALSE(read_future.is_ready());
 
     // Mailbox is FIFO and drop() was posted first, so this resume is the drop; the read stays queued.

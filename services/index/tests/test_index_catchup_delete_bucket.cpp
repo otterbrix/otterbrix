@@ -213,7 +213,8 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
                                                             session,
                                                             compare_type::gte,
                                                             make_scalar(&resource, int64_t{10}),
-                                                            txn_id);
+                                                            txn_id,
+                                                            true);
         REQUIRE_FALSE(answer.has_error());
         auto rows = std::move(answer.value());
         std::vector<int64_t> out(rows.begin(), rows.end());
@@ -310,7 +311,8 @@ TEST_CASE("services::index::the horizon does not erase what a CREATE INDEX catch
                                                         session,
                                                         compare_type::gte,
                                                         make_scalar(&resource, int64_t{10}),
-                                                        reader_txn);
+                                                        reader_txn,
+                                                        true);
     REQUIRE_FALSE(answer.has_error());
     auto rows = std::move(answer.value());
     std::vector<int64_t> out(rows.begin(), rows.end());

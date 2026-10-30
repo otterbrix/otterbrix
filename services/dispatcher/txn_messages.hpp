@@ -44,6 +44,11 @@ namespace services::dispatcher {
         std::string write_connection{};
         components::compute::function_uid function_uid{components::compute::invalid_function_uid};
         std::optional<components::logical_plan::prepared_statement_t> prepared{};
+        // The portal the statement names: the one a DECLARE or a host's window opens, or the one its session's
+        // cursor of a FETCH / CLOSE name is (0: the session has none of that name).
+        uint64_t portal_id{0};
+        // A DECLARE's name is already a cursor of the session (PostgreSQL 18 42P03, after the plan).
+        bool portal_name_taken{false};
     };
 
     // Result of txn_commit_drain_msg: the dispatcher snapshots txn_data, drains

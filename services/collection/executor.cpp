@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cstdio>
 
 #include <components/casts/default_casts.hpp>
 #include <components/catalog/catalog_codes.hpp>
@@ -43,6 +44,7 @@
 #include <components/logical_plan/node_create_sequence.hpp>
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_create_view.hpp>
+#include <components/logical_plan/node_cursor.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/logical_plan/node_deallocate.hpp>
 #include <components/logical_plan/node_delete.hpp>
@@ -92,6 +94,7 @@ namespace services::collection::executor {
         std::atomic<void (*)(uint64_t)> g_dml_pre_drive_hook{nullptr};
         std::atomic<source_await_hook_fn> g_source_await_hook{nullptr};
         std::atomic<std::int64_t> g_user_functions_held{0};
+        std::atomic<uint64_t> g_portal_carry_peak{0};
         oid_alloc_interposer_t* g_oid_alloc_interposer = nullptr;
     } // namespace
 
@@ -104,6 +107,8 @@ namespace services::collection::executor {
     void dev_set_dml_pre_drive_hook(void (*hook)(uint64_t)) noexcept { g_dml_pre_drive_hook.store(hook); }
     void dev_set_source_await_hook(source_await_hook_fn hook) noexcept { g_source_await_hook.store(hook); }
     std::int64_t dev_user_functions_held() noexcept { return g_user_functions_held.load(); }
+    uint64_t dev_portal_carry_peak() noexcept { return g_portal_carry_peak.load(); }
+    void dev_reset_portal_carry_peak() noexcept { g_portal_carry_peak.store(0); }
 
     void dev_set_oid_alloc_interposer(oid_alloc_interposer_t* interposer) { g_oid_alloc_interposer = interposer; }
     oid_alloc_interposer_t* dev_oid_alloc_interposer() { return g_oid_alloc_interposer; }
@@ -212,6 +217,8 @@ namespace services::collection::executor {
                 case node_type::set_setting_t:
                 case node_type::prepare_t:
                 case node_type::deallocate_t:
+                case node_type::declare_cursor_t:
+                case node_type::close_cursor_t:
                     return true;
                 default:
                     return false;
@@ -298,7 +305,8 @@ namespace services::collection::executor {
         , cast_registry_(resource)
         , backends_(resource)
         , dml_flush_row_threshold_(execution.dml_flush_row_threshold)
-        , explain_renderers_(resource) {
+        , explain_renderers_(resource)
+        , portals_(resource) {
         register_default_functions(function_registry_);
         components::casts::register_default_casts(cast_registry_);
         explain_renderers_.push_back(&render_postgres);
@@ -329,120 +337,6 @@ namespace services::collection::executor {
     }
 
     auto executor_t::make_type() const noexcept -> const char* { return "executor"; }
-
-    executor_t::unique_future<execute_result_t>
-    executor_t::execute_plan(components::session::session_id_t session,
-                             components::logical_plan::execution_plan_t plan,
-                             services::context_storage_t context_storage,
-                             statement_registries_t registries,
-                             components::table::transaction_data txn,
-                             uint64_t lowest_active_start_time,
-                             std::pmr::vector<explain_plan_node> captured_subplans) {
-        trace(log_, "executor::execute_plan, session: {}", session.data());
-
-        using namespace components::logical_plan;
-
-        components::table::transaction_data txn_data = txn;
-
-        auto limit = components::logical_plan::limit_t::all();
-        auto* limit_lookup_node = plan.sub_queries.back().get();
-        if (limit_lookup_node && limit_lookup_node->type() == components::logical_plan::node_type::sequence_t) {
-            auto is_catalog_resolve = [](components::logical_plan::node_type t) {
-                return t == components::logical_plan::node_type::catalog_resolve_t;
-            };
-            for (const auto& c : limit_lookup_node->children()) {
-                if (c && !is_catalog_resolve(c->type())) {
-                    limit_lookup_node = c.get();
-                    break;
-                }
-            }
-        }
-        for (const auto& child : limit_lookup_node->children()) {
-            if (child->type() == components::logical_plan::node_type::limit_t) {
-                limit = static_cast<components::logical_plan::node_limit_t*>(child.get())->limit();
-            }
-        }
-
-        context_storage.parameters = &plan.parameters->parameters();
-        context_storage.functions = registries.functions;
-        auto planned = planner::create_plan(context_storage,
-                                            *registries.functions,
-                                            plan.sub_queries.back(),
-                                            limit,
-                                            &plan.parameters->parameters());
-        if (planned.has_error()) {
-            co_return execute_result_t{make_cursor(resource(), planned.error())};
-        }
-        components::operators::operator_ptr node = std::move(planned.value());
-
-        node->set_as_root();
-
-        components::operators::operator_ptr explain_root =
-            plan.explain != components::logical_plan::explain_type::none ? node : nullptr;
-        explain_name_map_t explain_names{resource()};
-        const bool explain_analyze = plan.explain == components::logical_plan::explain_type::analyze;
-        if (explain_root && explain_analyze) {
-            explain_name_collector nc{context_storage, explain_names};
-            explain_root->explain(nc.sink());
-        }
-        if (plan.explain == components::logical_plan::explain_type::plan) {
-            if (plan.explain_capture_ir) {
-                explain_ir_builder b{resource(), explain_names, &context_storage};
-                explain_root->explain(b.sink());
-                execute_result_t out{make_cursor(resource())};
-                out.captured_explain_ir = b.release();
-                co_return std::move(out);
-            }
-            co_return execute_result_t{render_explain_(explain_root,
-                                                       explain_names,
-                                                       &context_storage,
-                                                       plan.explain_render_id,
-                                                       false,
-                                                       std::move(captured_subplans))};
-        }
-
-        auto plan_data = traverse_plan_(std::move(node), plan.parameters->parameters(), std::move(context_storage));
-        plan_data.analyze = explain_analyze;
-
-        auto result = co_await execute_sub_plan_(session, std::move(plan_data), txn_data, lowest_active_start_time);
-
-        std::optional<explain_plan_node> captured_ir;
-        if (explain_analyze && result.cursor->is_success()) {
-            if (plan.explain_capture_ir) {
-                explain_ir_builder b{resource(), explain_names, nullptr};
-                explain_root->explain(b.sink());
-                captured_ir = b.release();
-            } else {
-                result.cursor = render_explain_(explain_root,
-                                                explain_names,
-                                                nullptr,
-                                                plan.explain_render_id,
-                                                true,
-                                                std::move(captured_subplans));
-            }
-        }
-
-        execute_result_t out{std::move(result.cursor),
-                             std::move(result.pg_catalog_appends),
-                             std::move(result.pg_catalog_delete_tables),
-                             std::move(result.pg_attribute_commit_id_backfills),
-                             std::move(result.dml_appends),
-                             std::move(result.dml_deletes),
-                             std::move(result.dropped_storage_oids),
-                             std::move(result.created_storage_oids),
-                             std::move(result.created_indexes),
-                             result.commit_id,
-                             result.applied_setting_scope,
-                             std::move(result.applied_settings)};
-        out.captured_explain_ir = std::move(captured_ir);
-        out.referenced_deletes = std::move(result.referenced_deletes);
-        out.written = result.written;
-        out.participants = std::move(result.participants);
-        out.host_rows = std::move(result.host_rows);
-        out.dropped_functions = std::move(result.dropped_functions);
-        out.prepared_change = std::move(result.prepared_change);
-        co_return std::move(out);
-    }
 
     components::cursor::cursor_t_ptr
     executor_t::render_explain_(const components::operators::operator_ptr& explain_root,
@@ -1464,6 +1358,8 @@ namespace services::collection::executor {
         run.explain = plan.explain;
         run.explain_render_id = plan.explain_render_id;
         run.commits_when_done = plan.commits_when_done;
+        // A host's window on EXECUTE is its body's.
+        run.fetch_window = plan.fetch_window;
         run.expected_columns.emplace(statement.columns.begin(), statement.columns.end(), resource());
         co_return co_await execute_statement_(session,
                                               std::move(run),
@@ -2704,9 +2600,54 @@ namespace services::collection::executor {
             }
         }
 
+        // FETCH / CLOSE read the portal the dispatcher found for their cursor's name.
+        uint64_t named_portal = 0;
+        if (auto* named = plan.sub_queries.back().get(); !sub_query && named != nullptr) {
+            if (named->type() == node_type::fetch_t) {
+                auto* fetch = static_cast<components::logical_plan::node_fetch_t*>(named);
+                if (fetch->portal_id() == 0) {
+                    fetch->set_portal_id(session_ctx.portal_id);
+                }
+                named_portal = fetch->portal_id();
+            } else if (named->type() == node_type::close_cursor_t) {
+                auto* close = static_cast<components::logical_plan::node_close_cursor_t*>(named);
+                if (!close->closes_all() && close->portal_id() == 0) {
+                    close->set_portal_id(session_ctx.portal_id);
+                }
+                named_portal = close->portal_id();
+            }
+        }
+        // PostgreSQL 18 answers the describe of a FETCH with its portal's columns, of a cursor it has not with NoData.
+        if (describe && named_portal != 0 && plan.sub_queries.back()->type() == node_type::fetch_t) {
+            const auto found = portals_.find(named_portal);
+            if (found == portals_.end() || found->second.session != session) {
+                co_return execute_result_t{make_cursor(resource())};
+            }
+            co_return execute_result_t{make_cursor(
+                resource(),
+                std::pmr::vector<components::types::complex_logical_type>{found->second.columns, resource()})};
+        }
+        // DECLARE: the query is run as a statement whose portal stays (PostgreSQL 18: the analysis of the query, then
+        // PerformCursorOpen's transaction block, then the plan, then the portal's name). Outside a block its query,
+        // sub-selects included, is analyzed only.
+        std::pmr::string cursor_name{resource()};
+        bool declares = false;
+        if (auto* declared = plan.sub_queries.back().get();
+            !sub_query && declared != nullptr && declared->type() == node_type::declare_cursor_t) {
+            cursor_name = static_cast<const components::logical_plan::node_declare_cursor_t*>(declared)->name();
+            declares = true;
+            auto query = declared->children().front();
+            plan.sub_queries.back() = std::move(query);
+        }
+        const bool declares_outside_block = declares && plan.commits_when_done;
         std::pmr::vector<explain_plan_node> captured_subplans{resource()};
-        if (auto failed =
-                co_await run_sub_queries_(session, plan, session_ctx, registries, plan.explain, captured_subplans);
+        if (auto failed = co_await run_sub_queries_(
+                session,
+                plan,
+                session_ctx,
+                registries,
+                declares_outside_block ? components::logical_plan::explain_type::describe : plan.explain,
+                captured_subplans);
             failed.contains_error()) {
             co_return execute_result_t{make_cursor(resource(), std::move(failed))};
         }
@@ -2951,6 +2892,11 @@ namespace services::collection::executor {
                 co_return execute_result_t{make_cursor(resource())};
             }
         }
+        if (!describe) {
+            if (auto in_use = table_in_use_(session, plan, original_type, target); in_use.contains_error()) {
+                co_return execute_result_t{make_cursor(resource(), std::move(in_use))};
+            }
+        }
         {
             // The connection the statement writes to: one per transaction.
             std::string written;
@@ -3091,6 +3037,8 @@ namespace services::collection::executor {
             case node_type::vacuum_t:
             // Leaf control nodes like checkpoint/vacuum — omitting this hits validate_schema's default assert(false).
             case node_type::transaction_t:
+            case node_type::fetch_t:
+            case node_type::close_cursor_t:
             case node_type::create_sequence_t:
             case node_type::create_macro_t:
             case node_type::prepare_t:
@@ -3265,6 +3213,18 @@ namespace services::collection::executor {
             co_return execute_result_t{make_cursor(resource(), parameters.error())};
         } else if (describe) {
             co_return execute_result_t{describe_(plan, returning, parameters.value())};
+        } else if (declares_outside_block) {
+            co_return execute_result_t{make_cursor(
+                resource(),
+                core::error_t{core::error_code_t::no_active_sql_transaction,
+                              std::pmr::string{"DECLARE CURSOR can only be used in transaction blocks", resource()}})};
+        }
+        // The columns of a portal's rows, for the describe of its FETCH and a FETCH that reads none.
+        std::pmr::vector<components::types::complex_logical_type> portal_columns{resource()};
+        if (declares || plan.fetch_window > 0) {
+            const auto described =
+                describe_(plan, returning, std::pmr::vector<components::types::complex_logical_type>{resource()});
+            portal_columns.assign(described->type_data().begin(), described->type_data().end());
         }
 
         components::catalog::oid_t create_index_table_oid = components::catalog::INVALID_OID;
@@ -3615,17 +3575,91 @@ namespace services::collection::executor {
             }
         }
 
-        trace(log_, "executor::execute_plan_full: delegating to execute_plan, session: {}", session.data());
-        auto exec_result = co_await execute_plan(session,
-                                                 plan,
-                                                 std::move(context_storage),
-                                                 registries,
-                                                 resolve_txn,
-                                                 session_ctx.lowest_active_start_time,
-                                                 std::move(captured_subplans));
+        trace(log_, "executor::execute_plan_full: running the statement, session: {}", session.data());
+        // Only a query keeps its portal between fetches: a write runs whole, and so does every other statement.
+        const bool is_query =
+            !needs_ddl_txn && !needs_dml_txn && !needs_commit_txn &&
+            plan.explain == components::logical_plan::explain_type::none && original_type != node_type::transaction_t &&
+            original_type != node_type::set_setting_t && original_type != node_type::checkpoint_t &&
+            original_type != node_type::fetch_t && original_type != node_type::close_cursor_t &&
+            original_type != node_type::create_matview_t && original_type != node_type::register_udf_t &&
+            original_type != node_type::unregister_udf_t;
+        const uint64_t window = sub_query ? 0 : plan.fetch_window;
+        const bool keeps = declares || (window > 0 && is_query);
+        const uint64_t portal_id = session_ctx.portal_id;
+        if ((keeps || window > 0) && portal_id == 0) {
+            std::fprintf(stderr, "executor: a statement that opens a portal came without the portal's id\n");
+            assert(false && "executor: a statement that opens a portal came without the portal's id");
+            std::abort();
+        }
+        if (declares && session_ctx.portal_name_taken) {
+            std::pmr::string what{"cursor \"", resource()};
+            what.append(cursor_name);
+            what.append("\" already exists");
+            co_return execute_result_t{
+                make_cursor(resource(), core::error_t{core::error_code_t::duplicate_cursor, std::move(what)})};
+        }
+        std::optional<portal_t> statement_portal;
+        portal_t& portal = keeps ? portals_
+                                       .try_emplace(portal_id,
+                                                    resource(),
+                                                    session,
+                                                    std::move(plan),
+                                                    std::move(expanded_views),
+                                                    session_ctx,
+                                                    registries)
+                                       .first->second
+                                 : statement_portal.emplace(resource(),
+                                                            session,
+                                                            std::move(plan),
+                                                            std::move(expanded_views),
+                                                            session_ctx,
+                                                            registries);
+        portal.tail = statement_tail_t{original_type,
+                                       needs_ddl_txn,
+                                       needs_dml_txn,
+                                       needs_commit_txn,
+                                       create_index_table_oid,
+                                       create_index_oid,
+                                       context_storage.execution_context,
+                                       std::move(statement_changes)};
+        // The registries the statement made for itself live in its frame; a portal that outlives it keeps a copy.
+        if (keeps && registries.functions != &function_registry_) {
+            portal.registries.functions = &portal.own_functions.emplace(*registries.functions, resource());
+        }
+        if (keeps && registries.casts != &cast_registry_) {
+            portal.registries.casts = &portal.own_casts.emplace(*registries.casts, resource());
+        }
+        portal.columns = std::move(portal_columns);
+        portal.closes_when_drained = window > 0;
+        // A portal that outlives its statement reads the block's own writes as of it (PostgreSQL 18's curcid).
+        if (keeps) {
+            portal.session_ctx.txn.sees_commands_before = portal.session_ctx.txn.command_id;
+        }
+        portal.captured_subplans = std::move(captured_subplans);
+        context_storage.catalog_resolves = &portal.plan.catalog_resolves;
+
+        execute_result_t exec_result{make_cursor(resource())};
+        if (auto answered = start_portal_(portal, std::move(context_storage)); answered) {
+            exec_result = std::move(*answered);
+        } else if (declares) {
+            exec_result.cursor->set_portal(portal_id, true);
+            co_return std::move(exec_result);
+        } else {
+            auto error = co_await pump_portal_(portal, keeps ? window : components::logical_plan::fetch_all);
+            if (keeps && !error.contains_error() && !(drained_(portal) && count_rows(portal.carry) <= window)) {
+                execute_result_t first{make_cursor(resource(), take_rows_(portal, window))};
+                portal.at_start = false;
+                first.cursor->set_portal(portal_id, true);
+                co_return first;
+            }
+            error = co_await finish_run_(portal, std::move(error));
+            exec_result = result_of_run_(portal, std::move(error));
+        }
         // The functions a DROP took with its dependents leave the registries with their rows; a function of a previous
         // process has rows only, and one the statement drops itself is in its changes already.
         if (exec_result.cursor->is_success()) {
+            auto& statement_changes = portal.tail.registry_changes;
             for (const auto& dropped : exec_result.dropped_functions) {
                 const auto uid = static_cast<components::compute::function_uid>(dropped.prouid);
                 const auto* function = registries.functions->get_function(uid);
@@ -3646,13 +3680,73 @@ namespace services::collection::executor {
             }
         }
         // The type before the offer: a backend may have taken the UPDATE / DELETE node.
-        if (modified_rows && plan.explain == components::logical_plan::explain_type::none &&
+        if (modified_rows && portal.plan.explain == components::logical_plan::explain_type::none &&
             exec_result.cursor->is_success()) {
             exec_result.cursor->set_written(exec_result.written);
         }
         if (created_table_oid != components::catalog::INVALID_OID && exec_result.cursor->is_success()) {
             exec_result.cursor->set_created_oid(created_table_oid);
         }
+        co_await finish_statement_(portal, exec_result);
+        if (keeps) {
+            portals_.erase(portal_id);
+        }
+        // A write with a window ran whole and committed; its RETURNING rows wait in a portal of their own
+        // (PostgreSQL 18 PORTAL_ONE_RETURNING).
+        if (window > 0 && needs_dml_txn && !modified_rows &&
+            portal.plan.explain == components::logical_plan::explain_type::none && exec_result.cursor->is_success() &&
+            exec_result.cursor->size() > window) {
+            auto& buffer = portals_
+                               .try_emplace(portal_id,
+                                            resource(),
+                                            session,
+                                            components::logical_plan::execution_plan_t{resource()},
+                                            std::pmr::vector<expanded_view_t>{resource()},
+                                            session_ctx,
+                                            own_registries_())
+                               .first->second;
+            buffer.closes_when_drained = true;
+            buffer.columns.assign(exec_result.cursor->type_data().begin(), exec_result.cursor->type_data().end());
+            for (auto& chunk : exec_result.cursor->chunks()) {
+                buffer.carry.push_back(std::move(chunk));
+            }
+            auto first = make_cursor(resource(), take_rows_(buffer, window));
+            buffer.at_start = false;
+            first->set_portal(portal_id, true);
+            exec_result.cursor = std::move(first);
+        }
+        if (named_portal != 0) {
+            const auto found = portals_.find(named_portal);
+            if (found != portals_.end() && found->second.session == session) {
+                const auto& named = found->second;
+                exec_result.cursor->set_portal(named_portal,
+                                               !named.at_end && !(drained_(named) && named.carry.empty()));
+            }
+            // MOVE answers the count of the rows it passed, as its command tag does.
+            if (original_type == node_type::fetch_t && exec_result.cursor->is_success() &&
+                static_cast<const components::logical_plan::node_fetch_t*>(portal.plan.sub_queries.back().get())
+                    ->is_move()) {
+                exec_result.cursor->set_written(exec_result.written);
+            }
+        }
+        co_return std::move(exec_result);
+    }
+
+    executor_t::unique_future<void> executor_t::finish_statement_(portal_t& portal, execute_result_t& exec_result) {
+        using node_type = components::logical_plan::node_type;
+        const auto session = portal.session;
+        const auto resolve_txn = portal.session_ctx.txn;
+        const auto& session_ctx = portal.session_ctx;
+        const auto& plan = portal.plan;
+        const auto original_type = portal.tail.original_type;
+        const bool needs_ddl_txn = portal.tail.needs_ddl_txn;
+        const bool needs_dml_txn = portal.tail.needs_dml_txn;
+        const bool needs_commit_txn = portal.tail.needs_commit_txn;
+        const auto create_index_table_oid = portal.tail.create_index_table_oid;
+        const auto create_index_oid = portal.tail.create_index_oid;
+        const auto& settings = portal.tail.settings;
+        auto& statement_changes = portal.tail.registry_changes;
+        const auto registries = portal.registries;
 
         auto revert_failed_txn = [this, session, resolve_txn, &session_ctx](
                                      [[maybe_unused]] executor_t* self,
@@ -3845,7 +3939,7 @@ namespace services::collection::executor {
                 if (plan.commits_when_done && exec_result.cursor->is_success()) {
                     auto commit_result = co_await run_commit_pipeline_(session,
                                                                        resolve_txn,
-                                                                       context_storage.execution_context,
+                                                                       settings,
                                                                        session_ctx.lowest_active_start_time,
                                                                        /*ddl_mode=*/false);
                     if (commit_result.cursor->is_error()) {
@@ -3931,7 +4025,7 @@ namespace services::collection::executor {
             if (plan.commits_when_done && exec_result.cursor->is_success()) {
                 auto commit_result = co_await run_commit_pipeline_(session,
                                                                    resolve_txn,
-                                                                   context_storage.execution_context,
+                                                                   settings,
                                                                    session_ctx.lowest_active_start_time,
                                                                    /*ddl_mode=*/true);
                 if (commit_result.cursor->is_error()) {
@@ -3956,8 +4050,7 @@ namespace services::collection::executor {
 
             co_await revert_failed_txn(this, exec_result);
         }
-
-        co_return std::move(exec_result);
+        co_return;
     }
 
     executor_t::unique_future<bool> executor_t::set_explain_renderer(uint32_t id, explain_render_fn fn) {
@@ -4004,57 +4097,83 @@ namespace services::collection::executor {
         return plan_t{std::move(plan), std::move(sub_plans), &parameters, std::move(context_storage)};
     }
 
-    executor_t::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
-    executor_t::execute_pipeline(components::operators::operator_ptr root, components::pipeline::context_t* ctx) {
+    pipeline_run_t executor_t::start_pipeline_(components::operators::operator_t* root,
+                                               components::pipeline::context_t* ctx) {
         namespace ops = components::operators;
 #ifdef DEV_MODE
         g_streaming_pipeline_runs.fetch_add(1, std::memory_order_relaxed);
 #endif
-        std::pmr::vector<ops::operator_t*> chain{resource()};
-        for (ops::operator_t* op = root.get(); op != nullptr; op = op->left().get()) {
+        pipeline_run_t run{resource()};
+        auto& chain = run.chain;
+        for (ops::operator_t* op = root; op != nullptr; op = op->left().get()) {
             chain.push_back(op);
         }
         std::reverse(chain.begin(), chain.end());
 
-        const bool analyze = ctx->analyze;
-
-        std::size_t start = 0;
+        run.analyze = ctx->analyze;
         for (std::size_t i = 0; i < chain.size(); ++i) {
             if (chain[i]->is_executed()) {
-                start = i + 1;
+                run.start = i + 1;
             }
         }
-        const bool sourceless_sink_root = start == 0 && chain.front()->role() != ops::pipeline_role::source;
-        const std::size_t op_start = sourceless_sink_root ? 1 : ((start == 0) ? 1 : start);
+        run.sourceless_sink_root = run.start == 0 && chain.front()->role() != ops::pipeline_role::source;
+        run.op_start = run.sourceless_sink_root ? 1 : ((run.start == 0) ? 1 : run.start);
 
-        if (analyze) {
-            if (start == 0) {
+        if (run.analyze) {
+            if (run.start == 0) {
                 chain.front()->bump_analyze_loop();
             }
-            for (std::size_t i = op_start; i < chain.size(); ++i) {
+            for (std::size_t i = run.op_start; i < chain.size(); ++i) {
                 chain[i]->bump_analyze_loop();
             }
         }
 
-        bool pumpable_ancestors = false;
-        if (sourceless_sink_root) {
-            pumpable_ancestors = chain.front()->produces_query_rows();
+        if (run.sourceless_sink_root) {
+            run.pumpable_ancestors = chain.front()->produces_query_rows();
             for (ops::operator_t* op : chain) {
-                if (pumpable_ancestors) {
+                if (run.pumpable_ancestors) {
                     break;
                 }
                 if (op->role() != ops::pipeline_role::sink) {
-                    pumpable_ancestors = true;
+                    run.pumpable_ancestors = true;
                 }
             }
         }
 
-        ops::chunks_vector_t output{resource()};
+        run.dml_idx = chain.size();
+        for (std::size_t i = run.op_start; i < chain.size(); ++i) {
+            if (chain[i]->needs_async_finalize()) {
+                run.dml_idx = i;
+                break;
+            }
+        }
+        bool parent_constraint = false;
+        for (std::size_t i = run.dml_idx + 1; i < chain.size(); ++i) {
+            if (chain[i]->needs_async_finalize()) {
+                parent_constraint = true;
+                break;
+            }
+        }
+        ctx->dml_has_parent_constraint = parent_constraint;
+        run.next_finalize = run.op_start;
+        return run;
+    }
 
-        auto pump_one = [&](components::vector::data_chunk_t&& batch) -> core::error_t {
+    executor_t::unique_future<core::error_t> executor_t::pump_pipeline_(pipeline_run_t& run,
+                                                                        components::pipeline::context_t* ctx,
+                                                                        uint64_t want,
+                                                                        components::operators::chunks_vector_t& out) {
+        namespace ops = components::operators;
+        using phase_t = pipeline_run_t::phase_t;
+        auto& chain = run.chain;
+        const bool analyze = run.analyze;
+        uint64_t have = count_rows(out);
+
+        // A batch from chain[from - 1] through the operators above it; what comes out is the run's.
+        auto push_from = [&](std::size_t from, components::vector::data_chunk_t&& batch) -> core::error_t {
             ops::chunks_vector_t stage{resource()};
             stage.push_back(std::move(batch));
-            for (std::size_t i = op_start; i < chain.size(); ++i) {
+            for (std::size_t i = from; i < chain.size(); ++i) {
                 ops::chunks_vector_t produced{resource()};
                 const analyze_scope scope{analyze};
                 for (auto& in : stage) {
@@ -4069,166 +4188,151 @@ namespace services::collection::executor {
                 stage = std::move(produced);
             }
             for (auto& c : stage) {
-                output.push_back(std::move(c));
+                have += c.size();
+                out.push_back(std::move(c));
             }
             return core::error_t::no_error();
         };
 
-        std::size_t dml_idx = chain.size();
-        for (std::size_t i = op_start; i < chain.size(); ++i) {
-            if (chain[i]->needs_async_finalize()) {
-                dml_idx = i;
-                break;
-            }
-        }
-        bool parent_constraint = false;
-        for (std::size_t i = dml_idx + 1; i < chain.size(); ++i) {
-            if (chain[i]->needs_async_finalize()) {
-                parent_constraint = true;
-                break;
-            }
-        }
-        ctx->dml_has_parent_constraint = parent_constraint;
-
-        if (sourceless_sink_root) {
-            const analyze_scope front_scope{analyze};
-            if (chain.front()->needs_async_finalize()) {
-                co_await chain.front()->await_async_and_resume(ctx);
-                if (chain.front()->has_error()) {
-                    co_return core::result_wrapper_t<ops::chunks_vector_t>(chain.front()->get_error());
-                }
-            }
-            // The producing bottom is driven only here — without it, its EXPLAIN ANALYZE line reads rows=0.
-            if (analyze) {
-                chain.front()->record_analyze(chain.front()->output() ? count_rows(chain.front()->output()->chunks())
-                                                                      : 0,
-                                              front_scope.elapsed());
-            }
-            if (pumpable_ancestors && chain.front()->output()) {
-                for (const auto& c : chain.front()->output()->chunks()) {
-                    auto err = pump_one(c.partial_copy(resource(), 0, c.size()));
-                    if (err.contains_error()) {
-                        co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
+        while (run.phase != phase_t::done && have < want) {
+            switch (run.phase) {
+                case phase_t::input: {
+                    if (run.sourceless_sink_root && !run.front_driven) {
+                        run.front_driven = true;
+                        const analyze_scope front_scope{analyze};
+                        if (chain.front()->needs_async_finalize()) {
+                            co_await chain.front()->await_async_and_resume(ctx);
+                            if (chain.front()->has_error()) {
+                                co_return chain.front()->get_error();
+                            }
+                        }
+                        // The producing bottom is driven only here — without it, its EXPLAIN ANALYZE line reads
+                        // rows=0.
+                        if (analyze) {
+                            chain.front()->record_analyze(
+                                chain.front()->output() ? count_rows(chain.front()->output()->chunks()) : 0,
+                                front_scope.elapsed());
+                        }
+                        if (!run.pumpable_ancestors) {
+                            run.phase = phase_t::finalize;
+                        }
+                        break;
                     }
-                    if (auto flush_err = co_await maybe_mid_flush(chain, dml_idx, ctx); flush_err.contains_error()) {
-                        co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(flush_err));
-                    }
-                }
-            }
-        } else if (start == 0) {
-            ops::operator_t* source = chain.front();
-            auto release_source_cursor = [&](std::pmr::memory_resource*) -> actor_zeta::unique_future<void> {
-                if (source->holds_open_cursor()) {
-                    co_await source->release_cursor(ctx);
-                }
-                co_return;
-            };
-            while (true) {
-                const analyze_scope scope{analyze};
-                auto pending_next = source->source_next(ctx);
+                    if (!run.sourceless_sink_root && run.start == 0) {
+                        ops::operator_t* source = chain.front();
+                        auto release_source_cursor =
+                            [&](std::pmr::memory_resource*) -> actor_zeta::unique_future<void> {
+                            if (source->holds_open_cursor()) {
+                                co_await source->release_cursor(ctx);
+                            }
+                            co_return;
+                        };
+                        const analyze_scope scope{analyze};
+                        auto pending_next = source->source_next(ctx);
 #ifdef DEV_MODE
-                if (auto* hook = g_source_await_hook.load()) {
-                    hook(source);
-                }
+                        if (auto* hook = g_source_await_hook.load()) {
+                            hook(source);
+                        }
 #endif
-                auto next = co_await std::move(pending_next);
-                if (next.has_error()) {
-                    co_await release_source_cursor(resource());
-                    co_return next.convert_error<ops::chunks_vector_t>();
-                }
-                if (!next.value().has_value()) {
+                        auto next = co_await std::move(pending_next);
+                        if (next.has_error()) {
+                            co_await release_source_cursor(resource());
+                            co_return next.error();
+                        }
+                        if (!next.value().has_value()) {
+                            co_await release_source_cursor(resource());
+                            run.phase = phase_t::finalize;
+                            break;
+                        }
+                        auto batch = std::move(*next.value());
+                        // Every source slices its batches (a storage's answer is held to it when it arrives).
+                        assert(batch.size() <= components::vector::DEFAULT_VECTOR_CAPACITY &&
+                               "a source emitted a batch over DEFAULT_VECTOR_CAPACITY");
+                        if (batch.size() > components::vector::DEFAULT_VECTOR_CAPACITY) {
+                            co_await release_source_cursor(resource());
+                            std::pmr::string what{"source batch of ", resource()};
+                            what += std::to_string(batch.size());
+                            what += " rows exceeds the ";
+                            what += std::to_string(components::vector::DEFAULT_VECTOR_CAPACITY);
+                            what += "-row limit per batch; the source must slice it";
+                            co_return core::error_t(core::error_code_t::protocol_violation, std::move(what));
+                        }
+                        if (analyze) {
+                            source->record_analyze(batch.size(), scope.elapsed());
+                        }
+                        if (auto err = push_from(run.op_start, std::move(batch)); err.contains_error()) {
+                            co_await release_source_cursor(resource());
+                            co_return err;
+                        }
+                        if (auto flush_err = co_await maybe_mid_flush(chain, run.dml_idx, ctx);
+                            flush_err.contains_error()) {
+                            co_await release_source_cursor(resource());
+                            co_return flush_err;
+                        }
+                        break;
+                    }
+                    // A materialized input: the sink at the bottom, or the operator that ran before this pipeline.
+                    ops::operator_t* input = run.sourceless_sink_root ? chain.front() : chain[run.start - 1];
+                    if (!input->output() || run.next_input >= input->output()->chunks().size()) {
+                        run.phase = phase_t::finalize;
+                        break;
+                    }
+                    const auto& chunk = input->output()->chunks()[run.next_input++];
+                    if (auto err = push_from(run.op_start, chunk.partial_copy(resource(), 0, chunk.size()));
+                        err.contains_error()) {
+                        co_return err;
+                    }
+                    if (auto flush_err = co_await maybe_mid_flush(chain, run.dml_idx, ctx);
+                        flush_err.contains_error()) {
+                        co_return flush_err;
+                    }
                     break;
                 }
-                auto batch = std::move(*next.value());
-                // Every source slices its batches (a storage's answer is held to it when it arrives).
-                assert(batch.size() <= components::vector::DEFAULT_VECTOR_CAPACITY &&
-                       "a source emitted a batch over DEFAULT_VECTOR_CAPACITY");
-                if (batch.size() > components::vector::DEFAULT_VECTOR_CAPACITY) {
-                    co_await release_source_cursor(resource());
-                    std::pmr::string what{"source batch of ", resource()};
-                    what += std::to_string(batch.size());
-                    what += " rows exceeds the ";
-                    what += std::to_string(components::vector::DEFAULT_VECTOR_CAPACITY);
-                    what += "-row limit per batch; the source must slice it";
-                    co_return core::result_wrapper_t<ops::chunks_vector_t>(
-                        core::error_t(core::error_code_t::protocol_violation, std::move(what)));
-                }
-                if (analyze) {
-                    source->record_analyze(batch.size(), scope.elapsed());
-                }
-                auto err = pump_one(std::move(batch));
-                if (err.contains_error()) {
-                    co_await release_source_cursor(resource());
-                    co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
-                }
-                if (auto flush_err = co_await maybe_mid_flush(chain, dml_idx, ctx); flush_err.contains_error()) {
-                    co_await release_source_cursor(resource());
-                    co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(flush_err));
-                }
-            }
-            co_await release_source_cursor(resource());
-        } else if (chain[start - 1]->output()) {
-            for (const auto& c : chain[start - 1]->output()->chunks()) {
-                auto err = pump_one(c.partial_copy(resource(), 0, c.size()));
-                if (err.contains_error()) {
-                    co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
-                }
-                if (auto flush_err = co_await maybe_mid_flush(chain, dml_idx, ctx); flush_err.contains_error()) {
-                    co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(flush_err));
-                }
-            }
-        }
-
-        for (std::size_t i = op_start; i < chain.size(); ++i) {
-            ops::chunks_vector_t fin{resource()};
-            const analyze_scope scope{analyze};
-            auto err = chain[i]->finalize(ctx, fin);
-            if (err.contains_error()) {
-                co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(err));
-            }
-            if (analyze) {
-                chain[i]->record_analyze(count_rows(fin), scope.elapsed());
-            }
-            for (auto& c : fin) {
-                ops::chunks_vector_t stage{resource()};
-                stage.push_back(std::move(c));
-                for (std::size_t j = i + 1; j < chain.size(); ++j) {
-                    ops::chunks_vector_t produced{resource()};
+                case phase_t::finalize: {
+                    if (run.next_finalize >= chain.size()) {
+                        run.phase = phase_t::async_finalize;
+                        break;
+                    }
+                    const std::size_t i = run.next_finalize++;
+                    ops::chunks_vector_t fin{resource()};
                     const analyze_scope scope{analyze};
-                    for (auto& in : stage) {
-                        auto e = chain[j]->push(ctx, std::move(in), produced);
-                        if (e.contains_error()) {
-                            co_return core::result_wrapper_t<ops::chunks_vector_t>(std::move(e));
-                        }
+                    if (auto err = chain[i]->finalize(ctx, fin); err.contains_error()) {
+                        co_return err;
                     }
                     if (analyze) {
-                        chain[j]->record_analyze(count_rows(produced), scope.elapsed());
+                        chain[i]->record_analyze(count_rows(fin), scope.elapsed());
                     }
-                    stage = std::move(produced);
+                    for (auto& c : fin) {
+                        if (auto err = push_from(i + 1, std::move(c)); err.contains_error()) {
+                            co_return err;
+                        }
+                    }
+                    break;
                 }
-                for (auto& s : stage) {
-                    output.push_back(std::move(s));
+                case phase_t::async_finalize: {
+                    ctx->dml_flush_is_final = true;
+                    for (std::size_t i = run.op_start; i < chain.size(); ++i) {
+                        ops::operator_t* op = chain[i];
+                        if (!op->needs_async_finalize()) {
+                            continue;
+                        }
+                        const analyze_scope scope{analyze};
+                        co_await op->await_async_and_resume(ctx);
+                        if (op->has_error()) {
+                            co_return op->get_error();
+                        }
+                        if (analyze) {
+                            op->record_analyze(op->output() ? count_rows(op->output()->chunks()) : 0, scope.elapsed());
+                        }
+                    }
+                    run.phase = phase_t::done;
+                    break;
                 }
+                case phase_t::done:
+                    break;
             }
         }
-
-        ctx->dml_flush_is_final = true;
-        for (std::size_t i = op_start; i < chain.size(); ++i) {
-            ops::operator_t* op = chain[i];
-            if (!op->needs_async_finalize()) {
-                continue;
-            }
-            const analyze_scope scope{analyze};
-            co_await op->await_async_and_resume(ctx);
-            if (op->has_error()) {
-                co_return core::result_wrapper_t<ops::chunks_vector_t>(op->get_error());
-            }
-            if (analyze) {
-                op->record_analyze(op->output() ? count_rows(op->output()->chunks()) : 0, scope.elapsed());
-            }
-        }
-
-        co_return output;
+        co_return core::error_t::no_error();
     }
 
     executor_t::unique_future<core::error_t>
@@ -4360,12 +4464,14 @@ namespace services::collection::executor {
         if (build_err.contains_error()) {
             co_return build_err;
         }
-        auto piped = co_await execute_pipeline(root, ctx);
-        if (piped.has_error()) {
-            co_return piped.error();
+        auto run = start_pipeline_(root.get(), ctx);
+        components::operators::chunks_vector_t piped{resource()};
+        if (auto err = co_await pump_pipeline_(run, ctx, components::logical_plan::fetch_all, piped);
+            err.contains_error()) {
+            co_return err;
         }
         if (!root->is_executed()) {
-            root->set_output(components::operators::make_operator_data(resource(), std::move(piped.value())));
+            root->set_output(components::operators::make_operator_data(resource(), std::move(piped)));
             root->mark_executed();
         }
         if (root->has_error()) {
@@ -4420,22 +4526,16 @@ namespace services::collection::executor {
     }
 
     namespace {
-        // A piece is what traverse_plan_ drives as one pipeline: the left chain from its root down to the first
-        // operator with a right input (that operator included). Its left and right inputs are pieces of their own.
-        struct piece_t {
-            components::operators::operator_t* root;
-            std::size_t parent; // no_piece for the plan root
-            std::pmr::vector<components::operators::operator_t*> opens_at_start;
-        };
         constexpr std::size_t no_piece = static_cast<std::size_t>(-1);
 
-        void
-        collect_pieces(components::operators::operator_t* root, std::size_t parent, std::pmr::vector<piece_t>& pieces) {
+        void collect_pieces(components::operators::operator_t* root,
+                            std::size_t parent,
+                            std::pmr::vector<pipeline_piece_t>& pieces) {
             const std::size_t self = pieces.size();
-            pieces.push_back(
-                piece_t{root,
-                        parent,
-                        std::pmr::vector<components::operators::operator_t*>{pieces.get_allocator().resource()}});
+            pieces.push_back(pipeline_piece_t{
+                root,
+                parent,
+                std::pmr::vector<components::operators::operator_t*>{pieces.get_allocator().resource()}});
             for (const auto& step : steps_of(root)) {
                 collect_pieces(step.get(), self, pieces);
             }
@@ -4455,7 +4555,7 @@ namespace services::collection::executor {
 
         // The operators that open at start in the piece rooted at `root` and in every piece above it, outermost first.
         std::pmr::vector<components::operators::operator_t*>
-        opens_at_start_on_path(const std::pmr::vector<piece_t>& pieces,
+        opens_at_start_on_path(const std::pmr::vector<pipeline_piece_t>& pieces,
                                components::operators::operator_t* root,
                                std::pmr::memory_resource* resource) {
             std::pmr::vector<components::operators::operator_t*> wanted{resource};
@@ -4477,306 +4577,697 @@ namespace services::collection::executor {
         }
     } // namespace
 
-    executor_t::unique_future<sub_plan_result_t>
-    executor_t::execute_sub_plan_(components::session::session_id_t session,
-                                  plan_t plan_data,
-                                  components::table::transaction_data txn,
-                                  uint64_t lowest_active_start_time) {
-        cursor_t_ptr cursor;
-        sub_plan_result_t result_tracking{.applied_settings =
-                                              std::pmr::vector<components::catalog::setting_assignment_t>{resource()}};
+    portal_t::portal_t(std::pmr::memory_resource* resource,
+                       components::session::session_id_t session,
+                       components::logical_plan::execution_plan_t plan,
+                       std::pmr::vector<expanded_view_t> expanded_views,
+                       services::dispatcher::txn_session_context_t session_ctx,
+                       statement_registries_t registries)
+        : session(session)
+        , plan(std::move(plan))
+        , expanded_views(std::move(expanded_views))
+        , session_ctx(std::move(session_ctx))
+        , registries(registries)
+        , columns(resource)
+        , explain_names(resource)
+        , captured_subplans(resource)
+        , opened(resource)
+        , pieces(resource)
+        , root_run(resource)
+        , tracking{.applied_settings = std::pmr::vector<components::catalog::setting_assignment_t>{resource}}
+        , carry(resource) {}
 
-        opened_sources_t opened{resource()};
-        auto open_context = make_pipeline_context_(session, plan_data, txn, lowest_active_start_time);
-        open_sources_(plan_data.root.get(), &open_context, opened);
+    executor_t::unique_future<execute_result_t>
+    executor_t::execute_plan(components::session::session_id_t session,
+                             components::logical_plan::execution_plan_t plan,
+                             services::context_storage_t context_storage,
+                             statement_registries_t registries,
+                             components::table::transaction_data txn,
+                             uint64_t lowest_active_start_time,
+                             std::pmr::vector<explain_plan_node> captured_subplans) {
+        trace(log_, "executor::execute_plan, session: {}", session.data());
+        services::dispatcher::txn_session_context_t session_ctx;
+        session_ctx.txn = std::move(txn);
+        session_ctx.lowest_active_start_time = lowest_active_start_time;
+        portal_t portal{resource(),
+                        session,
+                        std::move(plan),
+                        std::pmr::vector<expanded_view_t>{resource()},
+                        std::move(session_ctx),
+                        registries};
+        portal.captured_subplans = std::move(captured_subplans);
+        if (auto answered = start_portal_(portal, std::move(context_storage)); answered) {
+            co_return std::move(*answered);
+        }
+        auto error = co_await pump_portal_(portal, components::logical_plan::fetch_all);
+        error = co_await finish_run_(portal, std::move(error));
+        co_return result_of_run_(portal, std::move(error));
+    }
 
-        std::pmr::vector<piece_t> pieces{resource()};
-        collect_pieces(plan_data.root.get(), no_piece, pieces);
+    std::optional<execute_result_t> executor_t::start_portal_(portal_t& portal,
+                                                              services::context_storage_t context_storage) {
+        using namespace components::logical_plan;
+        auto& plan = portal.plan;
 
-        while (!plan_data.sub_plans.empty()) {
-            auto plan = plan_data.sub_plans.top();
-            trace(log_, "executor::execute_sub_plan, session: {}", session.data());
-
-            if (!plan) {
-                cursor = make_cursor(resource(),
-                                     core::error_t(core::error_code_t::internal_error,
-                                                   std::pmr::string{"invalid query plan", resource()}));
-                break;
-            }
-
-            auto pipeline_context = make_pipeline_context_(session, plan_data, txn, lowest_active_start_time);
-            pipeline_context.analyze = plan_data.analyze;
-
-            plan->prepare();
-
-            // Top-down, as PostgreSQL starts a Limit before it asks below for a row: the Limit nodes of this piece
-            // and of the pieces above it (the path up to the plan root, outermost first) are started first; those of
-            // a piece beside it are not, they start when that piece runs.
-            if (auto start_err =
-                    co_await await_opens_at_start_(opened, opens_at_start_on_path(pieces, plan.get(), resource()));
-                start_err.contains_error()) {
-                cursor = make_cursor(resource(), std::move(start_err));
-                break;
-            }
-
-            if (auto open_err = co_await await_opened_(opened, plan.get()); open_err.contains_error()) {
-                cursor = make_cursor(resource(), std::move(open_err));
-                break;
-            }
-
-            // Factored out so the CONSTRAINT-ERROR path can lift these ranges too, else the appended row leaks.
-            auto lift_dml_ranges = [&pipeline_context, &result_tracking, &open_context]() {
-                for (const auto& participant : open_context.participants) {
-                    components::table::merge_participant(result_tracking.participants, participant);
-                }
-                open_context.participants.clear();
-                for (const auto& participant : pipeline_context.participants) {
-                    components::table::merge_participant(result_tracking.participants, participant);
-                }
-                pipeline_context.participants.clear();
-                for (const auto& app : pipeline_context.dml_appends) {
-                    result_tracking.dml_appends.push_back({app.table_oid, app.row_start, app.row_count});
-                }
-                for (const auto& del : pipeline_context.dml_deletes) {
-                    result_tracking.dml_deletes.push_back({del.table_oid, del.txn_id});
-                }
-                for (auto& app : pipeline_context.pg_catalog_appends) {
-                    result_tracking.pg_catalog_appends.push_back(std::move(app));
-                }
-                for (auto& d : pipeline_context.pg_catalog_delete_tables) {
-                    result_tracking.pg_catalog_delete_tables.insert(std::move(d));
-                }
-                pipeline_context.dml_appends.clear();
-                pipeline_context.dml_deletes.clear();
-                pipeline_context.pg_catalog_appends.clear();
-                pipeline_context.pg_catalog_delete_tables.clear();
+        auto limit = components::logical_plan::limit_t::all();
+        auto* limit_lookup_node = plan.sub_queries.back().get();
+        if (limit_lookup_node && limit_lookup_node->type() == components::logical_plan::node_type::sequence_t) {
+            auto is_catalog_resolve = [](components::logical_plan::node_type t) {
+                return t == components::logical_plan::node_type::catalog_resolve_t;
             };
+            for (const auto& c : limit_lookup_node->children()) {
+                if (c && !is_catalog_resolve(c->type())) {
+                    limit_lookup_node = c.get();
+                    break;
+                }
+            }
+        }
+        for (const auto& child : limit_lookup_node->children()) {
+            if (child->type() == components::logical_plan::node_type::limit_t) {
+                limit = static_cast<components::logical_plan::node_limit_t*>(child.get())->limit();
+            }
+        }
 
-            {
+        context_storage.parameters = &plan.parameters->parameters();
+        context_storage.functions = portal.registries.functions;
+        auto planned = planner::create_plan(context_storage,
+                                            *portal.registries.functions,
+                                            plan.sub_queries.back(),
+                                            limit,
+                                            &plan.parameters->parameters());
+        if (planned.has_error()) {
+            return execute_result_t{make_cursor(resource(), planned.error())};
+        }
+        components::operators::operator_ptr node = std::move(planned.value());
+
+        node->set_as_root();
+
+        if (plan.explain != components::logical_plan::explain_type::none) {
+            portal.explain_root = node;
+        }
+        const bool explain_analyze = plan.explain == components::logical_plan::explain_type::analyze;
+        if (portal.explain_root && explain_analyze) {
+            explain_name_collector nc{context_storage, portal.explain_names};
+            portal.explain_root->explain(nc.sink());
+        }
+        if (plan.explain == components::logical_plan::explain_type::plan) {
+            if (plan.explain_capture_ir) {
+                explain_ir_builder b{resource(), portal.explain_names, &context_storage};
+                portal.explain_root->explain(b.sink());
+                execute_result_t out{make_cursor(resource())};
+                out.captured_explain_ir = b.release();
+                return std::optional<execute_result_t>{std::move(out)};
+            }
+            return execute_result_t{render_explain_(portal.explain_root,
+                                                    portal.explain_names,
+                                                    &context_storage,
+                                                    plan.explain_render_id,
+                                                    false,
+                                                    std::move(portal.captured_subplans))};
+        }
+
+        portal.plan_data.emplace(
+            traverse_plan_(std::move(node), plan.parameters->parameters(), std::move(context_storage)));
+        portal.plan_data->analyze = explain_analyze;
+        portal.open_context.emplace(make_pipeline_context_(portal.session,
+                                                           *portal.plan_data,
+                                                           portal.session_ctx.txn,
+                                                           portal.session_ctx.lowest_active_start_time));
+        open_sources_(portal.plan_data->root.get(), &*portal.open_context, portal.opened);
+        collect_pieces(portal.plan_data->root.get(), no_piece, portal.pieces);
+        return std::nullopt;
+    }
+
+    bool executor_t::drained_(const portal_t& portal) noexcept {
+        return !portal.plan_data || portal.plan_data->sub_plans.empty();
+    }
+
+    void executor_t::lift_ranges_(portal_t& portal, components::pipeline::context_t& ctx) {
+        auto& tracking = portal.tracking;
+        for (const auto& participant : portal.open_context->participants) {
+            components::table::merge_participant(tracking.participants, participant);
+        }
+        portal.open_context->participants.clear();
+        for (const auto& participant : ctx.participants) {
+            components::table::merge_participant(tracking.participants, participant);
+        }
+        ctx.participants.clear();
+        for (const auto& app : ctx.dml_appends) {
+            tracking.dml_appends.push_back({app.table_oid, app.row_start, app.row_count});
+        }
+        for (const auto& del : ctx.dml_deletes) {
+            tracking.dml_deletes.push_back({del.table_oid, del.txn_id});
+        }
+        for (auto& app : ctx.pg_catalog_appends) {
+            tracking.pg_catalog_appends.push_back(std::move(app));
+        }
+        for (auto& d : ctx.pg_catalog_delete_tables) {
+            tracking.pg_catalog_delete_tables.insert(std::move(d));
+        }
+        ctx.dml_appends.clear();
+        ctx.dml_deletes.clear();
+        ctx.pg_catalog_appends.clear();
+        ctx.pg_catalog_delete_tables.clear();
+    }
+
+    executor_t::unique_future<core::error_t> executor_t::begin_piece_(portal_t& portal,
+                                                                      components::operators::operator_ptr piece) {
+        piece->prepare();
+
+        // Top-down, as PostgreSQL starts a Limit before it asks below for a row: the Limit nodes of this piece
+        // and of the pieces above it (the path up to the plan root, outermost first) are started first; those of
+        // a piece beside it are not, they start when that piece runs.
+        if (auto start_err =
+                co_await await_opens_at_start_(portal.opened,
+                                               opens_at_start_on_path(portal.pieces, piece.get(), resource()));
+            start_err.contains_error()) {
+            co_return start_err;
+        }
+        if (auto open_err = co_await await_opened_(portal.opened, piece.get()); open_err.contains_error()) {
+            co_return open_err;
+        }
 #ifdef DEV_MODE
-                if (auto* hook = g_dml_pre_drive_hook.load()) {
-                    const auto root_type = plan->type();
-                    if (root_type == components::operators::operator_type::insert ||
-                        root_type == components::operators::operator_type::update ||
-                        root_type == components::operators::operator_type::remove) {
-                        hook(session.data());
-                    }
-                }
-#endif
-                auto drive_err = co_await drive_opened_subplan_(plan, &pipeline_context);
-                if (drive_err.contains_error()) {
-                    lift_dml_ranges();
-                    cursor = make_cursor(resource(), std::move(drive_err));
-                    break;
-                }
+        if (auto* hook = g_dml_pre_drive_hook.load()) {
+            const auto root_type = piece->type();
+            if (root_type == components::operators::operator_type::insert ||
+                root_type == components::operators::operator_type::update ||
+                root_type == components::operators::operator_type::remove) {
+                hook(portal.session.data());
             }
+        }
+#endif
+        co_return core::error_t::no_error();
+    }
 
-            // Post-append reconciliation against the LIVE index: a concurrent CREATE INDEX can predate this stamp.
-            if (!pipeline_context.dml_appends.empty() && index_address_ != actor_zeta::address_t::empty_address()) {
-                auto reconcile = [this, session, &pipeline_context](
-                                     std::pmr::memory_resource* res) -> actor_zeta::unique_future<core::error_t> {
-                    std::pmr::unordered_map<components::catalog::oid_t,
-                                            std::pmr::vector<services::index::index_row_range_t>>
-                        by_oid(res);
-                    for (const auto& app : pipeline_context.dml_appends) {
-                        by_oid.try_emplace(app.table_oid)
-                            .first->second.push_back(
-                                services::index::index_row_range_t{static_cast<uint64_t>(app.row_start),
-                                                                   app.row_count});
-                    }
-                    for (auto& [oid, ranges] : by_oid) {
-                        components::execution_context_t exec_ctx{session,
-                                                                 pipeline_context.txn,
-                                                                 pipeline_context.execution_context.timezone_offset,
-                                                                 oid};
-                        auto [_q, qf] =
-                            actor_zeta::otterbrix::send(index_address_,
-                                                        &services::index::manager_index_t::unmirrored_ranges,
-                                                        exec_ctx,
-                                                        oid,
-                                                        std::move(ranges));
-                        auto missing = co_await std::move(qf);
-                        for (const auto& gap : missing) {
-                            auto fetch_ids = components::table::make_row_id_range(res,
-                                                                                  static_cast<int64_t>(gap.row_start),
-                                                                                  gap.row_count);
-                            auto [_f, ff] =
-                                actor_zeta::otterbrix::send(disk_address_,
-                                                            &services::disk::manager_disk_t::storage_fetch,
-                                                            session,
-                                                            oid,
-                                                            std::move(fetch_ids),
-                                                            std::vector<size_t>{},
-                                                            components::table::transaction_data::committed(),
-                                                            components::table::fetch_visibility_t::RAW,
-                                                            /*limit=*/int64_t{-1},
-                                                            services::disk::k_fetch_epoch_unchecked);
-                            auto rows_r = co_await std::move(ff);
-                            if (rows_r.has_error()) {
-                                co_return rows_r.error();
-                            }
-                            auto [_s, sf] = actor_zeta::otterbrix::send(index_address_,
-                                                                        &services::index::manager_index_t::insert_rows,
-                                                                        exec_ctx,
-                                                                        oid,
-                                                                        std::move(rows_r.value()),
-                                                                        gap.row_start,
-                                                                        gap.row_count);
-                            auto stage_err = co_await std::move(sf);
-                            if (stage_err.contains_error()) {
-                                co_return stage_err;
-                            }
+    executor_t::unique_future<core::error_t> executor_t::end_piece_(portal_t& portal,
+                                                                    components::operators::operator_ptr piece,
+                                                                    components::pipeline::context_t& pipeline_context) {
+        const auto session = portal.session;
+        auto& result_tracking = portal.tracking;
+        // Post-append reconciliation against the LIVE index: a concurrent CREATE INDEX can predate this stamp.
+        if (!pipeline_context.dml_appends.empty() && index_address_ != actor_zeta::address_t::empty_address()) {
+            auto reconcile = [this, session, &pipeline_context](
+                                 std::pmr::memory_resource* res) -> actor_zeta::unique_future<core::error_t> {
+                std::pmr::unordered_map<components::catalog::oid_t,
+                                        std::pmr::vector<services::index::index_row_range_t>>
+                    by_oid(res);
+                for (const auto& app : pipeline_context.dml_appends) {
+                    by_oid.try_emplace(app.table_oid)
+                        .first->second.push_back(
+                            services::index::index_row_range_t{static_cast<uint64_t>(app.row_start), app.row_count});
+                }
+                for (auto& [oid, ranges] : by_oid) {
+                    components::execution_context_t exec_ctx{session,
+                                                             pipeline_context.txn,
+                                                             pipeline_context.execution_context.timezone_offset,
+                                                             oid};
+                    auto [_q, qf] = actor_zeta::otterbrix::send(index_address_,
+                                                                &services::index::manager_index_t::unmirrored_ranges,
+                                                                exec_ctx,
+                                                                oid,
+                                                                std::move(ranges));
+                    auto missing = co_await std::move(qf);
+                    for (const auto& gap : missing) {
+                        auto fetch_ids = components::table::make_row_id_range(res,
+                                                                              static_cast<int64_t>(gap.row_start),
+                                                                              gap.row_count);
+                        auto [_f, ff] = actor_zeta::otterbrix::send(disk_address_,
+                                                                    &services::disk::manager_disk_t::storage_fetch,
+                                                                    session,
+                                                                    oid,
+                                                                    std::move(fetch_ids),
+                                                                    std::vector<size_t>{},
+                                                                    components::table::transaction_data::committed(),
+                                                                    components::table::fetch_visibility_t::RAW,
+                                                                    /*limit=*/int64_t{-1},
+                                                                    services::disk::k_fetch_epoch_unchecked);
+                        auto rows_r = co_await std::move(ff);
+                        if (rows_r.has_error()) {
+                            co_return rows_r.error();
+                        }
+                        auto [_s, sf] = actor_zeta::otterbrix::send(index_address_,
+                                                                    &services::index::manager_index_t::insert_rows,
+                                                                    exec_ctx,
+                                                                    oid,
+                                                                    std::move(rows_r.value()),
+                                                                    gap.row_start,
+                                                                    gap.row_count);
+                        auto stage_err = co_await std::move(sf);
+                        if (stage_err.contains_error()) {
+                            co_return stage_err;
+                        }
 #ifdef DEV_MODE
-                            g_index_reconcile_staged_ranges.fetch_add(1, std::memory_order_relaxed);
+                        g_index_reconcile_staged_ranges.fetch_add(1, std::memory_order_relaxed);
 #endif
-                        }
                     }
-                    co_return core::error_t::no_error();
-                };
-                auto reconcile_err = co_await reconcile(resource());
-                if (reconcile_err.contains_error()) {
-                    // Rows are in the table but not the index — fail so the abort tail reverts the appends.
-                    lift_dml_ranges();
-                    cursor = make_cursor(resource(), std::move(reconcile_err));
-                    break;
                 }
+                co_return core::error_t::no_error();
+            };
+            auto reconcile_err = co_await reconcile(resource());
+            if (reconcile_err.contains_error()) {
+                // Rows are in the table but not the index — fail so the abort tail reverts the appends.
+                lift_ranges_(portal, pipeline_context);
+                co_return reconcile_err;
             }
+        }
 
-            switch (plan->type()) {
-                case components::operators::operator_type::insert: {
-                    trace(log_, "executor::execute_plan : operators::operator_type::insert");
-                    if (plan->output()) {
-                        cursor = make_cursor(resource(), std::move(plan->output()->chunks()));
-                    } else {
-                        cursor = make_cursor(resource(), core::error_t::no_error());
-                    }
-                    break;
-                }
+        result_tracking.written = piece->written();
 
-                case components::operators::operator_type::remove: {
-                    trace(log_, "executor::execute_plan : operators::operator_type::remove");
-                    if (plan->output()) {
-                        cursor = make_cursor(resource(), std::move(plan->output()->chunks()));
-                    } else {
-                        cursor = make_cursor(resource(), core::error_t::no_error());
-                    }
-                    break;
-                }
-
-                case components::operators::operator_type::update: {
-                    trace(log_, "executor::execute_plan : operators::operator_type::update");
-                    if (plan->output()) {
-                        cursor = make_cursor(resource(), std::move(plan->output()->chunks()));
-                    } else {
-                        cursor = make_cursor(resource(), core::error_t::no_error());
-                    }
-                    break;
-                }
-
-                default: {
-                    trace(log_,
-                          "executor::execute_plan : operator_type={}, session: {}",
-                          static_cast<int>(plan->type()),
-                          session.data());
-
-                    if (plan->is_root()) {
-                        if (plan->output()) {
-                            cursor = make_cursor(resource(), std::move(plan->output()->chunks()));
-                        } else {
-                            cursor = make_cursor(resource(), core::error_t::no_error());
-                        }
-                    } else {
-                        cursor = make_cursor(resource(), core::error_t::no_error());
-                    }
-                    break;
-                }
+        if (pipeline_context.has_pending_disk_futures()) {
+            auto disk_futures = pipeline_context.take_pending_disk_futures();
+            for (auto& fut : disk_futures) {
+                co_await std::move(fut);
             }
+        }
 
-            if (cursor->is_error()) {
-                lift_dml_ranges();
-                break;
+        for (auto& a : pipeline_context.pg_catalog_appends) {
+            result_tracking.pg_catalog_appends.push_back(std::move(a));
+        }
+        for (auto& d : pipeline_context.pg_catalog_delete_tables) {
+            result_tracking.pg_catalog_delete_tables.insert(std::move(d));
+        }
+        for (auto& bf : pipeline_context.pg_attribute_commit_id_backfills) {
+            result_tracking.pg_attribute_commit_id_backfills.push_back(bf);
+        }
+        if (!pipeline_context.applied_settings.empty()) {
+            result_tracking.applied_setting_scope = pipeline_context.applied_setting_scope;
+            result_tracking.applied_settings = std::move(pipeline_context.applied_settings);
+            pipeline_context.applied_settings.clear();
+        }
+        if (pipeline_context.prepared_change.kind != components::logical_plan::prepared_change_t::kind_t::none) {
+            result_tracking.prepared_change = std::move(pipeline_context.prepared_change);
+            pipeline_context.prepared_change = {};
+        }
+        pipeline_context.pg_catalog_appends.clear();
+        pipeline_context.pg_catalog_delete_tables.clear();
+        pipeline_context.pg_attribute_commit_id_backfills.clear();
+
+        lift_ranges_(portal, pipeline_context);
+        for (auto oid : pipeline_context.dropped_storage_oids) {
+            result_tracking.dropped_storage_oids.push_back(oid);
+        }
+        pipeline_context.dropped_storage_oids.clear();
+        for (auto oid : pipeline_context.created_storage_oids) {
+            result_tracking.created_storage_oids.push_back(oid);
+        }
+        pipeline_context.created_storage_oids.clear();
+        for (auto& index : pipeline_context.created_indexes) {
+            result_tracking.created_indexes.push_back(std::move(index));
+        }
+        pipeline_context.created_indexes.clear();
+        for (auto& rows : pipeline_context.referenced_deletes) {
+            result_tracking.referenced_deletes.push_back(std::move(rows));
+        }
+        pipeline_context.referenced_deletes.clear();
+        for (auto& dropped : pipeline_context.dropped_functions) {
+            result_tracking.dropped_functions.push_back(std::move(dropped));
+        }
+        pipeline_context.dropped_functions.clear();
+        for (auto& rows : pipeline_context.host_rows) {
+            result_tracking.host_rows.push_back(std::move(rows));
+        }
+        pipeline_context.host_rows.clear();
+        if (pipeline_context.committed_id != 0) {
+            result_tracking.commit_id = pipeline_context.committed_id;
+        }
+        co_return core::error_t::no_error();
+    }
+
+    executor_t::unique_future<core::error_t> executor_t::pump_portal_(portal_t& portal, uint64_t want) {
+        if (!portal.plan_data) {
+            co_return core::error_t::no_error();
+        }
+        auto& sub_plans = portal.plan_data->sub_plans;
+        while (!sub_plans.empty()) {
+            auto plan = sub_plans.top();
+            trace(log_, "executor::pump_portal_, session: {}", portal.session.data());
+            if (!plan) {
+                co_return core::error_t(core::error_code_t::internal_error,
+                                        std::pmr::string{"invalid query plan", resource()});
             }
-            result_tracking.written = plan->written();
+            if (sub_plans.size() > 1) {
+                auto pipeline_context = make_pipeline_context_(portal.session,
+                                                               *portal.plan_data,
+                                                               portal.session_ctx.txn,
+                                                               portal.session_ctx.lowest_active_start_time);
+                pipeline_context.analyze = portal.plan_data->analyze;
+                if (auto err = co_await begin_piece_(portal, plan); err.contains_error()) {
+                    co_return err;
+                }
+                if (auto err = co_await drive_opened_subplan_(plan, &pipeline_context); err.contains_error()) {
+                    lift_ranges_(portal, pipeline_context);
+                    co_return err;
+                }
+                if (auto err = co_await end_piece_(portal, plan, pipeline_context); err.contains_error()) {
+                    co_return err;
+                }
+                sub_plans.pop();
+                continue;
+            }
+            if (!portal.root_context) {
+                portal.root_context.emplace(make_pipeline_context_(portal.session,
+                                                                   *portal.plan_data,
+                                                                   portal.session_ctx.txn,
+                                                                   portal.session_ctx.lowest_active_start_time));
+                portal.root_context->analyze = portal.plan_data->analyze;
+                if (auto err = co_await begin_piece_(portal, plan); err.contains_error()) {
+                    co_return err;
+                }
+                if (auto err = co_await materialize_build_sides_(plan, &*portal.root_context); err.contains_error()) {
+                    lift_ranges_(portal, *portal.root_context);
+                    co_return err;
+                }
+                portal.root_run = start_pipeline_(plan.get(), &*portal.root_context);
+            }
+            auto& ctx = *portal.root_context;
+            if (auto err = co_await pump_pipeline_(portal.root_run, &ctx, want, portal.carry); err.contains_error()) {
+                lift_ranges_(portal, ctx);
+                co_return err;
+            }
+            if (portal.root_run.phase != pipeline_run_t::phase_t::done) {
+                co_return core::error_t::no_error();
+            }
+            // A root the pipeline pushed into that executed itself (a write and its RETURNING) answers its own output;
+            // the rows of a root that is the pipeline's input (it ran before the pipeline, or it is a WITH RECURSIVE
+            // whose rows the pipeline pumps) went through the carry already.
+            const auto& run = portal.root_run;
+            const bool root_is_input = run.op_start >= run.chain.size();
+            const bool input_pumped = !run.sourceless_sink_root || run.pumpable_ancestors;
+            if (plan->is_executed() && !(root_is_input && input_pumped)) {
+                portal.carry.clear();
+                if (plan->output()) {
+                    for (auto& chunk : plan->output()->chunks()) {
+                        portal.carry.push_back(std::move(chunk));
+                    }
+                }
+            } else if (!plan->is_executed()) {
+                plan->mark_executed();
+            }
+            if (plan->has_error()) {
+                lift_ranges_(portal, ctx);
+                co_return plan->get_error();
+            }
+            if (auto err = co_await end_piece_(portal, plan, ctx); err.contains_error()) {
+                co_return err;
+            }
+            sub_plans.pop();
+        }
+        co_return core::error_t::no_error();
+    }
 
-            if (pipeline_context.has_pending_disk_futures()) {
-                auto disk_futures = pipeline_context.take_pending_disk_futures();
+    executor_t::unique_future<core::error_t> executor_t::finish_run_(portal_t& portal, core::error_t error) {
+        if (!portal.plan_data) {
+            co_return error;
+        }
+        if (portal.root_context) {
+            lift_ranges_(portal, *portal.root_context);
+            if (portal.root_context->has_pending_disk_futures()) {
+                auto disk_futures = portal.root_context->take_pending_disk_futures();
                 for (auto& fut : disk_futures) {
                     co_await std::move(fut);
                 }
             }
-
-            for (auto& a : pipeline_context.pg_catalog_appends) {
-                result_tracking.pg_catalog_appends.push_back(std::move(a));
-            }
-            for (auto& d : pipeline_context.pg_catalog_delete_tables) {
-                result_tracking.pg_catalog_delete_tables.insert(std::move(d));
-            }
-            for (auto& bf : pipeline_context.pg_attribute_commit_id_backfills) {
-                result_tracking.pg_attribute_commit_id_backfills.push_back(bf);
-            }
-            if (!pipeline_context.applied_settings.empty()) {
-                result_tracking.applied_setting_scope = pipeline_context.applied_setting_scope;
-                result_tracking.applied_settings = std::move(pipeline_context.applied_settings);
-                pipeline_context.applied_settings.clear();
-            }
-            if (pipeline_context.prepared_change.kind != components::logical_plan::prepared_change_t::kind_t::none) {
-                result_tracking.prepared_change = std::move(pipeline_context.prepared_change);
-                pipeline_context.prepared_change = {};
-            }
-            pipeline_context.pg_catalog_appends.clear();
-            pipeline_context.pg_catalog_delete_tables.clear();
-            pipeline_context.pg_attribute_commit_id_backfills.clear();
-
-            lift_dml_ranges();
-            for (auto oid : pipeline_context.dropped_storage_oids) {
-                result_tracking.dropped_storage_oids.push_back(oid);
-            }
-            pipeline_context.dropped_storage_oids.clear();
-            for (auto oid : pipeline_context.created_storage_oids) {
-                result_tracking.created_storage_oids.push_back(oid);
-            }
-            pipeline_context.created_storage_oids.clear();
-            for (auto& index : pipeline_context.created_indexes) {
-                result_tracking.created_indexes.push_back(std::move(index));
-            }
-            pipeline_context.created_indexes.clear();
-            for (auto& rows : pipeline_context.referenced_deletes) {
-                result_tracking.referenced_deletes.push_back(std::move(rows));
-            }
-            pipeline_context.referenced_deletes.clear();
-            for (auto& dropped : pipeline_context.dropped_functions) {
-                result_tracking.dropped_functions.push_back(std::move(dropped));
-            }
-            pipeline_context.dropped_functions.clear();
-            for (auto& rows : pipeline_context.host_rows) {
-                result_tracking.host_rows.push_back(std::move(rows));
-            }
-            pipeline_context.host_rows.clear();
-            if (pipeline_context.committed_id != 0) {
-                result_tracking.commit_id = pipeline_context.committed_id;
-            }
-            // (dml_* fields + cascade vectors were already drained and zeroed by lift_dml_ranges() above.)
-
-            plan_data.sub_plans.pop();
         }
-
-        if (auto open_err = co_await await_opened_(opened, nullptr);
-            open_err.contains_error() && cursor->is_success()) {
-            cursor = make_cursor(resource(), std::move(open_err));
+        if (auto open_err = co_await await_opened_(portal.opened, nullptr);
+            open_err.contains_error() && !error.contains_error()) {
+            error = std::move(open_err);
         }
-        // A source the run never reached (an error stopped it first) still holds the cursor its open took.
-        for (auto& source : opened) {
+        // A source the run never reached, or left before its end, still holds the cursor its open took.
+        for (auto& source : portal.opened) {
             if (source.op->holds_open_cursor()) {
-                co_await source.op->release_cursor(&open_context);
+                co_await source.op->release_cursor(&*portal.open_context);
             }
         }
-        for (const auto& participant : open_context.participants) {
-            components::table::merge_participant(result_tracking.participants, participant);
+        for (const auto& participant : portal.open_context->participants) {
+            components::table::merge_participant(portal.tracking.participants, participant);
         }
+        portal.open_context->participants.clear();
+        trace(log_, "executor::finish_run_, success: {}", !error.contains_error());
+        co_return error;
+    }
 
-        trace(log_, "executor::execute_sub_plan finished, success: {}", cursor->is_success());
-        result_tracking.cursor = std::move(cursor);
-        co_return std::move(result_tracking);
+    execute_result_t executor_t::result_of_run_(portal_t& portal, core::error_t error) {
+        auto cursor = error.contains_error() ? make_cursor(resource(), std::move(error))
+                                             : make_cursor(resource(), std::move(portal.carry));
+        portal.carry = components::operators::chunks_vector_t{resource()};
+        std::optional<explain_plan_node> captured_ir;
+        const bool explain_analyze = portal.plan.explain == components::logical_plan::explain_type::analyze;
+        if (explain_analyze && cursor->is_success()) {
+            if (portal.plan.explain_capture_ir) {
+                explain_ir_builder b{resource(), portal.explain_names, nullptr};
+                portal.explain_root->explain(b.sink());
+                captured_ir = b.release();
+            } else {
+                cursor = render_explain_(portal.explain_root,
+                                         portal.explain_names,
+                                         nullptr,
+                                         portal.plan.explain_render_id,
+                                         true,
+                                         std::move(portal.captured_subplans));
+            }
+        }
+        auto& result = portal.tracking;
+        execute_result_t out{std::move(cursor),
+                             std::move(result.pg_catalog_appends),
+                             std::move(result.pg_catalog_delete_tables),
+                             std::move(result.pg_attribute_commit_id_backfills),
+                             std::move(result.dml_appends),
+                             std::move(result.dml_deletes),
+                             std::move(result.dropped_storage_oids),
+                             std::move(result.created_storage_oids),
+                             std::move(result.created_indexes),
+                             result.commit_id,
+                             result.applied_setting_scope,
+                             std::move(result.applied_settings)};
+        out.captured_explain_ir = std::move(captured_ir);
+        out.referenced_deletes = std::move(result.referenced_deletes);
+        out.written = result.written;
+        out.participants = std::move(result.participants);
+        out.host_rows = std::move(result.host_rows);
+        out.dropped_functions = std::move(result.dropped_functions);
+        out.prepared_change = std::move(result.prepared_change);
+        return out;
+    }
+
+    components::operators::chunks_vector_t executor_t::take_rows_(portal_t& portal, uint64_t count) {
+        components::operators::chunks_vector_t rows{resource()};
+        auto& carry = portal.carry;
+        std::size_t used = 0;
+        for (uint64_t left = count; left > 0 && used < carry.size();) {
+            auto& chunk = carry[used];
+            const uint64_t take = std::min<uint64_t>({left, chunk.size(), components::vector::DEFAULT_VECTOR_CAPACITY});
+            if (take == chunk.size()) {
+                rows.push_back(std::move(chunk));
+                ++used;
+                if (take == 0) {
+                    continue;
+                }
+            } else {
+                rows.push_back(chunk.partial_copy(resource(), 0, take));
+                chunk = chunk.partial_copy(resource(), take, chunk.size() - take);
+            }
+            left -= take;
+        }
+        carry.erase(carry.begin(), carry.begin() + static_cast<std::ptrdiff_t>(used));
+        return rows;
+    }
+
+    core::error_t executor_t::table_in_use_(components::session::session_id_t session,
+                                            const components::logical_plan::execution_plan_t& plan,
+                                            components::logical_plan::node_type type,
+                                            const qualified_name_t& target) const {
+        using components::logical_plan::node_type;
+        const auto* root = plan.sub_queries.back().get();
+        const components::logical_plan::resolved_table_metadata_t* table = nullptr;
+        std::string_view statement;
+        switch (type) {
+            case node_type::alter_table_t: {
+                const auto& subcommands =
+                    static_cast<const components::logical_plan::node_alter_table_t*>(root)->subcommands();
+                // PostgreSQL 18 renames through renameatt, which does not check.
+                if (std::all_of(subcommands.begin(), subcommands.end(), [](const auto& subcommand) {
+                        return subcommand.kind == components::logical_plan::alter_table_kind::rename_column;
+                    })) {
+                    return core::error_t::no_error();
+                }
+                statement = "ALTER TABLE";
+                table = plan.catalog_resolves.table_md(target);
+                break;
+            }
+            case node_type::create_constraint_t:
+                statement = "ALTER TABLE";
+                table = plan.catalog_resolves.table_md(target);
+                break;
+            case node_type::create_index_t:
+                statement = "CREATE INDEX";
+                table = static_cast<const components::logical_plan::node_create_index_t*>(root)->table_metadata();
+                break;
+            case node_type::drop_t:
+                if (static_cast<const components::logical_plan::node_drop_t*>(root)->kind() !=
+                    components::logical_plan::drop_target_kind::collection) {
+                    return core::error_t::no_error();
+                }
+                statement = "DROP TABLE";
+                table = plan.catalog_resolves.table_md(target);
+                break;
+            default:
+                return core::error_t::no_error();
+        }
+        if (table == nullptr) {
+            return core::error_t::no_error();
+        }
+        for (const auto& [id, portal] : portals_) {
+            if (portal.session == session && portal.plan.catalog_resolves.table_md(table->table_oid) != nullptr) {
+                std::pmr::string what{"cannot ", resource()};
+                what.append(statement);
+                what.append(" \"");
+                what.append(table->name);
+                what.append("\" because it is being used by active queries in this session");
+                return core::error_t{core::error_code_t::object_in_use, std::move(what)};
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    executor_t::unique_future<core::error_t> executor_t::close_portal_(uint64_t portal_id, core::error_t error) {
+        auto found = portals_.find(portal_id);
+        assert(found != portals_.end());
+        auto& portal = found->second;
+        error = co_await finish_run_(portal, std::move(error));
+        auto ended = result_of_run_(portal, std::move(error));
+        co_await finish_statement_(portal, ended);
+        auto answer = ended.cursor->is_error() ? core::error_on(resource(), ended.cursor->get_error())
+                                               : core::error_t::no_error();
+        portals_.erase(portal_id);
+        co_return answer;
+    }
+
+    executor_t::unique_future<core::result_wrapper_t<components::pipeline::portal_rows_t>>
+    executor_t::fetch_portal_impl(components::pipeline::context_t* ctx,
+                                  uint64_t portal_id,
+                                  std::string name,
+                                  uint64_t count,
+                                  bool is_move) {
+        using result_t = core::result_wrapper_t<components::pipeline::portal_rows_t>;
+        auto found = portals_.find(portal_id);
+        if (portal_id == 0 || found == portals_.end() || found->second.session != ctx->session) {
+            co_return result_t{missing_portal_(name, portal_id)};
+        }
+        auto& portal = found->second;
+        auto no_rows = [this, &portal] {
+            components::operators::chunks_vector_t empty{resource()};
+            empty.emplace_back(resource(),
+                               std::pmr::vector<components::types::complex_logical_type>{portal.columns, resource()},
+                               0);
+            return empty;
+        };
+        components::pipeline::portal_rows_t answer{components::operators::chunks_vector_t{resource()}, 0};
+        // PostgreSQL 18 DoPortalRunFetch: a count of 0 reads the current row again, which a cursor that reads
+        // forward only refuses; before the first row and after the last there is none to read.
+        if (count == 0) {
+            const bool on_row = !portal.at_start && !portal.at_end;
+            if (is_move) {
+                answer.rows = on_row ? 1 : 0;
+                co_return result_t{std::move(answer)};
+            }
+            if (on_row) {
+                // A window's FETCH that fails ends its portal, as every failure of a window's statement does.
+                if (portal.closes_when_drained) {
+                    if (auto closed = co_await close_portal_(portal_id, core::error_t::no_error());
+                        closed.contains_error()) {
+                        co_return result_t{std::move(closed)};
+                    }
+                }
+                co_return result_t{core::error_t{core::error_code_t::object_not_in_prerequisite_state,
+                                                 std::pmr::string{"cursor can only scan forward", resource()}}};
+            }
+            answer.chunks = no_rows();
+            co_return result_t{std::move(answer)};
+        }
+        if (!portal.at_end) {
+            // MOVE passes its rows a batch at a time and keeps none of them.
+            for (uint64_t left = count; left > 0;) {
+                const uint64_t step =
+                    is_move ? std::min<uint64_t>(left, components::vector::DEFAULT_VECTOR_CAPACITY) : left;
+                if (auto pumped = co_await pump_portal_(portal, step); pumped.contains_error()) {
+                    // The run failed: the portal ends with it.
+                    co_return result_t{co_await close_portal_(portal_id, std::move(pumped))};
+                }
+#ifdef DEV_MODE
+                const uint64_t kept = portal.carry.size();
+                for (uint64_t peak = g_portal_carry_peak.load();
+                     kept > peak && !g_portal_carry_peak.compare_exchange_weak(peak, kept);) {
+                }
+#endif
+                auto rows = take_rows_(portal, step);
+                const uint64_t taken = count_rows(rows);
+                answer.rows += taken;
+                left -= taken;
+                if (!is_move) {
+                    answer.chunks = std::move(rows);
+                }
+                if (taken < step) {
+                    break;
+                }
+            }
+            if (answer.rows > 0) {
+                portal.at_start = false;
+            }
+            if (count == components::logical_plan::fetch_all || answer.rows < count) {
+                portal.at_end = true;
+            }
+        }
+        if (is_move) {
+            answer.chunks.clear();
+        } else if (answer.chunks.empty()) {
+            answer.chunks = no_rows();
+        }
+        if (portal.closes_when_drained && drained_(portal) && portal.carry.empty()) {
+            if (auto closed = co_await close_portal_(portal_id, core::error_t::no_error()); closed.contains_error()) {
+                co_return result_t{std::move(closed)};
+            }
+        }
+        co_return result_t{std::move(answer)};
+    }
+
+    executor_t::unique_future<core::error_t>
+    executor_t::close_portal_impl(components::pipeline::context_t* ctx, uint64_t portal_id, std::string name) {
+        if (portal_id == 0 && name.empty()) {
+            std::pmr::vector<uint64_t> session_portals{resource()};
+            for (const auto& [id, portal] : portals_) {
+                if (portal.session == ctx->session) {
+                    session_portals.push_back(id);
+                }
+            }
+            auto first_error = core::error_t::no_error();
+            for (const auto id : session_portals) {
+                if (auto closed = co_await close_portal_(id, core::error_t::no_error());
+                    closed.contains_error() && !first_error.contains_error()) {
+                    first_error = std::move(closed);
+                }
+            }
+            co_return first_error;
+        }
+        const auto found = portals_.find(portal_id);
+        if (portal_id == 0 || found == portals_.end() || found->second.session != ctx->session) {
+            co_return missing_portal_(name, portal_id);
+        }
+        co_return co_await close_portal_(portal_id, core::error_t::no_error());
+    }
+
+    core::error_t executor_t::missing_portal_(std::string_view name, uint64_t portal_id) const {
+        // PostgreSQL 18 portalcmds.c PerformPortalFetch / PerformPortalClose.
+        std::pmr::string what{resource()};
+        if (name.empty()) {
+            what.append("portal ");
+            what.append(std::to_string(portal_id));
+            what.append(" does not exist");
+        } else {
+            what.append("cursor \"");
+            what.append(name);
+            what.append("\" does not exist");
+        }
+        return core::error_t{core::error_code_t::undefined_cursor, std::move(what)};
     }
 
     executor_t::unique_future<execute_result_t>

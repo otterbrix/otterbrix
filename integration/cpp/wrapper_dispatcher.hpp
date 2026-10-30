@@ -80,6 +80,11 @@ namespace otterbrix {
                           const std::string& query,
                           const std::vector<std::pair<size_t, components::vector::vector_t>>& params = {})
             -> components::cursor::cursor_t_ptr;
+        // The next `count` rows of the portal a window (execution_plan_t::fetch_window) left open, as FETCH count of it.
+        auto fetch_next(const session_id_t& session, std::uint64_t portal_id, std::uint64_t count)
+            -> components::cursor::cursor_t_ptr;
+        // Closes the portal a window left open, as CLOSE of it.
+        auto close_cursor(const session_id_t& session, std::uint64_t portal_id) -> components::cursor::cursor_t_ptr;
         auto set_timezone(const session_id_t& session, std::string timezone_name) -> components::cursor::cursor_t_ptr;
         // Ends the session (manager_dispatcher_t::close_session); a failed rollback reaches only the log.
         void close_session(const session_id_t& session);

@@ -351,7 +351,8 @@ Outside a transaction block every statement runs in a transaction of its own tha
 `IF EXISTS`) succeeds and ends its transaction, so the session's next statement reads a fresh snapshot
 (`test_empty_statement_transaction.cpp`). Whether such a DDL has anything to do is decided before its columns and
 subcommands are checked: `ALTER TABLE IF EXISTS nosuch ADD COLUMN c nosuchtype` and `CREATE TABLE IF NOT EXISTS t
-(a int, a int)` over an existing `t` succeed. Inside a block such a statement leaves the block as it was. A DROP that
+(a int, a int)` over an existing `t` succeed. Inside a block such a statement leaves the block as it was. A query with
+a window keeps its statement transaction until its portal ends ("Cursors and windows"). A DROP that
 RESTRICT refuses for its dependents, and a DROP of a built-in type, answer `dependent_objects_still_exist`
 (PostgreSQL 2BP01).
 
@@ -376,7 +377,8 @@ namespace components::session {
 Every reply, an error cursor included, carries `cursor_t::transaction_status()`: where the statement's session stands
 once the statement ran, as PostgreSQL's ReadyForQuery reports it ('I', 'T', 'E').
 
-- `idle`: no transaction block is open; an autocommit statement that fails answers `idle` too.
+- `idle`: no transaction block is open; an autocommit statement that fails answers `idle` too, and so does a window
+  of an autocommit query whose portal holds its statement transaction.
 - `in_transaction`: a block is open and usable (after `BEGIN`, or any statement while `autocommit` is off).
 - `failed`: a statement failed inside the block; until `ROLLBACK`, `ROLLBACK TO SAVEPOINT` or `COMMIT` every other
   statement is refused with `transaction_finalized` and answers `failed`.
@@ -413,6 +415,7 @@ for the one before it to end. The C++ handle is `otterbrix::connection_t` (`inte
 - Then the session's own settings go: `SET`, `search_path` and `autocommit`, which ROLLBACK keeps.
 - A session the engine does not know, or one closed already, is a no-op. It is accepted during shutdown, after
   `begin_shutdown`, so a host closing its connections while the engine stops reaches its backends.
+- Its portals close before its transaction rolls back ("Cursors and windows").
 
 Closing a handle closes its session: C `otterbrix_destroy` (and Rust `Database`'s drop and C# `OtterbrixWrapper`'s
 dispose through it), C++ `connection_t::close()` and its destructor. Python has one rule for `connect()`'s connection
@@ -469,6 +472,70 @@ neither parses nor translates the statement again: it sends `EXECUTE name(...)` 
 - A declared type keeps its typmod: `PREPARE dd2(numeric(10,2))` answers a numeric(10,2) column and `EXECUTE
   dd2(1.257)` answers 1.26. PostgreSQL 18 discards the declared typmod; otterbrix keeps it because it has no NUMERIC
   without a precision (#885).
+
+## Cursors and windows
+
+A statement runs as a portal, as PostgreSQL 18's does: its start plans it and opens its sources without reading a
+row, each fetch runs it until it has the rows asked for, and its end closes its sources' cursors and gives the
+storages it read their part of the transaction's end. A whole statement is all three at once; a cursor and a window
+keep the portal between fetches in the executor that runs it (`test_streaming_cursor.cpp`); every portal of a
+session runs in one executor, so `CLOSE ALL` reaches them there.
+
+- `DECLARE name [BINARY] [INSENSITIVE | ASENSITIVE] [NO SCROLL] CURSOR [WITHOUT HOLD] FOR query` only inside a
+  transaction block. Its refusals come in PostgreSQL 18's order: what the analysis of the query finds (`DECLARE c
+  CURSOR FOR SELECT * FROM nope` answers as the SELECT does), then `no_active_sql_transaction` (25P01) `DECLARE
+  CURSOR can only be used in transaction blocks` (outside a block the query, its sub-selects included, is analyzed
+  and not run), then, once the query is planned, `duplicate_cursor` (42P03) `cursor "c" already exists` for a name
+  the session has a cursor of. The scan of its query begins with the first FETCH; its scalar sub-selects run at the
+  DECLARE, where PostgreSQL runs an InitPlan at the first FETCH. A `$n` in the query is refused as in any SQL text,
+  `Not all parameters were bound`.
+- A cursor reads its transaction's own writes as its DECLARE found them, as PostgreSQL 18's portal reads with the
+  DECLARE's command id: an INSERT, UPDATE or DELETE of a later statement of the block is not seen by its FETCHes,
+  through a scan or an index; the writes before the DECLARE are. Other transactions' commits are not seen either:
+  the transaction's snapshot is the cursor's.
+- `FETCH [NEXT | FORWARD [n | ALL] | n | ALL] [FROM | IN] name` answers exactly n rows, or fewer at the end; the rest
+  of a batch waits in the portal for the next FETCH. `MOVE` passes the rows a batch at a time, keeps none, and answers
+  their count as `affected_rows()`. `FETCH 0` answers no row before the first row and after the last; on a row it
+  would read that row again, which a cursor that reads forward refuses with `object_not_in_prerequisite_state` (55000)
+  `cursor can only scan forward`; `MOVE 0` answers 1 on a row, else 0. PostgreSQL 18 makes a cursor declared without
+  `NO SCROLL` scrollable when its plan can run backward and rereads the row there; every cursor here reads forward
+  only. A FETCH of a cursor whose other FETCH runs is refused with 55000 `portal "c" cannot be run`; the refusal is
+  the dispatcher's, and as any failed statement of the block it fails the block, so the FETCH that runs answers
+  `transaction_finalized`, where PostgreSQL's running FETCH ends normally.
+- `PRIOR`, `FIRST`, `LAST`, `ABSOLUTE`, `RELATIVE`, `BACKWARD`, a negative count, `SCROLL` and `WITH HOLD` are
+  `unimplemented_yet`. `SENSITIVE` and `PARALLEL RETRIEVE` are syntax errors, as in PostgreSQL 18.
+- An ALTER TABLE (ADD CONSTRAINT included), a DROP TABLE or a CREATE INDEX of a table an open portal of the same
+  session reads is refused with `object_in_use` (55006) `cannot ALTER TABLE "t" because it is being used by active
+  queries in this session`, as PostgreSQL 18's CheckTableNotInUse; the portal reads on, and after its CLOSE the DDL
+  runs. RENAME COLUMN is not refused, as in PostgreSQL. The DDL runs in the executor of the session's portals, which
+  knows the tables they read.
+- `CLOSE name` / `CLOSE ALL`; a name the session has no cursor of is `undefined_cursor` (34000) `cursor "c" does not
+  exist`, for FETCH and MOVE too.
+- COMMIT and ROLLBACK close every portal of the session first, ROLLBACK TO the ones opened after its savepoint;
+  `close_session` and `begin_shutdown` close them all, and a statement admitted before `begin_shutdown` closes the
+  portal it opened once it ends. After `begin_shutdown` CLOSE is admitted, FETCH is not; a CLOSE of a cursor the
+  shutdown closed answers 34000.
+- A sort, an aggregate and the build and the probe side of a join read their whole input on the first FETCH; the rows
+  above them are fetched as asked. PostgreSQL streams the probe side of a hash join.
+- A window: `execution_plan_t::fetch_window = n` on the host's `execute_plan` answers at most n rows; when more may
+  follow, `cursor_t::portal_id()` names the portal and `has_more()` is true. `wrapper_dispatcher_t::fetch_next(session,
+  portal_id, n)` reads the next n (a `node_fetch_t` of the id through `execute_plan`), `close_cursor(session,
+  portal_id)` closes it (a `node_close_cursor_t`). A window ends with its last row: the answer that reaches the end has
+  `has_more() == false` and `portal_id() == 0`, and the next fetch_next is 34000. A fetch that fails ends it as well,
+  a refused `FETCH 0` included.
+- In autocommit the window's portal holds its statement transaction, and with it the snapshot and the horizon,
+  until it ends; a describe runs in that transaction, and a describe that fails leaves the window open, where
+  PostgreSQL's failed Describe aborts the transaction the portal runs in. Any other input of the session (a statement,
+  `register_udf`, `unregister_udf`, `register_cast`, `unregister_cast`) closes the window first, as PostgreSQL 18
+  ends the portal at Sync; when the close fails the input does not run and answers the close's error. Inside a
+  transaction block a window lives as a cursor does, until CLOSE or the block's end.
+- A write with a window (INSERT / UPDATE / DELETE … RETURNING) runs whole and commits at once: its rows are visible to
+  other sessions before the last fetch, where PostgreSQL's extended protocol commits at Sync. Its RETURNING rows wait
+  in the portal and are fetched as a query's are. DDL, SET, ALTER SYSTEM and EXPLAIN [ANALYZE] with a window answer
+  whole, `has_more() == false`.
+- `EXECUTE name(...)` with a window streams as its statement does: the window is the body's.
+- Bindings: C++ only (`manager_dispatcher_t::execute_plan`, `wrapper_dispatcher_t`); the C ABI, Rust, C# and Python
+  answer whole results.
 
 ## Settings
 
@@ -572,9 +639,10 @@ the same with `execution_plan_t::explain = explain_type::describe` through `exec
   neither: `describe_sends_the_backend_nothing`), nothing is written or logged. A scalar sub-query is analyzed the
   same way and stands for a NULL of its column's type.
 - The result of an INSERT / UPDATE / DELETE is its RETURNING list, none without one.
-- DDL, BEGIN / COMMIT / ROLLBACK, SET and the other utilities answer no columns and no parameters and check nothing
-  (`describe CREATE TABLE` of a table that exists is no error), as PostgreSQL answers NoData. So do PREPARE and
-  DEALLOCATE, which store and drop nothing, and `EXECUTE` of a name the session does not have.
+- DDL, BEGIN / COMMIT / ROLLBACK, SET, DECLARE, CLOSE and the other utilities answer no columns and no parameters and
+  check nothing (`describe CREATE TABLE` of a table that exists is no error), as PostgreSQL answers NoData. So do
+  PREPARE and DEALLOCATE, which store and drop nothing, and `EXECUTE` of a name the session does not have. The
+  describe of FETCH answers the columns of its cursor, NoData when the session has no cursor of its name.
 - `EXECUTE name` answers the columns and the `$n` types PREPARE described, with any number of arguments, as
   PostgreSQL's Describe of a prepared statement does; `EXPLAIN EXECUTE …` answers `QUERY PLAN`, the name known or not.
 - EXPLAIN [ANALYZE] answers one text column `QUERY PLAN` and the types of the inner statement's `$n`

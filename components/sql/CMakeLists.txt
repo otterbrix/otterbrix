@@ -54,6 +54,7 @@ set(SOURCE_${PROJECT_NAME}
     transformer/impl/transform_alter_table.cpp
     transformer/impl/transform_transaction.cpp
     transformer/impl/transform_checkpoint.cpp
+    transformer/impl/transform_cursor.cpp
     transformer/impl/transform_set_setting.cpp
     transformer/impl/transform_prepare.cpp
     transformer/impl/transform_vacuum.cpp

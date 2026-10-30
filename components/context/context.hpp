@@ -76,7 +76,7 @@ namespace components::pipeline {
         // dml_flush_is_final gates RETURNING/mark_executed; dml_has_parent_constraint gates constraint accumulation.
         bool dml_flush_is_final{true};
         bool dml_has_parent_constraint{false};
-        // When true, execute_pipeline records per-operator time/rows/loops (zero-cost when false).
+        // When true, pump_pipeline_ records per-operator time/rows/loops (zero-cost when false).
         bool analyze{false};
         // Recorded by operator_dynamic_cascade_delete_t so COMMIT's drain runs GC off the ACTUAL drops.
         std::vector<catalog::oid_t> dropped_storage_oids;

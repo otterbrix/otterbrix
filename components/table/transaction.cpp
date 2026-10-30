@@ -81,6 +81,11 @@ namespace components::table {
         return true;
     }
 
+    uint64_t transaction_t::savepoint_sub_id(std::string_view name) const {
+        const auto latest = find_latest(savepoints_, name);
+        return latest == savepoints_.rend() ? 0 : latest->sub_id;
+    }
+
     bool transaction_t::rollback_to_savepoint(std::string_view name, txn_abort_drain_t* drain) {
         auto latest = find_latest(savepoints_, name);
         if (latest == savepoints_.rend()) {

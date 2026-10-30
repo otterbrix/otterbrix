@@ -1,4 +1,4 @@
-// Asserts a WITH RECURSIVE query streams end-to-end through execute_pipeline (fixpoint sub-plans
+// Asserts a WITH RECURSIVE query streams end-to-end through pump_pipeline_ (fixpoint sub-plans
 // AND the outer plan), not just that it is correct -- see test_subqueries.cpp for correctness.
 
 #include "integration_fixture_path.hpp"

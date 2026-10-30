@@ -19,3 +19,6 @@ inline constexpr int32_t EC_UNDEFINED_PREPARED_STATEMENT = 94;
 inline constexpr int32_t EC_DUPLICATE_PREPARED_STATEMENT = 95;
 inline constexpr int32_t EC_UNDEFINED_PARAMETER = 96;
 inline constexpr int32_t EC_WINDOWING_ERROR = 97;
+inline constexpr int32_t EC_UNDEFINED_CURSOR = 98;
+inline constexpr int32_t EC_DUPLICATE_CURSOR = 99;
+inline constexpr int32_t EC_OBJECT_IN_USE = 100;

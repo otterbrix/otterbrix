@@ -82,6 +82,10 @@ namespace components::sql::transform {
         core::result_wrapper_t<logical_plan::node_ptr> transform_drop_database(DropdbStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_schema(CreateSchemaStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_checkpoint(CheckPointStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_declare_cursor(DeclareCursorStmt& node,
+                                                                                logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_fetch(FetchStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_close_cursor(ClosePortalStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_vacuum(VacuumStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_create_table(CreateStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_drop(DropStmt& node);

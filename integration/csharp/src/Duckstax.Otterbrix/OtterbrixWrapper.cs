@@ -86,6 +86,9 @@ namespace Duckstax.Otterbrix
         DuplicatePreparedStatement = 95,
         UndefinedParameter = 96,
         WindowingError = 97,
+        UndefinedCursor = 98,
+        DuplicateCursor = 99,
+        ObjectInUse = 100,
     }
 
     public struct ErrorMessage {

@@ -27,6 +27,7 @@ set(${PROJECT_NAME}_SOURCES
         impl/create_plan_sequence.cpp
         impl/create_plan_dynamic_cascade_delete.cpp
         impl/create_plan_checkpoint.cpp
+        impl/create_plan_cursor.cpp
         impl/create_plan_set_setting.cpp
         impl/create_plan_prepared_statement.cpp
         impl/create_plan_vacuum.cpp

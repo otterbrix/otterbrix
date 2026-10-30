@@ -21,3 +21,6 @@ static_assert(EC_DUPLICATE_PREPARED_STATEMENT ==
               static_cast<int32_t>(core::error_code_t::duplicate_prepared_statement));
 static_assert(EC_UNDEFINED_PARAMETER == static_cast<int32_t>(core::error_code_t::undefined_parameter));
 static_assert(EC_WINDOWING_ERROR == static_cast<int32_t>(core::error_code_t::windowing_error));
+static_assert(EC_UNDEFINED_CURSOR == static_cast<int32_t>(core::error_code_t::undefined_cursor));
+static_assert(EC_DUPLICATE_CURSOR == static_cast<int32_t>(core::error_code_t::duplicate_cursor));
+static_assert(EC_OBJECT_IN_USE == static_cast<int32_t>(core::error_code_t::object_in_use));

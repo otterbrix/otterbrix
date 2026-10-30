@@ -17,6 +17,7 @@
 #include "impl/create_plan_computed_field_unregister.hpp"
 #include "impl/create_plan_create_matview.hpp"
 #include "impl/create_plan_cte_scan.hpp"
+#include "impl/create_plan_cursor.hpp"
 #include "impl/create_plan_data.hpp"
 #include "impl/create_plan_delete.hpp"
 #include "impl/create_plan_dynamic_cascade_delete.hpp"
@@ -260,6 +261,10 @@ namespace services::planner {
                 return impl::create_plan_dynamic_cascade_delete(context, node);
             case node_type::checkpoint_t:
                 return impl::create_plan_checkpoint(context, node);
+            case node_type::fetch_t:
+                return impl::create_plan_fetch(context, node);
+            case node_type::close_cursor_t:
+                return impl::create_plan_close_cursor(context, node);
             case node_type::set_setting_t:
                 return impl::create_plan_set_setting(context, node);
             case node_type::prepare_t:

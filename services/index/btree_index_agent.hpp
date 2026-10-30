@@ -84,7 +84,8 @@ namespace services::index {
         read_rows(session_id_t session,
                   components::expressions::compare_type compare,
                   components::vector::vector_t key,
-                  uint64_t txn_id);
+                  uint64_t txn_id,
+                  bool hides_own_deletes);
         unique_future<core::error_t> force_flush(session_id_t session);
 
         // Order must match bitcask_index_agent_t's dispatch_traits exactly -- msg_id positions are

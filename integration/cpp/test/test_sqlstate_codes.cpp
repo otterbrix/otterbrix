@@ -92,6 +92,26 @@ TEST_CASE("integration::cpp::sqlstate_codes::each_refusal_answers_its_postgresql
         CHECK(error.type == refusal.expected);
     }
 
+    // A session's cursors: each refusal in a block of its own, over an open cursor c.
+    const std::vector<refusal_t> cursor_refusals{
+        {"FETCH 1 FROM nope;", code::undefined_cursor},
+        {"CLOSE nope;", code::undefined_cursor},
+        {"DECLARE c CURSOR FOR SELECT v FROM s.p;", code::duplicate_cursor},
+        {"FETCH 0 FROM c;", code::object_not_in_prerequisite_state},
+        {"DROP TABLE s.raw;", code::object_in_use},
+        {"ALTER TABLE s.raw ADD COLUMN w BIGINT;", code::object_in_use},
+    };
+    for (const auto& refusal : cursor_refusals) {
+        db.ok(session, "BEGIN;");
+        db.ok(session, "DECLARE c CURSOR FOR SELECT t FROM s.raw;");
+        db.ok(session, "FETCH 1 FROM c;");
+        const auto error = db.refused(session, refusal.sql);
+        INFO(refusal.sql << " -> " << static_cast<int>(error.type) << " " << error.what);
+        CHECK(error.type == refusal.expected);
+        db.ok(session, "ROLLBACK;");
+    }
+    CHECK(db.refused(session, "DECLARE c CURSOR FOR SELECT v FROM s.p;").type == code::no_active_sql_transaction);
+
     CHECK(db.ints(any(), "SELECT v FROM s.p ORDER BY id;") == ints{10, 20});
     CHECK(db.ints(any(), "SELECT count(*) FROM s.c;") == ints{0});
     CHECK(db.ints(any(), "SELECT count(*) FROM s.n;") == ints{0});

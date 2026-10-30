@@ -8,7 +8,7 @@ namespace components::operators {
     // it is only ever read synchronously via output() by its holder (operator_aggregate_t
     // wraps an input chunk in one and runs the scalar aggregate over left_->output()) — it
     // is never a plan root nor an operator on a driven left-chain. It is nonetheless a
-    // trivial SOURCE: when execute_pipeline ever drives it, source_next() streams its held
+    // trivial SOURCE: when pump_pipeline_ ever drives it, source_next() streams its held
     // chunks then ends the stream, so no plan it sits in is forced to legacy.
     class operator_empty_t final : public read_only_operator_t {
     public:

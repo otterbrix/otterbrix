@@ -180,6 +180,7 @@ namespace host_actor {
         void clear_journal() {
             std::lock_guard<std::mutex> guard(state_mutex_);
             journal_.clear();
+            open_cursors_at_abort_.clear();
             calls_.clear();
             oid_calls_.clear();
             write_rounds_.clear();
@@ -348,6 +349,11 @@ namespace host_actor {
         std::size_t open_cursors() const {
             std::lock_guard<std::mutex> guard(state_mutex_);
             return cursors_.size();
+        }
+        // The open cursors at each abort_transaction, in order.
+        std::vector<std::size_t> open_cursors_at_abort() const {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            return open_cursors_at_abort_;
         }
         // Transactions with state here (not yet released or aborted whole).
         std::size_t open_transactions() const {
@@ -785,6 +791,7 @@ namespace host_actor {
         abort_transaction(execution_context_t ctx, uint64_t from_sub_id, std::pmr::set<components::catalog::oid_t>) {
             std::lock_guard<std::mutex> guard(state_mutex_);
             journal_.push_back("abort " + std::to_string(from_sub_id));
+            open_cursors_at_abort_.push_back(cursors_.size());
             auto found = transactions_.find(ctx.txn.transaction_id);
             if (found == transactions_.end()) {
                 co_return core::error_t::no_error();
@@ -1833,6 +1840,7 @@ namespace host_actor {
         std::vector<call_t> calls_;
         std::map<uint64_t, transaction_state_t> transactions_;
         std::map<uint64_t, cursor_t> cursors_;
+        std::vector<std::size_t> open_cursors_at_abort_;
         std::map<uint64_t, block_cursor_t> block_cursors_;
         std::map<std::string, std::vector<complex_logical_type>> block_types_;
         int offers_{0};

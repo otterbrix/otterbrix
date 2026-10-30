@@ -123,7 +123,7 @@ namespace components::operators {
     }
 
     // Each call does at most one cross-actor fetch await; the N awaits are sequential across calls in
-    // this nested operator coroutine (driven by execute_pipeline), so the single-slot awaited
+    // this nested operator coroutine (driven by pump_pipeline_), so the single-slot awaited
     // continuation is republished+cleared between awaits — no lost-wakeup. Peak scan memory is one
     // batch: no pins survive a round-trip, and the agent re-seeks a transient scan state from a stored
     // position.

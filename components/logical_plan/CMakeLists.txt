@@ -31,6 +31,7 @@ set(SOURCE_${PROJECT_NAME}
         node_create_sequence.cpp
         node_create_type.cpp
         node_create_view.cpp
+        node_cursor.cpp
         node_refresh_matview.cpp
         node_data.cpp
         node_delete.cpp

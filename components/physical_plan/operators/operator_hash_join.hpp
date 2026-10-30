@@ -74,7 +74,7 @@ namespace components::operators {
         // The join is a SINK on its build side (it must fully retain the right
         // input before any match can be decided) and STREAMING on its probe side
         // (one left batch in -> matched/padded rows out). A single role models both:
-        // execute_pipeline pushes each probe batch through push() and, after the
+        // pump_pipeline_ pushes each probe batch through push() and, after the
         // probe is drained, drains unmatched build rows (right/full) via finalize().
         // The build (right_->output()) is materialized by a separate sub-plan before
         // the first push. Right and full joins index it on the first push; inner and

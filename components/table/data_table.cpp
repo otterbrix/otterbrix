@@ -1059,9 +1059,13 @@ namespace components::table {
                     break;
                 }
             }
-            VALUE_OR_RETURN(
-                auto deleted,
-                row_groups_->delete_rows(*this, claimed_ids + start, pos - start, txn.transaction_id, txn.sub_id));
+            VALUE_OR_RETURN(auto deleted,
+                            row_groups_->delete_rows(*this,
+                                                     claimed_ids + start,
+                                                     pos - start,
+                                                     txn.transaction_id,
+                                                     txn.sub_id,
+                                                     txn.command_id));
             delete_count += deleted;
         }
         return core::result_wrapper_t<uint64_t>{delete_count};

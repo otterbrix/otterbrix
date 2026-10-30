@@ -142,7 +142,8 @@ namespace services::dispatcher {
         unique_future<void> on_drop_resource_marked(uint8_t subscriber_kind);
         unique_future<void> on_subscriber_empty(uint8_t subscriber_kind);
 
-        // Shutdown: every statement arriving after this is refused, except CHECKPOINT and close_session.
+        // Shutdown: every portal is closed, and every statement arriving after this is refused, except CHECKPOINT, CLOSE
+        // and close_session.
         unique_future<void> begin_shutdown();
 
         // After the statements sent before it: rolls the open transaction back, then forgets the session's settings.
@@ -182,9 +183,11 @@ namespace services::dispatcher {
 
         std::size_t next_executor_index() noexcept;
 
+        // `joins_held`: the statement runs in the statement transaction a portal of the session holds.
         core::result_wrapper_t<txn_session_context_t>
         create_session_context(components::session::session_id_t session,
-                               components::logical_plan::execution_plan_t* plan);
+                               components::logical_plan::execution_plan_t* plan,
+                               bool joins_held);
 
         struct settings_statement_t {
             bool is_transaction_control{false};
@@ -230,8 +233,8 @@ namespace services::dispatcher {
                                                                  uint64_t transaction_id);
 
         // A statement that runs alone in its session: the end of a transaction or a savepoint, the registration or
-        // drop of a function or a cast, and a PREPARE or a DEALLOCATE; the others of a transaction block may run beside
-        // one another.
+        // drop of a function or a cast, a PREPARE or a DEALLOCATE, and a DECLARE or a CLOSE; the others of a transaction
+        // block may run beside one another.
         enum class turn_t : bool
         {
             beside,
@@ -272,6 +275,39 @@ namespace services::dispatcher {
         void end_turn_(components::session::session_id_t session, turn_t turn);
         bool may_start_(components::session::session_id_t session, const session_order_t& order, turn_t turn);
         void start_(session_order_t* order, turn_t turn);
+
+        // A portal of a session: the executor it runs in and what of the transaction it is part of. Its state is the
+        // executor's; the dispatcher only routes to it and ends it with its transaction.
+        struct portal_ref_t {
+            uint64_t portal_id;
+            // A SQL cursor's name; empty for a host's window.
+            std::pmr::string name;
+            std::size_t executor;
+            // The savepoint level it was opened at: ROLLBACK TO a savepoint taken before it closes it.
+            uint64_t sub_id;
+            // A window of an autocommit statement, whose statement transaction it holds: the session's next statement
+            // other than its FETCH, its CLOSE and a describe closes it first (PostgreSQL 18 ends it at Sync).
+            bool autocommit;
+            // A FETCH of it runs: a second one is refused (PostgreSQL 18 MarkPortalActive).
+            bool running{false};
+        };
+        enum class portals_t : uint8_t
+        {
+            all,
+            autocommit_windows,
+            after_savepoint
+        };
+        portal_ref_t*
+        find_portal_(components::session::session_id_t session, std::string_view name, uint64_t portal_id);
+        // A portal's statement transaction is held between the statements of its session.
+        bool holds_statement_transaction_(components::session::session_id_t session);
+        // CLOSE of the session's portals `which` (those opened at `sub_id` or later for after_savepoint), each by an
+        // ordinary CLOSE plan in its executor, inside the transaction they are part of; the first error.
+        unique_future<core::error_t>
+        close_portals_(components::session::session_id_t session, portals_t which, uint64_t sub_id);
+        // The statement reads the session's window of an autocommit statement: its FETCH, its CLOSE, or a describe.
+        bool reads_autocommit_window_(components::session::session_id_t session,
+                                      const components::logical_plan::execution_plan_t& plan);
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
@@ -330,6 +366,10 @@ namespace services::dispatcher {
             components::session::session_id_t,
             std::pmr::unordered_map<std::pmr::string, components::logical_plan::prepared_statement_t>>
             prepared_statements_{resource_};
+
+        // Only sessions with an open portal have an entry.
+        std::pmr::unordered_map<components::session::session_id_t, std::pmr::vector<portal_ref_t>> portals_{resource_};
+        uint64_t last_portal_id_{0};
 
         components::catalog::session_catalog_t session_settings(components::session::session_id_t session) const;
         components::catalog::place_t place_of(components::session::session_id_t session) const;

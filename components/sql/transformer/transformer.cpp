@@ -164,6 +164,15 @@ namespace components::sql::transform {
             case T_CheckPointStmt:
                 log_node = transform_checkpoint(pg_cast<CheckPointStmt>(node));
                 break;
+            case T_DeclareCursorStmt:
+                log_node = transform_declare_cursor(pg_cast<DeclareCursorStmt>(node), plan);
+                break;
+            case T_FetchStmt:
+                log_node = transform_fetch(pg_cast<FetchStmt>(node));
+                break;
+            case T_ClosePortalStmt:
+                log_node = transform_close_cursor(pg_cast<ClosePortalStmt>(node));
+                break;
             case T_VacuumStmt:
                 log_node = transform_vacuum(pg_cast<VacuumStmt>(node));
                 break;

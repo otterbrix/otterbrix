@@ -1,4 +1,5 @@
 #include "wrapper_dispatcher.hpp"
+#include <components/logical_plan/node_cursor.hpp>
 #include <components/logical_plan/node_register_cast.hpp>
 #include <components/logical_plan/node_register_udf.hpp>
 #include <components/logical_plan/node_set_setting.hpp>
@@ -232,6 +233,23 @@ namespace otterbrix {
     auto wrapper_dispatcher_t::add_parser_extension(components::sql::parser::parser_extension_t extension)
         -> core::result_wrapper_t<const components::sql::parser::parser_extension_t*> {
         return parser_extensions_.add(std::move(extension));
+    }
+
+    auto wrapper_dispatcher_t::fetch_next(const session_id_t& session, std::uint64_t portal_id, std::uint64_t count)
+        -> cursor_t_ptr {
+        return send_plan(session,
+                         components::logical_plan::execution_plan_t{
+                             resource(),
+                             components::logical_plan::make_node_fetch(resource(), portal_id, count),
+                             components::logical_plan::make_parameter_node(resource())});
+    }
+
+    auto wrapper_dispatcher_t::close_cursor(const session_id_t& session, std::uint64_t portal_id) -> cursor_t_ptr {
+        return send_plan(session,
+                         components::logical_plan::execution_plan_t{
+                             resource(),
+                             components::logical_plan::make_node_close_cursor(resource(), portal_id),
+                             components::logical_plan::make_parameter_node(resource())});
     }
 
     auto wrapper_dispatcher_t::set_timezone(const session_id_t& session, std::string timezone_name) -> cursor_t_ptr {

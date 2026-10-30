@@ -58,11 +58,14 @@ namespace services::index {
         unique_future<core::error_t> revert_deletes(session_id_t session, uint64_t txn_id);
 
         // One full reply, duplicates included, no cursor: merges committed rows with staged inserts minus deletes.
+        // `hides_own_deletes` false: the staged deletes of `txn_id` stay in the reply, for a portal that sees its
+        // transaction's writes as of its DECLARE; the table answers which of those rows it sees.
         unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>
         read_rows(session_id_t session,
                   components::expressions::compare_type compare,
                   components::vector::vector_t key,
-                  uint64_t txn_id);
+                  uint64_t txn_id,
+                  bool hides_own_deletes);
 
         // Ordered behind this agent's pending writes; must report, or a checkpoint could truncate the WAL.
         unique_future<core::error_t> force_flush(session_id_t session);
@@ -115,7 +118,7 @@ namespace services::index {
         ->std::same_as<actor_zeta::unique_future<core::error_t>>;
         { agent.revert_deletes(session, txn_id) }
         ->std::same_as<actor_zeta::unique_future<core::error_t>>;
-        { agent.read_rows(session, components::expressions::compare_type::eq, key, txn_id) }
+        { agent.read_rows(session, components::expressions::compare_type::eq, key, txn_id, true) }
         ->std::same_as<actor_zeta::unique_future<core::result_wrapper_t<std::pmr::vector<int64_t>>>>;
         { agent.force_flush(session) }
         ->std::same_as<actor_zeta::unique_future<core::error_t>>;

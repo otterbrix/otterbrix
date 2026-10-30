@@ -36,6 +36,20 @@ def test_a_cursor_names_the_postgresql_code_of_its_error(tmp_path):
     ):
         assert client.execute(statement).get_error()[0] == name, statement
 
+    assert client.execute("DECLARE c CURSOR FOR SELECT v FROM s.t;").get_error()[0] == "no_active_sql_transaction"
+    for statement, name in (
+        ("FETCH 1 FROM nope;", "undefined_cursor"),
+        ("DECLARE c CURSOR FOR SELECT v FROM s.t;", "duplicate_cursor"),
+        ("FETCH 0 FROM c;", "object_not_in_prerequisite_state"),
+        ("DROP TABLE s.t;", "object_in_use"),
+    ):
+        assert not client.execute("BEGIN;").is_error()
+        assert not client.execute("INSERT INTO s.t (id, v) VALUES (7, 7);").is_error()
+        assert not client.execute("DECLARE c CURSOR FOR SELECT v FROM s.t;").is_error()
+        assert not client.execute("FETCH 1 FROM c;").is_error()
+        assert client.execute(statement).get_error()[0] == name, statement
+        assert not client.execute("ROLLBACK;").is_error()
+
 
 def test_a_closed_client_names_connection_closed(tmp_path):
     client = Client(str(tmp_path / "closed_db"))

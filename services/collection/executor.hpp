@@ -41,7 +41,7 @@
 
 namespace services::collection::executor {
 
-    // Bumped once per execute_pipeline() entry (streaming vs. legacy materialize path).
+    // Bumped once per start of a piece's pipeline (start_pipeline_).
 #ifdef DEV_MODE
     uint64_t streaming_pipeline_runs() noexcept;
 
@@ -67,6 +67,9 @@ namespace services::collection::executor {
 
     // Test seam: the user functions the registries of every executor of the process hold together.
     std::int64_t dev_user_functions_held() noexcept;
+    // The most chunks a portal kept between two of its fetches since the last reset.
+    uint64_t dev_portal_carry_peak() noexcept;
+    void dev_reset_portal_carry_peak() noexcept;
 #endif
 
     // A view the statement reads, as its catalog row described it before the expansion; the body is read back as the
@@ -131,7 +134,7 @@ namespace services::collection::executor {
     struct plan_t {
         components::operators::operator_ptr root;
         std::stack<components::operators::operator_ptr> sub_plans;
-        // Non-owning: points into the execute_plan frame's storage, which outlives execute_sub_plan_.
+        // Non-owning: points into the plan of the portal that owns this plan_t.
         const components::logical_plan::storage_parameters* parameters;
         services::context_storage_t context_storage_;
         bool analyze{false};
@@ -150,7 +153,6 @@ namespace services::collection::executor {
 
     // Internal only — never crosses an actor boundary; drained from pipeline::context_t::dml_*.
     struct sub_plan_result_t {
-        components::cursor::cursor_t_ptr cursor;
         std::vector<dml_append_range_t> dml_appends;
         std::vector<dml_delete_range_t> dml_deletes;
         std::vector<components::catalog::oid_t> dropped_storage_oids;
@@ -169,6 +171,98 @@ namespace services::collection::executor {
         std::vector<components::host_rows_t> host_rows;
         std::vector<components::pipeline::dropped_function_t> dropped_functions;
         components::logical_plan::prepared_change_t prepared_change;
+    };
+
+    // A piece is what one pipeline runs: the left chain from its root down to the first operator with a right input
+    // (that operator included). Its left and right inputs are pieces of their own.
+    struct pipeline_piece_t {
+        components::operators::operator_t* root;
+        std::size_t parent; // none for the plan root
+        std::pmr::vector<components::operators::operator_t*> opens_at_start;
+    };
+
+    // One piece's pipeline, Source -> streaming operators -> Sink one batch at a time, stopped between two batches
+    // when it has produced what was asked: peak memory is one batch plus active sink state.
+    struct pipeline_run_t {
+        enum class phase_t : uint8_t
+        {
+            input,
+            finalize,
+            async_finalize,
+            done
+        };
+        explicit pipeline_run_t(std::pmr::memory_resource* resource)
+            : chain(resource) {}
+        std::pmr::vector<components::operators::operator_t*> chain;
+        std::size_t start{0};
+        std::size_t op_start{0};
+        std::size_t dml_idx{0};
+        bool sourceless_sink_root{false};
+        bool pumpable_ancestors{false};
+        bool analyze{false};
+        bool front_driven{false};
+        phase_t phase{phase_t::input};
+        // The next chunk of a materialized input, the next operator to finalize.
+        std::size_t next_input{0};
+        std::size_t next_finalize{0};
+    };
+
+    // What the end of a statement does after its run, by the kind of statement it is.
+    struct statement_tail_t {
+        components::logical_plan::node_type original_type{components::logical_plan::node_type::unused};
+        bool needs_ddl_txn{false};
+        bool needs_dml_txn{false};
+        bool needs_commit_txn{false};
+        components::catalog::oid_t create_index_table_oid{components::catalog::INVALID_OID};
+        components::catalog::oid_t create_index_oid{components::catalog::INVALID_OID};
+        components::graph_execution_context settings{};
+        // The registrations and drops of functions and casts the statement makes, parked with its writes.
+        services::dispatcher::registry_changes_t registry_changes{};
+    };
+
+    // A statement's run, between its start and its finish (PostgreSQL 18's portal): its plan and everything that
+    // points into it, the opened sources, the state of the root piece, and the rows it ran ahead of its client in
+    // `carry`. Never moved once its run started: the operators and the opens point into it.
+    struct portal_t {
+        portal_t(std::pmr::memory_resource* resource,
+                 components::session::session_id_t session,
+                 components::logical_plan::execution_plan_t plan,
+                 std::pmr::vector<expanded_view_t> expanded_views,
+                 services::dispatcher::txn_session_context_t session_ctx,
+                 statement_registries_t registries);
+        portal_t(const portal_t&) = delete;
+        portal_t& operator=(const portal_t&) = delete;
+
+        components::session::session_id_t session;
+        components::logical_plan::execution_plan_t plan;
+        std::pmr::vector<expanded_view_t> expanded_views;
+        services::dispatcher::txn_session_context_t session_ctx;
+        // The functions and casts the plan is lowered with and runs with; a portal that outlives its statement keeps
+        // its own copy of registries its statement made for itself (`own_functions`, `own_casts`).
+        statement_registries_t registries;
+        std::optional<components::compute::function_registry_t> own_functions;
+        std::optional<components::casts::cast_registry_t> own_casts;
+        statement_tail_t tail;
+        // The columns of the rows, as a describe answers them.
+        std::pmr::vector<components::types::complex_logical_type> columns;
+        // A host's window ends with its last row; a cursor lives until CLOSE or its transaction's end.
+        bool closes_when_drained{false};
+
+        components::operators::operator_ptr explain_root;
+        explain_name_map_t explain_names;
+        std::pmr::vector<explain_plan_node> captured_subplans;
+
+        std::optional<plan_t> plan_data;
+        opened_sources_t opened;
+        std::optional<components::pipeline::context_t> open_context;
+        std::pmr::vector<pipeline_piece_t> pieces;
+        std::optional<components::pipeline::context_t> root_context;
+        pipeline_run_t root_run;
+        sub_plan_result_t tracking;
+        components::operators::chunks_vector_t carry;
+        // PostgreSQL 18 portal atStart / atEnd.
+        bool at_start{true};
+        bool at_end{false};
     };
 
     // Implements subplan_runner_t: an operator inside this executor's coroutine drives a child sub-plan via
@@ -215,7 +309,8 @@ namespace services::collection::executor {
         // Fanned out from the dispatcher; POD fn-pointers stored per-executor, so there's no shared mutable state.
         unique_future<bool> set_explain_renderer(uint32_t id, explain_render_fn fn);
 
-        // Same seam as execute_sub_plan_; not in dispatch_traits, a synchronous in-coroutine call.
+        // A piece run whole, as pump_portal_ runs the pieces under a root; not in dispatch_traits, a synchronous
+        // in-coroutine call.
         [[nodiscard]] unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
         run_subplan(components::operators::operator_ptr root, components::pipeline::context_t* ctx) override;
 
@@ -227,6 +322,15 @@ namespace services::collection::executor {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
+        unique_future<core::result_wrapper_t<components::pipeline::portal_rows_t>>
+        fetch_portal_impl(components::pipeline::context_t* ctx,
+                          uint64_t portal_id,
+                          std::string name,
+                          uint64_t count,
+                          bool is_move) override;
+        unique_future<core::error_t>
+        close_portal_impl(components::pipeline::context_t* ctx, uint64_t portal_id, std::string name) override;
+
         // `sub_query`: a flattened sub-plan of the statement, whose describe answers its columns only (the
         // statement's $n are the main plan's to list).
         unique_future<execute_result_t> execute_statement_(components::session::session_id_t session,
@@ -408,14 +512,47 @@ namespace services::collection::executor {
                               const components::logical_plan::storage_parameters& parameters,
                               services::context_storage_t&& context_storage);
 
-        unique_future<sub_plan_result_t> execute_sub_plan_(components::session::session_id_t session,
-                                                           plan_t plan_data,
-                                                           components::table::transaction_data txn,
-                                                           uint64_t lowest_active_start_time);
+        // The one road of every statement's run, in three steps. start: everything before the first batch of the
+        // root (the physical plan, its pieces, the opens of its sources, none awaited), as PostgreSQL 18's PortalStart
+        // runs nothing; an answer without a run (a plan-only EXPLAIN, a refused plan) comes from it. pump: until
+        // `want` rows wait in the portal's carry or the run ended; the pieces under the root run whole on the first
+        // pump, as a Sort or a Hash build does. finish: the run's end, the first error of it or `error`.
+        std::optional<execute_result_t> start_portal_(portal_t& portal, services::context_storage_t context_storage);
+        unique_future<core::error_t> pump_portal_(portal_t& portal, uint64_t want);
+        unique_future<core::error_t> finish_run_(portal_t& portal, core::error_t error);
+        // The answer of a whole run: its rows (all of the carry) and what it did.
+        execute_result_t result_of_run_(portal_t& portal, core::error_t error);
+        // The end of the statement after its run: its writes parked, committed or reverted, the storages it read
+        // given their part of the transaction's end.
+        unique_future<void> finish_statement_(portal_t& portal, execute_result_t& exec_result);
+        // CLOSE: the run and the statement of a portal of this executor end, and the portal is forgotten; the end is
+        // the first error of the run or `error`, and is the answer.
+        unique_future<core::error_t> close_portal_(uint64_t portal_id, core::error_t error);
+        // PostgreSQL 18's CheckTableNotInUse: 55006 for an ALTER TABLE, a DROP TABLE or a CREATE INDEX of a table an open
+        // portal of the session reads.
+        core::error_t table_in_use_(components::session::session_id_t session,
+                                    const components::logical_plan::execution_plan_t& plan,
+                                    components::logical_plan::node_type type,
+                                    const qualified_name_t& target) const;
+        // PostgreSQL 18's 34000 for a cursor the session has not, or a portal id it has not.
+        core::error_t missing_portal_(std::string_view name, uint64_t portal_id) const;
+        // At most `count` rows from the front of the carry, in chunks of at most DEFAULT_VECTOR_CAPACITY rows.
+        components::operators::chunks_vector_t take_rows_(portal_t& portal, uint64_t count);
+        // The run ended: nothing but the carry is left to fetch.
+        static bool drained_(const portal_t& portal) noexcept;
 
-        // Push-based, one batch at a time from source to sink; peak memory is one batch plus active sink state.
-        unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
-        execute_pipeline(components::operators::operator_ptr root, components::pipeline::context_t* ctx);
+        // A piece's operators prepared and the opens it reads awaited.
+        unique_future<core::error_t> begin_piece_(portal_t& portal, components::operators::operator_ptr piece);
+        unique_future<core::error_t>
+        end_piece_(portal_t& portal, components::operators::operator_ptr piece, components::pipeline::context_t& ctx);
+        // What the piece's context gathered (ranges, participants) goes to the portal's tracking.
+        static void lift_ranges_(portal_t& portal, components::pipeline::context_t& ctx);
+
+        pipeline_run_t start_pipeline_(components::operators::operator_t* root, components::pipeline::context_t* ctx);
+        unique_future<core::error_t> pump_pipeline_(pipeline_run_t& run,
+                                                    components::pipeline::context_t* ctx,
+                                                    uint64_t want,
+                                                    components::operators::chunks_vector_t& out);
 
         // Precondition: caller must have already called root->prepare(); returns the first error, or no_error().
         unique_future<core::error_t> drive_subplan_(components::operators::operator_ptr root,
@@ -487,6 +624,9 @@ namespace services::collection::executor {
         [[nodiscard]] bool explain_slot_registered_(uint32_t id) const noexcept {
             return id < explain_renderers_.size() && explain_renderers_[id] != nullptr;
         }
+
+        // The portals of this executor's sessions, by the id the dispatcher gave them.
+        std::pmr::unordered_map<uint64_t, portal_t> portals_;
 
         // Unregistered id resolves to slot 0 as the default, not a silent fallback — pinned by
         // test_explain.cpp's out-of-range cases.

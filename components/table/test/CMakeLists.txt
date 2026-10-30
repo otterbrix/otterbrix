@@ -16,6 +16,7 @@ set(${PROJECT_NAME}_SOURCES
         test_nested_fetch_channel.cpp
         test_nested_error_channel.cpp
         test_fetch_visibility.cpp
+        test_command_visibility.cpp
         test_eviction_guard.cpp
         test_buffer_manager_nvi.cpp
         test_buffer_spill.cpp

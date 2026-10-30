@@ -55,6 +55,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_alter_column_rename.cpp
         operators/operator_alter_column_set_not_null.cpp
         operators/operator_checkpoint.cpp
+        operators/operator_portal.cpp
         operators/operator_set_setting.cpp
         operators/operator_prepared_statement.cpp
         operators/operator_vacuum.cpp

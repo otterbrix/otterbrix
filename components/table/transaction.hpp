@@ -139,9 +139,12 @@ namespace components::table {
         transaction_data data() const {
             transaction_data out(transaction_id_, start_time_, snapshot_horizon_, in_flight_snapshot_);
             out.sub_id = current_sub_id_;
+            out.command_id = command_id_;
             return out;
         }
         uint64_t transaction_id() const { return transaction_id_; }
+        // The next statement of the block, as PostgreSQL 18's CommandCounterIncrement: its writes carry the new number.
+        void start_command() noexcept { ++command_id_; }
         uint64_t start_time() const { return start_time_; }
         uint64_t commit_id() const { return commit_id_; }
         session::session_id_t session() const { return session_; }
@@ -164,6 +167,8 @@ namespace components::table {
         void push_savepoint(std::string_view name);
         bool release_savepoint(std::string_view name);
         bool rollback_to_savepoint(std::string_view name, txn_abort_drain_t* drain);
+        // The level of the latest savepoint `name`; 0 when there is none.
+        uint64_t savepoint_sub_id(std::string_view name) const;
 
         // Kept to the end of the transaction, savepoints included: a storage that saw the transaction gets its end.
         void accumulate_participant(const participant_t& participant) {
@@ -307,6 +312,7 @@ namespace components::table {
 
         uint64_t last_sub_id_{0};
         uint64_t current_sub_id_{0};
+        uint64_t command_id_{0};
         std::pmr::vector<savepoint_t> savepoints_;
     };
 

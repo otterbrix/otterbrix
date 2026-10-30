@@ -170,7 +170,8 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
                                                             session,
                                                             compare_type::eq,
                                                             make_scalar(&resource, int64_t{42}),
-                                                            txn_id);
+                                                            txn_id,
+                                                            true);
         REQUIRE_FALSE(answer.has_error());
         auto rows = std::move(answer.value());
         return std::vector<int64_t>(rows.begin(), rows.end());

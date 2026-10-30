@@ -92,6 +92,11 @@ namespace components::cursor {
 
         [[nodiscard]] catalog::oid_t created_oid() const noexcept;
         void set_created_oid(catalog::oid_t oid) noexcept;
+        // The portal the answer leaves open (0 for none) and whether it may hold rows still to fetch: a window's first
+        // answer, a FETCH of a cursor that is still open.
+        [[nodiscard]] std::uint64_t portal_id() const noexcept;
+        [[nodiscard]] bool has_more() const noexcept;
+        void set_portal(std::uint64_t portal_id, bool has_more) noexcept;
         [[nodiscard]] session::transaction_status_t transaction_status() const noexcept;
         void set_transaction_status(session::transaction_status_t status) noexcept;
 
@@ -128,6 +133,8 @@ namespace components::cursor {
         std::uint64_t affected_rows_ = 0;
         bool is_write_ = false;
         catalog::oid_t created_oid_ = catalog::INVALID_OID;
+        std::uint64_t portal_id_ = 0;
+        bool has_more_ = false;
         session::transaction_status_t transaction_status_ = session::transaction_status_t::idle;
     };
 

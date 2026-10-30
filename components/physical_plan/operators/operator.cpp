@@ -100,6 +100,8 @@ namespace components::operators {
                 case operator_type::resolve_constraint:
                 case operator_type::allocate_oids:
                 case operator_type::batch:
+                case operator_type::portal_fetch:
+                case operator_type::portal_close:
                     break;
             }
             return "?";

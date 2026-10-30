@@ -2,10 +2,10 @@
 // VACUUM, CHECKPOINT, BEGIN) have no data pipeline -- their effect is an async cross-actor commit
 // inside await_async_and_resume, so they lower to a single sourceless sink-root operator.
 // is_streaming_pipeline() admits that shape (root->role()==sink && root->left()==nullptr) and
-// execute_pipeline() drives it via the same bottom-up needs_async_finalize pass the DML sinks use,
+// pump_pipeline_() drives it via the same bottom-up needs_async_finalize pass the DML sinks use,
 // retiring the legacy on_execute + find_waiting_operator drive for these leaves.
 //
-// Each case bumps streaming_pipeline_runs() to prove it routed through execute_pipeline, not the
+// Each case bumps streaming_pipeline_runs() to prove it routed through pump_pipeline_, not the
 // legacy path -- reverting a leaf to role()==none makes the matching REQUIRE red.
 
 #include "integration_fixture_path.hpp"

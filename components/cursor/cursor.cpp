@@ -227,6 +227,15 @@ namespace components::cursor {
 
     void cursor_t::set_created_oid(catalog::oid_t oid) noexcept { created_oid_ = oid; }
 
+    std::uint64_t cursor_t::portal_id() const noexcept { return portal_id_; }
+
+    bool cursor_t::has_more() const noexcept { return has_more_; }
+
+    void cursor_t::set_portal(std::uint64_t portal_id, bool has_more) noexcept {
+        portal_id_ = portal_id;
+        has_more_ = has_more;
+    }
+
     session::transaction_status_t cursor_t::transaction_status() const noexcept { return transaction_status_; }
 
     void cursor_t::set_transaction_status(session::transaction_status_t status) noexcept {

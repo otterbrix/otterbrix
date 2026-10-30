@@ -436,6 +436,18 @@ py::tuple wrapper_cursor::get_error() const {
         case error_code_t::ambiguous_parameter:
             type = "ambiguous_parameter";
             break;
+
+        case error_code_t::undefined_cursor:
+            type = "undefined_cursor";
+            break;
+
+        case error_code_t::duplicate_cursor:
+            type = "duplicate_cursor";
+            break;
+
+        case error_code_t::object_in_use:
+            type = "object_in_use";
+            break;
     }
     return py::make_tuple(type, ptr_->get_error().what);
 }

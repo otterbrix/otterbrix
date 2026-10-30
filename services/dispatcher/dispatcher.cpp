@@ -2,6 +2,7 @@
 #include <atomic>
 #include <services/dev_pump.hpp>
 
+#include <components/logical_plan/node_cursor.hpp>
 #include <components/logical_plan/node_deallocate.hpp>
 #include <components/logical_plan/node_execute.hpp>
 #include <components/logical_plan/node_prepare.hpp>
@@ -395,7 +396,20 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<void> manager_dispatcher_t::begin_shutdown() {
         trace(log_, "manager_dispatcher_t::begin_shutdown");
         shutting_down_ = true;
-        co_return;
+        std::pmr::vector<components::session::session_id_t> sessions{resource()};
+        for (const auto& [session, refs] : portals_) {
+            sessions.push_back(session);
+        }
+        for (const auto session : sessions) {
+            co_await take_turn_(session, turn_t::alone);
+            session_turn_t turn{this, session, turn_t::alone};
+            if (auto closed = co_await close_portals_(session, portals_t::all, 0); closed.contains_error()) {
+                error(log_,
+                      "manager_dispatcher_t::begin_shutdown: a portal of session {} failed to close: {}",
+                      session.data(),
+                      closed.what);
+            }
+        }
     }
 
     manager_dispatcher_t::unique_future<void> manager_dispatcher_t::on_subscriber_empty(uint8_t subscriber_kind) {
@@ -450,8 +464,8 @@ namespace services::dispatcher {
             return components::table::transaction_control_t::none;
         }
 
-        // A statement that changes its session's registries or prepared statements runs alone, as the end of a
-        // transaction does.
+        // A statement that changes its session's registries, prepared statements or portals runs alone, as the end of
+        // a transaction does.
         bool changes_session_state(const components::logical_plan::execution_plan_t& plan) {
             using components::logical_plan::node_type;
             const auto* root = plan.sub_queries.back().get();
@@ -465,6 +479,8 @@ namespace services::dispatcher {
                 case node_type::unregister_cast_t:
                 case node_type::prepare_t:
                 case node_type::deallocate_t:
+                case node_type::declare_cursor_t:
+                case node_type::close_cursor_t:
                     return true;
                 default:
                     return false;
@@ -491,6 +507,21 @@ namespace services::dispatcher {
             }
         }
 
+        // The DDL PostgreSQL 18 refuses on a table an open portal of the session reads.
+        bool changes_a_table(const components::logical_plan::node_t& root) {
+            using components::logical_plan::node_type;
+            return root.type() == node_type::alter_table_t || root.type() == node_type::create_constraint_t ||
+                   root.type() == node_type::create_index_t || root.type() == node_type::drop_t;
+        }
+
+        components::logical_plan::execution_plan_t make_close_plan(std::pmr::memory_resource* resource,
+                                                                   uint64_t portal_id) {
+            return components::logical_plan::execution_plan_t{
+                resource,
+                components::logical_plan::make_node_close_cursor(resource, portal_id),
+                components::logical_plan::make_parameter_node(resource)};
+        }
+
         components::logical_plan::execution_plan_t make_rollback_plan(std::pmr::memory_resource* resource) {
             return components::logical_plan::execution_plan_t{
                 resource,
@@ -511,14 +542,17 @@ namespace services::dispatcher {
         }
 
         assert(!executors_.empty());
-        if (shutting_down_ && plan.sub_queries.back()->type() != components::logical_plan::node_type::checkpoint_t) {
+        const auto root_type = plan.sub_queries.back()->type();
+        if (shutting_down_ && root_type != components::logical_plan::node_type::checkpoint_t &&
+            root_type != components::logical_plan::node_type::close_cursor_t) {
             co_return stamp_transaction_status_(
                 session,
                 components::cursor::make_cursor(
                     resource(),
                     core::error_t{
                         core::error_code_t::connection_closed,
-                        std::pmr::string{"the engine is shutting down: only CHECKPOINT is admitted", resource()}}));
+                        std::pmr::string{"the engine is shutting down: only CHECKPOINT and CLOSE are admitted",
+                                         resource()}}));
         }
         const auto control = transaction_control_of(plan);
         const auto turn_of_plan =
@@ -530,7 +564,160 @@ namespace services::dispatcher {
         if (after_close) {
             co_return refuse_closed_(session);
         }
-        co_return co_await run_statement_(session, control, std::move(plan));
+        if (portals_.contains(session) && !reads_autocommit_window_(session, plan)) {
+            // The statement is not run: the close's error is its answer, as PostgreSQL 18 answers Sync with it.
+            if (auto closed = co_await close_portals_(session, portals_t::autocommit_windows, 0);
+                closed.contains_error()) {
+                co_return stamp_transaction_status_(session, components::cursor::make_cursor(resource(), closed));
+            }
+        }
+        // The portals of the transaction close before its end reaches the storages they read (PostgreSQL 18
+        // PreCommit_Portals, AtAbort_Portals, AtSubAbort_Portals).
+        if (portals_.contains(session) && (control == components::table::transaction_control_t::commit ||
+                                           control == components::table::transaction_control_t::rollback ||
+                                           control == components::table::transaction_control_t::rollback_to)) {
+            uint64_t from_sub_id = 0;
+            if (control == components::table::transaction_control_t::rollback_to) {
+                const auto* txn = txn_manager_.find_transaction(session);
+                from_sub_id = txn == nullptr ? 0 : txn->savepoint_sub_id(settings_statement_of(plan).savepoint);
+            }
+            const auto which = control == components::table::transaction_control_t::rollback_to
+                                   ? portals_t::after_savepoint
+                                   : portals_t::all;
+            if (which == portals_t::all || from_sub_id != 0) {
+                if (auto closed = co_await close_portals_(session, which, from_sub_id); closed.contains_error()) {
+                    error(
+                        log_,
+                        "manager_dispatcher_t::execute_plan: a portal of session {} failed to close before the end of "
+                        "its transaction: {}",
+                        session.data(),
+                        closed.what);
+                }
+            }
+        }
+        auto answer = co_await run_statement_(session, control, std::move(plan));
+        // A statement admitted before the shutdown that opened a portal after it: begin_shutdown did not see it.
+        if (shutting_down_ && portals_.contains(session)) {
+            if (auto closed = co_await close_portals_(session, portals_t::all, 0); closed.contains_error()) {
+                error(log_,
+                      "manager_dispatcher_t::execute_plan: a portal of session {} opened during the shutdown failed to "
+                      "close: {}",
+                      session.data(),
+                      closed.what);
+            }
+        }
+        co_return answer;
+    }
+
+    manager_dispatcher_t::portal_ref_t* manager_dispatcher_t::find_portal_(components::session::session_id_t session,
+                                                                           std::string_view name,
+                                                                           uint64_t portal_id) {
+        const auto refs = portals_.find(session);
+        if (refs == portals_.end()) {
+            return nullptr;
+        }
+        for (auto& ref : refs->second) {
+            if ((portal_id != 0 && ref.portal_id == portal_id) || (!name.empty() && ref.name == name)) {
+                return &ref;
+            }
+        }
+        return nullptr;
+    }
+
+    bool manager_dispatcher_t::holds_statement_transaction_(components::session::session_id_t session) {
+        const auto refs = portals_.find(session);
+        if (refs == portals_.end()) {
+            return false;
+        }
+        const auto* txn = txn_manager_.find_transaction(session);
+        if (txn == nullptr || txn->scope() != components::table::transaction_scope_t::statement) {
+            return false;
+        }
+        return std::any_of(refs->second.begin(), refs->second.end(), [](const portal_ref_t& ref) {
+            return ref.autocommit;
+        });
+    }
+
+    bool manager_dispatcher_t::reads_autocommit_window_(components::session::session_id_t session,
+                                                        const components::logical_plan::execution_plan_t& plan) {
+        using components::logical_plan::node_type;
+        if (describes(plan)) {
+            return true;
+        }
+        const auto* root = plan.sub_queries.back().get();
+        const portal_ref_t* named = nullptr;
+        if (root->type() == node_type::fetch_t) {
+            const auto* fetch = static_cast<const components::logical_plan::node_fetch_t*>(root);
+            named = find_portal_(session, fetch->name(), fetch->portal_id());
+        } else if (root->type() == node_type::close_cursor_t) {
+            const auto* close = static_cast<const components::logical_plan::node_close_cursor_t*>(root);
+            named = find_portal_(session, close->name(), close->portal_id());
+        }
+        return named != nullptr && named->autocommit;
+    }
+
+    manager_dispatcher_t::unique_future<core::error_t>
+    manager_dispatcher_t::close_portals_(components::session::session_id_t session, portals_t which, uint64_t sub_id) {
+        auto refs = portals_.find(session);
+        if (refs == portals_.end()) {
+            co_return core::error_t::no_error();
+        }
+        std::pmr::vector<std::pair<uint64_t, std::size_t>> closing{resource()};
+        bool holds = false;
+        for (const auto& ref : refs->second) {
+            const bool closes = which == portals_t::all || (which == portals_t::autocommit_windows && ref.autocommit) ||
+                                (which == portals_t::after_savepoint && ref.sub_id >= sub_id);
+            if (closes) {
+                closing.emplace_back(ref.portal_id, ref.executor);
+                holds = holds || ref.autocommit;
+            }
+        }
+        auto first_error = core::error_t::no_error();
+        for (const auto& [portal_id, executor] : closing) {
+            txn_session_context_t context;
+            if (const auto* txn = txn_manager_.find_transaction(session); txn != nullptr) {
+                context.txn = txn->data();
+                context.write_connection = txn->write_connection();
+            }
+            context.settings = session_settings(session);
+            context.lowest_active_start_time = txn_manager_.lowest_active_start_time();
+            context.portal_id = portal_id;
+            auto [needs_sched, future] =
+                actor_zeta::otterbrix::send(executor_addresses_[executor],
+                                            &collection::executor::executor_t::execute_plan_full,
+                                            session,
+                                            make_close_plan(resource(), portal_id),
+                                            std::move(context),
+                                            registry_changes_t{});
+            if (needs_sched && executors_[executor]) {
+                scheduler_->enqueue(executors_[executor].get());
+            }
+            auto closed = co_await std::move(future);
+            if (closed.cursor->is_error() && closed.cursor->get_error().type != core::error_code_t::undefined_cursor &&
+                !first_error.contains_error()) {
+                first_error = core::error_on(resource(), closed.cursor->get_error());
+            }
+            // The executor forgot the portal whatever its close answered.
+            if (auto remaining = portals_.find(session); remaining != portals_.end()) {
+                std::erase_if(remaining->second,
+                              [id = portal_id](const portal_ref_t& ref) { return ref.portal_id == id; });
+                if (remaining->second.empty()) {
+                    portals_.erase(remaining);
+                }
+            }
+        }
+        // The statement transaction a window held ends with it.
+        if (holds) {
+            if (const auto* txn = txn_manager_.find_transaction(session);
+                txn != nullptr && txn->scope() == components::table::transaction_scope_t::statement) {
+                if (first_error.contains_error()) {
+                    co_await finish_failed_statement_(session, txn->transaction_id());
+                } else {
+                    end_statement_transaction_(session, txn->transaction_id());
+                }
+            }
+        }
+        co_return first_error;
     }
 
     core::error_t manager_dispatcher_t::failed_transaction_() const {
@@ -549,7 +736,58 @@ namespace services::dispatcher {
         // A failed transaction's writes wait for its end; a COMMIT ends it as a ROLLBACK.
         bool commits_failed = control == components::table::transaction_control_t::commit && failed_at_admission;
         auto executed = commits_failed ? make_rollback_plan(resource()) : std::move(plan);
-        auto resolved = create_session_context(session, &executed);
+
+        // The portal the statement names: the one it opens (DECLARE, a host's window), or the one of the cursor its
+        // FETCH / CLOSE names, in whose executor it runs.
+        using components::logical_plan::node_type;
+        const auto* root = executed.sub_queries.back().get();
+        const bool describing = describes(executed);
+        uint64_t portal_id = 0;
+        std::pmr::string opened_name{resource()};
+        bool opens = false;
+        bool name_taken = false;
+        bool closes_all = false;
+        bool fetches = false;
+        constexpr std::size_t no_executor = static_cast<std::size_t>(-1);
+        std::size_t portal_executor = no_executor;
+        bool joins_held = describing && holds_statement_transaction_(session);
+        if (root->type() == node_type::declare_cursor_t && !describing) {
+            opened_name = static_cast<const components::logical_plan::node_declare_cursor_t*>(root)->name();
+            name_taken = find_portal_(session, opened_name, 0) != nullptr;
+            portal_id = ++last_portal_id_;
+            opens = true;
+        } else if (root->type() == node_type::fetch_t || root->type() == node_type::close_cursor_t) {
+            const bool is_fetch = root->type() == node_type::fetch_t;
+            const auto& name = is_fetch
+                                   ? static_cast<const components::logical_plan::node_fetch_t*>(root)->name()
+                                   : static_cast<const components::logical_plan::node_close_cursor_t*>(root)->name();
+            const uint64_t id =
+                is_fetch ? static_cast<const components::logical_plan::node_fetch_t*>(root)->portal_id()
+                         : static_cast<const components::logical_plan::node_close_cursor_t*>(root)->portal_id();
+            closes_all = !is_fetch && name.empty() && id == 0;
+            fetches = is_fetch && !describing;
+            if (const auto* ref = find_portal_(session, name, id); ref != nullptr) {
+                portal_id = ref->portal_id;
+                portal_executor = ref->executor;
+                joins_held = joins_held || ref->autocommit;
+            } else if (closes_all) {
+                if (const auto refs = portals_.find(session); refs != portals_.end()) {
+                    portal_executor = refs->second.front().executor;
+                }
+            }
+        } else if (executed.fetch_window > 0 && !describing) {
+            portal_id = ++last_portal_id_;
+            opens = true;
+        }
+        // Every portal of a session runs in one executor: CLOSE ALL reaches them all there, and a DDL of a table one of
+        // them may read is answered there (PostgreSQL 18 CheckTableNotInUse).
+        if (opens || (!describing && changes_a_table(*root))) {
+            if (const auto refs = portals_.find(session); refs != portals_.end()) {
+                portal_executor = refs->second.front().executor;
+            }
+        }
+
+        auto resolved = create_session_context(session, &executed, joins_held);
         if (resolved.has_error()) {
             co_return stamp_transaction_status_(session, components::cursor::make_cursor(resource(), resolved.error()));
         }
@@ -570,8 +808,29 @@ namespace services::dispatcher {
                 }
             }
         }
+        session_ctx.portal_id = portal_id;
+        session_ctx.portal_name_taken = name_taken;
         const uint64_t statement_txn_id = session_ctx.txn.transaction_id;
-        const std::size_t pool_idx = next_executor_index();
+        const uint64_t statement_sub_id = session_ctx.txn.sub_id;
+        const bool statement_commits = executed.commits_when_done;
+        if (fetches) {
+            auto* ref = find_portal_(session, {}, portal_id);
+            if (ref != nullptr && ref->running) {
+                std::pmr::string what{"portal \"", resource()};
+                what.append(ref->name.empty() ? std::to_string(portal_id) : std::string{ref->name});
+                what.append("\" cannot be run");
+                co_await finish_failed_statement_(session, statement_txn_id);
+                co_return stamp_transaction_status_(
+                    session,
+                    components::cursor::make_cursor(
+                        resource(),
+                        core::error_t{core::error_code_t::object_not_in_prerequisite_state, std::move(what)}));
+            }
+            if (ref != nullptr) {
+                ref->running = true;
+            }
+        }
+        const std::size_t pool_idx = portal_executor != no_executor ? portal_executor : next_executor_index();
         trace(log_, "manager_dispatcher_t::run_statement_: routing to executor[{}]", pool_idx);
         auto [needs_sched, future] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
                                                                  &collection::executor::executor_t::execute_plan_full,
@@ -587,8 +846,32 @@ namespace services::dispatcher {
         trace(log_,
               "manager_dispatcher_t::run_statement_: result received, success: {}",
               exec_result.cursor->is_success());
+        // The portal is open after the statement exactly when its answer names it; a describe changes none.
+        if (!describing && (portal_id != 0 || closes_all)) {
+            if (auto* ref = find_portal_(session, {}, portal_id); ref != nullptr) {
+                ref->running = false;
+            }
+            const bool open_after = portal_id != 0 && exec_result.cursor->portal_id() == portal_id;
+            if (opens && open_after) {
+                const bool autocommit = opened_name.empty() && statement_commits;
+                portals_.try_emplace(session).first->second.push_back(
+                    portal_ref_t{portal_id, std::move(opened_name), pool_idx, statement_sub_id, autocommit});
+            } else if (!opens && !open_after) {
+                if (auto refs = portals_.find(session); refs != portals_.end()) {
+                    std::erase_if(refs->second, [closes_all, portal_id](const portal_ref_t& ref) {
+                        return closes_all || ref.portal_id == portal_id;
+                    });
+                    if (refs->second.empty()) {
+                        portals_.erase(refs);
+                    }
+                }
+            }
+        }
         if (exec_result.cursor && exec_result.cursor->is_error()) {
-            co_await finish_failed_statement_(session, statement_txn_id);
+            // A describe that failed leaves the statement transaction of the window it ran in to the window.
+            if (!(describing && joins_held)) {
+                co_await finish_failed_statement_(session, statement_txn_id);
+            }
         } else if (control == components::table::transaction_control_t::none && !failed_at_admission &&
                    failed_sessions_.contains(session)) {
             exec_result.cursor = components::cursor::make_cursor(
@@ -597,7 +880,7 @@ namespace services::dispatcher {
                               std::pmr::string{"the transaction failed while this statement ran", resource()}});
         } else if (control == components::table::transaction_control_t::rollback_to) {
             failed_sessions_.erase(session);
-        } else {
+        } else if (!holds_statement_transaction_(session)) {
             end_statement_transaction_(session, statement_txn_id);
         }
         finish_registry_changes_(session, settings_statement, exec_result);
@@ -614,6 +897,12 @@ namespace services::dispatcher {
         session_turn_t turn{this, session, turn_t::beside};
         if (after_close) {
             co_return refuse_closed_(session);
+        }
+        if (portals_.contains(session)) {
+            if (auto closed = co_await close_portals_(session, portals_t::autocommit_windows, 0);
+                closed.contains_error()) {
+                co_return stamp_transaction_status_(session, components::cursor::make_cursor(resource(), closed));
+            }
         }
         if (const auto* txn = txn_manager_.find_transaction(session); txn != nullptr) {
             co_await finish_failed_statement_(session, txn->transaction_id());
@@ -642,6 +931,14 @@ namespace services::dispatcher {
         session_order_.try_emplace(session, resource()).first->second.closed = true;
         co_await take_turn_(session, turn_t::alone);
         session_turn_t turn{this, session, turn_t::alone};
+        if (portals_.contains(session)) {
+            if (auto closed = co_await close_portals_(session, portals_t::all, 0); closed.contains_error()) {
+                error(log_,
+                      "manager_dispatcher_t::close_session: a portal of session {} failed to close: {}",
+                      session.data(),
+                      closed.what);
+            }
+        }
         if (txn_manager_.find_transaction(session) != nullptr) {
             auto cursor = co_await run_statement_(session, control, make_rollback_plan(resource()));
             if (cursor->is_error()) {
@@ -697,7 +994,8 @@ namespace services::dispatcher {
 
     core::result_wrapper_t<txn_session_context_t>
     manager_dispatcher_t::create_session_context(components::session::session_id_t session,
-                                                 components::logical_plan::execution_plan_t* plan) {
+                                                 components::logical_plan::execution_plan_t* plan,
+                                                 bool joins_held) {
         if (failed_sessions_.contains(session)) {
             if (!ends_transaction(*plan->sub_queries.back())) {
                 return failed_transaction_();
@@ -717,14 +1015,19 @@ namespace services::dispatcher {
         const auto scope = settings.autocommit || statement.alter_system || describes(*plan)
                                ? components::table::transaction_scope_t::statement
                                : components::table::transaction_scope_t::until_commit;
-        const bool opens = txn_manager_.find_transaction(session) == nullptr;
-        auto& txn = txn_manager_.resolve_transaction(session, scope);
+        auto* held = joins_held ? txn_manager_.find_transaction(session) : nullptr;
+        const bool opens = held == nullptr && txn_manager_.find_transaction(session) == nullptr;
+        auto& txn = held != nullptr ? *held : txn_manager_.resolve_transaction(session, scope);
         plan->commits_when_done = txn.scope() == components::table::transaction_scope_t::statement;
         // The settings as the transaction found them: what ROLLBACK returns to.
         if (opens &&
             (txn.scope() == components::table::transaction_scope_t::until_commit ||
              (statement.is_transaction_control && statement.op == components::logical_plan::transaction_op::begin))) {
             session_settings_.try_emplace(session, resource()).first->second.begin_transaction();
+        }
+        // Each statement of a block is a command of its own: a portal reads the block's writes as of its DECLARE.
+        if (txn.scope() == components::table::transaction_scope_t::until_commit) {
+            txn.start_command();
         }
         txn_session_context_t context;
         context.txn = txn.data();

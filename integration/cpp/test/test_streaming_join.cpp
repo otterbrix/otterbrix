@@ -12,7 +12,7 @@
 //
 // WHAT THESE TESTS ASSERT:
 //   (a) PATH — a non-equi JOIN over a MULTI-BATCH scan (>> DEFAULT_VECTOR_CAPACITY)
-//       routes through execute_pipeline, proven by streaming_pipeline_runs() bumping.
+//       routes through pump_pipeline_, proven by streaming_pipeline_runs() bumping.
 //   (b) CORRECTNESS — inner/left/right/full/cross cardinality + NULL padding, and
 //       UNION / UNION ALL / SELECT DISTINCT dedup, all over multi-batch inputs that
 //       force chunk boundaries inside the streamed probe.
@@ -68,7 +68,7 @@ TEST_CASE("integration::cpp::streaming_join::nested_loop_streams_and_is_correct"
 
     const std::string on = " ON SJ.l.k >= SJ.r.k AND SJ.l.k <= SJ.r.k";
 
-    // PATH: the multi-batch nested-loop INNER JOIN runs through execute_pipeline.
+    // PATH: the multi-batch nested-loop INNER JOIN runs through pump_pipeline_.
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     {
         auto cur = exec(dispatcher, "SELECT * FROM SJ.l INNER JOIN SJ.r" + on + ";");
@@ -182,7 +182,7 @@ TEST_CASE("integration::cpp::streaming_join::cross_join_streams_multibatch") {
     }
     REQUIRE(exec(dispatcher, "INSERT INTO SJ5.b (y) VALUES (10), (20);")->is_success());
 
-    // PATH: the multi-batch CROSS JOIN now routes through execute_pipeline (cross is
+    // PATH: the multi-batch CROSS JOIN now routes through pump_pipeline_ (cross is
     // a sink, like every other join type), proven by streaming_pipeline_runs bumping.
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     auto cur = exec(dispatcher, "SELECT * FROM SJ5.a CROSS JOIN SJ5.b;");
@@ -200,7 +200,7 @@ TEST_CASE("integration::cpp::streaming_join::no_from_constants_stream") {
 
     // No-FROM constants-only SELECT: the INVALID_OID sentinel scan is now a SOURCE
     // emitting one synthetic placeholder row, so `select -> scan` routes through
-    // execute_pipeline and yields exactly the single constants row.
+    // pump_pipeline_ and yields exactly the single constants row.
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     {
         auto cur = exec(dispatcher, "SELECT 2 + 3 AS five, 10 * 5 AS fifty;");

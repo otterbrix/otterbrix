@@ -138,6 +138,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_host_transactions.cpp
         test_close_session.cpp
         test_udf_cast_in_block.cpp
+        test_streaming_cursor.cpp
         test_describe.cpp
         test_host_pushdown.cpp
         test_decorrelation.cpp

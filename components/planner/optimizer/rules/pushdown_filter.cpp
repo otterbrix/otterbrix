@@ -662,7 +662,7 @@ namespace components::planner::optimizer {
                 }
             }
 
-            // A group_t/sort_t above the join does not block the push: execute_pipeline treats the topmost
+            // A group_t/sort_t above the join does not block the push: pump_pipeline_ treats the topmost
             // executed operator as the materialized sub-plan boundary (repro: test_batch_execution "join +
             // WHERE with UDF batch predicate", test_column_projection "inner JOIN + GROUP BY with WHERE on
             // non-select column").

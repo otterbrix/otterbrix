@@ -542,7 +542,8 @@ namespace components::table {
                                                                int64_t* ids,
                                                                uint64_t count,
                                                                uint64_t transaction_id,
-                                                               uint64_t sub_id) {
+                                                               uint64_t sub_id,
+                                                               uint64_t command_id) {
         uint64_t delete_count = 0;
         uint64_t pos = 0;
         do {
@@ -565,7 +566,7 @@ namespace components::table {
                     break;
                 }
             }
-            delete_count += row_group->delete_rows(table, ids + start, pos - start, transaction_id, sub_id);
+            delete_count += row_group->delete_rows(table, ids + start, pos - start, transaction_id, sub_id, command_id);
         } while (pos < count);
         return delete_count;
     }

@@ -19,7 +19,7 @@ namespace components::operators {
     // Like operator_hash_join_t, the join is a SINK on its build (RIGHT) side and
     // STREAMING on its probe (LEFT) side. The build (right_->output()) is
     // materialized by a separate sub-plan (traverse_plan_) before the first push();
-    // execute_pipeline pushes each LEFT probe batch through push() and, after the
+    // pump_pipeline_ pushes each LEFT probe batch through push() and, after the
     // probe is drained, drains unmatched build rows (right/full) via finalize().
     //
     // A SINGLE core (probe_batch_ + emit_unmatched_build_, built on the shared

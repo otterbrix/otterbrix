@@ -1394,9 +1394,8 @@ namespace services::index {
                                                 components::vector::vector_t key,
                                                 components::expressions::compare_type compare,
                                                 components::logical_plan::index_type preferred_type,
-                                                // Unused; kept because it's part of index_contract::search.
-                                                uint64_t /*start_time*/,
                                                 uint64_t txn_id,
+                                                bool hides_own_deletes,
                                                 core::date::timezone_offset_t /*session_tz*/) {
         auto it = indexes_per_oid_.find(table_oid);
         if (it == indexes_per_oid_.end()) {
@@ -1437,7 +1436,8 @@ namespace services::index {
             session,
             compare,
             components::vector::make_constant_copy(resource_, key),
-            txn_id);
+            txn_id,
+            hides_own_deletes);
         schedule_agent(agent_addr, needs_sched);
         auto agent_result = co_await std::move(agent_future);
         if (agent_result.has_error()) {
@@ -1453,8 +1453,8 @@ namespace services::index {
                             components::index::keys_base_storage_t keys,
                             components::vector::vector_t key,
                             components::expressions::compare_type compare,
-                            uint64_t start_time,
                             uint64_t txn_id,
+                            bool hides_own_deletes,
                             core::date::timezone_offset_t session_tz) {
         co_return co_await search_with_preferred_type(session,
                                                       table_oid,
@@ -1462,8 +1462,8 @@ namespace services::index {
                                                       std::move(key),
                                                       compare,
                                                       components::logical_plan::index_type::no_valid,
-                                                      start_time,
                                                       txn_id,
+                                                      hides_own_deletes,
                                                       session_tz);
     }
 

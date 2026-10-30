@@ -294,7 +294,8 @@ namespace services::index {
     btree_index_agent_t::read_rows(session_id_t session,
                                    components::expressions::compare_type compare,
                                    components::vector::vector_t key,
-                                   uint64_t txn_id) {
+                                   uint64_t txn_id,
+                                   bool hides_own_deletes) {
         trace(log_, "btree_index_agent_t::read_rows, session: {}", session.data());
         if (is_dropped_) {
             co_return core::error_t{
@@ -400,7 +401,7 @@ namespace services::index {
         if (auto merge_error = drop_bucket(0); merge_error.contains_error()) {
             co_return merge_error;
         }
-        if (txn_id != 0) {
+        if (txn_id != 0 && hides_own_deletes) {
             if (auto merge_error = drop_bucket(txn_id); merge_error.contains_error()) {
                 co_return merge_error;
             }

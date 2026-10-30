@@ -101,7 +101,10 @@ namespace components::operators {
         // What a backend took: the rows it answers, or the write it runs.
         remote_scan,
         remote_write,
-        batch
+        batch,
+        // FETCH / MOVE and CLOSE of a portal: see operator_portal.hpp.
+        portal_fetch,
+        portal_close
     };
 
     inline bool is_scan(operator_type t) {
@@ -243,7 +246,7 @@ namespace components::operators {
         // Operators that emit a typed result over zero input rows override this to avoid the NA sentinel.
         virtual void set_output_types(const std::pmr::vector<types::complex_logical_type>& types);
 
-        // Written only by execute_pipeline when ctx->analyze is set; read only by the EXPLAIN renderer.
+        // Written only by pump_pipeline_ when ctx->analyze is set; read only by the EXPLAIN renderer.
         void record_analyze(uint64_t rows, std::chrono::nanoseconds dt) noexcept {
             analyze_rows_ += rows;
             analyze_time_ += dt;

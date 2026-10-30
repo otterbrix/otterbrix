@@ -4,7 +4,7 @@
 // operator_index_scan (operator_type::index_scan) is the scan the planner builds
 // for a pure-compare predicate over an INDEXED column (e.g. WHERE grp = 7 when an
 // index exists on grp). It is now role()==source: an index-rooted SELECT/DML runs
-// through the push-based STREAMING executor (execute_pipeline).
+// through the push-based STREAMING executor (pump_pipeline_).
 //
 // The index search is ONE-SHOT (the whole matched row-id set returns in a single
 // future), so the source materializes the ids ONCE and then WINDOWS the per-row-id
@@ -16,7 +16,7 @@
 //
 // WHAT THESE TESTS ASSERT:
 //   (a) PATH — an index-rooted SELECT over a matched set >> DEFAULT_VECTOR_CAPACITY
-//       (so the source emits MANY windows) routes through execute_pipeline, proven
+//       (so the source emits MANY windows) routes through pump_pipeline_, proven
 //       by streaming_pipeline_runs() bumping.
 //   (b) CORRECTNESS — the streamed index scan returns exactly the rows the
 //       materialize path produced, including point-lookups, OFFSET/LIMIT on the
@@ -70,7 +70,7 @@ TEST_CASE("integration::cpp::streaming_index_scan::indexed_select_streams_many_w
 
     // PATH + CORRECTNESS: an equality predicate on the INDEXED grp column -> index_scan
     // (role()==source). The matched set (~3000 ids) >> DEFAULT_VECTOR_CAPACITY, so the
-    // source emits MANY windows. Streams through execute_pipeline and returns exactly
+    // source emits MANY windows. Streams through pump_pipeline_ and returns exactly
     // the rows in the group.
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
     {
@@ -80,7 +80,7 @@ TEST_CASE("integration::cpp::streaming_index_scan::indexed_select_streams_many_w
         REQUIRE(cur->size() == kExpectedInGroup0);
     }
     const auto runs_after = services::collection::executor::streaming_pipeline_runs();
-    REQUIRE(runs_after > runs_before); // streamed through execute_pipeline (windowed source)
+    REQUIRE(runs_after > runs_before); // streamed through pump_pipeline_ (windowed source)
 
     // CORRECTNESS via a scalar aggregate over the same indexed predicate: COUNT equals
     // the matched-row count (exercises the empty/real-window path through a sink).

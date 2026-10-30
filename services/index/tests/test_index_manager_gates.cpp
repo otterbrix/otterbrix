@@ -515,7 +515,8 @@ TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not 
                                                             session,
                                                             compare_type::gte,
                                                             make_scalar(&resource, int64_t{10}),
-                                                            reader_txn);
+                                                            reader_txn,
+                                                            true);
         REQUIRE_FALSE(answer.has_error());
         auto rows = std::move(answer.value());
         std::vector<int64_t> out(rows.begin(), rows.end());

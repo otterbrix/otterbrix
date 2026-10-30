@@ -30,6 +30,17 @@ namespace {
         }
 
     private:
+        actor_zeta::unique_future<core::result_wrapper_t<pipeline::portal_rows_t>>
+        fetch_portal_impl(pipeline::context_t*, uint64_t, std::string, uint64_t, bool) override {
+            co_return core::error_t{core::error_code_t::unimplemented_yet,
+                                    std::pmr::string{"the stub runner holds no portal", resource_}};
+        }
+        actor_zeta::unique_future<core::error_t>
+        close_portal_impl(pipeline::context_t*, uint64_t, std::string) override {
+            co_return core::error_t{core::error_code_t::unimplemented_yet,
+                                    std::pmr::string{"the stub runner holds no portal", resource_}};
+        }
+
         std::pmr::memory_resource* resource_;
         operators::chunks_vector_t chunks_;
     };

@@ -2631,7 +2631,7 @@ typedef struct SecLabelStmt {
 * CURRENT OF. It can be passed to SPI_prepare_cursor.
 */
 #define CURSOR_OPT_UPDATABLE 0x0200         /* updateable with CURRENT OF, if possible */
-#define CURSOR_OPT_PARALLEL_RETRIEVE 0x0400 /* Cursor for parallel retrieving */
+#define CURSOR_OPT_ASENSITIVE 0x0800        /* ASENSITIVE */
 
 typedef struct DeclareCursorStmt {
     NodeTag type;

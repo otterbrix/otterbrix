@@ -88,6 +88,9 @@ namespace core {
         duplicate_prepared_statement = 95,              // PostgreSQL 42P05
         undefined_parameter = 96,                       // PostgreSQL 42P02
         windowing_error = 97,                           // PostgreSQL 42P20
+        undefined_cursor = 98,                          // PostgreSQL 34000
+        duplicate_cursor = 99,                          // PostgreSQL 42P03
+        object_in_use = 100,                            // PostgreSQL 55006
     };
 
     struct [[nodiscard]] error_t {

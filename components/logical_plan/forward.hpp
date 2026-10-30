@@ -85,6 +85,10 @@ namespace components::logical_plan {
         deallocate_t,
         // A block a backend took (storage_offer), placed after optimize: see node_remote.hpp.
         remote_t,
+        // DECLARE / FETCH and MOVE / CLOSE of a cursor: see node_cursor.hpp.
+        declare_cursor_t,
+        fetch_t,
+        close_cursor_t,
         unused
     };
 

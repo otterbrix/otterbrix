@@ -6,9 +6,9 @@
 // The streaming-executor plan claims N *sequential* cross-actor co_awaits are SAFE
 // when they live inside the executor's NESTED unique_future coroutines
 //   behavior()  ->  dispatch()  ->  outer unique_future  ->  inner unique_future
-//                                   (execute_plan*)         (execute_pipeline)
+//                                   (execute_plan*)         (pump_pipeline_)
 // and NOT inside a fresh top-level behavior() handler per await. The per-batch
-// fetch-next source does exactly this: execute_pipeline loops
+// fetch-next source does exactly this: pump_pipeline_ loops
 //      while (true) { auto b = co_await source->source_next(ctx); ... }
 // so one scan turns into MANY sequential cross-actor awaits, all driven from the
 // SAME inner coroutine frame, under ONE dispatched behavior() handler.
@@ -85,8 +85,8 @@ namespace {
     //   behavior()                              <- ONE top-level dispatch / message
     //     -> dispatch(run_query)
     //       -> run_query()        (outer #1, ~ execute_plan_full)
-    //         -> execute_plan()   (outer #2, ~ execute_plan / execute_sub_plan_)
-    //           -> execute_pipeline()  (inner, the per-batch loop)
+    //         -> execute_plan()   (outer #2, ~ execute_plan / pump_portal_)
+    //           -> pump_pipeline_()  (inner, the per-batch loop)
     //               for i in 0..N: co_await source.fetch_batch(i)   <- N sequential
     //                                                                   cross-actor awaits
     //
@@ -107,8 +107,8 @@ namespace {
             , source_raw_(source_raw)
             , batches_(batches) {}
 
-        // Innermost coroutine: the per-batch streaming loop (== execute_pipeline).
-        unique_future<std::int64_t> execute_pipeline() {
+        // Innermost coroutine: the per-batch streaming loop (== pump_pipeline_).
+        unique_future<std::int64_t> pump_pipeline_() {
             std::int64_t sum = 0;
             for (std::int64_t i = 0; i < batches_; ++i) {
                 // ONE cross-actor await per batch (== co_await source->source_next).
@@ -125,9 +125,9 @@ namespace {
             co_return sum;
         }
 
-        // outer #2 (== execute_plan / execute_sub_plan_)
+        // outer #2 (== execute_plan / pump_portal_)
         unique_future<std::int64_t> execute_plan() {
-            auto v = co_await execute_pipeline();
+            auto v = co_await pump_pipeline_();
             co_return v;
         }
 

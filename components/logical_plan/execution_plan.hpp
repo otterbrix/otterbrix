@@ -105,6 +105,10 @@ namespace components::logical_plan {
 
         bool commits_when_done{false};
 
+        // A host's window: the first answer holds at most this many rows and the rest are read with FETCH of the
+        // portal it leaves open (0: the whole result at once).
+        uint64_t fetch_window{0};
+
         // Every $n the statement names, by number. Empty for a plan whose parameters the host wrote itself.
         std::pmr::vector<external_parameter_t> external_parameters;
 

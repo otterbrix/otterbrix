@@ -1364,7 +1364,7 @@ TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history")
     // no delete at all: 1024 insert stamps visible to everyone, so the whole slot goes
     {
         chunk_vector_info info(0);
-        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
+        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit, 0);
         std::unique_ptr<chunk_info> result;
         REQUIRE(info.cleanup(kLowest, result));
         REQUIRE(result == nullptr);
@@ -1373,7 +1373,7 @@ TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history")
     // fully deleted: collapses to one constant, but it must KEEP the delete_id
     {
         chunk_vector_info info(0);
-        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
+        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit, 0);
         info.any_deleted = true;
         for (uint64_t i = 0; i < DEFAULT_VECTOR_CAPACITY; i++) {
             info.deleted[i] = kOldCommit + 1;
@@ -1390,7 +1390,7 @@ TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history")
     // deleted by TWO transactions: a constant carries only ONE stamp, so collapse is off
     {
         chunk_vector_info info(0);
-        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
+        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit, 0);
         info.any_deleted = true;
         for (uint64_t i = 0; i < DEFAULT_VECTOR_CAPACITY; i++) {
             info.deleted[i] = (i % 2 == 0) ? kOldCommit + 1 : kOldCommit + 2;
@@ -1403,7 +1403,7 @@ TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history")
     // revert_all_deletes leaves any_deleted as a conservative hint with no surviving stamp
     {
         chunk_vector_info info(0);
-        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
+        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit, 0);
         info.any_deleted = true;
         std::unique_ptr<chunk_info> result;
         REQUIRE(info.cleanup(kLowest, result));
@@ -1422,14 +1422,14 @@ TEST_CASE("components::table::mvcc::cleanup_still_reclaims_insert_only_history")
     // refusals that already held: an insert newer than the floor, a delete still pending under a live txn id
     {
         chunk_vector_info info(0);
-        info.append(0, DEFAULT_VECTOR_CAPACITY, kLowest + 1);
+        info.append(0, DEFAULT_VECTOR_CAPACITY, kLowest + 1, 0);
         std::unique_ptr<chunk_info> result;
         REQUIRE_FALSE(info.cleanup(kLowest, result));
         REQUIRE(result == nullptr);
     }
     {
         chunk_vector_info info(0);
-        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit);
+        info.append(0, DEFAULT_VECTOR_CAPACITY, kOldCommit, 0);
         info.any_deleted = true;
         info.deleted[7] = TRANSACTION_ID_START + 3;
         std::unique_ptr<chunk_info> result;

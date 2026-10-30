@@ -103,6 +103,8 @@ namespace components::operators {
 
     actor_zeta::unique_future<core::error_t> index_scan::open_index_window(pipeline::context_t* ctx) {
         const auto& key = ctx->parameters.at(key_parameter_);
+        // A portal sees its transaction's deletes as of its DECLARE: the fetch below answers which rows remain.
+        const bool hides_own_deletes = ctx->txn.sees_commands_before == 0;
         auto [_s, sf] = preferred_index_type_ == logical_plan::index_type::no_valid
                             ? actor_zeta::otterbrix::send(ctx->index_address,
                                                           &services::index::manager_index_t::search,
@@ -111,8 +113,8 @@ namespace components::operators {
                                                           index::keys_base_storage_t{{key_}},
                                                           vector::make_constant_copy(resource_, key),
                                                           compare_type_,
-                                                          ctx->txn.start_time,
                                                           ctx->txn.transaction_id,
+                                                          hides_own_deletes,
                                                           ctx->execution_context.timezone_offset)
                             : actor_zeta::otterbrix::send(ctx->index_address,
                                                           &services::index::manager_index_t::search_with_preferred_type,
@@ -122,8 +124,8 @@ namespace components::operators {
                                                           vector::make_constant_copy(resource_, key),
                                                           compare_type_,
                                                           preferred_index_type_,
-                                                          ctx->txn.start_time,
                                                           ctx->txn.transaction_id,
+                                                          hides_own_deletes,
                                                           ctx->execution_context.timezone_offset);
         auto matched = co_await std::move(sf);
         if (matched.has_error()) {

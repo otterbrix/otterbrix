@@ -606,7 +606,7 @@ TypeName *SystemTypeName(std::pmr::memory_resource* resource, char *name);
 /* ordinary key words in alphabetical order */
 %token <keyword> ABORT_P ABSOLUTE_P ACCESS ACTION ADD_P ADMIN AFTER
 	AGGREGATE ALL ALSO ALTER ALWAYS ANALYSE ANALYZE AND ANY ARRAY AS ASC
-	ASSERTION ASSIGNMENT ASYMMETRIC AT ATTRIBUTE AUTHORIZATION
+	ASENSITIVE ASSERTION ASSIGNMENT ASYMMETRIC AT ATTRIBUTE AUTHORIZATION
 
 	BACKWARD BEFORE BEGIN_P BETWEEN BIGINT BINARY BIT
 	BOOLEAN_P BOTH BY
@@ -725,7 +725,7 @@ TypeName *SystemTypeName(std::pmr::memory_resource* resource, char *name);
 
 	ORDERED OTHERS OVERCOMMIT
 
-	PARALLEL RETRIEVE
+	RETRIEVE
 
 	PARTITIONS PERCENT PERSISTENTLY PROTOCOL
 
@@ -808,6 +808,7 @@ TypeName *SystemTypeName(std::pmr::memory_resource* resource, char *name);
 			%nonassoc AGGREGATE
 			%nonassoc ALSO
 			%nonassoc ALTER
+			%nonassoc ASENSITIVE
 			%nonassoc ASSERTION
 			%nonassoc ASSIGNMENT
 			%nonassoc BACKWARD
@@ -952,7 +953,6 @@ TypeName *SystemTypeName(std::pmr::memory_resource* resource, char *name);
 			%nonassoc OVERCOMMIT
 			%nonassoc OWNED
 			%nonassoc OWNER
-			%nonassoc PARALLEL
 			%nonassoc PARTIAL
 			%nonassoc PARTITIONS
 			%nonassoc PASSWORD
@@ -12093,8 +12093,8 @@ cursor_options: /*EMPTY*/					{ $$ = 0; }
 			| cursor_options NO SCROLL		{ $$ = $1 | CURSOR_OPT_NO_SCROLL; }
 			| cursor_options SCROLL			{ $$ = $1 | CURSOR_OPT_SCROLL; }
 			| cursor_options BINARY			{ $$ = $1 | CURSOR_OPT_BINARY; }
+			| cursor_options ASENSITIVE		{ $$ = $1 | CURSOR_OPT_ASENSITIVE; }
 			| cursor_options INSENSITIVE	{ $$ = $1 | CURSOR_OPT_INSENSITIVE; }
-			| cursor_options PARALLEL RETRIEVE	{ $$ = $1 | CURSOR_OPT_PARALLEL_RETRIEVE; }
 		;
 
 opt_hold: /* EMPTY */						{ $$ = 0; }
@@ -15933,6 +15933,7 @@ unreserved_keyword:
 			| ALSO
 			| ALTER
 			| ALWAYS
+			| ASENSITIVE
 			| ASSERTION
 			| ASSIGNMENT
 			| AT
@@ -16109,7 +16110,6 @@ unreserved_keyword:
 			| OVERCOMMIT
 			| OWNED
 			| OWNER
-			| PARALLEL
 			| PARSER
 			| PARTIAL
 			| PARTITIONS
@@ -16274,6 +16274,7 @@ PartitionIdentKeyword: ABORT_P
 			| AFTER
 			| AGGREGATE
 			| ALSO
+			| ASENSITIVE
 			| ASSERTION
 			| ASSIGNMENT
 			| BACKWARD
@@ -16408,7 +16409,6 @@ PartitionIdentKeyword: ABORT_P
 			| OVERCOMMIT
 			| OWNED
 			| OWNER
-			| PARALLEL
 			| PARTIAL
 			| PARTITIONS
 			| PASSWORD

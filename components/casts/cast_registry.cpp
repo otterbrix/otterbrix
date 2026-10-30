@@ -53,7 +53,7 @@ namespace components::casts {
 
         for (const auto& existing : targets) {
             if (same_cast_type(existing.first, target)) {
-                return core::error_t{core::error_code_t::already_exists,
+                return core::error_t{core::error_code_t::duplicate_object,
                                      std::pmr::string{"cast already registered for this type pair", resource_}};
             }
         }
@@ -91,7 +91,7 @@ namespace components::casts {
         complex_target_entries_t& targets = source_iterator->second;
         for (const auto& registered : targets) {
             if (same_cast_type(registered.first, target)) {
-                return core::error_t{core::error_code_t::already_exists,
+                return core::error_t{core::error_code_t::duplicate_object,
                                      std::pmr::string{"struct cast already registered", resource_}};
             }
         }

@@ -616,7 +616,7 @@ TEST_CASE("list_revert_pin: a revert from inside an append session is refused", 
 
         auto inside = table->revert_append(3, 2);
         REQUIRE(inside.has_error());
-        CHECK(inside.error().type == core::error_code_t::invalid_parameter);
+        CHECK(inside.error().type == core::error_code_t::internal_error);
         CHECK(column_of(*table, 1).count() == 5);
 
         auto whole = table->revert_append(1, 4);

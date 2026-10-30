@@ -299,6 +299,7 @@ namespace components::sql::transform {
         }
         node_join->append_child(right);
 
+        RETURN_IF_ERROR(names.refuse_indistinguishable_elements(resource_));
         node_join->set_single_match(single_match_joins_.count(join) != 0);
         if (join->quals) {
             VALUE_OR_RETURN(auto expr, transform_predicate(join->quals, names, plan));
@@ -350,7 +351,6 @@ namespace components::sql::transform {
         if (nodeTag(from_first) == T_JoinExpr) {
             agg = logical_plan::make_node_aggregate(resource_, qualified_name_t{});
             RETURN_IF_ERROR(join_dfs(resource_, pg_ptr_cast<JoinExpr>(from_first), join, names, plan));
-            RETURN_IF_ERROR(names.refuse_indistinguishable_elements(resource_));
             agg->append_child(join);
         } else {
             logical_plan::node_join_ptr no_join;

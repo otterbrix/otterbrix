@@ -140,14 +140,14 @@ TEST_CASE("integration::cpp::decorrelation::scalar_sub_queries") {
           rows_t{{"1", "a"}, {"2", "a"}, {"3", "b"}, {"4", "null"}});
     db.check_refused(any(),
                      "SELECT d.id, (SELECT e.sal FROM e WHERE e.dept = d.id) AS s FROM d;",
-                     code::invalid_parameter,
+                     code::cardinality_violation,
                      "more than one row returned by a subquery used as an expression");
     // A departure from PostgreSQL 18 in the moment of the error: PostgreSQL computes the sub-query only for the rows
     // that reach the output and answers NULL here (the department without an id comes first and has no staff);
     // the join reads every department first, as Trino's TransformCorrelatedScalarSubquery does.
     db.check_refused(any(),
                      "SELECT d.id, (SELECT e.sal FROM e WHERE e.dept = d.id) AS s FROM d ORDER BY d.id DESC LIMIT 1;",
-                     code::invalid_parameter,
+                     code::cardinality_violation,
                      "more than one row returned by a subquery used as an expression");
     const auto lines = plan_of(db, "SELECT d.id, (SELECT count(*) FROM e WHERE e.dept = d.id) AS c FROM d;");
     CHECK(has_line(lines, "Hash Join"));

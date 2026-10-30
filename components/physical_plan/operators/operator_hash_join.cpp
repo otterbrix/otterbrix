@@ -102,7 +102,7 @@ namespace components::operators {
         }
         for (auto slot : slots) {
             if (!vector::vector_ops::is_hashable(built->slot_type(slot))) {
-                return core::error_t(core::error_code_t::schema_error,
+                return core::error_t(core::error_code_t::unimplemented_yet,
                                      std::pmr::string{"hash join: a join key type has no hash", resource_});
             }
         }
@@ -216,9 +216,9 @@ namespace components::operators {
                 const auto& build_slot = build_graph_->key_slots()[key];
                 const auto& probe_slot = probe_graph_->key_slots()[key];
                 if (build_graph_->slot_type(build_slot) != probe_graph_->slot_type(probe_slot)) {
-                    return core::error_t(core::error_code_t::schema_error,
-                                         std::pmr::string{"hash join: the two sides of a join key differ in type",
-                                                          resource_});
+                    return core::error_t(
+                        core::error_code_t::internal_error,
+                        std::pmr::string{"hash join: the two sides of a join key differ in type", resource_});
                 }
             }
         }

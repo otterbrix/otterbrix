@@ -89,5 +89,5 @@ TEST_CASE("integration::cpp::lateral_join::an_outer_column_of_another_type_than_
     std::move(fut).take_ready();
 
     REQUIRE(join->has_error());
-    CHECK(join->get_error().type == core::error_code_t::invalid_parameter);
+    CHECK(join->get_error().type == core::error_code_t::internal_error);
 }

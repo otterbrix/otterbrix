@@ -306,7 +306,7 @@ namespace otterbrix {
             return result;
         }
 
-        return core::error_t(core::error_code_t::conversion_failure,
+        return core::error_t(core::error_code_t::undefined_object,
                              std::pmr::string("Could not convert from unknown 'type' to OtterBrixPyType", resource));
     }
 
@@ -410,7 +410,7 @@ namespace otterbrix {
         }
         std::string origin_type = py::str(origin);
         return core::error_t(
-            core::error_code_t::conversion_failure,
+            core::error_code_t::undefined_object,
             std::pmr::string("Could not convert from " + origin_type + " to OtterBrixPyType", resource));
     }
 
@@ -464,7 +464,7 @@ namespace otterbrix {
             default: {
                 std::string actual_type = py::str(object.get_type());
                 return core::error_t(
-                    core::error_code_t::conversion_failure,
+                    core::error_code_t::undefined_object,
                     std::pmr::string("Could not convert from object of type " + actual_type + " to OtterBrixPyType",
                                      resource));
             }

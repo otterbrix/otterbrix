@@ -29,7 +29,7 @@ namespace services::collection {
                                      const dispatcher::validation::column_uses_t& uses);
 
     // The statement names a view or a materialized view (`expected` relkind) and the relation of that name is of
-    // another kind: PostgreSQL 18 ERRCODE_WRONG_OBJECT_TYPE, here schema_error. REFRESH (matview.c) and CREATE OR
+    // another kind: PostgreSQL 18 ERRCODE_WRONG_OBJECT_TYPE (wrong_object_type). REFRESH (matview.c) and CREATE OR
     // REPLACE VIEW (view.c) say only that.
     core::error_t wrong_relation_kind(std::pmr::memory_resource* resource, std::string_view name, char expected);
     // DROP VIEW / DROP MATERIALIZED VIEW add the hint naming the DROP for the kind `found` (tablecmds.c

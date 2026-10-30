@@ -66,7 +66,7 @@ namespace components::logical_plan {
         core::error_t refused(std::pmr::memory_resource* target, const node_t& from) {
             std::pmr::string what{"a block offered to a backend holds a node it may not hold: ", target};
             what += from.to_string();
-            return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
+            return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
 
         core::result_wrapper_t<node_ptr>

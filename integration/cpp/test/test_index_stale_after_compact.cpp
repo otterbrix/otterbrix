@@ -269,7 +269,7 @@ TEST_CASE("integration::cpp::index_stale_after_compact::the_wal_auto_checkpoint_
     }
     {
         // Loud-refusal contract: while a compacting auto-round's index rebuild is still in
-        // flight the indexed read is REFUSED (stale_index), not answered with the pre-compact
+        // flight the indexed read is REFUSED (write_conflict), not answered with the pre-compact
         // stranger id it used to return. Under this test's back-to-back auto rounds a probe can
         // land in that window, so retry the documented remedy ("retry the statement") until a
         // round has settled — then the answer must be the survivor, NEVER a stranger.

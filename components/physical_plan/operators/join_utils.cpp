@@ -20,7 +20,7 @@ namespace components::operators::join_detail {
 
     core::error_t more_than_one_row(std::pmr::memory_resource* resource) {
         return core::error_t{
-            core::error_code_t::invalid_parameter,
+            core::error_code_t::cardinality_violation,
             std::pmr::string{"more than one row returned by a subquery used as an expression", resource}};
     }
 

@@ -96,7 +96,7 @@ namespace components::expressions {
             // that side; right_offset_ places it in the merged chunk the caller feeds.
             const size_t column = key.side() == side_t::right ? right_offset_ + path.front() : path.front();
             if (column >= input_types_.size()) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"execution graph builder: column ordinal " +
                                                           std::to_string(column) + " is outside the input of " +
                                                           std::to_string(input_types_.size()) + " columns",
@@ -126,7 +126,7 @@ namespace components::expressions {
             auto field_type = nested_type(input_types_[column], path, 1);
             if (!field_type.has_value()) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph builder: nested path does not match the column type",
                                      resource()});
             }
@@ -149,7 +149,7 @@ namespace components::expressions {
             }
             const auto& nested = as_expr(param);
             if (!nested) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"execution graph builder: sub-expression is empty", resource()});
             }
 
@@ -161,7 +161,7 @@ namespace components::expressions {
             const bool is_coalesce = expression->type() == scalar_type::coalesce;
             if (!is_stamped(expression->result_type())) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph builder: blend was not stamped by validation", resource()});
             }
             if (!is_coalesce) {
@@ -246,18 +246,18 @@ namespace components::expressions {
             const auto* function = expression->function();
             if (function == nullptr) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph builder: match was not resolved by validation", resource()});
             }
             const auto flags_id = expression->regex_flags_param();
             if (!flags_id.has_value()) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph builder: match carries no flags parameter", resource()});
             }
             if (parameters_.type(*flags_id).type() != logical_type::UTINYINT) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph builder: a match mode is a UTINYINT parameter", resource()});
             }
             auto flags_node = graph_->add_parameter(*flags_id);
@@ -296,12 +296,12 @@ namespace components::expressions {
             const auto flags_id = expression->regex_flags_param();
             if (!flags_id.has_value()) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph builder: match carries no flags parameter", resource()});
             }
             if (parameters_.type(*flags_id).type() != logical_type::UTINYINT) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph builder: a match mode is a UTINYINT parameter", resource()});
             }
             auto flags_node = graph_->add_parameter(*flags_id);
@@ -333,7 +333,7 @@ namespace components::expressions {
             }
             if (expression->is_union()) {
                 if (expression->children().empty()) {
-                    return core::error_t(core::error_code_t::invalid_parameter,
+                    return core::error_t(core::error_code_t::internal_error,
                                          std::pmr::string{"execution graph builder: " + to_string(expression->type()) +
                                                               " has no operands",
                                                           resource()});
@@ -378,7 +378,7 @@ namespace components::expressions {
                                           left_is_na ? right_type : left_type);
                 } else if (left_type != right_type) {
                     return core::error_t(
-                        core::error_code_t::invalid_parameter,
+                        core::error_code_t::internal_error,
                         std::pmr::string{"execution graph builder: comparison operands were not unified", resource()});
                 }
                 node = graph_->add_operator(code, left.value(), right.value());
@@ -393,12 +393,12 @@ namespace components::expressions {
             const auto* function = expression->function();
             if (function == nullptr) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph builder: aggregate was not resolved by validation", resource()});
             }
             if (!is_stamped(expression->result_type())) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph builder: aggregate was not stamped by validation", resource()});
             }
             execution_dag::slot_list_t inputs(resource());
@@ -419,12 +419,12 @@ namespace components::expressions {
             const auto* function = expression->function();
             if (function == nullptr) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph builder: function was not resolved by validation", resource()});
             }
             if (!is_stamped(expression->result_type())) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph builder: function was not stamped by validation", resource()});
             }
             execution_dag::slot_list_t inputs(resource());
@@ -457,11 +457,11 @@ namespace components::expressions {
             const size_t arity = operators::arity_of(code) == operators::operator_arity::binary ? 2 : 1;
             if (expression->params().size() != arity) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"execution graph builder: operand count does not match the operator", resource()});
             }
             if (!is_stamped(expression->result_type())) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"execution graph builder: operator was not stamped by "
                                                       "validation: " +
                                                           expression->to_string(),
@@ -507,7 +507,7 @@ namespace components::expressions {
                 case scalar_type::constant: {
                     if (expression->params().empty()) {
                         return core::error_t(
-                            core::error_code_t::invalid_parameter,
+                            core::error_code_t::internal_error,
                             std::pmr::string{"execution graph builder: constant carries no parameter", resource()});
                     }
                     auto slot = slot_of(expression->params().front());
@@ -546,7 +546,7 @@ namespace components::expressions {
         if (graph == nullptr || expression == nullptr) {
             // graph may be null here, so the resource comes from input_types instead.
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string{"execution graph builder: nothing to build", input_types.get_allocator().resource()});
         }
         builder_t builder(graph, parameters, input_types, right_offset);
@@ -641,7 +641,7 @@ namespace components::expressions {
                 auto field_type = nested_type(input_types[column], path, 1);
                 if (!field_type.has_value()) {
                     return core::error_t(
-                        core::error_code_t::invalid_parameter,
+                        core::error_code_t::internal_error,
                         std::pmr::string{"execution graph builder: update target path does not match the column type",
                                          resource});
                 }

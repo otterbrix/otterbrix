@@ -217,7 +217,7 @@ TEST_CASE("integration::cpp::extension_source::a_page_of_other_columns_errors_no
         INFO(sql);
         auto cursor = execute_within_deadline(space, sql);
         REQUIRE(cursor->is_error());
-        CHECK(cursor->get_error().type == core::error_code_t::invalid_parameter);
+        CHECK(cursor->get_error().type == core::error_code_t::protocol_violation);
         CHECK(std::string{cursor->get_error().what} ==
               "the storage of table \"ext.remote.public.t1\" answered a page of other columns");
     }
@@ -330,7 +330,7 @@ TEST_CASE("integration::cpp::extension_source::chunk_over_vector_capacity") {
         INFO(query);
         REQUIRE(cursor);
         REQUIRE_FALSE(cursor->is_success());
-        CHECK(cursor->get_error().type == core::error_code_t::invalid_parameter);
+        CHECK(cursor->get_error().type == core::error_code_t::protocol_violation);
         CHECK(std::string{cursor->get_error().what}.find(std::to_string(vector::DEFAULT_VECTOR_CAPACITY)) !=
               std::string::npos);
     };

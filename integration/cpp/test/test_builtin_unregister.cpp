@@ -68,7 +68,7 @@ TEST_CASE("integration::cpp::builtin_unregister::an_unregister_of_a_builtin_is_r
     auto refused = d->unregister_udf(otterbrix::session_id_t(), "abs", {components::types::logical_type::BIGINT});
     INFO("unregister of abs: " << refused.what.c_str());
     REQUIRE(refused.contains_error());
-    CHECK(refused.type == core::error_code_t::invalid_parameter);
+    CHECK(refused.type == core::error_code_t::dependent_objects_still_exist);
 
     for (std::size_t i = 0; i < 2 * config.execution.executor_pool_size; ++i) {
         auto cur = exec(d, "SELECT abs(id) FROM bdb.t WHERE id < 3;");

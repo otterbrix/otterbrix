@@ -193,7 +193,7 @@ TEST_CASE("components::sql::extension_duplicate_rejected") {
 
     auto duplicate = registry.add(make_demo_extension());
     REQUIRE(duplicate.has_error());
-    CHECK(duplicate.error().type == core::error_code_t::already_exists);
+    CHECK(duplicate.error().type == core::error_code_t::duplicate_object);
 }
 
 TEST_CASE("components::sql::two_extensions_route_by_keyword") {

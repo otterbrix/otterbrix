@@ -138,7 +138,7 @@ namespace services::index {
         trace(log_, "bitcask_index_agent_t::clear, session: {}", session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"bitcask_index_agent_t::clear: the index has been dropped", resource()}};
         }
         auto clear_error = store_.clear();
@@ -159,7 +159,7 @@ namespace services::index {
         // A dropped agent keeps a live address, so a stale message can still arrive here.
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"bitcask_index_agent_t::stage_inserts: the index has been dropped", resource()}};
         }
         append_key_batch(&pending_inserts_.try_emplace(txn_id, resource()).first->second, values, resource());
@@ -175,7 +175,7 @@ namespace services::index {
               session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"bitcask_index_agent_t::stage_deletes: the index has been dropped", resource()}};
         }
         append_key_batch(&pending_deletes_.try_emplace(txn_id, resource()).first->second, values, resource());
@@ -215,7 +215,7 @@ namespace services::index {
               session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"bitcask_index_agent_t::commit_inserts: the index has been dropped", resource()}};
         }
         if (txn_id != 0) {
@@ -256,7 +256,7 @@ namespace services::index {
               session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"bitcask_index_agent_t::commit_deletes: the index has been dropped", resource()}};
         }
         if (txn_id != 0) {
@@ -283,7 +283,7 @@ namespace services::index {
         trace(log_, "bitcask_index_agent_t::revert_inserts, txn_id: {}, session: {}", txn_id, session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"bitcask_index_agent_t::revert_inserts: the index has been dropped", resource()}};
         }
         // No write-through before commit, so the abort is a bucket erase and touches no store.
@@ -296,7 +296,7 @@ namespace services::index {
         trace(log_, "bitcask_index_agent_t::revert_deletes, txn_id: {}, session: {}", txn_id, session.data());
         if (is_dropped_) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"bitcask_index_agent_t::revert_deletes: the index has been dropped", resource()}};
         }
         pending_deletes_.erase(txn_id);
@@ -312,7 +312,7 @@ namespace services::index {
         if (is_dropped_) {
             // A dropped agent still has a live address, so a read in flight can arrive here.
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"bitcask_index_agent_t::read_rows: the index has been dropped", resource()}};
         }
 

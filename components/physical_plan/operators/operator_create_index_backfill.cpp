@@ -44,7 +44,7 @@ namespace components::operators {
 
     actor_zeta::unique_future<void> operator_create_index_backfill_t::await_async_and_resume(pipeline::context_t* ctx) {
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {
-            set_error(core::error_t{core::error_code_t::index_create_fail,
+            set_error(core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"CREATE INDEX: no index manager is wired to this executor; "
                                                      "the index was not created",
                                                      resource()}});

@@ -133,7 +133,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::aggregate_over_an_unresol
 
     INFO("a table that never resolved must refuse, not scan a synthetic row");
     REQUIRE(plan.has_error());
-    CHECK(plan.error().type == core::error_code_t::create_physical_plan_error);
+    CHECK(plan.error().type == core::error_code_t::internal_error);
     CHECK(refusal(plan) == "relation \"edb.ghost\" has no resolved table in this plan");
 }
 
@@ -244,7 +244,7 @@ TEST_CASE("physical_plan_generator::unresolved_source::update_over_an_unresolved
 
     INFO("an UPDATE whose target never resolved must refuse, same as DELETE");
     REQUIRE(plan.has_error());
-    CHECK(plan.error().type == core::error_code_t::create_physical_plan_error);
+    CHECK(plan.error().type == core::error_code_t::internal_error);
 }
 
 // A write to a table the plan holds no metadata of has no storage to go to: the plan is refused, so no row reaches
@@ -263,6 +263,6 @@ TEST_CASE("physical_plan_generator::unresolved_source::a_write_without_table_met
     auto plan = services::planner::create_plan(h.context, h.registry, insert, lp::limit_t::all(), nullptr);
 
     REQUIRE(plan.has_error());
-    CHECK(plan.error().type == core::error_code_t::missing_table);
+    CHECK(plan.error().type == core::error_code_t::internal_error);
     CHECK(refusal(plan) == "no table metadata for oid 16400");
 }

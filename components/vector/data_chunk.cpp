@@ -3,7 +3,6 @@
 #include "vector_operations.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <stdexcept>
 #include <utility>
 
@@ -233,76 +232,6 @@ namespace components::vector {
         return types;
     }
 
-    core::result_wrapper_t<size_t> data_chunk_t::column_index(std::string_view key) const {
-        for (uint64_t i = 0; i < column_count(); i++) {
-            if (data[i].type().alias() == key) {
-                return static_cast<size_t>(i);
-            }
-        }
-        // Unknown name is user input, not an invariant — return an error, not a SIZE_MAX sentinel
-        // that indexes out of bounds under NDEBUG.
-        std::pmr::string message{resource_};
-        message.append("data_chunk_t::column_index: no column named \"");
-        message.append(key);
-        message.append("\"");
-        return core::error_t{core::error_code_t::field_not_exists, std::move(message)};
-    }
-
-    core::result_wrapper_t<std::pmr::vector<size_t>>
-    data_chunk_t::sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const {
-        auto missing = [&](std::string_view segment) {
-            std::pmr::string message{resource_};
-            message.append("data_chunk_t::sub_column_indices: no column or field named \"");
-            message.append(segment);
-            message.append("\"");
-            return core::error_t{core::error_code_t::field_not_exists, std::move(message)};
-        };
-        if (path.empty()) {
-            std::pmr::string message{"data_chunk_t::sub_column_indices: empty path", resource_};
-            return core::error_t{core::error_code_t::field_not_exists, std::move(message)};
-        }
-        std::pmr::vector<size_t> res(resource_);
-        for (uint64_t i = 0; i < column_count(); i++) {
-            if (core::pmr::operator==(data[i].type().alias(), path.front())) {
-                res.emplace_back(i);
-                break;
-            }
-        }
-        if (res.empty()) {
-            return missing(path.front());
-        }
-        const vector_t* sub_column = &data[res.front()];
-        for (auto it = std::next(path.begin()); it != path.end(); ++it) {
-            bool field_found = false;
-            if (sub_column->type().type() == types::logical_type::ARRAY) {
-                size_t index{};
-                auto [p, ec] = std::from_chars(it->data(), it->data() + it->size(), index);
-                if (ec == std::errc{} &&
-                    index < static_cast<const types::array_logical_type_extension*>(sub_column->type().extension())
-                                ->size()) {
-                    res.emplace_back(index);
-                    sub_column = &sub_column->entry();
-                    field_found = true;
-                }
-            } else {
-                for (uint64_t i = 0; i < sub_column->type().child_types().size(); i++) {
-                    if (core::pmr::operator==(sub_column->type().child_types()[i].alias(), *it)) {
-                        res.emplace_back(i);
-                        if (std::next(it) != path.end()) {
-                            sub_column = sub_column->entries()[i].get();
-                        }
-                        field_found = true;
-                        break;
-                    }
-                }
-            }
-            if (!field_found) {
-                return missing(*it);
-            }
-        }
-        return res;
-    }
-
     std::pmr::memory_resource* data_chunk_t::resource() const { return resource_; }
 
     void data_chunk_t::slice(const indexing_vector_t& indexing_vector, uint64_t count) {
@@ -444,7 +373,7 @@ namespace components::vector {
         if (total_rows == 0 || cols == 0) {
             return make_null(resource, result_type);
         }
-        return core::error_t(core::error_code_t::conversion_failure,
+        return core::error_t(core::error_code_t::cardinality_violation,
                              std::pmr::string{"could not convert data_chunk_t to a single value", resource});
     }
 
@@ -461,14 +390,14 @@ namespace components::vector {
                 continue;
             }
             if (c.column_count() != 1) {
-                return core::error_t(core::error_code_t::conversion_failure,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"could not convert data_chunk_t to a list value", resource});
             }
             if (typed == nullptr) {
                 typed = &c;
             } else if (c.data[0].type() != typed->data[0].type()) {
                 return core::error_t(
-                    core::error_code_t::conversion_failure,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"could not convert data_chunk_t to a list value: the column changes its type "
                                      "between chunks",
                                      resource});

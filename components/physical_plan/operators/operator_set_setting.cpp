@@ -49,7 +49,7 @@ namespace components::operators {
 
         if (scope_ == catalog::setting_scope_t::system) {
             if (ctx->disk_address == actor_zeta::address_t::empty_address()) {
-                set_error(core::error_t{core::error_code_t::physical_plan_error,
+                set_error(core::error_t{core::error_code_t::internal_error,
                                         std::pmr::string{"ALTER SYSTEM: no disk actor is wired, so pg_settings "
                                                          "cannot be written",
                                                          this->resource()}});
@@ -59,7 +59,7 @@ namespace components::operators {
             const auto* settings_def =
                 components::catalog::find_system_table(components::catalog::well_known_oid::pg_settings_table);
             if (settings_def == nullptr) {
-                set_error(core::error_t{core::error_code_t::physical_plan_error,
+                set_error(core::error_t{core::error_code_t::internal_error,
                                         std::pmr::string{"ALTER SYSTEM: the pg_settings schema is missing from the "
                                                          "system-table registry",
                                                          this->resource()}});

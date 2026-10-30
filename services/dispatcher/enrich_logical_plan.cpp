@@ -129,7 +129,7 @@ namespace services::dispatcher { namespace {
             auto parsed = local.parse_where_expr(text, *params);
             if (parsed.has_error()) {
                 return core::error_t{
-                    core::error_code_t::invalid_constraint,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"stored CHECK constraint \"" + name + "\" no longer parses: " + text, resource}};
             }
             predicates->emplace_back(name, std::move(parsed.value().expr));
@@ -253,7 +253,7 @@ namespace services::dispatcher { namespace {
         auto* source = node->children().empty() ? nullptr : node->children().front().get();
         if (node->column_bindings().empty() || source == nullptr ||
             source->type() != components::logical_plan::node_type::data_t) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"INSERT: VALUES cells of differing types cannot be resolved "
                                                   "against the target columns",
                                                   resource});
@@ -270,7 +270,7 @@ namespace services::dispatcher { namespace {
         for (const auto& cell : cells) {
             if (cell.row >= total_rows || cell.column >= node->column_bindings().size()) {
                 return core::error_t(
-                    core::error_code_t::schema_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"INSERT: a deferred VALUES cell points outside the VALUES list", resource});
             }
             auto found = by_column.find(cell.column);
@@ -295,7 +295,7 @@ namespace services::dispatcher { namespace {
                 const auto& stored = chunk.data[column];
                 const uint64_t count = chunk.size();
                 if (stored.type() != first_chunk_type) {
-                    return core::error_t(core::error_code_t::schema_error,
+                    return core::error_t(core::error_code_t::internal_error,
                                          std::pmr::string{"INSERT: a VALUES column of differing types spans several "
                                                           "chunks",
                                                           resource});
@@ -854,7 +854,7 @@ namespace services::dispatcher { namespace {
             msg += ": table \"";
             msg += node->target().collection.t;
             msg += "\" carries no resolved metadata";
-            return core::error_t(core::error_code_t::invalid_constraint, std::pmr::string{std::move(msg), resource});
+            return core::error_t(core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource});
         }
 
         // Every declared column name must resolve — a miss refuses, since conkey is read positionally from here on.
@@ -876,8 +876,7 @@ namespace services::dispatcher { namespace {
                 msg += "\" does not exist in table \"";
                 msg.append(local->name);
                 msg += "\"";
-                return core::error_t(core::error_code_t::invalid_constraint,
-                                     std::pmr::string{std::move(msg), resource});
+                return core::error_t(core::error_code_t::undefined_column, std::pmr::string{std::move(msg), resource});
             }
         }
         if (local->attoids_minted) {
@@ -893,18 +892,18 @@ namespace services::dispatcher { namespace {
             msg += ": referenced relation \"";
             msg += node->ref().to_string();
             msg += "\" does not exist";
-            return core::error_t(core::error_code_t::invalid_constraint, std::pmr::string{std::move(msg), resource});
+            return core::error_t(core::error_code_t::table_not_exists, std::pmr::string{std::move(msg), resource});
         }
         if (node->ref_col_names().empty()) {
             if (referenced->pk_columns.empty()) {
-                return core::error_t(core::error_code_t::invalid_constraint,
+                return core::error_t(core::error_code_t::undefined_object,
                                      std::pmr::string{describe_constraint() +
                                                           ": there is no primary key for referenced table \"" +
                                                           std::string(referenced->name) + "\"",
                                                       resource});
             }
             if (node->local_col_names().size() != referenced->pk_columns.size()) {
-                return core::error_t(core::error_code_t::invalid_constraint,
+                return core::error_t(core::error_code_t::invalid_foreign_key,
                                      std::pmr::string{describe_constraint() + ": foreign key column count mismatch — " +
                                                           std::to_string(node->local_col_names().size()) +
                                                           " referencing column(s) vs " +
@@ -918,7 +917,7 @@ namespace services::dispatcher { namespace {
         // Both lists written and disagreeing: without this, every INSERT/DELETE on the pair is refused at DML time.
         if (node->local_col_names().size() != node->ref_col_names().size()) {
             return core::error_t(
-                core::error_code_t::invalid_constraint,
+                core::error_code_t::invalid_foreign_key,
                 std::pmr::string{describe_constraint() + ": foreign key column count mismatch — " +
                                      std::to_string(node->local_col_names().size()) + " referencing column(s) vs " +
                                      std::to_string(node->ref_col_names().size()) +
@@ -943,8 +942,7 @@ namespace services::dispatcher { namespace {
                 msg += "\" does not exist in referenced table \"";
                 msg.append(referenced->name);
                 msg += "\"";
-                return core::error_t(core::error_code_t::invalid_constraint,
-                                     std::pmr::string{std::move(msg), resource});
+                return core::error_t(core::error_code_t::undefined_column, std::pmr::string{std::move(msg), resource});
             }
         }
         if (referenced->attoids_minted) {
@@ -1047,7 +1045,7 @@ namespace services::dispatcher { namespace {
                 }
                 if (node->column_definitions().empty()) {
                     co_return core::error_t(
-                        core::error_code_t::schema_error,
+                        core::error_code_t::unimplemented_yet,
                         std::pmr::string{"constraints are not supported on dynamic-schema (relkind='g') tables: "
                                          "CREATE TABLE declared a constraint but no columns. Constraint "
                                          "enforcement requires stable column attoids.",
@@ -1087,7 +1085,7 @@ namespace services::dispatcher { namespace {
                             if (rrt) {
                                 if (rrt->relkind == 'g') {
                                     co_return core::error_t(
-                                        core::error_code_t::schema_error,
+                                        core::error_code_t::unimplemented_yet,
                                         std::pmr::string{
                                             "Foreign key constraints are not supported when the referencing or "
                                             "referenced table is dynamic-schema (relkind='g'). FK enforcement "

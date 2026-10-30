@@ -1317,7 +1317,7 @@ namespace components::table {
         if (scan_type == scan_vector_type::SCAN_ENTIRE_VECTOR) {
             if (result_offset != 0) {
                 state.scan_error =
-                    core::error_t(core::error_code_t::invalid_parameter,
+                    core::error_t(core::error_code_t::internal_error,
                                   std::pmr::string("column scan: an entire-vector scan cannot honour a result "
                                                    "offset",
                                                    block->buffer_manager.resource()));

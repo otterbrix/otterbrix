@@ -24,7 +24,7 @@ namespace services::planner {
     core::error_t unresolved_table_refusal(std::pmr::memory_resource* resource, const qualified_name_t& name);
 
     // Where the rows of `table_oid` live: its resolved storage, the disk for a system catalog table; a table the plan
-    // holds no metadata of is refused (missing_table).
+    // holds no metadata of is refused (internal_error).
     core::result_wrapper_t<components::table::storage_address_t>
     storage_address_of(const context_storage_t& context, components::catalog::oid_t table_oid);
     // connection.database.schema.table of a resolved table, as EXPLAIN names a table of a connection.

@@ -52,7 +52,7 @@ namespace {
         assert(inputs.size() == 1 && "expand kernel is invoked per input row");
         const size_t arg_count = inputs.column_count();
         if (arg_count < 2 || arg_count > 3) {
-            return core::error_t(core::error_code_t::kernel_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"generate_series expects 2 or 3 arguments", resource});
         }
 
@@ -66,7 +66,7 @@ namespace {
         const int64_t stop = coerce_int(inputs.data[1], 0);
         const int64_t step = arg_count == 3 ? coerce_int(inputs.data[2], 0) : 1;
         if (step == 0) {
-            return core::error_t(core::error_code_t::kernel_error,
+            return core::error_t(core::error_code_t::invalid_parameter,
                                  std::pmr::string{"generate_series: step must not be zero", resource});
         }
 

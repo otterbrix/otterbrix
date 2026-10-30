@@ -39,7 +39,7 @@ TEST_CASE("integration::cpp::not_null::every_write_of_a_null_is_refused_by_the_s
                                    "INSERT INTO s.t (v) VALUES (3);",
                                    "INSERT INTO s.t (id, v) SELECT id, v FROM s.src;",
                                    "UPDATE s.t SET id = NULL WHERE v = 10;"}) {
-        db.check_refused(any(), sql, code::invalid_constraint, null_in("id", "t"));
+        db.check_refused(any(), sql, code::not_null_violation, null_in("id", "t"));
     }
     CHECK(db.ints(any(), "SELECT id FROM s.t;") == ints{1});
 }
@@ -49,19 +49,19 @@ TEST_CASE("integration::cpp::not_null::a_primary_key_column_is_not_null") {
     db.ok(any(), "CREATE SCHEMA s;");
     db.ok(any(), "CREATE TABLE s.p (id BIGINT PRIMARY KEY, v BIGINT);");
     CHECK(not_null_columns(db, "p") == strings{"id"});
-    db.check_refused(any(), "INSERT INTO s.p (id, v) VALUES (NULL, 1);", code::invalid_constraint, null_in("id", "p"));
-    db.check_refused(any(), "INSERT INTO s.p (v) VALUES (1);", code::invalid_constraint, null_in("id", "p"));
+    db.check_refused(any(), "INSERT INTO s.p (id, v) VALUES (NULL, 1);", code::not_null_violation, null_in("id", "p"));
+    db.check_refused(any(), "INSERT INTO s.p (v) VALUES (1);", code::not_null_violation, null_in("id", "p"));
 
     db.ok(any(), "CREATE TABLE s.q (id BIGINT, v BIGINT);");
     db.ok(any(), "INSERT INTO s.q (id, v) VALUES (1, 1);");
     db.ok(any(), "ALTER TABLE s.q ADD CONSTRAINT q_pk PRIMARY KEY (id);");
     CHECK(not_null_columns(db, "q") == strings{"id"});
-    db.check_refused(any(), "INSERT INTO s.q (id, v) VALUES (NULL, 2);", code::invalid_constraint, null_in("id", "q"));
-    db.check_refused(any(), "UPDATE s.q SET id = NULL;", code::invalid_constraint, null_in("id", "q"));
+    db.check_refused(any(), "INSERT INTO s.q (id, v) VALUES (NULL, 2);", code::not_null_violation, null_in("id", "q"));
+    db.check_refused(any(), "UPDATE s.q SET id = NULL;", code::not_null_violation, null_in("id", "q"));
 
     db.restart();
     CHECK(not_null_columns(db, "q") == strings{"id"});
-    db.check_refused(any(), "INSERT INTO s.q (id, v) VALUES (NULL, 3);", code::invalid_constraint, null_in("id", "q"));
+    db.check_refused(any(), "INSERT INTO s.q (id, v) VALUES (NULL, 3);", code::not_null_violation, null_in("id", "q"));
 }
 
 // PostgreSQL 18 refuses a PRIMARY KEY over a column that holds a NULL, and a ROLLBACK takes the NOT NULL back.
@@ -72,7 +72,7 @@ TEST_CASE("integration::cpp::not_null::a_primary_key_over_a_null_and_its_rollbac
     db.ok(any(), "INSERT INTO s.r (id, v) VALUES (NULL, 1);");
     db.check_refused(any(),
                      "ALTER TABLE s.r ADD CONSTRAINT r_pk PRIMARY KEY (id);",
-                     code::invalid_constraint,
+                     code::not_null_violation,
                      "column \"id\" of relation \"r\" contains null values");
     CHECK(not_null_columns(db, "r").empty());
 
@@ -82,7 +82,7 @@ TEST_CASE("integration::cpp::not_null::a_primary_key_over_a_null_and_its_rollbac
     db.ok(session, "ALTER TABLE s.r ADD CONSTRAINT r_pk PRIMARY KEY (id);");
     db.check_refused(session,
                      "INSERT INTO s.r (id, v) VALUES (NULL, 2);",
-                     code::invalid_constraint,
+                     code::not_null_violation,
                      null_in("id", "r"));
     db.ok(session, "ROLLBACK;");
     CHECK(not_null_columns(db, "r").empty());
@@ -116,7 +116,7 @@ TEST_CASE("integration::cpp::not_null::the_storage_learns_not_null_from_the_cata
         INFO(sql);
         auto refused = test_helpers::exec(d, sql);
         REQUIRE(refused->is_error());
-        CHECK(refused->get_error().type == code::invalid_constraint);
+        CHECK(refused->get_error().type == code::not_null_violation);
         // The relation's name a reload of a never-checkpointed file has is "temp" (an old bug, reported apart).
         CHECK(std::string{refused->get_error().what}.rfind("null value in column \"id\" of relation ", 0) == 0);
     }
@@ -142,7 +142,7 @@ TEST_CASE("integration::cpp::not_null::a_refused_write_of_several_chunks_leaves_
     db.ok(session, "SAVEPOINT a;");
     db.check_refused(session,
                      "INSERT INTO s.t (id, v) SELECT id, v FROM s.src;",
-                     code::invalid_constraint,
+                     code::not_null_violation,
                      null_in("id", "t"));
     db.ok(session, "ROLLBACK TO SAVEPOINT a;");
     CHECK(db.ints(session, "SELECT count(*) FROM s.t;") == ints{0});
@@ -153,7 +153,7 @@ TEST_CASE("integration::cpp::not_null::a_refused_write_of_several_chunks_leaves_
     db.ok(session, "SAVEPOINT a;");
     db.check_refused(session,
                      "UPDATE s.t SET id = CASE WHEN v = " + std::to_string(rows) + " THEN NULL ELSE id + 1 END;",
-                     code::invalid_constraint,
+                     code::not_null_violation,
                      null_in("id", "t"));
     db.ok(session, "ROLLBACK TO SAVEPOINT a;");
     CHECK(db.ints(session, "SELECT count(*) FROM s.t;") == ints{rows});

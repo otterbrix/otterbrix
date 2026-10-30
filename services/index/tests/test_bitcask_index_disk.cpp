@@ -1059,7 +1059,7 @@ TEST_CASE("services::index::bitcask_index_disk::recovery_crc_mismatch_does_not_d
                                    bitcask_index_disk_t::deferred_open_t{});
         auto open_error = index.open();
         REQUIRE(open_error.contains_error());
-        REQUIRE(open_error.type == core::error_code_t::index_create_fail);
+        REQUIRE(open_error.type == core::error_code_t::data_corruption);
     }
 
     const auto intact_after_failed_recovery = read_file_bytes(intact_segment);
@@ -1100,7 +1100,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_directory_under_an_unsearchabl
 
     INFO("open_error: " << open_error.what.c_str());
     REQUIRE(open_error.contains_error());
-    CHECK(open_error.type == core::error_code_t::index_create_fail);
+    CHECK(open_error.type == core::error_code_t::io_error);
     CHECK(message_mentions(open_error, path.string()));
 }
 
@@ -1137,7 +1137,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unreadable_current_refuses_an
                                    bitcask_index_disk_t::deferred_open_t{});
         const auto open_error = index.open();
         REQUIRE(open_error.contains_error());
-        REQUIRE(open_error.type == core::error_code_t::index_create_fail);
+        REQUIRE(open_error.type == core::error_code_t::data_corruption);
         REQUIRE(message_mentions(open_error, "does not hold a segment id"));
     }
 
@@ -1972,7 +1972,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unopenable_txn_log_refuses_th
                                    bitcask_index_disk_t::deferred_open_t{});
         const auto open_error = index.open();
         REQUIRE(open_error.contains_error());
-        REQUIRE(open_error.type == core::error_code_t::index_create_fail);
+        REQUIRE(open_error.type == core::error_code_t::io_error);
     }
 
     {
@@ -2061,7 +2061,7 @@ TEST_CASE("services::index::bitcask_index_disk::an_unopenable_segment_refuses_th
                                    bitcask_index_disk_t::deferred_open_t{});
         const auto open_error = index.open();
         REQUIRE(open_error.contains_error());
-        REQUIRE(open_error.type == core::error_code_t::index_create_fail);
+        REQUIRE(open_error.type == core::error_code_t::io_error);
     }
 
     {
@@ -2385,7 +2385,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_refused_keydir_reset_is_a_valu
                                    bitcask_index_disk_t::deferred_open_t{});
         const auto open_error = index.open();
         REQUIRE(open_error.contains_error());
-        REQUIRE(open_error.type == core::error_code_t::index_create_fail);
+        REQUIRE(open_error.type == core::error_code_t::io_error);
     }
 
     {
@@ -2445,7 +2445,7 @@ TEST_CASE("services::index::bitcask_index_disk::opening_over_a_read_only_directo
         const auto open_error = index.open();
         INFO("reaching this line at all is half the assertion: the predecessor of this path aborted");
         REQUIRE(open_error.contains_error());
-        REQUIRE(open_error.type == core::error_code_t::index_create_fail);
+        REQUIRE(open_error.type == core::error_code_t::io_error);
     }
 
     {
@@ -2494,7 +2494,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_wipe_that_left_the_keydir_behi
                                    bitcask_index_disk_t::deferred_open_t{});
         const auto open_error = index.open();
         REQUIRE(open_error.contains_error());
-        REQUIRE(open_error.type == core::error_code_t::index_create_fail);
+        REQUIRE(open_error.type == core::error_code_t::io_error);
         INFO("the message has to name the postcondition, not some later symptom of it");
         REQUIRE(message_mentions(open_error, "survived the wipe"));
     }
@@ -2652,7 +2652,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_clear_whose_wipe_refused_stays
         env_var_guard_t armed("OTTERBRIX_DISK_HASH_RESET_FAILPOINT", "1");
         const auto clear_error = index.clear();
         REQUIRE(clear_error.contains_error());
-        REQUIRE(clear_error.type == core::error_code_t::index_create_fail);
+        REQUIRE(clear_error.type == core::error_code_t::io_error);
 
         INFO("a read after a refused rebuild must refuse, not answer with an empty row set");
         auto found = find(index, make_scalar(&resource, int64_t(5150)));
@@ -2847,7 +2847,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_merge_manifest_that_will_not_p
                                    bitcask_index_disk_t::deferred_open_t{});
         const auto open_error = index.open();
         REQUIRE(open_error.contains_error());
-        CHECK(open_error.type == core::error_code_t::index_create_fail);
+        CHECK(open_error.type == core::error_code_t::data_corruption);
     }
 
     REQUIRE(std::filesystem::remove(manifest));
@@ -2931,7 +2931,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_source_the_merge_cleanup_canno
                                    bitcask_index_disk_t::deferred_open_t{});
         const auto open_error = index.open();
         REQUIRE(open_error.contains_error());
-        CHECK(open_error.type == core::error_code_t::index_create_fail);
+        CHECK(open_error.type == core::error_code_t::io_error);
     }
     REQUIRE(std::filesystem::exists(manifest));
 
@@ -2977,7 +2977,7 @@ TEST_CASE("services::index::bitcask_index_disk::a_merge_manifest_count_is_bounde
                                    bitcask_index_disk_t::deferred_open_t{});
         const auto open_error = index.open();
         REQUIRE(open_error.contains_error());
-        REQUIRE(open_error.type == core::error_code_t::index_create_fail);
+        REQUIRE(open_error.type == core::error_code_t::data_corruption);
         REQUIRE(message_mentions(open_error, "could not be read as a manifest"));
     }
 

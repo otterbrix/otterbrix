@@ -40,7 +40,7 @@ namespace components::casts::kernels {
                 std::pmr::string message{"invalid input value for enum: '", result->resource()};
                 message.append(label.data(), label.size());
                 message += "'";
-                return core::error_t(core::error_code_t::conversion_failure, std::move(message));
+                return core::error_t(core::error_code_t::invalid_text_representation, std::move(message));
             }
             result->set_null(row, false);
             result->set_value(row, value);

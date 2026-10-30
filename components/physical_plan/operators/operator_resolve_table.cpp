@@ -302,7 +302,7 @@ namespace components::operators {
                         msg += " this build reads — the columns of table \"";
                         msg += entry.relname;
                         msg += "\" cannot be decoded";
-                        set_error(core::error_t{core::error_code_t::schema_error,
+                        set_error(core::error_t{core::error_code_t::internal_error,
                                                 std::pmr::string{std::move(msg), resource_}});
                         co_return;
                     }
@@ -411,7 +411,7 @@ namespace components::operators {
                         msg += " storage columns of that name ";
                         msg += how;
                         msg += " — picking one by storage order would misread its data";
-                        set_error(core::error_t{core::error_code_t::schema_error,
+                        set_error(core::error_t{core::error_code_t::internal_error,
                                                 std::pmr::string{std::move(msg), resource_}});
                     };
                     if (exact_matches == 1) {
@@ -462,7 +462,7 @@ namespace components::operators {
                         msg += " this build reads — the columns of table \"";
                         msg += entry.relname;
                         msg += "\" cannot be decoded";
-                        set_error(core::error_t{core::error_code_t::schema_error,
+                        set_error(core::error_t{core::error_code_t::internal_error,
                                                 std::pmr::string{std::move(msg), resource_}});
                         co_return;
                     }

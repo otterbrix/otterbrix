@@ -26,7 +26,8 @@ One thing to keep in mind: message should be initialized with resource, that wil
 * There are 2 ways to check if error_t is in error state: method 'contains_error()' and comparing it to 'no_error()' first one is more efficient, because it does not create a temporary object and looks cleaner
 * Avoid repeating between error code and message, e.g. error_code_t::table_not_exists with message: "table not exists"
 * Avoid using memory_resource from 'message', because in 'no_error' state it is set to 'std::pmr::null_memory_resource()'
-* Avoid using error_code_t::other_error **if you know** what actually caused that error
+* An error the engine cannot reach unless one of its own invariants broke is error_code_t::internal_error (PostgreSQL XX000); anything a statement or the host can cause takes the code PostgreSQL 18 gives it
+* Every error_code_t member is written with its number: the C ABI and the C# enum hand the numbers out as they are. A removed code leaves its number unused, a new code takes the next free one. A code that has a PostgreSQL SQLSTATE names it in a comment
 * A helper that builds an error_t for its callers should take 'std::source_location location = std::source_location::current()' as its last parameter and pass it to the constructor. Without it every error the helper produces reports the helper itself as **origin**, and all its call sites become indistinguishable in a trace. The constructor accepts the location in every build configuration, Release included, even though only Debug stores it
 
 ### core::result_wrapper_t<T>
@@ -90,7 +91,6 @@ leftover noise.
 
 ### Known issues
 
-* Currently, there is no rigid structure for error_code_t
 * It is possible to ignore plain error_t with error and result_wrapper_t<> if function was not marked as **nodiscard**
 * Using std::string error_t could be 'constexpr', optimizing return of no_error() and result_wrapper_t with value
 * error_t does not fit requirements for actor_zeta::unique_future<T>, and has to be wrapper in something (here result_wrapper_t<void> could be useful)

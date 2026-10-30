@@ -57,7 +57,7 @@ namespace components::operators {
         if (found_chunk == nullptr) {
             std::string what = "the PRIMARY KEY names column attoid " + std::to_string(attoid_) + ", which table oid " +
                                std::to_string(table_oid_) + " does not have";
-            set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(what), resource_}});
+            set_error(core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(what), resource_}});
             co_return;
         }
         const auto& row = *found_chunk;

@@ -212,7 +212,7 @@ namespace services::index {
 
     core::error_t disk_hash_table_t::rehash_unlocked(uint32_t new_bucket_count) {
         if (new_bucket_count == 0) {
-            return core::error_t{core::error_code_t::invalid_parameter,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"disk_hash_table: rehash to zero buckets", memory_resource_}};
         }
         if (new_bucket_count <= header_.bucket_count_value) {
@@ -452,7 +452,7 @@ namespace services::index {
     }
 
     core::error_t disk_hash_table_t::io_failure(const std::string& message) const {
-        return core::error_t{core::error_code_t::index_create_fail, std::pmr::string{message, memory_resource_}};
+        return core::error_t{core::error_code_t::io_error, std::pmr::string{message, memory_resource_}};
     }
 
     core::error_t disk_hash_table_t::page_read_failure(uint64_t page_id) const {

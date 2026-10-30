@@ -373,7 +373,7 @@ TEST_CASE("services::dispatcher::register_udf_operator_refusal_unwinds_executors
                                           components::compute::function_ptr{make_probe_func(mr.get(), fname)});
         REQUIRE(err.contains_error());
         REQUIRE(mentions(err, "already exists in the catalog"));
-        REQUIRE(err.type == core::error_code_t::already_exists);
+        REQUIRE(err.type == core::error_code_t::duplicate_function);
     }
 }
 

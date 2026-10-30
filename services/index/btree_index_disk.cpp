@@ -195,7 +195,7 @@ namespace services::index {
         reset_flush_state();
         if (!directory_removed) {
             return core::error_t{
-                core::error_code_t::index_create_fail,
+                core::error_code_t::io_error,
                 std::pmr::string{"btree: the index directory " + path_.string() + " could not be removed for a clear",
                                  resource()}};
         }

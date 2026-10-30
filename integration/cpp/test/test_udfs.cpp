@@ -335,7 +335,7 @@ TEST_CASE("integration::cpp::test_udfs") {
                                                R"_(GROUP BY count )_"
                                                R"_(ORDER BY count ASC;)_");
             REQUIRE(cur->is_error());
-            REQUIRE(cur->get_error().type == core::error_code_t::incorrect_function_argument);
+            REQUIRE(cur->get_error().type == core::error_code_t::unrecognized_function);
         }
         INFO("bool function in WHERE clause");
         {

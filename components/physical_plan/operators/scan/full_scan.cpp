@@ -19,7 +19,7 @@ namespace components::operators {
         if (expression->type() == expressions::compare_type::all_false ||
             expression->type() == expressions::compare_type::all_unknown) {
             return core::error_t{
-                core::error_code_t::physical_plan_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"a predicate that selects nothing reached filter construction", resource}};
         }
         return table::make_pushed_filter(target, expression, *parameters, context);
@@ -114,7 +114,7 @@ namespace components::operators {
             std::pmr::string what{"the storage of table \"", resource_};
             what += name_;
             what += "\" answered a page without a cursor";
-            core::error_t refused{core::error_code_t::invalid_parameter, std::move(what)};
+            core::error_t refused{core::error_code_t::protocol_violation, std::move(what)};
             set_error(refused);
             mark_failed();
             co_return refused;

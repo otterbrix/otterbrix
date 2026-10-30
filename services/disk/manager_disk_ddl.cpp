@@ -230,7 +230,7 @@ namespace services::disk {
         }
         std::pmr::string msg{"manager_disk::add_storage_column: no disk agent owns table oid ", resource()};
         msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
-        co_return core::error_t{core::error_code_t::actor_agent_missing, std::move(msg)};
+        co_return core::error_t{core::error_code_t::internal_error, std::move(msg)};
     }
 
     manager_disk_t::unique_future<core::result_wrapper_t<ddl_reply_t>>
@@ -257,7 +257,7 @@ namespace services::disk {
         }
         std::pmr::string msg{"manager_disk::stamp_column_dropped: no disk agent owns table oid ", resource()};
         msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
-        co_return core::error_t{core::error_code_t::actor_agent_missing, std::move(msg)};
+        co_return core::error_t{core::error_code_t::internal_error, std::move(msg)};
     }
 
     manager_disk_t::unique_future<void>
@@ -440,7 +440,7 @@ namespace services::disk {
         // "Done" here would leave storage on the OLD name, the divergence bootstrap reads as a DROP.
         std::pmr::string msg{"manager_disk::rename_storage_column: no disk agent owns table oid ", resource()};
         msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
-        co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::actor_agent_missing, std::move(msg)});
+        co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::internal_error, std::move(msg)});
     }
 
 } // namespace services::disk

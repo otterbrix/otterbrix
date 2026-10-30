@@ -155,7 +155,7 @@ namespace components::casts::kernels {
             }
             double scaled = std::round(static_cast<double>(value) * types::DOUBLE_POWERS_OF_TEN[scale]);
             if (scaled >= types::DOUBLE_POWERS_OF_TEN[width] || scaled <= -types::DOUBLE_POWERS_OF_TEN[width]) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             detail::write_decimal_raw(result, row, static_cast<types::int128_t>(scaled));
@@ -212,12 +212,12 @@ namespace components::casts::kernels {
             }
             types::int128_t raw = detail::decimal_raw(source, row);
             if (types::decimal_special::is_special(physical, raw)) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             std::optional<Target> value = types::decimal_to_numeric<types::int128_t, Target>(raw, scale);
             if (!value.has_value()) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             result->set_value(row, *value);
@@ -264,7 +264,7 @@ namespace components::casts::kernels {
             }
             types::int128_t raw = detail::decimal_raw(source, row);
             if (types::decimal_special::is_special(physical, raw)) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             result->set_value(row, raw != 0);
@@ -307,7 +307,7 @@ namespace components::casts::kernels {
             }
             Source value = source.get_value<Source>(row);
             if (!detail::integer_within_decimal_magnitude(value, magnitude_exclusive)) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             detail::write_decimal_raw(result,
@@ -366,7 +366,7 @@ namespace components::casts::kernels {
             }
             types::int128_t out;
             if (!detail::rescale_decimal(raw, source_scale, result_scale, result_width, &out)) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             detail::write_decimal_raw(result, row, out);

@@ -29,7 +29,7 @@ namespace services {
                 },
                 self);
             if (rc != 0) {
-                return core::error_t(core::error_code_t::thread_start_failed,
+                return core::error_t(core::error_code_t::insufficient_resources,
                                      std::pmr::string{std::string{owner} + ": the loop thread could not be started: " +
                                                           std::strerror(rc),
                                                       resource});

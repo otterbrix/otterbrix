@@ -353,6 +353,25 @@ TEST_CASE("integration::cpp::insert_on_conflict") {
                       ->is_error());
             CHECK(read_items(dispatcher) == SEEDED_ITEMS);
         }
+        SECTION("ON CONSTRAINT: a name the table lacks, and one of a constraint with no index") {
+            require_ok(dispatcher, "ALTER TABLE ocdb.items ADD CONSTRAINT v_positive CHECK (v > 0);");
+            auto session = otterbrix::session_id_t();
+            auto missing =
+                run(dispatcher,
+                    session,
+                    "INSERT INTO ocdb.items (id, v) VALUES (20, 1) ON CONFLICT ON CONSTRAINT missing DO NOTHING;");
+            REQUIRE(missing->is_error());
+            CHECK(missing->get_error().type == core::error_code_t::undefined_object);
+            CHECK(why(*missing) == "constraint \"missing\" for table \"items\" does not exist");
+            auto check = run(dispatcher,
+                             session,
+                             "INSERT INTO ocdb.items (id, v) VALUES (20, 1) ON CONFLICT ON CONSTRAINT v_positive DO "
+                             "NOTHING;");
+            REQUIRE(check->is_error());
+            CHECK(check->get_error().type == core::error_code_t::wrong_object_type);
+            CHECK(why(*check) == "constraint in ON CONFLICT clause has no associated index");
+            CHECK(read_items(dispatcher) == SEEDED_ITEMS);
+        }
         SECTION("a multi-column target matches its constraint in any column order") {
             require_ok(dispatcher, "CREATE TABLE ocdb.pairs (id bigint, v bigint, w bigint);");
             require_ok(dispatcher, "ALTER TABLE ocdb.pairs ADD CONSTRAINT uq_pairs UNIQUE (v, w);");

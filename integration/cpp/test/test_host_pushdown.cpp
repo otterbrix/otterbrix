@@ -204,7 +204,7 @@ TEST_CASE("integration::cpp::host_pushdown::a_block_page_without_a_cursor_is_ref
     host.backend().set_pages_without_cursor(true);
     host.db.check_refused(any(),
                           "SELECT * FROM m2.shop.public.orders WHERE id = 2;",
-                          code::invalid_parameter,
+                          code::protocol_violation,
                           "the backend of connection \"m2\" answered a page without a cursor");
 }
 
@@ -219,7 +219,7 @@ TEST_CASE("integration::cpp::host_pushdown::a_wrong_answer_to_an_offer") {
                           "server m2: cannot plan the block");
     host.backend().set_take_policy({.take_a_missing_node = true});
     const auto error = host.db.refused(any(), "SELECT * FROM m2.shop.public.orders;");
-    CHECK(error.type == code::invalid_parameter);
+    CHECK(error.type == code::protocol_violation);
     CHECK(std::string{error.what}.starts_with("the backend of connection \"m2\" took a block wrongly"));
     CHECK(host.backend().journal("scan").empty());
 
@@ -227,7 +227,7 @@ TEST_CASE("integration::cpp::host_pushdown::a_wrong_answer_to_an_offer") {
     host.backend().set_take_policy({.whole_select = true, .residual_without_where = true});
     host.db.check_refused(any(),
                           "SELECT * FROM m2.shop.public.orders;",
-                          code::invalid_parameter,
+                          code::protocol_violation,
                           "the backend of connection \"m2\" took a block wrongly: a residual WHERE is left of a "
                           "block without one");
 }
@@ -253,7 +253,7 @@ TEST_CASE("integration::cpp::host_pushdown::the_pages_of_a_taken_read") {
     host.backend().set_take_policy({.whole_select = true, .short_block_pages = true});
     host.db.check_refused(any(),
                           "SELECT * FROM m2.shop.public.orders;",
-                          code::invalid_parameter,
+                          code::protocol_violation,
                           "the backend of connection \"m2\" answered a block with a page of other columns");
 }
 
@@ -270,7 +270,7 @@ TEST_CASE("integration::cpp::host_pushdown::a_taken_read_page_wider_than_a_chunk
     host.backend().set_take_policy({.whole_select = true, .wide_block_pages = true});
     host.db.check_refused(any(),
                           "SELECT * FROM m2.shop.public.orders;",
-                          code::invalid_parameter,
+                          code::protocol_violation,
                           "a storage answered a chunk of 2500 rows, more than the 1024 rows of a chunk");
 }
 #endif

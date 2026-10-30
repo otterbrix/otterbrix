@@ -219,7 +219,7 @@ TEST_CASE("integration::cpp::avg_sum_widening::bigint_sum_overflow_is_an_error")
         INFO(sql);
         REQUIRE(c);
         REQUIRE_FALSE(c->is_success());
-        CHECK(c->get_error().type == core::error_code_t::arithmetics_failure);
+        CHECK(c->get_error().type == core::error_code_t::numeric_value_out_of_range);
         CHECK(std::string{c->get_error().what}.find("overflow") != std::string::npos);
     }
     // avg accumulates wider than the input, so the same rows average without overflowing.

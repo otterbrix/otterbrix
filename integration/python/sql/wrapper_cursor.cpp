@@ -24,7 +24,7 @@ namespace {
             case logical_type::UUID:
             case logical_type::BLOB:
             case logical_type::BIT:
-                return core::error_t{core::error_code_t::other_error,
+                return core::error_t{core::error_code_t::unimplemented_yet,
                                      std::pmr::string{"Unimplemented type for value access", leaf.resource()}};
             default:
                 break;
@@ -197,23 +197,228 @@ py::tuple wrapper_cursor::get_error() const {
             type = "table_not_exists";
             break;
 
-        case error_code_t::table_dropped:
-            type = "table_dropped";
-            break;
-
         case error_code_t::sql_parse_error:
             type = "sql_parse_error";
             break;
 
-        case error_code_t::create_physical_plan_error:
-            type = "create_physical_plan_error";
+        case error_code_t::duplicate_object:
+            type = "duplicate_object";
             break;
 
-        case error_code_t::other_error:
-            type = "other_error";
+        case error_code_t::duplicate_column:
+            type = "duplicate_column";
             break;
 
-        default:
+        case error_code_t::undefined_object:
+            type = "undefined_object";
+            break;
+
+        case error_code_t::invalid_function_definition:
+            type = "invalid_function_definition";
+            break;
+
+        case error_code_t::lock_file_exists:
+            type = "lock_file_exists";
+            break;
+
+        case error_code_t::duplicate_function:
+            type = "duplicate_function";
+            break;
+
+        case error_code_t::wrong_object_type:
+            type = "wrong_object_type";
+            break;
+
+        case error_code_t::internal_error:
+            type = "internal_error";
+            break;
+
+        case error_code_t::undefined_column:
+            type = "undefined_column";
+            break;
+
+        case error_code_t::datatype_mismatch:
+            type = "datatype_mismatch";
+            break;
+
+        case error_code_t::ambiguous_column:
+            type = "ambiguous_column";
+            break;
+
+        case error_code_t::invalid_table_definition:
+            type = "invalid_table_definition";
+            break;
+
+        case error_code_t::invalid_object_definition:
+            type = "invalid_object_definition";
+            break;
+
+        case error_code_t::protocol_violation:
+            type = "protocol_violation";
+            break;
+
+        case error_code_t::numeric_value_out_of_range:
+            type = "numeric_value_out_of_range";
+            break;
+
+        case error_code_t::division_by_zero:
+            type = "division_by_zero";
+            break;
+
+        case error_code_t::cannot_coerce:
+            type = "cannot_coerce";
+            break;
+
+        case error_code_t::cardinality_violation:
+            type = "cardinality_violation";
+            break;
+
+        case error_code_t::invalid_row_count_in_limit_clause:
+            type = "invalid_row_count_in_limit_clause";
+            break;
+
+        case error_code_t::invalid_row_count_in_result_offset_clause:
+            type = "invalid_row_count_in_result_offset_clause";
+            break;
+
+        case error_code_t::program_limit_exceeded:
+            type = "program_limit_exceeded";
+            break;
+
+        case error_code_t::invalid_text_representation:
+            type = "invalid_text_representation";
+            break;
+
+        case error_code_t::invalid_datetime_format:
+            type = "invalid_datetime_format";
+            break;
+
+        case error_code_t::null_value_no_indicator_parameter:
+            type = "null_value_no_indicator_parameter";
+            break;
+
+        case error_code_t::null_value_not_allowed:
+            type = "null_value_not_allowed";
+            break;
+
+        case error_code_t::invalid_regular_expression:
+            type = "invalid_regular_expression";
+            break;
+
+        case error_code_t::ambiguous_function:
+            type = "ambiguous_function";
+            break;
+
+        case error_code_t::grouping_error:
+            type = "grouping_error";
+            break;
+
+        case error_code_t::statement_too_complex:
+            type = "statement_too_complex";
+            break;
+
+        case error_code_t::check_violation:
+            type = "check_violation";
+            break;
+
+        case error_code_t::not_null_violation:
+            type = "not_null_violation";
+            break;
+
+        case error_code_t::unique_violation:
+            type = "unique_violation";
+            break;
+
+        case error_code_t::foreign_key_violation:
+            type = "foreign_key_violation";
+            break;
+
+        case error_code_t::invalid_foreign_key:
+            type = "invalid_foreign_key";
+            break;
+
+        case error_code_t::invalid_column_reference:
+            type = "invalid_column_reference";
+            break;
+
+        case error_code_t::ambiguous_alias:
+            type = "ambiguous_alias";
+            break;
+
+        case error_code_t::duplicate_alias:
+            type = "duplicate_alias";
+            break;
+
+        case error_code_t::index_corrupted:
+            type = "index_corrupted";
+            break;
+
+        case error_code_t::no_active_sql_transaction:
+            type = "no_active_sql_transaction";
+            break;
+
+        case error_code_t::object_not_in_prerequisite_state:
+            type = "object_not_in_prerequisite_state";
+            break;
+
+        case error_code_t::insufficient_resources:
+            type = "insufficient_resources";
+            break;
+
+        case error_code_t::unimplemented_yet:
+            type = "unimplemented_yet";
+            break;
+
+        case error_code_t::transaction_finalized:
+            type = "transaction_finalized";
+            break;
+
+        case error_code_t::missing_savepoint:
+            type = "missing_savepoint";
+            break;
+
+        case error_code_t::invalid_parameter:
+            type = "invalid_parameter";
+            break;
+
+        case error_code_t::unrecognized_function:
+            type = "unrecognized_function";
+            break;
+
+        case error_code_t::out_of_memory:
+            type = "out_of_memory";
+            break;
+
+        case error_code_t::data_corruption:
+            type = "data_corruption";
+            break;
+
+        case error_code_t::io_error:
+            type = "io_error";
+            break;
+
+        case error_code_t::write_conflict:
+            type = "write_conflict";
+            break;
+
+        case error_code_t::connection_closed:
+            type = "connection_closed";
+            break;
+
+        case error_code_t::active_sql_transaction:
+            type = "active_sql_transaction";
+            break;
+
+        case error_code_t::dependent_objects_still_exist:
+            type = "dependent_objects_still_exist";
+            break;
+
+        case error_code_t::indeterminate_datatype:
+            type = "indeterminate_datatype";
+            break;
+
+        case error_code_t::ambiguous_parameter:
+            type = "ambiguous_parameter";
             break;
     }
     return py::make_tuple(type, ptr_->get_error().what);

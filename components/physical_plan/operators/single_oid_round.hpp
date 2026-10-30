@@ -20,7 +20,7 @@ namespace components::operators {
     // (register_udf/pg_proc, register_cast/pg_cast, alter_column_add/pg_attribute). allocate_oids_batch has
     // no error channel — an exhausted batch answers INVALID_OID and only latches overrun() — so this checks
     // that flag before use. Error code is io_error (oid_batch_t::make()'s name for this exact
-    // shortfall), distinct from create_physical_plan_error (a demand/rewrite mismatch, not an exhausted round).
+    // shortfall), distinct from internal_error (a demand/rewrite mismatch, not an exhausted round).
     [[nodiscard]] inline core::error_t single_oid_from_round(std::pmr::memory_resource* resource,
                                                              std::vector<components::catalog::oid_t> oids,
                                                              const char* refusal_prefix,

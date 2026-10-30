@@ -79,7 +79,7 @@ TEST_CASE("components::compute::registry::add_function_refuses_a_null_payload") 
 
     auto added = registry.add_function(no_function());
     REQUIRE(added.has_error());
-    REQUIRE(added.error().type == core::error_code_t::function_registry_error);
+    REQUIRE(added.error().type == core::error_code_t::internal_error);
 }
 
 TEST_CASE("components::compute::registry::a_refused_null_payload_never_enters_the_registry") {
@@ -141,7 +141,7 @@ TEST_CASE("components::compute::registry::poisoned_builtin_registration_reports_
     // the channel names the shift
     const auto& err = registry.builtin_registration_error();
     REQUIRE(err.contains_error());
-    CHECK(err.type == core::error_code_t::function_registry_error);
+    CHECK(err.type == core::error_code_t::internal_error);
     CHECK(std::string(err.what).find("shifted") != std::string::npos);
 
     // a poisoned registry serves nothing — the stray is gone too
@@ -160,7 +160,7 @@ TEST_CASE("components::compute::registry::poisoned_builtin_registration_reports_
                                                             /*available_kernel_slots=*/size_t{1},
                                                             components::compute::volatility_t::volatile_));
     REQUIRE(after.has_error());
-    CHECK(after.error().type == core::error_code_t::function_registry_error);
+    CHECK(after.error().type == core::error_code_t::internal_error);
 }
 
 // The green half: on a clean registry the builtins land EXACTLY on their

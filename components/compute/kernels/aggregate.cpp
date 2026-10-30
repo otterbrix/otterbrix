@@ -91,7 +91,7 @@ namespace {
     core::result_wrapper_t<complex_logical_type> sum_result_type(std::pmr::memory_resource* resource,
                                                                  const std::pmr::vector<complex_logical_type>& inputs) {
         if (inputs.size() != 1) {
-            return core::error_t(core::error_code_t::incorrect_function_argument,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"the aggregate takes exactly one argument", resource});
         }
         const auto& input = inputs.front();
@@ -116,7 +116,7 @@ namespace {
     core::result_wrapper_t<complex_logical_type> avg_result_type(std::pmr::memory_resource* resource,
                                                                  const std::pmr::vector<complex_logical_type>& inputs) {
         if (inputs.size() != 1) {
-            return core::error_t(core::error_code_t::incorrect_function_argument,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"the aggregate takes exactly one argument", resource});
         }
         switch (accumulation_of(inputs.front())) {
@@ -391,7 +391,7 @@ namespace {
                         fits = fold<int128_t, sum128_t>(column, groups, states, add128);
                         break;
                     default:
-                        return core::error_t(core::error_code_t::kernel_error,
+                        return core::error_t(core::error_code_t::internal_error,
                                              std::pmr::string{"sum does not accumulate the type it was given",
                                                               ctx.exec_context().resource()});
                 }
@@ -400,7 +400,7 @@ namespace {
                 return arithmetic_dispatch<sum_update_t>(
                     column.type(),
                     [&ctx] {
-                        return core::error_t(core::error_code_t::kernel_error,
+                        return core::error_t(core::error_code_t::internal_error,
                                              std::pmr::string{"sum does not accumulate the type it was given",
                                                               ctx.exec_context().resource()});
                     },
@@ -409,7 +409,7 @@ namespace {
                     states);
         }
         if (!fits) {
-            return core::error_t(core::error_code_t::arithmetics_failure,
+            return core::error_t(core::error_code_t::numeric_value_out_of_range,
                                  std::pmr::string{"sum overflow: the total leaves the range of its result type",
                                                   ctx.exec_context().resource()});
         }
@@ -533,18 +533,18 @@ namespace {
                         fits = fold<int128_t, avg_wide_state_t>(column, groups, states, add_decimal);
                         break;
                     default:
-                        return core::error_t(core::error_code_t::kernel_error,
+                        return core::error_t(core::error_code_t::internal_error,
                                              std::pmr::string{"avg does not accumulate the type it was given",
                                                               ctx.exec_context().resource()});
                 }
                 break;
             default:
                 return core::error_t(
-                    core::error_code_t::kernel_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"avg does not accumulate the type it was given", ctx.exec_context().resource()});
         }
         if (!fits) {
-            return core::error_t(core::error_code_t::arithmetics_failure,
+            return core::error_t(core::error_code_t::numeric_value_out_of_range,
                                  std::pmr::string{"avg overflow: the total leaves the range of its result type",
                                                   ctx.exec_context().resource()});
         }
@@ -599,7 +599,7 @@ namespace {
             output.type(),
             [&ctx] {
                 return core::error_t(
-                    core::error_code_t::kernel_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"sum does not accumulate the type it was given", ctx.exec_context().resource()});
             },
             states,
@@ -674,13 +674,13 @@ namespace {
                     case physical_type::INT128:
                         return emit_averages<int128_t>(states, first, count, output, decimal_average);
                     default:
-                        return core::error_t(core::error_code_t::kernel_error,
+                        return core::error_t(core::error_code_t::internal_error,
                                              std::pmr::string{"avg does not accumulate the type it was given",
                                                               ctx.exec_context().resource()});
                 }
             default:
                 return core::error_t(
-                    core::error_code_t::kernel_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"avg does not accumulate the type it was given", ctx.exec_context().resource()});
         }
     }

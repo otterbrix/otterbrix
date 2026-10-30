@@ -601,7 +601,7 @@ namespace components::operators {
                     co_return lookup;
                 }
                 if (std::any_of(children.begin(), children.end(), [](const auto& ids) { return !ids.empty(); })) {
-                    co_return core::error_t{core::error_code_t::invalid_constraint,
+                    co_return core::error_t{core::error_code_t::foreign_key_violation,
                                             std::pmr::string{"FK constraint violated: a child row committed beside "
                                                              "the delete of its parent",
                                                              resource_}};

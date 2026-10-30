@@ -491,12 +491,12 @@ TEST_CASE("name_resolution::type_name::type_name_over_three_parts_rejected") {
 
 TEST_CASE("name_resolution::ambiguity::bare_relname_across_databases") {
     auto result = probe("SELECT t.id FROM d1.t CROSS JOIN d2.t;", "id");
-    require_rejected(result, core::error_code_t::ambiguous_name);
+    require_rejected(result, core::error_code_t::ambiguous_alias);
 }
 
 TEST_CASE("name_resolution::ambiguity::left_out_database_made_it_ambiguous") {
     auto result = probe("SELECT s.t.id FROM d1.s.t CROSS JOIN d2.s.t;", "id");
-    require_rejected(result, core::error_code_t::ambiguous_name);
+    require_rejected(result, core::error_code_t::ambiguous_alias);
 }
 
 TEST_CASE("name_resolution::ambiguity::database_qualifier_picks_a_side") {
@@ -791,14 +791,14 @@ TEST_CASE("name_resolution::duplicate_name::same_table_twice_without_aliases") {
     auto result = transform_only("SELECT t.id FROM d.t JOIN d.t ON t.jk = t.jk;");
     INFO(describe(result));
     REQUIRE(result.rejected);
-    CHECK(static_cast<int>(result.code) == static_cast<int>(core::error_code_t::ambiguous_name));
+    CHECK(static_cast<int>(result.code) == static_cast<int>(core::error_code_t::duplicate_alias));
 }
 
 TEST_CASE("name_resolution::duplicate_name::same_alias_twice") {
     auto result = transform_only("SELECT x.id FROM d.a AS x JOIN d.b AS x ON x.jk = x.jk;");
     INFO(describe(result));
     REQUIRE(result.rejected);
-    CHECK(static_cast<int>(result.code) == static_cast<int>(core::error_code_t::ambiguous_name));
+    CHECK(static_cast<int>(result.code) == static_cast<int>(core::error_code_t::duplicate_alias));
 }
 
 TEST_CASE("name_resolution::duplicate_name::same_table_twice_with_aliases_is_fine") {
@@ -886,12 +886,12 @@ TEST_CASE("name_resolution::validator::table_function_shares_the_from_namespace"
     {
         INFO("the function's alias collides with a table's visible name");
         CHECK(run_refused(db, "SELECT g.g FROM vd.g, generate_series(1, 3) g;").type ==
-              core::error_code_t::ambiguous_name);
+              core::error_code_t::duplicate_alias);
     }
     {
         INFO("unaliased, the function's column name is the function name — and so is the table's column");
         CHECK(run_refused(db, "SELECT generate_series FROM vd.s, generate_series(1, 3);").type ==
-              core::error_code_t::ambiguous_name);
+              core::error_code_t::ambiguous_column);
     }
     {
         INFO("an alias takes no qualification");
@@ -935,7 +935,7 @@ TEST_CASE("name_resolution::validator::ambiguous_column_says_it_is_ambiguous") {
              "INSERT INTO vd.b (id, bv) VALUES (1,100),(2,200);"});
 
     CHECK(run_refused(db, "SELECT a.av FROM vd.a a JOIN vd.b b ON a.id = b.id WHERE id > 1;").type ==
-          core::error_code_t::ambiguous_name);
+          core::error_code_t::ambiguous_column);
 }
 
 TEST_CASE("name_resolution::quoted::quoted_alias_answers_as_written") {
@@ -1215,7 +1215,7 @@ TEST_CASE("name_resolution::fk_target::alter_does_not_reach_another_database") {
         REQUIRE(cursor->is_error());
         const auto& refused = cursor->get_error();
         INFO(sql << ": " << to_std(refused.what));
-        CHECK(refused.type == core::error_code_t::invalid_constraint);
+        CHECK(refused.type == core::error_code_t::table_not_exists);
         CHECK(to_std(refused.what).find("customers\" does not exist") != std::string::npos);
     }
 }
@@ -1362,7 +1362,7 @@ TEST_CASE("name_resolution::drop_matview::kind_mismatch_is_refused") {
         auto refused = run_refused(db, sql);
         INFO(sql << ": " << to_std(refused.what));
         CHECK(to_std(refused.what).find(text) != std::string::npos);
-        CHECK(refused.type == core::error_code_t::schema_error);
+        CHECK(refused.type == core::error_code_t::wrong_object_type);
     }
     // PostgreSQL 18 DropErrorMsgWrongType: the hint names the DROP for the kind the name has.
     CHECK(to_std(run_refused(db, "DROP VIEW d.t;").what).find("HINT: Use DROP TABLE to remove a table.") !=

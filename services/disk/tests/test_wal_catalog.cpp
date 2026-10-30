@@ -527,7 +527,7 @@ TEST_CASE("services::disk::wal_catalog::a_refused_catalog_cast_leaves_no_journal
             row.set_value(0, 0, 1.0e12);
             auto appended = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_class, std::move(row));
             REQUIRE(appended.has_error());
-            CHECK(appended.error().type == core::error_code_t::conversion_failure);
+            CHECK(appended.error().type == core::error_code_t::internal_error);
         }
         SECTION("a STRING for the UINTEGER oid column") {
             auto row = pg_class_probe_row(
@@ -537,7 +537,7 @@ TEST_CASE("services::disk::wal_catalog::a_refused_catalog_cast_leaves_no_journal
             row.set_value(0, 0, std::string_view("12345"));
             auto appended = fx.invoke(&manager_disk_t::append_pg_catalog_row, auto_ctx(), pg_class, std::move(row));
             REQUIRE(appended.has_error());
-            CHECK(appended.error().type == core::error_code_t::conversion_failure);
+            CHECK(appended.error().type == core::error_code_t::internal_error);
         }
     }
     core::pmr::otterbrix_resource reader_resource;

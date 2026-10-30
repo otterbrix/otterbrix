@@ -52,7 +52,7 @@ namespace components::operators {
             if (key_col >= chunk.column_count()) {
                 // The fetched width disagrees with the width plan-gen resolved against: nothing here can
                 // be trusted to be the row the index meant, so refuse rather than skip the check.
-                return core::error_t{core::error_code_t::stale_index,
+                return core::error_t{core::error_code_t::internal_error,
                                      std::pmr::string{"index_scan: the fetched row is narrower than the "
                                                       "indexed column position the plan resolved; the index "
                                                       "answer cannot be verified",
@@ -84,7 +84,7 @@ namespace components::operators {
                 if (!selected.is_null(row) && selected.get_value<bool>(row)) {
                     continue;
                 }
-                return core::error_t{core::error_code_t::stale_index,
+                return core::error_t{core::error_code_t::index_corrupted,
                                      std::pmr::string{"index_scan: the index named a row that does not "
                                                       "satisfy the predicate it was searched with — its "
                                                       "row ids no longer name the rows it indexed (a "
@@ -159,7 +159,7 @@ namespace components::operators {
                                                     table::fetch_visibility_t::SNAPSHOT,
                                                     // -1 uncapped, else stops after this many rows.
                                                     cap_.to_disk(),
-                                                    // Epoch minted against; refuses (stale_index) if renumbered.
+                                                    // Epoch minted against; refuses (write_conflict) if renumbered.
                                                     built_compact_epoch_);
         co_return co_await std::move(ff);
     }
@@ -192,7 +192,7 @@ namespace components::operators {
             if (ctx->index_address == actor_zeta::address_t::empty_address()) {
                 pos_ = 0;
                 end_ = 0;
-                core::error_t unwired{core::error_code_t::index_not_exists,
+                core::error_t unwired{core::error_code_t::internal_error,
                                       std::pmr::string{"index_scan: no index service is wired into this topology; "
                                                        "a planned index_scan cannot be answered",
                                                        resource_}};

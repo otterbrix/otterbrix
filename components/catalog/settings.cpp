@@ -116,7 +116,7 @@ namespace components::catalog {
             case setting_id::search_path:
                 return canonical_search_path(raw, resource);
         }
-        return core::error_t(core::error_code_t::invalid_parameter, std::pmr::string{"unknown setting", resource});
+        return core::error_t(core::error_code_t::internal_error, std::pmr::string{"unknown setting", resource});
     }
 
     core::error_t
@@ -141,7 +141,7 @@ namespace components::catalog {
                 cache.search_path = std::string(value);
                 return core::error_t::no_error();
         }
-        return core::error_t(core::error_code_t::invalid_parameter, std::pmr::string{"unknown setting", resource});
+        return core::error_t(core::error_code_t::internal_error, std::pmr::string{"unknown setting", resource});
     }
 
 } // namespace components::catalog

@@ -127,7 +127,7 @@ namespace components::operators {
             msg += "\" of relation \"";
             msg += rel;
             msg += "\" does not exist; use DROP COLUMN IF EXISTS to ignore it";
-            set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+            set_error(core::error_t{core::error_code_t::undefined_column, std::pmr::string{std::move(msg), resource_}});
             mark_executed();
             co_return;
         }
@@ -160,7 +160,8 @@ namespace components::operators {
                 msg += " column(s), fewer than the ";
                 msg += std::to_string(static_cast<std::size_t>(catalog::pg_depend_col::deptype) + 1);
                 msg += " this build reads — the column's dependencies cannot be classified";
-                set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+                set_error(
+                    core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource_}});
                 co_return;
             }
             for (uint64_t i = 0; i < chunk.size(); ++i) {
@@ -248,7 +249,8 @@ namespace components::operators {
             msg += "\" on table \"";
             msg += con_table;
             msg += "\" references it; drop that constraint or that table first";
-            set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+            set_error(core::error_t{core::error_code_t::dependent_objects_still_exist,
+                                    std::pmr::string{std::move(msg), resource_}});
             mark_executed();
             co_return;
         }

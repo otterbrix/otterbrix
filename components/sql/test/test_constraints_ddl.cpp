@@ -292,7 +292,7 @@ TEST_CASE("components::sql::check_constraint_whitelist") {
         auto node = ddl_consumer(transformed.value().sub_queries.back());
         auto* data = static_cast<node_create_collection_t*>(node.get());
         if (data->constraints().size() != 1) {
-            return core::error_t{core::error_code_t::invalid_constraint,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"expected exactly one constraint", &resource}};
         }
         return data->constraints()[0].check_expression;

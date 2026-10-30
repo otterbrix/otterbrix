@@ -205,7 +205,7 @@ TEST_CASE("default casts: DOUBLE -> INTEGER is fallible and assignment, so it ne
         vector::vector_t cast_result{resource, integer_type};
         core::error_t error = entry->fn.invoke(cast_kind::cast, source, &cast_result, params, 1);
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::conversion_failure);
+        REQUIRE(error.type == core::error_code_t::numeric_value_out_of_range);
 
         vector::vector_t try_result{resource, integer_type};
         core::error_t try_error = entry->fn.invoke(cast_kind::try_cast, source, &try_result, params, 1);
@@ -248,7 +248,7 @@ TEST_CASE("default casts: integer narrowing errors on overflow (PostgreSQL rule)
         vector::vector_t cast_result{resource, utinyint_type};
         core::error_t error = to_uint8->fn.invoke(cast_kind::cast, source, &cast_result, params, 3);
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::conversion_failure);
+        REQUIRE(error.type == core::error_code_t::numeric_value_out_of_range);
 
         vector::vector_t try_result{resource, utinyint_type};
         REQUIRE_FALSE(to_uint8->fn.invoke(cast_kind::try_cast, source, &try_result, params, 3).contains_error());
@@ -310,7 +310,7 @@ TEST_CASE("default casts: double -> float narrows at assignment level") {
         vector::vector_t cast_result{resource, float_type};
         core::error_t error = narrow->fn.invoke(cast_kind::cast, source, &cast_result, params, 2);
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::conversion_failure);
+        REQUIRE(error.type == core::error_code_t::numeric_value_out_of_range);
 
         vector::vector_t try_result{resource, float_type};
         REQUIRE_FALSE(narrow->fn.invoke(cast_kind::try_cast, source, &try_result, params, 2).contains_error());
@@ -358,7 +358,7 @@ TEST_CASE("default casts: DECIMAL <-> double round-trips, passes inf/nan, errors
         vector::vector_t cast_result{resource, decimal_type};
         core::error_t error = from_double->fn.invoke(cast_kind::cast, source, &cast_result, context, 4);
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::conversion_failure);
+        REQUIRE(error.type == core::error_code_t::numeric_value_out_of_range);
 
         vector::vector_t try_result{resource, decimal_type};
         REQUIRE_FALSE(from_double->fn.invoke(cast_kind::try_cast, source, &try_result, context, 4).contains_error());
@@ -414,7 +414,7 @@ TEST_CASE("default casts: DECIMAL <-> integer rounds, fails on overflow and spec
         vector::vector_t cast_result{resource, decimal_type};
         core::error_t error = from_bigint->fn.invoke(cast_kind::cast, source, &cast_result, context, 3);
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::conversion_failure);
+        REQUIRE(error.type == core::error_code_t::numeric_value_out_of_range);
 
         vector::vector_t try_result{resource, decimal_type};
         REQUIRE_FALSE(from_bigint->fn.invoke(cast_kind::try_cast, source, &try_result, context, 3).contains_error());
@@ -672,7 +672,7 @@ TEST_CASE("default casts: string conversions are not implicit and non-throwing")
         vector::vector_t cast_result{resource, integer_type};
         core::error_t error = from_string->fn.invoke(cast_kind::cast, source, &cast_result, params, 3);
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::conversion_failure);
+        REQUIRE(error.type == core::error_code_t::invalid_text_representation);
 
         vector::vector_t try_result{resource, integer_type};
         REQUIRE_FALSE(from_string->fn.invoke(cast_kind::try_cast, source, &try_result, params, 3).contains_error());
@@ -704,6 +704,54 @@ TEST_CASE("default casts: string conversions are not implicit and non-throwing")
         REQUIRE_FALSE(parse_huge->fn.invoke(cast_kind::cast, text_source, &number_result, params, 1).contains_error());
         REQUIRE(number_result.get_value<types::int128_t>(0) == big);
     }
+}
+
+TEST_CASE("default casts: string -> DECIMAL(38,2) with 37 integer digits answers numeric_value_out_of_range") {
+    auto* resource = std::pmr::get_default_resource();
+    cast_registry_t registry{resource};
+    register_default_casts(registry);
+
+    const complex_logical_type decimal_type = make_decimal(38, 2);
+    const cast_entry* from_string = registry.find(string_type, decimal_type);
+    REQUIRE(from_string != nullptr);
+    graph_execution_context context{};
+
+    vector::vector_t source{resource, string_type};
+    source.set_value(0, std::string_view{"2000000000000000000000000000000000000"});
+
+    vector::vector_t cast_result{resource, decimal_type};
+    const core::error_t error = from_string->fn.invoke(cast_kind::cast, source, &cast_result, context, 1);
+    REQUIRE(error.contains_error());
+    CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
+
+    vector::vector_t try_result{resource, decimal_type};
+    REQUIRE_FALSE(from_string->fn.invoke(cast_kind::try_cast, source, &try_result, context, 1).contains_error());
+    CHECK(try_result.is_null(0));
+}
+
+TEST_CASE("default casts: a '+'-signed integer that does not fit answers numeric_value_out_of_range") {
+    auto* resource = std::pmr::get_default_resource();
+    cast_registry_t registry{resource};
+    register_default_casts(registry);
+    graph_execution_context context{};
+
+    const auto refusal = [&](const complex_logical_type& target, std::string_view text) {
+        const cast_entry* from_string = registry.find(string_type, target);
+        REQUIRE(from_string != nullptr);
+        vector::vector_t source{resource, string_type};
+        source.set_value(0, text);
+        vector::vector_t result{resource, target};
+        return from_string->fn.invoke(cast_kind::cast, source, &result, context, 1);
+    };
+
+    const complex_logical_type hugeint{logical_type::HUGEINT};
+    const core::error_t huge = refusal(hugeint, "+170141183460469231731687303715884105728");
+    REQUIRE(huge.contains_error());
+    CHECK(huge.type == core::error_code_t::numeric_value_out_of_range);
+
+    const core::error_t narrow = refusal(integer_type, "+99999999999");
+    REQUIRE(narrow.contains_error());
+    CHECK(narrow.type == core::error_code_t::numeric_value_out_of_range);
 }
 
 TEST_CASE("default casts: date/time conversions, string parse/format, and to_string") {
@@ -1419,7 +1467,10 @@ TEST_CASE("cast_registry: a composite cast can be registered and resolve() retur
     };
     REQUIRE_FALSE(
         registry.add(pair_type, pair_type, complex_cast_entry{custom, cast_type::assignment}).contains_error());
-    REQUIRE(registry.add(pair_type, pair_type, complex_cast_entry{custom, cast_type::assignment}).contains_error());
+    const core::error_t duplicate =
+        registry.add(pair_type, pair_type, complex_cast_entry{custom, cast_type::assignment});
+    REQUIRE(duplicate.contains_error());
+    CHECK(duplicate.type == core::error_code_t::duplicate_object);
 
     {
         auto resolved = registry.resolve(pair_type, pair_type, cast_type::explicit_only);
@@ -2706,12 +2757,12 @@ TEST_CASE("default casts: numeric overflow into DECIMAL is a refusal") {
     SECTION("positive overflow") {
         const auto error = bigint_cast(10000);
         REQUIRE(error.contains_error());
-        CHECK(error.type == core::error_code_t::conversion_failure);
+        CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
     }
     SECTION("negative overflow") {
         const auto error = bigint_cast(-10000);
         REQUIRE(error.contains_error());
-        CHECK(error.type == core::error_code_t::conversion_failure);
+        CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
     }
     SECTION("floating overflow refuses; NaN is the DECIMAL NaN special") {
         CHECK(double_cast(1e30).contains_error());
@@ -2742,13 +2793,13 @@ TEST_CASE("default casts: DECIMAL to an integer refuses what does not fit instea
             vector::vector_t result{&arena, plain(logical_type::TINYINT), 1};
             const auto error = descale(dec, 1000, result);
             REQUIRE(error.contains_error());
-            CHECK(error.type == core::error_code_t::conversion_failure);
+            CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
         }
         {
             vector::vector_t result{&arena, plain(logical_type::UTINYINT), 1};
             const auto error = descale(dec, -5, result);
             REQUIRE(error.contains_error());
-            CHECK(error.type == core::error_code_t::conversion_failure);
+            CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
         }
         {
             vector::vector_t result{&arena, plain(logical_type::TINYINT), 1};
@@ -2769,7 +2820,7 @@ TEST_CASE("default casts: DECIMAL to an integer refuses what does not fit instea
             vector::vector_t result{&arena, plain(logical_type::TINYINT), 1};
             const auto error = descale(dec, 1234567, result);
             REQUIRE(error.contains_error());
-            CHECK(error.type == core::error_code_t::conversion_failure);
+            CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
         }
         {
             vector::vector_t result{&arena, plain(logical_type::INTEGER), 1};
@@ -2781,7 +2832,7 @@ TEST_CASE("default casts: DECIMAL to an integer refuses what does not fit instea
             vector::vector_t result{&arena, plain(logical_type::TINYINT), 1};
             const auto error = descale(dec, -1234567, result);
             REQUIRE(error.contains_error());
-            CHECK(error.type == core::error_code_t::conversion_failure);
+            CHECK(error.type == core::error_code_t::numeric_value_out_of_range);
         }
     }
 }
@@ -2802,7 +2853,7 @@ TEST_CASE("default casts: casting to an ENUM refuses a label the enum does not h
 
     const auto absent = from_text("angry");
     REQUIRE(absent.first.contains_error());
-    CHECK(absent.first.type == core::error_code_t::conversion_failure);
+    CHECK(absent.first.type == core::error_code_t::invalid_text_representation);
 
     const auto present = from_text("sad");
     REQUIRE_FALSE(present.first.contains_error());
@@ -2874,7 +2925,7 @@ namespace {
 
     void require_out_of_range(const core::error_t& error) {
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::conversion_failure);
+        REQUIRE(error.type == core::error_code_t::numeric_value_out_of_range);
         REQUIRE(std::string_view{error.what} == "out of range");
     }
 } // namespace

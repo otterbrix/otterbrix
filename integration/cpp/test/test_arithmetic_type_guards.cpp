@@ -83,7 +83,7 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::where_arithmetic_rejects_no
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT id FROM db.t WHERE b + 1 > 0;");
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == core::error_code_t::arithmetics_failure);
+        REQUIRE(cur->get_error().type == core::error_code_t::unrecognized_function);
     }
     {
         auto session = otterbrix::session_id_t();
@@ -162,7 +162,7 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::update_rejects_non_numeric_
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "UPDATE db.t SET v = b + 1;");
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == core::error_code_t::arithmetics_failure);
+        REQUIRE(cur->get_error().type == core::error_code_t::unrecognized_function);
     }
     {
         auto session = otterbrix::session_id_t();
@@ -355,7 +355,7 @@ TEST_CASE("integration::cpp::arithmetic_type_guards::mixed_operands_refuse_and_n
     SECTION("modulus over a floating operand refuses") {
         auto cur = test_helpers::exec(dispatcher, "SELECT d % d FROM db.m;");
         REQUIRE(cur->is_error());
-        CHECK(cur->get_error().type == core::error_code_t::invalid_parameter);
+        CHECK(cur->get_error().type == core::error_code_t::unrecognized_function);
     }
     SECTION("supported pairs still answer") {
         auto sum = test_helpers::exec(dispatcher, "SELECT id + v FROM db.m;");

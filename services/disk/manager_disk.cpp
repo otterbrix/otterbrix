@@ -349,7 +349,7 @@ namespace services::disk {
                                  buffer_manager_.resource()};
             msg += std::pmr::string{old_attname, buffer_manager_.resource()};
             msg += std::pmr::string{"'", buffer_manager_.resource()};
-            return core::error_t{core::error_code_t::missing_table, std::move(msg)};
+            return core::error_t{core::error_code_t::internal_error, std::move(msg)};
         }
         return table_->rename_column(old_attname, new_attname);
     }

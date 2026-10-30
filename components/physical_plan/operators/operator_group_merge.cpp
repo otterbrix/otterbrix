@@ -38,7 +38,7 @@ namespace components::operators {
             if (is_count) {
                 if (output_types_[j].type() != types::logical_type::UBIGINT) {
                     return core::error_t(
-                        core::error_code_t::physical_plan_error,
+                        core::error_code_t::internal_error,
                         std::pmr::string{"group_merge: COUNT over no rows needs a UBIGINT column", resource_});
                 }
                 row.data[j].set_value(0, uint64_t{0});

@@ -701,7 +701,7 @@ TEST_CASE("integration::cpp::test_sql_features::regex_invalid_pattern_disk_error
         auto cur =
             dispatcher->execute_plan(session, components::logical_plan::execution_plan_t{resource, plan, params});
         REQUIRE(cur->is_error());
-        CHECK(cur->get_error().type == core::error_code_t::comparison_failure);
+        CHECK(cur->get_error().type == core::error_code_t::invalid_regular_expression);
         CHECK(std::string{cur->get_error().what} == "invalid regular expression: invalid escape sequence: \\1");
     }
 }
@@ -835,7 +835,7 @@ TEST_CASE("integration::cpp::test_sql_features::like_match_mode_is_not_callable_
         return cur->get_error();
     };
     CHECK(refusal_of("SELECT id FROM rdb.t WHERE regexp_like(s, 'a_c', 1::uint1);").type ==
-          core::error_code_t::incorrect_function_argument);
+          core::error_code_t::unrecognized_function);
     auto hidden = refusal_of("SELECT id FROM rdb.t WHERE like_match(s, 'a_c', 1::uint1);");
     CHECK(hidden.type == core::error_code_t::unrecognized_function);
     CHECK(std::string{hidden.what} == "unrecognized function 'like_match'");

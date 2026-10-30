@@ -48,7 +48,7 @@ namespace core {
         error_t invalid_pattern(std::pmr::memory_resource* resource, std::string_view reason) {
             std::pmr::string message{"invalid regular expression: ", resource};
             message.append(reason);
-            return error_t{error_code_t::comparison_failure, std::move(message)};
+            return error_t{error_code_t::invalid_regular_expression, std::move(message)};
         }
 
         error_t refusal_of(std::pmr::memory_resource* resource,

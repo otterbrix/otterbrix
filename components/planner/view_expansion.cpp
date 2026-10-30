@@ -26,7 +26,7 @@ namespace components::planner {
         using components::logical_plan::node_t;
         using components::logical_plan::node_type;
 
-        core::error_t schema_error(std::pmr::memory_resource* resource, const std::string& what) {
+        core::error_t view_parse_error(std::pmr::memory_resource* resource, const std::string& what) {
             return core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{what, resource});
         }
 
@@ -111,23 +111,23 @@ namespace components::planner {
         auto parse_tree = raw_parser(&parser_arena, view_sql.t.c_str());
         if (parse_tree.has_error()) {
             // No position: it would count characters of the stored view body, not of the statement being run.
-            return schema_error(resource, parse_tree.error().what.c_str());
+            return view_parse_error(resource, parse_tree.error().what.c_str());
         }
         List* statements = parse_tree.value();
         // parser.h's list is never null (a `!statements` test proves nothing) but may be EMPTY or hold several
         // statements; linitial() alone would read past the end of an empty list, or silently drop every
         // statement after the first — so both counts are checked before it's called.
         if (list_length(statements) == 0) {
-            return schema_error(resource, "the view body parsed into no statement");
+            return view_parse_error(resource, "the view body parsed into no statement");
         }
         if (list_length(statements) > 1) {
-            return schema_error(resource,
-                                "the view body parsed into " + std::to_string(list_length(statements)) +
-                                    " statements; exactly one is expected");
+            return view_parse_error(resource,
+                                    "the view body parsed into " + std::to_string(list_length(statements)) +
+                                        " statements; exactly one is expected");
         }
         void* parse_cell = linitial(statements);
         if (!parse_cell) {
-            return schema_error(resource, "the view body parsed into an empty statement");
+            return view_parse_error(resource, "the view body parsed into an empty statement");
         }
         components::sql::transform::transformer local_transformer(resource, view_sql.t.c_str());
         auto parsed =
@@ -141,7 +141,7 @@ namespace components::planner {
         // Taking only the last of several flattened plans (a sub-query in the view) would drop the
         // sub_query_results binding ids it carries in the OUTER plan's parameter space — refuse instead.
         if (parsed.value().sub_queries.size() > 1) {
-            return schema_error(resource, "a view body containing a sub-query is not supported yet");
+            return view_parse_error(resource, "a view body containing a sub-query is not supported yet");
         }
         return view_body_t{std::move(parsed.value().sub_queries.back()),
                            std::move(parsed.value().parameters),
@@ -163,11 +163,11 @@ namespace components::planner {
             return core::error_t::no_error();
         }
         if (!body) {
-            return schema_error(ref->resource(), "view body lowered to an empty plan");
+            return view_parse_error(ref->resource(), "view body lowered to an empty plan");
         }
         if (has_correlated_join(body.get())) {
-            return schema_error(ref->resource(),
-                                "a view body containing a correlated (LATERAL) join is not supported yet");
+            return view_parse_error(ref->resource(),
+                                    "a view body containing a correlated (LATERAL) join is not supported yet");
         }
         // The name the outer query addresses the body's columns by: the alias if the
         // reference was aliased (`FROM v AS x`), otherwise the view's own name.
@@ -194,8 +194,9 @@ namespace components::planner {
                 const auto* entry = resolves.table_entry(target);
                 if (entry != nullptr && entry->table_md.has_value() &&
                     entry->table_md->relkind == components::catalog::relkind::view) {
-                    return schema_error(n->resource(),
-                                        "cannot INSERT / UPDATE / DELETE through view \"" + target.collection.t + "\"");
+                    return view_parse_error(n->resource(),
+                                            "cannot INSERT / UPDATE / DELETE through view \"" + target.collection.t +
+                                                "\"");
                 }
             }
             for (const auto& c : n->children()) {
@@ -213,7 +214,7 @@ namespace components::planner {
         msg.append("\" is stale: ");
         msg.append(why);
         msg.append("; recreate the view");
-        return core::error_t(core::error_code_t::schema_error, std::move(msg));
+        return core::error_t(core::error_code_t::undefined_object, std::move(msg));
     }
 
     namespace {

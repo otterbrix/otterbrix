@@ -169,7 +169,7 @@ namespace components::table {
         std::pmr::string what{"write to table '", resource_};
         what += std::pmr::string{name_, resource_};
         what += std::pmr::string{"': the columns written are not the table's columns", resource_};
-        return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
+        return core::error_t{core::error_code_t::internal_error, std::move(what)};
     }
 
     core::error_t data_table_t::refuse_null_values(const transaction_data& txn,
@@ -190,7 +190,7 @@ namespace components::table {
                 what += std::pmr::string{"\" of relation \"", resource_};
                 what += std::pmr::string{name_, resource_};
                 what += std::pmr::string{"\" violates not-null constraint", resource_};
-                return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+                return core::error_t{core::error_code_t::not_null_violation, std::move(what)};
             }
         }
         return core::error_t::no_error();
@@ -251,7 +251,7 @@ namespace components::table {
             what += std::pmr::string{"\" of relation \"", resource_};
             what += std::pmr::string{name_, resource_};
             what += std::pmr::string{"\" contains null values", resource_};
-            return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+            return core::error_t{core::error_code_t::not_null_violation, std::move(what)};
         }
         column_definitions_[position].stamp_not_null(txn.transaction_id, txn.sub_id);
         mark_modified();
@@ -382,7 +382,7 @@ namespace components::table {
                         what += std::pmr::string{"' is NOT NULL without a default, and a row that would be live "
                                                  "after this commit holds NULL in it",
                                                  resource_};
-                        return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+                        return core::error_t{core::error_code_t::not_null_violation, std::move(what)};
                     }
                 }
             }
@@ -485,7 +485,7 @@ namespace components::table {
             what += std::pmr::string{"': column '", resource_};
             what += std::pmr::string{column.name(), resource_};
             what += std::pmr::string{"' stores a type other than the payload carries; nothing was written", resource_};
-            return core::error_t{core::error_code_t::schema_error, std::move(what)};
+            return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         payload.set_type_alias(column.name());
         physical.push_back(std::move(payload));
@@ -543,7 +543,7 @@ namespace components::table {
                 std::pmr::string what{"update of table '", resource_};
                 what += std::pmr::string{name_, resource_};
                 what += std::pmr::string{"': a row id names no row of it; nothing was written", resource_};
-                return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
+                return core::error_t{core::error_code_t::internal_error, std::move(what)};
             }
         }
 
@@ -599,7 +599,7 @@ namespace components::table {
                 std::pmr::string what{"write to table '", resource_};
                 what += std::pmr::string{name_, resource_};
                 what += std::pmr::string{"': the payload names a column the writer does not see", resource_};
-                return core::error_t{core::error_code_t::schema_error, std::move(what)};
+                return core::error_t{core::error_code_t::internal_error, std::move(what)};
             }
         }
         chunk.data = std::move(physical);
@@ -891,7 +891,7 @@ namespace components::table {
                 msg += std::pmr::string{"' already has a column named '", resource_};
                 msg += std::pmr::string{new_name, resource_};
                 msg += std::pmr::string{"'", resource_};
-                return core::error_t{core::error_code_t::schema_error, std::move(msg)};
+                return core::error_t{core::error_code_t::internal_error, std::move(msg)};
             }
             if (col_name == old_name) {
                 idx = i;
@@ -935,7 +935,7 @@ namespace components::table {
                "data_table_t::append_lock should be called before data_table_t::initialize_append");
         if (!state.append_locked) {
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string("data_table_t::append_lock must precede initialize_append", resource_));
         }
         mark_modified();
@@ -1092,7 +1092,7 @@ namespace components::table {
             type_spec.clear();
             auto encoded = types::encode_type_spec(col.type(), type_spec);
             if (encoded.has_error()) {
-                return encoded; // schema_error: this column type cannot be persisted
+                return encoded; // this column type cannot be persisted
             }
             writer.write<uint32_t>(static_cast<uint32_t>(type_spec.size()));
             writer.write_data(type_spec.data(), type_spec.size());

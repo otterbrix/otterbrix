@@ -33,7 +33,7 @@ namespace components::operators {
     actor_zeta::unique_future<void> operator_register_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
         if (!function_) {
             set_error(
-                core::error_t{core::error_code_t::invalid_parameter,
+                core::error_t{core::error_code_t::internal_error,
                               std::pmr::string{"register_udf: the plan node carries no function payload", resource_}});
             mark_failed();
             co_return;
@@ -68,7 +68,7 @@ namespace components::operators {
                     return m.namespace_oid == catalog::well_known_oid::pg_catalog_namespace;
                 })) {
                 set_error(core::error_t{
-                    core::error_code_t::already_exists,
+                    core::error_code_t::duplicate_function,
                     std::pmr::string{"register_udf: a function named '" + func_name + "' already exists in the catalog",
                                      resource_}});
                 mark_failed();
@@ -82,7 +82,7 @@ namespace components::operators {
                     continue;
                 }
                 if (existing->signature != signatures[i]) {
-                    set_error(core::error_t{core::error_code_t::already_exists,
+                    set_error(core::error_t{core::error_code_t::invalid_function_definition,
                                             std::pmr::string{"register_udf: cannot change return type of existing "
                                                              "function \"" +
                                                                  func_name + "\"\nHINT: Use unregister_udf first.",
@@ -105,7 +105,7 @@ namespace components::operators {
                 return u != components::compute::invalid_function_uid && u == first_uid;
             });
             if (!agree) {
-                set_error(core::error_t{core::error_code_t::function_registry_error,
+                set_error(core::error_t{core::error_code_t::internal_error,
                                         std::pmr::string{"register_udf: the executor registries did not agree on a "
                                                          "single valid uid for '" +
                                                              func_name + "'",

@@ -115,7 +115,7 @@ namespace services::collection {
                 msg.append("\nHINT: ");
                 msg.append(hint);
             }
-            return core::error_t{core::error_code_t::schema_error, std::move(msg)};
+            return core::error_t{core::error_code_t::wrong_object_type, std::move(msg)};
         }
     } // namespace
 
@@ -147,29 +147,32 @@ namespace services::collection {
                                          const components::logical_plan::node_create_view_t& view,
                                          const components::logical_plan::resolved_table_metadata_t& existing,
                                          std::span<const catalog::oid_t> read_views) {
-        const auto refuse = [resource](std::string msg) {
-            return core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource}};
+        const auto refuse = [resource](core::error_code_t code, std::string msg) {
+            return core::error_t{code, std::pmr::string{std::move(msg), resource}};
         };
         if (existing.relkind != catalog::relkind::view) {
             return wrong_relation_kind(resource, view.viewname().t, catalog::relkind::view);
         }
         if (std::find(read_views.begin(), read_views.end(), existing.table_oid) != read_views.end()) {
-            return refuse("view \"" + view.viewname().t + "\" would read itself");
+            return refuse(core::error_code_t::invalid_object_definition,
+                          "view \"" + view.viewname().t + "\" would read itself");
         }
         const auto& columns = view.columns();
         if (columns.size() < existing.columns.size()) {
-            return refuse("cannot drop columns from view");
+            return refuse(core::error_code_t::invalid_table_definition, "cannot drop columns from view");
         }
         for (std::size_t i = 0; i < existing.columns.size(); ++i) {
             const auto& before = existing.columns[i];
             if (columns[i].name() != before.attname) {
-                return refuse("cannot change name of view column \"" + before.attname + "\" to \"" + columns[i].name() +
-                              "\"");
+                return refuse(core::error_code_t::invalid_table_definition,
+                              "cannot change name of view column \"" + before.attname + "\" to \"" + columns[i].name() +
+                                  "\"");
             }
             if (!(columns[i].type() == before.type)) {
-                return refuse("cannot change data type of view column \"" + before.attname + "\" from " +
-                              components::catalog::describe_type(before.type) + " to " +
-                              components::catalog::describe_type(columns[i].type()));
+                return refuse(core::error_code_t::invalid_table_definition,
+                              "cannot change data type of view column \"" + before.attname + "\" from " +
+                                  components::catalog::describe_type(before.type) + " to " +
+                                  components::catalog::describe_type(columns[i].type()));
             }
         }
         return core::error_t::no_error();
@@ -350,12 +353,12 @@ namespace services::collection {
             const std::string name = type.has_alias() ? type.alias() : std::string{};
             if (name.empty()) {
                 return core::error_t{
-                    core::error_code_t::schema_error,
+                    core::error_code_t::unimplemented_yet,
                     std::pmr::string{"view column " + std::to_string(i + 1) + " has no name; name it with AS",
                                      resource}};
             }
             if (std::any_of(columns.begin(), columns.end(), [&](const auto& c) { return c.name() == name; })) {
-                return core::error_t{core::error_code_t::duplicate_field,
+                return core::error_t{core::error_code_t::duplicate_column,
                                      std::pmr::string{"column \"" + name + "\" specified more than once", resource}};
             }
             if (auto gate = dispatcher::gate_persistable_type(resource, "view column '" + name + "'", type);

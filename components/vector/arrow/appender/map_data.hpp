@@ -121,7 +121,7 @@ namespace components::vector::arrow::appender {
             }
             struct_data.child_arrays[1] = *value_child.value();
             if (key_data->null_count > 0) {
-                return core::error_t(core::error_code_t::conversion_failure,
+                return core::error_t(core::error_code_t::null_value_not_allowed,
                                      std::pmr::string("Arrow doesn't accept NULL keys on Maps", append_data.resource));
             }
             return core::error_t::no_error();

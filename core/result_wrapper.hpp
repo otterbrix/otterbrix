@@ -11,70 +11,79 @@
 #include <utility>
 
 namespace core {
-    // TODO: define specific value for each error to make documentation easier
+    // Every member carries its number: the C ABI and the C# enum hand these out as is. A removed code leaves
+    // its number unused; a new code takes the next free one.
     enum class error_code_t : int32_t
     {
-        other_error = -1,
         none = 0,
-        already_exists,
-        do_not_exists,
-        unimplemented_yet,
+        unimplemented_yet = 3,
 
-        duplicate_field,
-        missing_field,
-        missing_primary_key_id,
-        missing_namespace,
-        transaction_inactive,
-        transaction_finalized,
-        missing_savepoint,
-        commit_failed,
-        missing_table,
-        database_already_exists,
-        database_not_exists,
-        table_already_exists,
-        table_not_exists,
-        table_dropped,
-        type_already_exists,
-        type_not_exists,
-        ambiguous_name,
-        field_not_exists,
-        invalid_parameter,
+        transaction_finalized = 9,
+        missing_savepoint = 10,
+        database_already_exists = 13,
+        database_not_exists = 14,
+        table_already_exists = 15,
+        table_not_exists = 16,
+        invalid_parameter = 22, // PostgreSQL 22023
 
-        physical_plan_error,
-        create_physical_plan_error,
-
-        arithmetics_failure,
-        comparison_failure,
-        conversion_failure,
-
-        index_create_fail,
-        index_not_exists,
-        sql_parse_error,
-        schema_error,
-        kernel_error,
-        function_registry_error,
-        unrecognized_function,
-        incorrect_function_argument,
-        incorrect_function_return_type,
-        invalid_constraint,
+        sql_parse_error = 30,
+        unrecognized_function = 34,
 
         // Buffer/storage-layer runtime errors. Surfaced via result_wrapper_t/error_t instead of throwing on
         // the agent_disk thread.
-        out_of_memory,   // buffer pool exhausted; evict_blocks could not free enough memory
-        data_corruption, // block checksum mismatch on read (disk reload / spill read)
-        io_error,        // file create/open/header/read/write failure
-        write_conflict,  // MVCC write-write conflict
-        stale_index,     // index answered row ids minted before the table's last compact
+        out_of_memory = 38,   // buffer pool exhausted; evict_blocks could not free enough memory
+        data_corruption = 39, // block checksum mismatch on read (disk reload / spill read)
+        io_error = 40,        // file create/open/header/read/write failure
+        write_conflict = 41,  // MVCC write-write conflict
 
-        actor_agent_missing,
-        connection_closed,
-        thread_start_failed,           // pthread_create refused a manager's loop thread
-        active_sql_transaction,        // PostgreSQL 25001: the statement cannot run inside a transaction block
-        dependent_objects_still_exist, // PostgreSQL 2BP01: other objects or the database system need it
-        schema_already_exists,         // PostgreSQL 42P06
-        schema_not_exists,             // PostgreSQL 3F000
-        indeterminate_datatype,        // PostgreSQL 42P18: no clause gives a $n a type
-        ambiguous_parameter,           // PostgreSQL 42P08: two clauses give a $n two types
+        connection_closed = 44,
+        active_sql_transaction = 46,            // PostgreSQL 25001: the statement cannot run inside a transaction block
+        dependent_objects_still_exist = 47,     // PostgreSQL 2BP01: other objects or the database system need it
+        schema_already_exists = 48,             // PostgreSQL 42P06
+        schema_not_exists = 49,                 // PostgreSQL 3F000
+        indeterminate_datatype = 50,            // PostgreSQL 42P18: no clause gives a $n a type
+        ambiguous_parameter = 51,               // PostgreSQL 42P08: two clauses give a $n two types
+        duplicate_object = 52,                  // PostgreSQL 42710
+        duplicate_column = 53,                  // PostgreSQL 42701
+        undefined_object = 54,                  // PostgreSQL 42704
+        invalid_function_definition = 55,       // PostgreSQL 42P13
+        lock_file_exists = 56,                  // PostgreSQL F0001
+        duplicate_function = 57,                // PostgreSQL 42723
+        wrong_object_type = 58,                 // PostgreSQL 42809
+        internal_error = 59,                    // PostgreSQL XX000: an invariant of the engine itself broke
+        undefined_column = 60,                  // PostgreSQL 42703
+        datatype_mismatch = 61,                 // PostgreSQL 42804
+        ambiguous_column = 62,                  // PostgreSQL 42702
+        invalid_table_definition = 63,          // PostgreSQL 42P16
+        invalid_object_definition = 64,         // PostgreSQL 42P17
+        protocol_violation = 65,                // PostgreSQL 08P01: the host broke the engine's contract
+        numeric_value_out_of_range = 66,        // PostgreSQL 22003
+        division_by_zero = 67,                  // PostgreSQL 22012
+        cannot_coerce = 68,                     // PostgreSQL 42846
+        cardinality_violation = 69,             // PostgreSQL 21000
+        invalid_row_count_in_limit_clause = 70, // PostgreSQL 2201W
+        invalid_row_count_in_result_offset_clause = 71, // PostgreSQL 2201X
+        program_limit_exceeded = 72,                    // PostgreSQL 54000
+        invalid_text_representation = 73,               // PostgreSQL 22P02
+        invalid_datetime_format = 74,                   // PostgreSQL 22007
+        null_value_no_indicator_parameter = 75,         // PostgreSQL 22002
+        null_value_not_allowed = 76,                    // PostgreSQL 22004
+        invalid_regular_expression = 77,                // PostgreSQL 2201B
+        ambiguous_function = 78,                        // PostgreSQL 42725
+        grouping_error = 79,                            // PostgreSQL 42803
+        statement_too_complex = 80,                     // PostgreSQL 54001
+        check_violation = 81,                           // PostgreSQL 23514
+        not_null_violation = 82,                        // PostgreSQL 23502
+        unique_violation = 83,                          // PostgreSQL 23505
+        foreign_key_violation = 84,                     // PostgreSQL 23503
+        invalid_foreign_key = 85,                       // PostgreSQL 42830
+        invalid_column_reference = 86,                  // PostgreSQL 42P10
+        ambiguous_alias = 87,                           // PostgreSQL 42P09
+        duplicate_alias = 88,                           // PostgreSQL 42712
+        index_corrupted = 89,                           // PostgreSQL XX002
+        no_active_sql_transaction = 91,                 // PostgreSQL 25P01
+        object_not_in_prerequisite_state = 92,          // PostgreSQL 55000
+        insufficient_resources = 93,                    // PostgreSQL 53000
     };
 
     struct [[nodiscard]] error_t {

@@ -252,7 +252,7 @@ namespace services::dispatcher {
         const std::string written = name.to_string();
 
         bool name_exists = false;
-        bool rejected_by_context = false;
+        std::optional<components::compute::function_type_t> rejected_kind;
         std::pmr::vector<resolved_function_t> tied(resource);
         std::optional<total_cost_t> best_cost;
 
@@ -283,7 +283,9 @@ namespace services::dispatcher {
                     continue;
                 }
                 if (!components::compute::check_mask(allowed_function_types, signature.function_type)) {
-                    rejected_by_context = true;
+                    if (!rejected_kind.has_value()) {
+                        rejected_kind = signature.function_type;
+                    }
                     continue;
                 }
                 auto candidate = try_signature(resource, cast_registry, signature, arguments);
@@ -312,14 +314,20 @@ namespace services::dispatcher {
             return core::error_t(core::error_code_t::unrecognized_function,
                                  std::pmr::string{"unrecognized function '" + written + "'", resource});
         }
-        if (tied.empty() && rejected_by_context) {
+        if (tied.empty() && rejected_kind.has_value()) {
+            core::error_code_t code = core::error_code_t::wrong_object_type;
+            if (*rejected_kind == components::compute::function_type_t::aggregate) {
+                code = core::error_code_t::grouping_error;
+            } else if (*rejected_kind == components::compute::function_type_t::expand) {
+                code = core::error_code_t::unimplemented_yet;
+            }
             return core::error_t(
-                core::error_code_t::incorrect_function_argument,
+                code,
                 std::pmr::string{"function '" + written + "' is not allowed in this part of the statement", resource});
         }
         if (tied.empty()) {
             return core::error_t(
-                core::error_code_t::incorrect_function_argument,
+                core::error_code_t::unrecognized_function,
                 std::pmr::string{"function '" + written + "' does not accept (" + describe_arguments(arguments) + ")",
                                  resource});
         }
@@ -329,7 +337,7 @@ namespace services::dispatcher {
         if (auto chosen = prefer_string_at_null(arguments, tied); chosen.has_value()) {
             return std::move(tied[*chosen]);
         }
-        return core::error_t(core::error_code_t::incorrect_function_argument,
+        return core::error_t(core::error_code_t::ambiguous_function,
                              std::pmr::string{"call to function '" + written + "' with (" +
                                                   describe_arguments(arguments) +
                                                   ") is ambiguous between equally costly overloads",

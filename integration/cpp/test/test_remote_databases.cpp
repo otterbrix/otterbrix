@@ -367,11 +367,11 @@ TEST_CASE("integration::cpp::remote_databases::only_tables_in_a_database_of_a_co
                                    "CREATE SEQUENCE q;",
                                    "CREATE FUNCTION f(x INT) RETURNS INT AS 'x -> x';",
                                    "CREATE TYPE pair_t AS (x BIGINT);"}) {
-        host.db.check_refused(session, sql, code::invalid_parameter, refusal);
+        host.db.check_refused(session, sql, code::unimplemented_yet, refusal);
     }
     host.db.check_refused(any(),
                           "CREATE VIEW m2.shop.public.v AS SELECT id FROM m2.shop.public.orders;",
-                          code::invalid_parameter,
+                          code::unimplemented_yet,
                           refusal);
     host.db.ok(any(), "CREATE VIEW public.v AS SELECT id FROM m2.shop.public.orders;");
 }
@@ -397,7 +397,7 @@ TEST_CASE("integration::cpp::remote_databases::a_schema_needs_no_backend") {
     CHECK(host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_namespace WHERE nspname = 's';") == ints{1});
     CHECK(host.backend().changes().empty());
     const auto refused = host.refused(host.remote_database("m3", "shop"));
-    CHECK(refused.type == code::do_not_exists);
+    CHECK(refused.type == code::undefined_object);
     CHECK(std::string{refused.what} == "connection \"m3\" does not exist");
     CHECK(host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_database WHERE datconnection = 'm3';") == ints{0});
 }

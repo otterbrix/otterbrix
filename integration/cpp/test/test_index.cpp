@@ -136,12 +136,7 @@ static std::set<std::filesystem::path> list_index_dirs(const std::filesystem::pa
             session,                                                                                                   \
             components::logical_plan::execution_plan_t{dispatcher->resource(), plan, nullptr});                        \
         REQUIRE(res->is_error() == true);                                                                              \
-        /* DML operators wrap any operator-level set_error into create_physical_plan_error, so */                      \
-        /* "index already exists" can surface either as its own index_create_fail or as that   */                      \
-        /* wrapped code, depending on where the caller observes it.                            */                      \
-                                                                                                                       \
-        REQUIRE((res->get_error().type == core::error_code_t::index_create_fail ||                                     \
-                 res->get_error().type == core::error_code_t::create_physical_plan_error));                            \
+        REQUIRE(res->get_error().type == core::error_code_t::table_already_exists);                                    \
     } while (false)
 
 #define DROP_INDEX(INDEX_NAME)                                                                                         \

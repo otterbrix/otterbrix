@@ -407,7 +407,7 @@ TEST_CASE("expressions::graph_builder::a match mode that is not UTINYINT is refu
         auto expr = quantified(core::parameter_id_t{0});
         auto built = build_expression(&graph, parameters, expr.get(), types);
         REQUIRE(built.has_error());
-        REQUIRE(built.error().type == core::error_code_t::invalid_parameter);
+        REQUIRE(built.error().type == core::error_code_t::internal_error);
     }
     {
         execution_dag_t graph(resource());
@@ -429,6 +429,6 @@ TEST_CASE("expressions::graph_builder::a match mode that is not UTINYINT is refu
         auto expr = match(core::parameter_id_t{0});
         auto built = build_expression(&graph, parameters, expr.get(), types);
         REQUIRE(built.has_error());
-        REQUIRE(built.error().type == core::error_code_t::invalid_parameter);
+        REQUIRE(built.error().type == core::error_code_t::internal_error);
     }
 }

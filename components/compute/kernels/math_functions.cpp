@@ -46,7 +46,7 @@ namespace {
                 absolute_into<int128_t>(input, output, count, all_valid);
                 return core::error_t::no_error();
             default:
-                return core::error_t(core::error_code_t::kernel_error,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"abs: unsupported decimal storage width", ctx.resource()});
         }
     }
@@ -94,7 +94,7 @@ namespace {
                 vector_ops::copy(input, output, count, 0, 0);
                 break;
             default:
-                return core::error_t(core::error_code_t::kernel_error,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"abs is not defined for this type", exec_ctx.resource()});
         }
         return core::error_t::no_error();
@@ -184,11 +184,11 @@ namespace {
             }
             const auto argument = src[row];
             if (argument < 0) {
-                return core::error_t(core::error_code_t::kernel_error,
+                return core::error_t(core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"factorial of a negative number is undefined", resource});
             }
             if (argument > max_factorial_argument) {
-                return core::error_t(core::error_code_t::kernel_error,
+                return core::error_t(core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"factorial argument is too large for bigint", resource});
             }
             int64_t result = 1;

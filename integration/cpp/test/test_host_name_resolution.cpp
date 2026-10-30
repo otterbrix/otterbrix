@@ -385,7 +385,7 @@ TEST_CASE("integration::cpp::host_names::a_page_without_a_cursor_is_refused") {
         INFO(sql);
         auto refused = run(dispatcher, sql);
         REQUIRE(refused->is_error());
-        CHECK(refused->get_error().type == core::error_code_t::invalid_parameter);
+        CHECK(refused->get_error().type == core::error_code_t::protocol_violation);
         CHECK(std::string{refused->get_error().what} ==
               "the storage of table \"" + orders + "\" answered a page without a cursor");
     }
@@ -640,7 +640,7 @@ TEST_CASE("integration::cpp::host_names::returned_rows_wider_than_a_chunk_are_re
     host.backend().set_wide_returned(true);
     auto deleted = run(dispatcher, "DELETE FROM m2.shop.public.orders RETURNING id;");
     REQUIRE(deleted->is_error());
-    CHECK(deleted->get_error().type == core::error_code_t::invalid_parameter);
+    CHECK(deleted->get_error().type == core::error_code_t::protocol_violation);
     CHECK(std::string{deleted->get_error().what} ==
           "a storage answered a chunk of 2500 rows, more than the 1024 rows of a chunk");
 }
@@ -1090,7 +1090,7 @@ TEST_CASE("integration::cpp::host_names::a_run_without_the_connection_in_the_map
     dispatcher = host.db.dispatcher();
     auto refused = run(dispatcher, "SELECT id FROM m2.shop.public.orders;");
     REQUIRE(refused->is_error());
-    CHECK(refused->get_error().type == core::error_code_t::do_not_exists);
+    CHECK(refused->get_error().type == core::error_code_t::undefined_object);
     CHECK(std::string{refused->get_error().what} == "connection \"m2\" does not exist");
     REQUIRE(run(dispatcher, "SELECT 1;")->is_success());
 }

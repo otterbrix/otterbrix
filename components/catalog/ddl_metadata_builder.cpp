@@ -590,7 +590,7 @@ namespace components::catalog {
         // WRITER-SIDE GATE, the conkey gate's twin (see build_create_constraint_writes).
         for (std::size_t i = 0; i < column_attoids.size(); ++i) {
             if (column_attoids[i] == INVALID_OID) {
-                return core::error_t{core::error_code_t::invalid_constraint,
+                return core::error_t{core::error_code_t::internal_error,
                                      std::pmr::string{"index '" + index_name + "': indkey column #" +
                                                           std::to_string(i) +
                                                           " has no attoid; the row would claim a column without a "
@@ -795,7 +795,7 @@ namespace components::catalog {
             for (std::size_t i = 0; i < list->size(); ++i) {
                 if ((*list)[i] == INVALID_OID) {
                     const bool own = (list == &fk_column_attoids);
-                    return core::error_t{core::error_code_t::invalid_constraint,
+                    return core::error_t{core::error_code_t::internal_error,
                                          std::pmr::string{"constraint '" + constraint_name +
                                                               "': " + (own ? "conkey" : "confkey") + " column #" +
                                                               std::to_string(i) +

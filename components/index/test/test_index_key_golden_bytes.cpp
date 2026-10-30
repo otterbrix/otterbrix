@@ -273,7 +273,7 @@ TEST_CASE("index key bytes: UHUGEINT and composite keys have no encoding") {
             return core::error_t::no_error();
         });
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::invalid_parameter);
+        REQUIRE(error.type == core::error_code_t::internal_error);
 
         const std::string_view tag_only("\x1F", 1);
         REQUIRE(services::index::decode_key_bytes(arena(), tag_only).has_error());
@@ -288,7 +288,7 @@ TEST_CASE("index key bytes: UHUGEINT and composite keys have no encoding") {
             return core::error_t::no_error();
         });
         REQUIRE(error.contains_error());
-        REQUIRE(error.type == core::error_code_t::invalid_parameter);
+        REQUIRE(error.type == core::error_code_t::internal_error);
     }
 }
 

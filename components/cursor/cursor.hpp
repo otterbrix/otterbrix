@@ -51,7 +51,7 @@ namespace components::cursor {
 
         std::size_t size() const;
         std::size_t column_count() const;
-        // A name the result does not carry is a field_not_exists error, not a sentinel index.
+        // A name the result does not carry is an undefined_column error, not a sentinel index.
         [[nodiscard]] core::result_wrapper_t<std::size_t> column_index(std::string_view key) const;
 
         bool has_next() const;
@@ -178,7 +178,7 @@ namespace components::cursor {
                 case physical_type::DOUBLE:
                     return detail::from_floating<T>(vec.get_value<double>(index));
                 default:
-                    return make_error(core::error_code_t::conversion_failure,
+                    return make_error(core::error_code_t::datatype_mismatch,
                                       "the column's physical type is not numeric");
             }
         } else {
@@ -188,7 +188,7 @@ namespace components::cursor {
                               std::is_same_v<T, core::date::timestamptz_t> || std::is_same_v<T, core::date::interval_t>,
                           "cursor_t::get<T>: no cell type reads as T");
             if (vec.type().type() != types::to_logical_type<T>()) {
-                return make_error(core::error_code_t::conversion_failure,
+                return make_error(core::error_code_t::datatype_mismatch,
                                   "the column's type cannot be read as the requested type");
             }
             return vec.get_value<T>(index);
@@ -201,7 +201,7 @@ namespace components::cursor {
         assert(!is_write_ && "result is a row count, not a data");
         VALUE_OR_RETURN(const auto cell, resolve_cell(col_idx, row_idx, path));
         if (cell.is_null) {
-            return make_error(core::error_code_t::conversion_failure, "cell is NULL");
+            return make_error(core::error_code_t::null_value_no_indicator_parameter, "cell is NULL");
         }
         return read_cell<T>(*cell.vec, cell.index);
     }

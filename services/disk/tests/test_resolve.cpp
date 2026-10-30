@@ -556,7 +556,7 @@ TEST_CASE("services::disk::resolve::an_unowned_catalog_scan_is_not_no_rows") {
                               components::catalog::oid_t{well_known_oid::pg_class_table});
     INFO("a pg_cast scan that could not be performed must not answer 'no such cast'");
     REQUIRE(cast_oid.has_error());
-    CHECK(cast_oid.error().type == core::error_code_t::missing_table);
+    CHECK(cast_oid.error().type == core::error_code_t::internal_error);
 
     std::filesystem::remove_all(dir);
 }

@@ -555,19 +555,19 @@ namespace services::disk {
         if (it == storages_.end()) {
             std::pmr::string what{"storage_append: table oid is not owned by this disk agent: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         auto& entry = it->second;
         if (entry == nullptr) {
             std::pmr::string what{"storage_append: table oid has an empty entry on its disk agent: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         auto* s = entry->storage.get();
         if (s == nullptr) {
             std::pmr::string what{"storage_append: table oid has no materialized storage: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
 
         // No same-oid append can interleave: cooperative_actor won't pop the next message mid-await.
@@ -929,18 +929,18 @@ namespace services::disk {
         if (it == storages_.end()) {
             std::pmr::string what{"storage_update: table oid is not owned by this disk agent: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         auto& entry = it->second;
         if (entry == nullptr) {
             std::pmr::string what{"storage_update: table oid has an empty entry on its disk agent: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         if (entry->storage == nullptr) {
             std::pmr::string what{"storage_update: table oid has no materialized storage: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         // Every chunk is checked and widened before any row changes.
         auto& table = entry->table_storage.table();
@@ -1015,18 +1015,18 @@ namespace services::disk {
         if (it == storages_.end()) {
             std::pmr::string what{"storage_delete_rows: table oid is not owned by this disk agent: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         auto& entry = it->second;
         if (entry == nullptr) {
             std::pmr::string what{"storage_delete_rows: table oid has an empty entry on its disk agent: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         if (entry->storage == nullptr) {
             std::pmr::string what{"storage_delete_rows: table oid has no materialized storage: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         if (returning) {
             // The rows as they were, read before the delete stamps them, in the order they were named.
@@ -1075,13 +1075,13 @@ namespace services::disk {
         if (it == storages_.end()) {
             std::pmr::string what{"storage_fetch: table oid is not owned by this disk agent: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         auto& entry = it->second;
         if (entry == nullptr || entry->storage == nullptr) {
             std::pmr::string what{"storage_fetch: table oid has no materialized storage: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         if (expected_compact_epoch != k_fetch_epoch_unchecked &&
             expected_compact_epoch != entry->table_storage.table().compact_epoch()) {
@@ -1089,7 +1089,7 @@ namespace services::disk {
                                   "(row ids renumbered) after the index was built and before its rebuild "
                                   "finished; retry the statement",
                                   resource()};
-            co_return core::error_t{core::error_code_t::stale_index, std::move(what)};
+            co_return core::error_t{core::error_code_t::write_conflict, std::move(what)};
         }
         auto types = entry->storage->read_types(projected_cols.empty() ? nullptr : &projected_cols, txn);
         const bool capped = limit >= 0;
@@ -1115,7 +1115,7 @@ namespace services::disk {
                     what.append(std::to_string(frontier).c_str());
                     what.append(" rows) -- the index is ahead of its table after a restart; rebuild the "
                                 "index and retry the statement");
-                    co_return core::error_t{core::error_code_t::stale_index, std::move(what)};
+                    co_return core::error_t{core::error_code_t::index_corrupted, std::move(what)};
                 }
             }
         }
@@ -1152,12 +1152,12 @@ namespace services::disk {
         std::pmr::vector<components::vector::data_chunk_t> batches{resource()};
         auto it = storages_.find(table_oid);
         if (it == storages_.end()) {
-            return core::error_t{core::error_code_t::missing_table,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"scan: storage is not owned by this agent", resource()}};
         }
         auto& entry = it->second;
         if (entry == nullptr || entry->storage == nullptr) {
-            return core::error_t{core::error_code_t::missing_table,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"scan: storage is a record-only marker", resource()}};
         }
         auto scan_r = entry->storage->scan_batched(batches, filter, limit, projected_cols, txn);
@@ -1178,7 +1178,7 @@ namespace services::disk {
             auto it = storages_.find(table_oid);
             if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
                 co_return core::error_t{
-                    core::error_code_t::missing_table,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"scan filter: storage is not owned by this agent", resource()}};
             }
             auto built =
@@ -1325,7 +1325,7 @@ namespace services::disk {
                 std::pmr::string what{"storage_fetch_next_batch: no materialized storage to open a scan on: ",
                                       resource()};
                 what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-                co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+                co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
             }
             auto built =
                 build_filter_(filter.get(),
@@ -1369,7 +1369,7 @@ namespace services::disk {
             active_scans_.erase(cit);
             std::pmr::string what{"storage_fetch_next_batch: the table was dropped under an open cursor: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::table_dropped, std::move(what)};
+            co_return core::error_t{core::error_code_t::table_not_exists, std::move(what)};
         }
         auto* storage = storage_it->second->storage.get();
 
@@ -1400,7 +1400,7 @@ namespace services::disk {
                 msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
                 msg += std::pmr::string{": ", resource()};
                 msg += std::pmr::string{what, resource()};
-                return core::error_t{core::error_code_t::schema_error, std::move(msg)};
+                return core::error_t{core::error_code_t::internal_error, std::move(msg)};
             };
 
             // attoid survives RENAME; falls back to (name, type) when either side lacks one. `gone` = no match.
@@ -1510,7 +1510,7 @@ namespace services::disk {
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
             std::pmr::string what{"storage_open_scan_hold: table oid is not owned by this disk agent: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         active_scan_t hold{};
         hold.table_oid = table_oid;
@@ -1532,7 +1532,7 @@ namespace services::disk {
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
             std::pmr::string what{"storage_compact_epoch: table oid is not owned by this disk agent: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         co_return it->second->table_storage.table().compact_epoch();
     }
@@ -1549,7 +1549,7 @@ namespace services::disk {
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
             std::pmr::string what{"storage_reduce: no materialized storage to reduce over: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         auto built =
             build_filter_(filter.get(),
@@ -1600,12 +1600,12 @@ namespace services::disk {
         }
         // Unevaluable must refuse, not answer all-miss — empty buckets affirm "no children" to CASCADE/RESTRICT.
         if (key_col_indices.empty()) {
-            return core::error_t{core::error_code_t::invalid_parameter,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"fk semi-join: no key columns given", resource}};
         }
         if (keys.column_count() != key_col_indices.size()) {
             return core::error_t{
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string{"fk semi-join: key chunk arity does not match key columns", resource}};
         }
 
@@ -1751,11 +1751,11 @@ namespace services::disk {
                                                  std::pmr::vector<std::uint64_t>& out_indices,
                                                  std::pmr::memory_resource* resource) {
         if (entry == nullptr || entry->storage == nullptr) {
-            return core::error_t{core::error_code_t::missing_table,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"keyed read: storage is not owned by this agent", resource}};
         }
         if (key_col_names.empty()) {
-            return core::error_t{core::error_code_t::invalid_parameter,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"keyed read: no key columns given", resource}};
         }
         const auto& cols = entry->storage->columns();
@@ -1776,7 +1776,7 @@ namespace services::disk {
             if (col_idx == cols.size()) {
                 std::pmr::string what{"keyed read: table has no column ", resource};
                 what.append(kname.c_str());
-                return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
+                return core::error_t{core::error_code_t::internal_error, std::move(what)};
             }
             out_indices.push_back(static_cast<std::uint64_t>(col_idx));
         }
@@ -1787,17 +1787,17 @@ namespace services::disk {
                                                   const std::pmr::vector<std::uint64_t>& key_col_indices,
                                                   std::pmr::memory_resource* resource) {
         if (entry == nullptr || entry->storage == nullptr) {
-            return core::error_t{core::error_code_t::missing_table,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"keyed read: storage is not owned by this agent", resource}};
         }
         if (key_col_indices.empty()) {
-            return core::error_t{core::error_code_t::invalid_parameter,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"keyed read: no key columns given", resource}};
         }
         const auto ncols = entry->storage->columns().size();
         for (const auto idx : key_col_indices) {
             if (idx >= ncols) {
-                return core::error_t{core::error_code_t::invalid_parameter,
+                return core::error_t{core::error_code_t::internal_error,
                                      std::pmr::string{"keyed read: key column index out of range", resource}};
             }
         }
@@ -2003,7 +2003,7 @@ namespace services::disk {
         for (const auto& key_chunk : keys) {
             if (key_chunk.column_count() != key_col_indices.size()) {
                 return core::error_t{
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"keyed read: key chunk arity does not match key columns", resource()}};
             }
             nkeys += key_chunk.size();
@@ -2016,7 +2016,7 @@ namespace services::disk {
         std::size_t narity = key_col_indices.size();
 
         if (nkeys * narity > std::numeric_limits<std::uint32_t>::max()) {
-            return core::error_t{core::error_code_t::invalid_parameter,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"keyed read: key batch too large to bind", resource()}};
         }
 
@@ -2074,13 +2074,13 @@ namespace services::disk {
         if (it == storages_.end()) {
             std::pmr::string what{"storage_types: table oid is not owned by this disk agent: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         auto& entry = it->second;
         if (entry == nullptr || entry->storage == nullptr) {
             std::pmr::string what{"storage_types: table oid has no materialized storage: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         co_return entry->storage->types();
     }
@@ -2091,13 +2091,13 @@ namespace services::disk {
         if (it == storages_.end()) {
             std::pmr::string what{"storage_total_rows: table oid is not owned by this disk agent: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         auto& entry = it->second;
         if (entry == nullptr || entry->storage == nullptr) {
             std::pmr::string what{"storage_total_rows: table oid has no materialized storage: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         co_return entry->storage->total_rows();
     }
@@ -2587,7 +2587,7 @@ namespace services::disk {
                                                             static_cast<int64_t>(cat::pg_type_col::typnamespace),
                                                             "typname",
                                                             "typnamespace",
-                                                            core::error_code_t::type_already_exists,
+                                                            core::error_code_t::duplicate_object,
                                                             "type",
                                                             int64_t{-1}};
             static constexpr catalog_name_key_t pg_attribute_key{
@@ -2595,7 +2595,7 @@ namespace services::disk {
                 static_cast<int64_t>(cat::pg_attribute_col::attrelid),
                 "attname",
                 "attrelid",
-                core::error_code_t::already_exists,
+                core::error_code_t::duplicate_column,
                 "column",
                 static_cast<int64_t>(cat::pg_attribute_col::attisdropped)};
             switch (table_oid) {
@@ -2826,7 +2826,10 @@ namespace services::disk {
                     auto casted =
                         components::vector::vector_ops::cast_vector(resource(), src_vec, target_type, row.size());
                     if (casted.has_error()) {
-                        co_return casted.convert_error<components::pg_catalog_append_range_t>();
+                        std::pmr::string what{"append_pg_catalog_row: a catalog cell does not fit its column: ",
+                                              resource()};
+                        what.append(casted.error().what.c_str());
+                        co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
                     }
                     row.data[i] = std::move(casted.value());
                 }
@@ -3029,7 +3032,7 @@ namespace services::disk {
                                   resource()};
             what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
             what.append(" was not applied");
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         auto& entry = it->second;
 
@@ -3052,7 +3055,7 @@ namespace services::disk {
             what.append(" (row width ");
             what.append(std::to_string(col_count).c_str());
             what.append(")");
-            co_return core::error_t{core::error_code_t::schema_error, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
 
         const auto& table_columns = entry->table_storage.table().columns();
@@ -3100,7 +3103,7 @@ namespace services::disk {
                                   resource()};
             what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
             what.append("; its commit_id stamp was not applied");
-            co_return core::error_t{core::error_code_t::do_not_exists, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         patch.data[patch_col_idx].set_value(0, static_cast<std::int64_t>(commit_id));
 
@@ -3210,7 +3213,7 @@ namespace services::disk {
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
             std::pmr::string msg{"agent_disk::drop_storage_column: no materialized storage for table oid ", resource()};
             msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
-            co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::missing_table, std::move(msg)});
+            co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::internal_error, std::move(msg)});
         }
         auto dropped = it->second->drop_column(attname, resource());
         if (dropped.has_error()) {
@@ -3236,7 +3239,7 @@ namespace services::disk {
             std::pmr::string msg{"agent_disk::rename_storage_column: no materialized storage for table oid ",
                                  resource()};
             msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
-            co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::missing_table, std::move(msg)});
+            co_return core::result_wrapper_t<bool>(core::error_t{core::error_code_t::internal_error, std::move(msg)});
         }
         auto renamed = it->second->rename_column(old_attname, new_attname);
         if (renamed.has_error()) {
@@ -3288,7 +3291,7 @@ namespace services::disk {
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
             std::pmr::string what{"add_storage_column: no materialized storage for table oid ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
 
         // Journal BEFORE the column exists, so replay re-adds it ahead of anything written into it. The
@@ -3349,7 +3352,7 @@ namespace services::disk {
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
             std::pmr::string what{"stamp_column_dropped: no materialized storage for table oid ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         auto& table = it->second->table_storage.table();
         const auto position = table.find_visible_column(txn, static_cast<std::uint32_t>(attoid));
@@ -3358,7 +3361,7 @@ namespace services::disk {
             what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
             what.append(" in table oid ");
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::field_not_exists, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         // The transaction's own id: its later statements stop seeing the column, every other snapshot
         // keeps it until this transaction commits and publish_column_stamps rewrites the stamp.
@@ -3450,7 +3453,7 @@ namespace services::disk {
         if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
             std::pmr::string what{"storage_set_not_null: table oid is not owned by this disk agent: ", resource()};
             what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            co_return core::error_t{core::error_code_t::missing_table, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         auto& table = it->second->table_storage.table();
         const auto& columns = table.columns();
@@ -3461,7 +3464,7 @@ namespace services::disk {
         }
         std::pmr::string what{"storage_set_not_null: the table has no column of attoid ", resource()};
         what.append(std::to_string(static_cast<unsigned>(attoid)).c_str());
-        co_return core::error_t{core::error_code_t::schema_error, std::move(what)};
+        co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
     }
 
 } //namespace services::disk

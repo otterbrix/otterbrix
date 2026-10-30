@@ -79,7 +79,7 @@ namespace otterbrix { namespace util {
             case physical_type::STRING:
                 return std::string(value.get_value<std::string_view>(0));
             default:
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::unimplemented_yet,
                                      std::pmr::string{"cannot convert a value of type " +
                                                           components::catalog::format_type_be(value.type(), false) +
                                                           " to string",

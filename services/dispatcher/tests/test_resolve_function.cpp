@@ -184,7 +184,7 @@ TEST_CASE("dispatcher::resolve_function: an unknown name and a non-viable call r
 
     auto wrong = resolve("substring", {logical_type::BIGINT, logical_type::BIGINT});
     REQUIRE(wrong.has_error());
-    REQUIRE(wrong.error().type == core::error_code_t::incorrect_function_argument);
+    REQUIRE(wrong.error().type == core::error_code_t::unrecognized_function);
 }
 
 TEST_CASE("dispatcher::resolve_function: mergeable rides along from the matched function") {
@@ -233,7 +233,7 @@ TEST_CASE("dispatcher::resolve_function: the clause decides which function kinds
                                          components::compute::function_scope_t{},
                                          {});
     REQUIRE(sum_in_where.has_error());
-    REQUIRE(sum_in_where.error().type == core::error_code_t::incorrect_function_argument);
+    REQUIRE(sum_in_where.error().type == core::error_code_t::grouping_error);
 
     auto length_in_aggregate = resolve_function(resource(),
                                                 casts(),

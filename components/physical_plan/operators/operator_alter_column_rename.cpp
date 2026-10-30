@@ -94,7 +94,8 @@ namespace components::operators {
                 msg += " column(s), fewer than the ";
                 msg += std::to_string(static_cast<std::size_t>(catalog::pg_attribute_col::added_at_commit_id) + 1);
                 msg += " this build reads — the column cannot be resolved";
-                set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+                set_error(
+                    core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource_}});
                 co_return;
             }
             bool found = false;
@@ -173,7 +174,7 @@ namespace components::operators {
             msg += "\" of relation \"";
             msg += rel;
             msg += "\" does not exist";
-            set_error(core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+            set_error(core::error_t{core::error_code_t::undefined_column, std::pmr::string{std::move(msg), resource_}});
             mark_executed();
             co_return;
         }
@@ -258,7 +259,7 @@ namespace components::operators {
         if (rng.count == 0) {
             std::string msg = "operator_alter_column_rename: renamed row append produced no rows for attoid ";
             msg += std::to_string(attoid);
-            set_error(core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource_}});
+            set_error(core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource_}});
             mark_executed();
             co_return;
         }

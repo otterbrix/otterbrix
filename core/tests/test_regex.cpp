@@ -48,7 +48,7 @@ TEST_CASE("regex_t::compile invalid pattern returns an error, never throws") {
     // An unbalanced group: RE2 reports it via ok().
     auto compiled = regex_t::compile(resource, "(");
     REQUIRE(compiled.has_error());
-    REQUIRE(compiled.error().type == core::error_code_t::comparison_failure);
+    REQUIRE(compiled.error().type == core::error_code_t::invalid_regular_expression);
 }
 
 TEST_CASE("regex_t::compile newline options") {

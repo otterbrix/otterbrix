@@ -55,7 +55,7 @@ namespace services::planner {
     using components::logical_plan::node_type;
 
     core::error_t plan_refusal(std::pmr::memory_resource* resource, std::string_view what) {
-        return core::error_t{core::error_code_t::create_physical_plan_error, std::pmr::string{what, resource}};
+        return core::error_t{core::error_code_t::internal_error, std::pmr::string{what, resource}};
     }
 
     core::error_t unresolved_table_refusal(std::pmr::memory_resource* resource, const qualified_name_t& name) {
@@ -79,7 +79,7 @@ namespace services::planner {
         }
         std::pmr::string what{"no table metadata for oid ", context.resource};
         what += std::to_string(static_cast<unsigned>(table_oid));
-        return core::error_t{core::error_code_t::missing_table, std::move(what)};
+        return core::error_t{core::error_code_t::internal_error, std::move(what)};
     }
 
     qualified_name_t qualified_name_of(const components::logical_plan::resolved_table_metadata_t& table) {

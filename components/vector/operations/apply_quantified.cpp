@@ -215,7 +215,7 @@ namespace components::vector::operations {
         element_count_ = sequence.length;
         if (element_count_ >= std::numeric_limits<uint32_t>::max()) {
             prepared_ = false;
-            return core::error_t(core::error_code_t::invalid_parameter,
+            return core::error_t(core::error_code_t::program_limit_exceeded,
                                  std::pmr::string{"quantified comparison: the set is too large", resource_});
         }
         if (element_count_ == 0 || is_untyped(*sequence.child)) {
@@ -259,7 +259,7 @@ namespace components::vector::operations {
         if (!vector_ops::is_hashable(elements.type())) {
             prepared_ = false;
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string{"quantified comparison: the set's elements cannot be hashed", resource_});
         }
         vector_t shallow(elements);
@@ -348,28 +348,28 @@ namespace components::vector::operations {
                                    quantified_set_t* prepared) {
         if (!test.is_match() && !is_quantifiable(test.code())) {
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string{"quantified comparison: the operator is not a comparison", output->resource()});
         }
         const bool untyped_set = is_untyped(set);
         if (!untyped_set) {
             const auto physical = set.type().to_physical_type();
             if (physical != types::physical_type::LIST && physical != types::physical_type::ARRAY) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"quantified comparison: the set is neither a LIST nor an ARRAY",
                                                       output->resource()});
             }
             const auto& element = set.type().child_type();
             if (element.type() != types::logical_type::NA && !is_untyped(probe) &&
                 element.to_physical_type() != probe.type().to_physical_type()) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"quantified comparison: the probe and the set's elements "
                                                       "must be cast to a common type",
                                                       output->resource()});
             }
             if (test.is_match() && element.type() != types::logical_type::NA &&
                 element.to_physical_type() != types::physical_type::STRING) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"quantified match: the probe and the patterns must be strings",
                                                       output->resource()});
             }

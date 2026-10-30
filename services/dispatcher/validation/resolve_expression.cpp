@@ -107,7 +107,7 @@ namespace services::dispatcher::validation {
                         last_cardinality_ = cardinality_t::row;
                         break;
                     case expression_group::invalid:
-                        fail(core::error_code_t::invalid_parameter, "invalid expression");
+                        fail(core::error_code_t::protocol_violation, "invalid expression");
                         break;
                 }
                 if (error_.contains_error()) {
@@ -183,7 +183,7 @@ namespace services::dispatcher::validation {
                                                               std::string_view what) {
                 auto common = context_.cast_registry.find_best_common_type(types);
                 if (!common.has_value()) {
-                    error_ = core::error_t(core::error_code_t::invalid_parameter,
+                    error_ = core::error_t(core::error_code_t::datatype_mismatch,
                                            message(context_.resource, "no type is common to every ", what));
                     return invalid_type;
                 }
@@ -367,7 +367,7 @@ namespace services::dispatcher::validation {
                 const bool match = comparison->inner_op() == compare_type::regex;
                 if (!match &&
                     !components::vector::operations::is_quantifiable(to_operator_code(comparison->inner_op()))) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::wrong_object_type,
                          message(context_.resource,
                                  to_string(comparison->inner_op()),
                                  " cannot be quantified with ",
@@ -380,7 +380,7 @@ namespace services::dispatcher::validation {
                     return;
                 }
                 if (set.type() != logical_type::LIST && set.type() != logical_type::ARRAY) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::wrong_object_type,
                          message(context_.resource,
                                  "op ANY/ALL (array) requires array on right side, not ",
                                  components::catalog::format_type_be(set, false)));
@@ -388,7 +388,7 @@ namespace services::dispatcher::validation {
                 }
                 const auto& element = set.child_type();
                 auto no_operator = [&](const complex_logical_type& left, const complex_logical_type& right) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::unrecognized_function,
                          message(context_.resource,
                                  "operator does not exist: ",
                                  components::catalog::format_type_be(left, false),
@@ -444,7 +444,7 @@ namespace services::dispatcher::validation {
             void resolve_compare(compare_expression_t* comparison, bool inside_aggregate) {
                 switch (comparison->type()) {
                     case compare_type::invalid:
-                        fail(core::error_code_t::invalid_parameter, "invalid comparison");
+                        fail(core::error_code_t::protocol_violation, "invalid comparison");
                         return;
                     case compare_type::union_and:
                     case compare_type::union_or:
@@ -566,7 +566,7 @@ namespace services::dispatcher::validation {
                 if (complex_logical_type::contains(conversion->result_type(), [](const complex_logical_type& part) {
                         return part.to_physical_type() == components::types::physical_type::INVALID;
                     })) {
-                    fail(core::error_code_t::schema_error,
+                    fail(core::error_code_t::unimplemented_yet,
                          message(context_.resource,
                                  "type ",
                                  components::catalog::describe_type(conversion->result_type()),
@@ -577,7 +577,7 @@ namespace services::dispatcher::validation {
                                                                conversion->result_type(),
                                                                components::casts::cast_type::explicit_only);
                 if (!resolved.has_value()) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::cannot_coerce,
                          message(context_.resource,
                                  "no cast from ",
                                  components::catalog::describe_type(source),
@@ -675,7 +675,7 @@ namespace services::dispatcher::validation {
                 }
                 const bool reduces = resolved.value().function_type == components::compute::function_type_t::aggregate;
                 if (call->args().empty() && !call->has_star_argument() && reduces) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::wrong_object_type,
                          message(context_.resource,
                                  "(*) must be used to call the parameterless aggregate '",
                                  call->name(),
@@ -727,7 +727,7 @@ namespace services::dispatcher::validation {
                             return;
                         }
                         if (scalar->type() == scalar_type::get_field && !is_key(scalar->params()[0])) {
-                            fail(core::error_code_t::invalid_parameter,
+                            fail(core::error_code_t::protocol_violation,
                                  "a column read holds an operand that is not a column");
                             return;
                         }
@@ -736,7 +736,7 @@ namespace services::dispatcher::validation {
                     }
                     case scalar_type::constant: {
                         if (scalar->params().empty()) {
-                            fail(core::error_code_t::invalid_parameter, "constant expression with no value");
+                            fail(core::error_code_t::protocol_violation, "constant expression with no value");
                             return;
                         }
                         if (is_stamped(scalar->result_type())) {
@@ -774,7 +774,7 @@ namespace services::dispatcher::validation {
                         // Structural markers: the node-level pass expands them against the schema
                         // before any expression reaches here.
                         fail(
-                            core::error_code_t::invalid_parameter,
+                            core::error_code_t::protocol_violation,
                             message(context_.resource, to_string(scalar->type()), " is not valid in a value position"));
                         return;
                     case scalar_type::round:
@@ -785,16 +785,16 @@ namespace services::dispatcher::validation {
                     case scalar_type::sqrt:
                         // Legacy python-integration spellings. Every one of them is a function, so
                         // it resolves through the function arm; none is a scalar operator.
-                        fail(core::error_code_t::invalid_parameter,
+                        fail(core::error_code_t::unrecognized_function,
                              message(context_.resource,
                                      to_string(scalar->type()),
                                      " is a function, not a scalar operator"));
                         return;
                     case scalar_type::invalid:
-                        fail(core::error_code_t::invalid_parameter, "invalid scalar expression");
+                        fail(core::error_code_t::protocol_violation, "invalid scalar expression");
                         return;
                 }
-                fail(core::error_code_t::invalid_parameter,
+                fail(core::error_code_t::protocol_violation,
                      message(context_.resource, "unsupported scalar expression ", to_string(scalar->type())));
             }
 
@@ -803,7 +803,7 @@ namespace services::dispatcher::validation {
                 const bool is_case = scalar->type() == scalar_type::case_expr;
                 const size_t minimum = is_case ? 2 : 1;
                 if (scalar->params().size() < minimum) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::protocol_violation,
                          is_case ? "CASE expression with no THEN branch" : "COALESCE with no operands");
                     return;
                 }
@@ -841,7 +841,7 @@ namespace services::dispatcher::validation {
 
             void resolve_unary_operator(scalar_expression_t* scalar, bool inside_aggregate) {
                 if (scalar->params().empty()) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::protocol_violation,
                          message(context_.resource, to_string(scalar->type()), " with no operand"));
                     return;
                 }
@@ -853,7 +853,7 @@ namespace services::dispatcher::validation {
                 const auto resolved =
                     resolve_arithmetic(context_.cast_registry, to_operator_code(scalar->type()), operand);
                 if (!is_stamped(resolved.op.result)) {
-                    fail(core::error_code_t::arithmetics_failure,
+                    fail(core::error_code_t::unrecognized_function,
                          message(context_.resource,
                                  "operator ",
                                  to_string(scalar->type()),
@@ -868,7 +868,7 @@ namespace services::dispatcher::validation {
 
             void resolve_binary_operator(scalar_expression_t* scalar, bool inside_aggregate) {
                 if (scalar->params().size() < 2) {
-                    fail(core::error_code_t::invalid_parameter,
+                    fail(core::error_code_t::protocol_violation,
                          message(context_.resource, "operator ", to_string(scalar->type()), " needs two operands"));
                     return;
                 }
@@ -889,7 +889,7 @@ namespace services::dispatcher::validation {
                 const auto resolved =
                     resolve_arithmetic(context_.cast_registry, to_operator_code(scalar->type()), left, right);
                 if (!is_stamped(resolved.op.result)) {
-                    fail(core::error_code_t::arithmetics_failure,
+                    fail(core::error_code_t::unrecognized_function,
                          message(context_.resource,
                                  "operator ",
                                  to_string(scalar->type()),
@@ -925,7 +925,7 @@ namespace services::dispatcher::validation {
                 }
                 auto cast = context_.cast_registry.resolve(actual, wanted, components::casts::cast_type::implicit);
                 if (!cast.has_value()) {
-                    fail(core::error_code_t::schema_error,
+                    fail(core::error_code_t::datatype_mismatch,
                          message(context_.resource,
                                  what,
                                  " must be ",
@@ -953,7 +953,7 @@ namespace services::dispatcher::validation {
         const auto& result_type = expression->result_type();
         if (result_type.type() == logical_type::UNKNOWN || result_type.type() == logical_type::INVALID) {
             return core::error_t(
-                core::error_code_t::schema_error,
+                core::error_code_t::indeterminate_datatype,
                 std::pmr::string{"could not resolve a concrete type for expression", context.resource});
         }
         param_storage required{expression};

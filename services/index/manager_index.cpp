@@ -28,7 +28,7 @@ namespace {
             if (chunk.row_ids.data() == nullptr ||
                 chunk.row_ids.get_vector_type() != components::vector::vector_type::FLAT) {
                 return core::error_t{
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"index rebuild received a scan chunk without physical row_ids", resource}};
             }
         }
@@ -596,27 +596,27 @@ namespace services::index {
         // Mirrors create_index's gates and agent-first order (see there for why each gate exists).
         auto it = indexes_per_oid_.find(table_oid);
         if (it == indexes_per_oid_.end()) {
-            return core::error_t{core::error_code_t::index_create_fail,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"index bootstrap: the table is not registered with the index "
                                                   "manager (bootstrap order violated)",
                                                   resource_}};
         }
 
         if (match_index_relid(it->second, index_oid) != nullptr) {
-            return core::error_t{core::error_code_t::index_create_fail,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"index bootstrap: the index is already registered", resource_}};
         }
 
         if (match_index(it->second, keys, type) != nullptr) {
             return core::error_t{
-                core::error_code_t::index_create_fail,
+                core::error_code_t::internal_error,
                 std::pmr::string{"index bootstrap: an index over the same keys and type is already registered",
                                  resource_}};
         }
 
         if (keys.size() != 1) {
             return core::error_t{
-                core::error_code_t::index_create_fail,
+                core::error_code_t::internal_error,
                 std::pmr::string{"index bootstrap: multi-column indexes are not supported by any backend; the "
                                  "index would silently store only its first key's column",
                                  resource_}};
@@ -624,13 +624,13 @@ namespace services::index {
 
         if (type != components::logical_plan::index_type::single &&
             type != components::logical_plan::index_type::hashed) {
-            return core::error_t{core::error_code_t::index_create_fail,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"index bootstrap: unsupported index type", resource_}};
         }
 
         if (path_db_.empty()) {
             return core::error_t{
-                core::error_code_t::index_create_fail,
+                core::error_code_t::internal_error,
                 std::pmr::string{"index bootstrap: this index manager has no on-disk catalog path, and an "
                                  "index keeps its rows on disk",
                                  resource_}};
@@ -847,25 +847,25 @@ namespace services::index {
 
         auto it = indexes_per_oid_.find(table_oid);
         if (it == indexes_per_oid_.end()) {
-            co_return core::error_t{core::error_code_t::index_create_fail,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"the table is not registered with the index manager", resource_}};
         }
 
-        // (keys, hash) beside (keys, single) is legal; index_create_fail not already_exists: test_index pins this code.
+        // (keys, hash) beside (keys, single) is legal; table_already_exists: test_index pins this code.
         if (match_index_relid(it->second, index_oid) != nullptr || match_index(it->second, keys, type) != nullptr) {
-            co_return core::error_t{core::error_code_t::index_create_fail,
+            co_return core::error_t{core::error_code_t::table_already_exists,
                                     std::pmr::string{"index already exists", resource_}};
         }
 
         if (type != components::logical_plan::index_type::single &&
             type != components::logical_plan::index_type::hashed) {
-            co_return core::error_t{core::error_code_t::index_create_fail,
+            co_return core::error_t{core::error_code_t::unimplemented_yet,
                                     std::pmr::string{"unsupported index type", resource_}};
         }
 
         if (keys.size() != 1) {
             co_return core::error_t{
-                core::error_code_t::index_create_fail,
+                core::error_code_t::unimplemented_yet,
                 std::pmr::string{"index create: multi-column indexes are not supported by any backend; the "
                                  "index would silently store only its first key's column",
                                  resource_}};
@@ -873,7 +873,7 @@ namespace services::index {
 
         if (path_db_.empty()) {
             co_return core::error_t{
-                core::error_code_t::index_create_fail,
+                core::error_code_t::internal_error,
                 std::pmr::string{"index create: this index manager has no on-disk catalog path, and an index "
                                  "keeps its rows on disk",
                                  resource_}};
@@ -1402,7 +1402,7 @@ namespace services::index {
         if (it == indexes_per_oid_.end()) {
             // A planner invariant, not a data answer: an empty match would be the silent wrong
             // answer the no-fallback rule forbids.
-            co_return core::error_t{core::error_code_t::index_not_exists,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"index search: no index engine for the table oid", resource_}};
         }
 
@@ -1412,7 +1412,7 @@ namespace services::index {
         }
         if (record == nullptr) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"index search: the table has no index on the predicate key", resource_}};
         }
 
@@ -1421,7 +1421,7 @@ namespace services::index {
                                   compare == components::expressions::compare_type::is_not_null;
         if (compare != components::expressions::compare_type::eq && !is_null_test && !record->ordered) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"index search: this index has no ordering and cannot answer a range predicate",
                                  resource_}};
         }
@@ -1858,7 +1858,7 @@ namespace services::index {
                   static_cast<unsigned>(record_type));
             catchup_failures_.try_emplace(
                 txn_id,
-                core::error_t{core::error_code_t::index_create_fail,
+                core::error_t{core::error_code_t::internal_error,
                               std::pmr::string{"CREATE INDEX catchup could not place a WAL record: the table has "
                                                "no registry entry; the build is missing rows and may not publish",
                                                resource_}});
@@ -1921,7 +1921,7 @@ namespace services::index {
                   static_cast<unsigned>(record_type));
             catchup_failures_.try_emplace(
                 txn_id,
-                core::error_t{core::error_code_t::index_create_fail,
+                core::error_t{core::error_code_t::internal_error,
                               std::pmr::string{"CREATE INDEX could not place a record: the index it names is not "
                                                "registered on this table; the build is missing rows and may not "
                                                "publish",

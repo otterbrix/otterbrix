@@ -257,7 +257,7 @@ TEST_CASE("services::dispatcher::admin_errors::register_udf_duplicate_keeps_exec
                                           session_id_t{},
                                           components::compute::function_ptr{make_probe_func(mr.get(), fname)});
         REQUIRE(err.contains_error());
-        REQUIRE(err.type == core::error_code_t::function_registry_error);
+        REQUIRE(err.type == core::error_code_t::duplicate_function);
         REQUIRE(mentions(err, "already registered"));
     }
 }
@@ -270,7 +270,7 @@ TEST_CASE("services::dispatcher::admin_errors::cast_refusals_are_distinguishable
         auto err =
             test.dispatcher_invoke(&manager_dispatcher_t::unregister_cast, session_id_t{}, kCastSource, kCastTarget);
         REQUIRE(err.contains_error());
-        REQUIRE(err.type == core::error_code_t::schema_error);
+        REQUIRE(err.type == core::error_code_t::undefined_object);
         REQUIRE(mentions(err, "cast is not registered"));
     }
     {
@@ -281,7 +281,7 @@ TEST_CASE("services::dispatcher::admin_errors::cast_refusals_are_distinguishable
                                           kCastTarget,
                                           make_cast_entry());
         REQUIRE(err.contains_error());
-        REQUIRE(err.type == core::error_code_t::schema_error);
+        REQUIRE(err.type == core::error_code_t::undefined_object);
         REQUIRE(mentions(err, "not registered"));
         REQUIRE_FALSE(mentions(err, "cast is not registered"));
     }
@@ -300,7 +300,7 @@ TEST_CASE("services::dispatcher::admin_errors::cast_refusals_are_distinguishable
                                           kCastTarget,
                                           make_cast_entry());
         REQUIRE(err.contains_error());
-        REQUIRE(err.type == core::error_code_t::schema_error);
+        REQUIRE(err.type == core::error_code_t::duplicate_object);
         REQUIRE(mentions(err, "already registered"));
     }
 }
@@ -404,5 +404,5 @@ TEST_CASE("services::dispatcher::admin_errors::txn_accumulate_without_transactio
     auto err =
         test.dispatcher_invoke(&manager_dispatcher_t::txn_accumulate_msg, orphan_session, no_such_transaction, payload);
     REQUIRE(err.contains_error());
-    REQUIRE(err.type == core::error_code_t::transaction_inactive);
+    REQUIRE(err.type == core::error_code_t::internal_error);
 }

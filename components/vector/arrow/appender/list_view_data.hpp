@@ -101,7 +101,7 @@ namespace components::vector::arrow::appender {
                 if (std::is_same<BUFTYPE, int32_t>::value == true &&
                     static_cast<uint64_t>(last_offset) + list_length > std::numeric_limits<int32_t>::max()) {
                     return core::error_t(
-                        core::error_code_t::conversion_failure,
+                        core::error_code_t::program_limit_exceeded,
                         std::pmr::string("Arrow Appender: the combined list offset " +
                                              std::to_string(static_cast<uint64_t>(last_offset) + list_length) +
                                              " exceeds " + std::to_string(std::numeric_limits<int32_t>::max()) +

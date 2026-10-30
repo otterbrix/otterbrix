@@ -704,7 +704,7 @@ namespace services::dispatcher {
             auto res = co_await std::move(ack_futures[i]);
             if (!res) {
                 if (!fanout_error.contains_error()) {
-                    fanout_error = core::error_t{core::error_code_t::function_registry_error,
+                    fanout_error = core::error_t{core::error_code_t::internal_error,
                                                  std::pmr::string{"register_udf: executor " + std::to_string(i) +
                                                                       " of " + std::to_string(ack_futures.size()) +
                                                                       " returned no registration result",
@@ -797,7 +797,7 @@ namespace services::dispatcher {
             std::pmr::string msg{"only tables can be created in a schema of connection \"", resource()};
             msg.append(resolves.place.connection);
             msg.append("\"");
-            co_return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+            co_return core::error_t{core::error_code_t::unimplemented_yet, std::move(msg)};
         }
         co_return resolves.namespaces->entries().front().namespace_oid;
     }
@@ -885,7 +885,7 @@ namespace services::dispatcher {
             });
         });
         if (builtin) {
-            core::error_t refused{core::error_code_t::invalid_parameter,
+            core::error_t refused{core::error_code_t::dependent_objects_still_exist,
                                   std::pmr::string{"unregister_udf: '" + function_name +
                                                        "' is a builtin function and cannot be unregistered",
                                                    resource()}};
@@ -1009,7 +1009,7 @@ namespace services::dispatcher {
             end_statement_transaction_(session, statement_txn_id);
         }
         if (!res.cursor) {
-            co_return core::error_t{core::error_code_t::other_error,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"register_cast: the resolve pass returned no cursor", resource()}};
         }
         if (res.cursor->is_error()) {
@@ -1017,7 +1017,7 @@ namespace services::dispatcher {
         }
         if (!res.resolved_cast) {
             co_return core::error_t{
-                core::error_code_t::schema_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"register_cast: the resolve pass returned no resolved (source, target) pair",
                                  resource()}};
         }
@@ -1043,7 +1043,7 @@ namespace services::dispatcher {
         for (std::size_t i = 0; i < ack_futures.size(); ++i) {
             const bool accepted = co_await std::move(ack_futures[i]);
             if (!accepted && !fanout_error.contains_error()) {
-                fanout_error = core::error_t{core::error_code_t::schema_error,
+                fanout_error = core::error_t{core::error_code_t::internal_error,
                                              std::pmr::string{"register_cast: executor " + std::to_string(i) + " of " +
                                                                   std::to_string(ack_futures.size()) +
                                                                   " refused the cast entry; pg_cast left unwritten",
@@ -1109,7 +1109,7 @@ namespace services::dispatcher {
         }
         if (!res.cursor) {
             co_return core::error_t{
-                core::error_code_t::other_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"unregister_cast: the resolve pass returned no cursor", resource()}};
         }
         if (res.cursor->is_error()) {
@@ -1117,7 +1117,7 @@ namespace services::dispatcher {
         }
         if (!res.resolved_cast) {
             co_return core::error_t{
-                core::error_code_t::schema_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"unregister_cast: the resolve pass returned no resolved (source, target) pair",
                                  resource()}};
         }
@@ -1141,7 +1141,7 @@ namespace services::dispatcher {
         for (std::size_t i = 0; i < ack_futures.size(); ++i) {
             const bool removed = co_await std::move(ack_futures[i]);
             if (!removed && !fanout_error.contains_error()) {
-                fanout_error = core::error_t{core::error_code_t::schema_error,
+                fanout_error = core::error_t{core::error_code_t::internal_error,
                                              std::pmr::string{"unregister_cast: executor " + std::to_string(i) +
                                                                   " of " + std::to_string(ack_futures.size()) +
                                                                   " did not drop the cast; pg_cast row left in place",
@@ -1154,7 +1154,7 @@ namespace services::dispatcher {
         }
         if (!cast_registry_.remove(resolved_source, resolved_target)) {
             auto own_error = core::error_t{
-                core::error_code_t::do_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"unregister_cast: the dispatcher's own cast registry did not hold the cast; "
                                  "pg_cast row left in place",
                                  resource()}};
@@ -1457,7 +1457,7 @@ namespace services::dispatcher {
         auto* txn = statement_transaction_(session, transaction_id);
         if (txn == nullptr) {
             co_return core::error_t{
-                core::error_code_t::transaction_inactive,
+                core::error_code_t::internal_error,
                 std::pmr::string{"BEGIN: its transaction ended before BEGIN reached it", resource()}};
         }
         txn->keep_until_commit();
@@ -1560,7 +1560,7 @@ namespace services::dispatcher {
                   payload.created_storage_oids.size(),
                   payload.created_indexes.size());
             co_return core::error_t{
-                core::error_code_t::transaction_inactive,
+                core::error_code_t::internal_error,
                 std::pmr::string{"txn_accumulate_msg: the session has no active transaction, so the statement's "
                                  "accumulated ranges cannot be parked",
                                  resource()}};
@@ -1600,7 +1600,7 @@ namespace services::dispatcher {
         if (txn == nullptr || txn->scope() == components::table::transaction_scope_t::statement) {
             std::pmr::string what{statement, resource()};
             what += " can only be used in transaction blocks";
-            return core::error_t{core::error_code_t::transaction_inactive, std::move(what)};
+            return core::error_t{core::error_code_t::no_active_sql_transaction, std::move(what)};
         }
         return txn;
     }

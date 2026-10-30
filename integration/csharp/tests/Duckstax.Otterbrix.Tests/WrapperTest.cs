@@ -82,6 +82,36 @@ public class Tests
     }
 
     [Test]
+    public void AddColumnOfANameTheTableHasAnswersDuplicateColumn() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("AddColumnOfANameTheTableHasAnswersDuplicateColumn");
+        foreach (string statement in new[] { "CREATE SCHEMA s;", "CREATE TABLE s.t (a BIGINT);" }) {
+            using CursorWrapper cursor = otterbrix.Execute(statement);
+            Assert.IsTrue(cursor.IsSuccess(), statement);
+        }
+        using CursorWrapper refused = otterbrix.Execute("ALTER TABLE s.t ADD COLUMN a BIGINT;");
+        Assert.IsTrue(refused.IsError());
+        Assert.That(refused.GetError().type, Is.EqualTo(ErrorCode.DuplicateColumn));
+        Assert.That(refused.GetError().what, Is.EqualTo("column \"a\" already exists"));
+    }
+
+    [Test]
+    public void DivisionByZeroAnswersDivisionByZero() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("DivisionByZeroAnswersDivisionByZero");
+        using CursorWrapper refused = otterbrix.Execute("SELECT 1 / 0;");
+        Assert.IsTrue(refused.IsError());
+        Assert.That(refused.GetError().type, Is.EqualTo(ErrorCode.DivisionByZero));
+    }
+
+    [Test]
+    public void ASecondEngineOnOneDirectoryAnswersLockFileExists() {
+        string path = TestDirectory.Fresh("ASecondEngineOnOneDirectoryAnswersLockFileExists");
+        using OtterbrixWrapper first = new OtterbrixWrapper(Config.CreateConfig(path));
+        OtterbrixStartupException refused =
+            Assert.Throws<OtterbrixStartupException>(() => new OtterbrixWrapper(Config.CreateConfig(path)));
+        Assert.That(refused.Error.type, Is.EqualTo(ErrorCode.LockFileExists));
+    }
+
+    [Test]
     public void AlterSystemInsideABlockAnswersActiveSqlTransaction() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("AlterSystemInsideABlockAnswersActiveSqlTransaction");
         {

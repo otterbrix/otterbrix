@@ -30,14 +30,14 @@ namespace components::vector::arrow {
                                                            arrow_schema_wrapper_t& schema) {
         assert(arrow_array_stream.get_schema);
         if (arrow_array_stream.get_schema(&arrow_array_stream, &schema.arrow_schema)) {
-            return core::error_t(core::error_code_t::conversion_failure, std::pmr::string(get_error(), resource));
+            return core::error_t(core::error_code_t::invalid_parameter, std::pmr::string(get_error(), resource));
         }
         if (!schema.arrow_schema.release) {
-            return core::error_t(core::error_code_t::conversion_failure,
+            return core::error_t(core::error_code_t::invalid_parameter,
                                  std::pmr::string("arrow_scan: released schema passed", resource));
         }
         if (schema.arrow_schema.n_children < 1) {
-            return core::error_t(core::error_code_t::conversion_failure,
+            return core::error_t(core::error_code_t::invalid_parameter,
                                  std::pmr::string("arrow_scan: empty schema passed", resource));
         }
         return core::error_t::no_error();
@@ -49,7 +49,7 @@ namespace components::vector::arrow {
         // `resource` (vector buffers keep it alive past this scan step), so it must not bind to it.
         arrow_array_wrapper_ptr current_chunk(new arrow_array_wrapper_t());
         if (arrow_array_stream.get_next(&arrow_array_stream, &current_chunk->arrow_array)) {
-            return core::error_t(core::error_code_t::conversion_failure,
+            return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string("arrow_scan: get_next failed()", resource));
         }
 

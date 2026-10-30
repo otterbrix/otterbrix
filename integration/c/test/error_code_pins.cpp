@@ -10,3 +10,8 @@ static_assert(EC_DEPENDENT_OBJECTS_STILL_EXIST ==
               static_cast<int32_t>(core::error_code_t::dependent_objects_still_exist));
 static_assert(EC_SCHEMA_ALREADY_EXISTS == static_cast<int32_t>(core::error_code_t::schema_already_exists));
 static_assert(EC_SCHEMA_NOT_EXISTS == static_cast<int32_t>(core::error_code_t::schema_not_exists));
+static_assert(EC_DUPLICATE_COLUMN == static_cast<int32_t>(core::error_code_t::duplicate_column));
+static_assert(EC_LOCK_FILE_EXISTS == static_cast<int32_t>(core::error_code_t::lock_file_exists));
+static_assert(EC_DIVISION_BY_ZERO == static_cast<int32_t>(core::error_code_t::division_by_zero));
+static_assert(EC_UNIQUE_VIOLATION == static_cast<int32_t>(core::error_code_t::unique_violation));
+static_assert(EC_NO_ACTIVE_SQL_TRANSACTION == static_cast<int32_t>(core::error_code_t::no_active_sql_transaction));

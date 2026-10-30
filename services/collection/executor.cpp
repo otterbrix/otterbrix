@@ -609,7 +609,7 @@ namespace services::collection::executor {
         std::pmr::string msg{"connection \"", resource()};
         msg.append(connection);
         msg.append("\" does not exist");
-        return core::error_t{core::error_code_t::do_not_exists, std::move(msg)};
+        return core::error_t{core::error_code_t::undefined_object, std::move(msg)};
     }
 
     core::error_t executor_t::bind_storages_(components::logical_plan::catalog_resolves_t& resolves,
@@ -738,7 +738,7 @@ namespace services::collection::executor {
                 msg.append(" of table \"");
                 msg.append(name.to_string());
                 msg.append("\", which has no such column");
-                co_return core::error_t{core::error_code_t::schema_error, std::move(msg)};
+                co_return core::error_t{core::error_code_t::protocol_violation, std::move(msg)};
             }
             const auto& key_column = table->columns[written.delete_column].attname;
             for (auto& foreign_keys : written.delete_keys) {
@@ -893,7 +893,7 @@ namespace services::collection::executor {
             what += address.connection();
             what += "\" took a block wrongly: ";
             what.append(why.data(), why.size());
-            return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
+            return core::error_t{core::error_code_t::protocol_violation, std::move(what)};
         }
 
         // What a backend took of one offered block, put in the plan: a taken node becomes a node_remote_t; a SELECT
@@ -1313,7 +1313,7 @@ namespace services::collection::executor {
                 std::pmr::string msg{"type \"", resource()};
                 msg.append(drop.target().to_string());
                 msg.append("\" does not exist");
-                return core::error_t{core::error_code_t::type_not_exists, std::move(msg)};
+                return core::error_t{core::error_code_t::undefined_object, std::move(msg)};
             }
             case drop_target_kind::sequence:
             case drop_target_kind::macro:
@@ -1345,7 +1345,7 @@ namespace services::collection::executor {
                 msg.append(".");
                 msg.append(index_name);
                 msg.append(" does not exist");
-                return core::error_t{core::error_code_t::index_not_exists, std::move(msg)};
+                return core::error_t{core::error_code_t::undefined_object, std::move(msg)};
             }
         }
         return core::error_t::no_error();
@@ -1431,7 +1431,7 @@ namespace services::collection::executor {
             case node_type::create_sequence_t:
             case node_type::create_macro_t:
             case node_type::create_type_t:
-                return refuse(core::error_code_t::invalid_parameter,
+                return refuse(core::error_code_t::unimplemented_yet,
                               "only tables can be created in a schema of connection",
                               connection);
             case node_type::create_index_t:
@@ -1729,7 +1729,7 @@ namespace services::collection::executor {
                     msg.append("\" of relation \"");
                     msg.append(table.name);
                     msg.append("\" does not exist; use DROP COLUMN IF EXISTS to ignore it");
-                    return core::error_t{core::error_code_t::schema_error, std::move(msg)};
+                    return core::error_t{core::error_code_t::undefined_column, std::move(msg)};
                 }
             } else if (sub.kind == alter_table_kind::add_column && ordinary) {
                 if (auto duplicate =
@@ -1749,7 +1749,7 @@ namespace services::collection::executor {
                     msg.append("\" of relation \"");
                     msg.append(table.name);
                     msg.append("\" does not exist");
-                    return core::error_t{core::error_code_t::invalid_constraint, std::move(msg)};
+                    return core::error_t{core::error_code_t::undefined_object, std::move(msg)};
                 }
             }
             if (missing && sub.if_exists) {
@@ -2381,20 +2381,20 @@ namespace services::collection::executor {
             if (src.type() == logical_type::UNKNOWN || tgt.type() == logical_type::UNKNOWN) {
                 co_return execute_result_t{make_cursor(
                     resource(),
-                    core::error_t{core::error_code_t::schema_error,
+                    core::error_t{core::error_code_t::undefined_object,
                                   std::pmr::string{"cast source or target type is not registered", resource()}})};
             }
             const bool exists = cast_registry_.contains(src, tgt);
             if (original_type == node_type::register_cast_t && exists) {
                 co_return execute_result_t{
                     make_cursor(resource(),
-                                core::error_t{core::error_code_t::schema_error,
+                                core::error_t{core::error_code_t::duplicate_object,
                                               std::pmr::string{"cast is already registered", resource()}})};
             }
             if (original_type == node_type::unregister_cast_t && !exists) {
                 co_return execute_result_t{
                     make_cursor(resource(),
-                                core::error_t{core::error_code_t::schema_error,
+                                core::error_t{core::error_code_t::undefined_object,
                                               std::pmr::string{"cast is not registered", resource()}})};
             }
             execute_result_t ok{make_cursor(resource())};
@@ -2485,7 +2485,7 @@ namespace services::collection::executor {
                 if (plan.catalog_resolves.type_md(created) != nullptr) {
                     error = make_cursor(
                         resource(),
-                        core::error_t{core::error_code_t::schema_error,
+                        core::error_t{core::error_code_t::duplicate_object,
                                       std::pmr::string{("type: \'" + n->type().alias() + "\' already exists").c_str(),
                                                        resource()}});
                     break;
@@ -2594,7 +2594,7 @@ namespace services::collection::executor {
                         if (cstr->kind() == constraint_kind::foreign_key && (local_is_g || ref_is_g)) {
                             error = make_cursor(
                                 resource(),
-                                core::error_t{core::error_code_t::schema_error,
+                                core::error_t{core::error_code_t::unimplemented_yet,
                                               std::pmr::string{
                                                   "Foreign key constraints are not supported when the referencing or "
                                                   "referenced table is dynamic-schema (relkind='g'). FK enforcement "
@@ -2605,7 +2605,7 @@ namespace services::collection::executor {
                             error = make_cursor(
                                 resource(),
                                 core::error_t{
-                                    core::error_code_t::schema_error,
+                                    core::error_code_t::unimplemented_yet,
                                     std::pmr::string{
                                         "UNIQUE / PRIMARY KEY constraints are not supported on dynamic-schema "
                                         "(relkind='g') tables. Key enforcement requires stable column attoids; "
@@ -2615,7 +2615,7 @@ namespace services::collection::executor {
                         } else if (cstr->kind() == constraint_kind::check && local_is_g) {
                             error = make_cursor(
                                 resource(),
-                                core::error_t{core::error_code_t::schema_error,
+                                core::error_t{core::error_code_t::unimplemented_yet,
                                               std::pmr::string{
                                                   "CHECK constraints are not supported on dynamic-schema (relkind='g') "
                                                   "tables. CHECK enforcement requires stable column attoids; "
@@ -2890,7 +2890,7 @@ namespace services::collection::executor {
                                     co_return execute_result_t{make_cursor(
                                         resource(),
                                         core::error_t{
-                                            core::error_code_t::schema_error,
+                                            core::error_code_t::internal_error,
                                             std::pmr::string{"INSERT ... SELECT into a dynamic-schema table: the "
                                                              "source schema could not be resolved, so the written "
                                                              "columns cannot be registered in the catalog",
@@ -2902,7 +2902,7 @@ namespace services::collection::executor {
                                         co_return execute_result_t{make_cursor(
                                             resource(),
                                             core::error_t{
-                                                core::error_code_t::schema_error,
+                                                core::error_code_t::unimplemented_yet,
                                                 std::pmr::string{"INSERT ... SELECT into a dynamic-schema table: "
                                                                  "every source column needs a name to register; "
                                                                  "alias the expression (AS <name>)",
@@ -2965,7 +2965,7 @@ namespace services::collection::executor {
                         co_return execute_result_t{make_cursor(
                             resource(),
                             core::error_t{
-                                core::error_code_t::invalid_constraint,
+                                core::error_code_t::unimplemented_yet,
                                 std::pmr::string{"CHECK constraint expression is empty or contains "
                                                  "unsupported constructs (functions, subqueries, and CASE "
                                                  "expressions are not allowed; valid: comparisons, AND/OR/NOT, "
@@ -3228,7 +3228,7 @@ namespace services::collection::executor {
                                                 session,
                                                 resolve_txn.transaction_id,
                                                 std::move(payload));
-                // transaction_inactive means the ranges were parked NOWHERE — swallowing it fakes success.
+                // An error here means the ranges were parked NOWHERE — swallowing it fakes success.
                 auto accumulate_err = co_await std::move(acf);
                 if (accumulate_err.contains_error()) {
                     // A failed statement keeps its own error.
@@ -3392,7 +3392,7 @@ namespace services::collection::executor {
                 continue;
             }
             co_return std::make_unique<function_result_t>(core::error_t(
-                core::error_code_t::function_registry_error,
+                core::error_code_t::duplicate_function,
                 std::pmr::string{"function '" + name + "' is already registered with this signature", resource()}));
         }
         auto res = function_registry_.add_function(std::move(function));
@@ -3624,7 +3624,7 @@ namespace services::collection::executor {
                     what += std::to_string(components::vector::DEFAULT_VECTOR_CAPACITY);
                     what += "-row limit per batch; the source must slice it";
                     co_return core::result_wrapper_t<ops::chunks_vector_t>(
-                        core::error_t(core::error_code_t::invalid_parameter, std::move(what)));
+                        core::error_t(core::error_code_t::protocol_violation, std::move(what)));
                 }
                 if (analyze) {
                     source->record_analyze(batch.size(), scope.elapsed());
@@ -3853,7 +3853,7 @@ namespace services::collection::executor {
         namespace ops = components::operators;
         if (!root) {
             co_return core::result_wrapper_t<ops::chunks_vector_t>(
-                core::error_t{core::error_code_t::create_physical_plan_error,
+                core::error_t{core::error_code_t::internal_error,
                               std::pmr::string{"run_subplan: null root", resource()}});
         }
         root->prepare();
@@ -3972,7 +3972,7 @@ namespace services::collection::executor {
 
             if (!plan) {
                 cursor = make_cursor(resource(),
-                                     core::error_t(core::error_code_t::create_physical_plan_error,
+                                     core::error_t(core::error_code_t::internal_error,
                                                    std::pmr::string{"invalid query plan", resource()}));
                 break;
             }

@@ -47,7 +47,7 @@ namespace components::compute::detail {
         }
 
         [[nodiscard]] core::error_t not_accumulating() const {
-            return core::error_t(core::error_code_t::kernel_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"this kernel does not accumulate across chunks", error_resource()});
         }
 
@@ -59,13 +59,13 @@ namespace components::compute::detail {
         [[nodiscard]] core::error_t check_kernel() const {
             if (!kernel_ctx_) {
                 return core::error_t(
-                    core::error_code_t::kernel_error,
+                    core::error_code_t::internal_error,
 
                     std::pmr::string{"Kernel context is null, init() method must be called first!", error_resource()});
             }
 
             if (!kernel_) {
-                return core::error_t(core::error_code_t::kernel_error,
+                return core::error_t(core::error_code_t::internal_error,
 
                                      std::pmr::string{"Kernel is null, init() method must be called first!",
                                                       kernel_ctx_->exec_context().resource()});
@@ -129,7 +129,7 @@ namespace components::compute::detail {
             for (const auto& in : inputs) {
                 if (in.size() != rows) {
                     return core::error_t(
-                        core::error_code_t::kernel_error,
+                        core::error_code_t::internal_error,
                         std::pmr::string{"a fused vector batch needs every chunk to hold the same number of rows",
                                          exec_ctx().resource()});
                 }
@@ -189,7 +189,7 @@ namespace components::compute::detail {
             }
             if (groups.size() != inputs.size()) {
                 return core::error_t(
-                    core::error_code_t::kernel_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"an aggregate update needs one group id per input row", exec_ctx().resource()});
             }
             return kernel().update(kernel_ctx(), inputs, groups, states);
@@ -213,7 +213,7 @@ namespace components::compute::detail {
         // update()/finalize() and never produces a value straight out of one call.
         [[nodiscard]] core::error_t not_directly_executable() const {
             return core::error_t(
-                core::error_code_t::kernel_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"an aggregate is driven by update()/finalize(), not execute()", error_resource()});
         }
 

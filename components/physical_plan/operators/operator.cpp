@@ -193,7 +193,7 @@ namespace components::operators {
 
     actor_zeta::unique_future<core::result_wrapper_t<std::optional<vector::data_chunk_t>>>
     operator_t::source_next(pipeline::context_t* /*ctx*/) {
-        co_return core::error_t(core::error_code_t::physical_plan_error,
+        co_return core::error_t(core::error_code_t::internal_error,
                                 std::pmr::string{"operator is not a pipeline source", resource_});
     }
 
@@ -204,7 +204,7 @@ namespace components::operators {
 
     core::error_t
     operator_t::push(pipeline::context_t* /*ctx*/, vector::data_chunk_t&& /*input*/, chunks_vector_t& /*out*/) {
-        return core::error_t(core::error_code_t::physical_plan_error,
+        return core::error_t(core::error_code_t::internal_error,
                              std::pmr::string{"operator is not a streaming/sink pipeline operator", resource_});
     }
 

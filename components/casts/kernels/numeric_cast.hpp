@@ -154,7 +154,7 @@ namespace components::casts::kernels {
             if (!detail::cast_flat<Source, Target>(source, result, count, [lower, upper](Source v, Target* out) {
                     return detail::round_to_integer<Source, Target>(v, lower, upper, out);
                 })) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             return core::error_t::no_error();
@@ -166,7 +166,7 @@ namespace components::casts::kernels {
             }
             Target value;
             if (!detail::round_to_integer<Source, Target>(source.get_value<Source>(row), lower, upper, &value)) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             result->set_value(row, value);
@@ -239,7 +239,7 @@ namespace components::casts::kernels {
                                        uint64_t count) noexcept {
         if (detail::both_flat(source, *result)) {
             if (!detail::cast_flat<Source, Target>(source, result, count, detail::floating_fits<Source, Target>)) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             return core::error_t::no_error();
@@ -251,7 +251,7 @@ namespace components::casts::kernels {
             }
             Target value;
             if (!detail::floating_fits<Source, Target>(source.get_value<Source>(row), &value)) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             result->set_value(row, value);
@@ -332,7 +332,7 @@ namespace components::casts::kernels {
                                       uint64_t count) noexcept {
         if (detail::both_flat(source, *result)) {
             if (!detail::cast_flat<Source, Target>(source, result, count, detail::integer_narrow<Source, Target>)) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             return core::error_t::no_error();
@@ -344,7 +344,7 @@ namespace components::casts::kernels {
             }
             const Source value = source.get_value<Source>(row);
             if (!detail::integer_fits<Source, Target>(value)) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             result->set_value(row, static_cast<Target>(value));

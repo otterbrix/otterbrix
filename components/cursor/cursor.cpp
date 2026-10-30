@@ -119,7 +119,7 @@ namespace components::cursor {
         std::pmr::string message{"cursor_t::column_index: no column named \"", chunks_.get_allocator().resource()};
         message.append(key);
         message.append("\"");
-        return core::error_t{core::error_code_t::field_not_exists, std::move(message)};
+        return core::error_t{core::error_code_t::undefined_column, std::move(message)};
     }
     bool cursor_t::has_next() const { return static_cast<std::size_t>(current_index_ + 1) < size_; }
     void cursor_t::advance() { ++current_index_; }
@@ -145,7 +145,7 @@ namespace components::cursor {
         VALUE_OR_RETURN(const auto location, locate(row_idx));
         const auto& columns = chunks_[location.chunk].data;
         if (col_idx >= columns.size()) {
-            return make_error(core::error_code_t::field_not_exists, "column is out of range");
+            return make_error(core::error_code_t::invalid_parameter, "column is out of range");
         }
         const auto& column = columns[col_idx];
 
@@ -191,7 +191,7 @@ namespace components::cursor {
         assert(!is_write_ && "result is a row count, not a data");
         VALUE_OR_RETURN(const auto cell, resolve_cell(col_idx, row_idx, {}));
         if (cell.is_null) {
-            return make_error(core::error_code_t::conversion_failure, "cell is NULL");
+            return make_error(core::error_code_t::null_value_no_indicator_parameter, "cell is NULL");
         }
         switch (cell.vec->type().type()) {
             case types::logical_type::LIST:

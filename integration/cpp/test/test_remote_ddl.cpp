@@ -281,7 +281,7 @@ TEST_CASE("integration::cpp::remote_ddl::host_rows_wider_than_a_chunk_are_refuse
     host.register_shop();
     host.db.check_refused(any(),
                           "CREATE TABLE m2.shop.public.t1 (id BIGINT);",
-                          code::invalid_parameter,
+                          code::protocol_violation,
                           "a storage answered a chunk of 2500 rows, more than the 1024 rows of a chunk");
     CHECK(host.db.strings(any(), "SELECT name FROM otterstax.params;") == strings{});
 }
@@ -382,11 +382,11 @@ TEST_CASE("integration::cpp::remote_ddl::subcommands_of_one_alter_are_checked_in
     host.backend().clear_journal();
     host.db.check_refused(any(),
                           "ALTER TABLE m2.shop.public.t2 ADD COLUMN x BIGINT, ADD COLUMN x BIGINT;",
-                          code::already_exists,
+                          code::duplicate_column,
                           "column \"x\" already exists");
     host.db.check_refused(any(),
                           "ALTER TABLE m2.shop.public.t2 DROP COLUMN a, DROP COLUMN a;",
-                          code::schema_error,
+                          code::undefined_column,
                           "column \"a\" of relation \"t2\" does not exist; use DROP COLUMN IF EXISTS to ignore it");
     CHECK(host.backend().changes().empty());
     CHECK(columns_of(host, "t2") == strings{"id", "a"});

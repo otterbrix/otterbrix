@@ -387,7 +387,7 @@ namespace host_actor {
                     co_await std::move(turn);
                 }
                 if (!fail.empty()) {
-                    co_return core::error_t{core::error_code_t::physical_plan_error, std::pmr::string{fail, resource_}};
+                    co_return core::error_t{core::error_code_t::io_error, std::pmr::string{fail, resource_}};
                 }
             }
             std::lock_guard<std::mutex> guard(state_mutex_);
@@ -745,7 +745,7 @@ namespace host_actor {
                 return column.attoid == attoid;
             });
             if (found == table->columns.end()) {
-                co_return core::error_t{core::error_code_t::schema_error,
+                co_return core::error_t{core::error_code_t::undefined_column,
                                         std::pmr::string{"the test backend has no such column", resource_}};
             }
             journal_.push_back("alter drop " + table->name + " " + found->name);
@@ -1646,7 +1646,7 @@ namespace host_actor {
                 std::pmr::string{"storage \"" + name + "\" cannot change a row by its number", resource_}};
         }
         core::error_t not_null_error(const table_t& table, std::size_t column) const {
-            return core::error_t{core::error_code_t::invalid_constraint,
+            return core::error_t{core::error_code_t::not_null_violation,
                                  std::pmr::string{"null value in column \"" + table.columns[column].name +
                                                       "\" of relation \"" + table.name +
                                                       "\" violates not-null constraint",

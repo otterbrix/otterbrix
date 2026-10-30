@@ -683,7 +683,7 @@ TEST_CASE("services::index::disk_hash_table::create_reports_unopenable_storage")
 
     auto result = disk_hash_table_t::create(path, disk_hash_table_t::default_bucket_count, &resource);
     REQUIRE(result.has_error());
-    REQUIRE(result.error().type == core::error_code_t::index_create_fail);
+    REQUIRE(result.error().type == core::error_code_t::io_error);
 
     std::filesystem::remove_all(path);
 }

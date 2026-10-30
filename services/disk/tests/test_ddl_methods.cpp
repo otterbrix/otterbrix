@@ -829,11 +829,11 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
         {
             auto rows = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, targets[i]);
             REQUIRE(rows.has_error());
-            REQUIRE(rows.error().type == core::error_code_t::missing_table);
+            REQUIRE(rows.error().type == core::error_code_t::internal_error);
         }
         std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
         key_cols.emplace_back(0);
-        // A dropped storage cannot be read at all: the keyed read reports missing_table instead of an empty result.
+        // A dropped storage cannot be read at all: the keyed read reports internal_error instead of an empty result.
         auto dropped_read = fx.invoke(&manager_disk_t::read_chunks_by_key,
                                       fx.ctx(),
                                       targets[i],
@@ -841,7 +841,7 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
                                       test_probe::test_key_chunk(&fx.resource, static_cast<std::int64_t>(i + 1)),
                                       std::pmr::vector<std::uint64_t>{&fx.resource});
         REQUIRE(dropped_read.has_error());
-        REQUIRE(dropped_read.error().type == core::error_code_t::missing_table);
+        REQUIRE(dropped_read.error().type == core::error_code_t::internal_error);
     }
 
     REQUIRE(fx.boot.has_storage(survivor));
@@ -1049,7 +1049,7 @@ TEST_CASE("services::disk::ddl::catalog_append_refuses_a_string_cell_for_a_numer
                               catalog::well_known_oid::pg_class_table,
                               std::move(row));
     REQUIRE(appended.has_error());
-    CHECK(appended.error().type == core::error_code_t::conversion_failure);
+    CHECK(appended.error().type == core::error_code_t::internal_error);
 
     auto probe = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("str_cast_probe"));
     CHECK_FALSE(probe.found);
@@ -1080,7 +1080,7 @@ TEST_CASE("services::disk::ddl::catalog_append_refuses_a_numeric_cell_that_does_
                               catalog::well_known_oid::pg_class_table,
                               std::move(row));
     REQUIRE(appended.has_error());
-    CHECK(appended.error().type == core::error_code_t::conversion_failure);
+    CHECK(appended.error().type == core::error_code_t::internal_error);
 
     auto probe = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("range_probe"));
     CHECK_FALSE(probe.found);

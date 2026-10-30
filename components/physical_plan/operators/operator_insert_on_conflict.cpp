@@ -46,7 +46,7 @@ namespace components::operators {
 
     actor_zeta::unique_future<core::error_t> operator_insert_on_conflict_t::drive_(pipeline::context_t* ctx) {
         if (!ctx->runner) {
-            co_return core::error_t{core::error_code_t::physical_plan_error,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"INSERT ... ON CONFLICT: no sub-plan runner", resource_}};
         }
         auto inserted = co_await ctx->runner->run_subplan(insert_part_, ctx);
@@ -62,7 +62,7 @@ namespace components::operators {
             for (const auto& holder : check_->conflict_holders()) {
                 if (holder.written_by_statement || !affected.insert(holder.row_id).second) {
                     co_return core::error_t{
-                        core::error_code_t::invalid_constraint,
+                        core::error_code_t::cardinality_violation,
                         std::pmr::string{"ON CONFLICT DO UPDATE cannot affect a row a second time: two proposed "
                                          "rows have the same conflict key",
                                          resource_}};
@@ -146,7 +146,7 @@ namespace components::operators {
                 auto found = fetched.find(holders[holder].row_id);
                 if (found == fetched.end()) {
                     co_return core::error_t{
-                        core::error_code_t::invalid_constraint,
+                        core::error_code_t::internal_error,
                         std::pmr::string{"ON CONFLICT DO UPDATE: the conflicting row could not be read", resource_}};
                 }
                 sources.push_back(found->second);

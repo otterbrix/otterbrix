@@ -34,7 +34,7 @@ namespace components::operators {
                 // A column-ref argument is a correlated (LATERAL) reference; resolving
                 // it needs an outer row, which only the LATERAL-join path provides.
                 return core::error_t(
-                    core::error_code_t::create_physical_plan_error,
+                    core::error_code_t::unimplemented_yet,
                     std::pmr::string{"table function: correlated arguments require LATERAL (not yet supported)",
                                      resource_});
             }
@@ -52,7 +52,7 @@ namespace components::operators {
         args.set_cardinality(1);
 
         if (!function_) {
-            return core::error_t(core::error_code_t::create_physical_plan_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"table function: not resolved by validation", resource_});
         }
         auto kernel_res = function_->dispatch_exact(resource_, arg_types);

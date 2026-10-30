@@ -75,16 +75,19 @@ TEST_CASE("integration::cpp::engine_startup_refusal::a_directory_owned_from_anot
     test_spaces owner(config);
     bool refused = false;
     std::string refusal;
+    core::error_code_t code = core::error_code_t::none;
     std::thread second([&] {
         auto opened = otterbrix::base_otterbrix_t::open(config);
         refused = opened.has_error();
         if (refused) {
             refusal = opened.error().what.c_str();
+            code = opened.error().type;
         }
     });
     second.join();
     INFO("refusal: " << refusal);
     REQUIRE(refused);
+    CHECK(code == core::error_code_t::lock_file_exists);
     CHECK(refusal.find("unique directory") != std::string::npos);
 }
 

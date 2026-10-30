@@ -316,7 +316,7 @@ namespace components::vector::arrow {
         for (uint64_t col_idx = 0; col_idx < static_cast<uint64_t>(arrow_schema.n_children); col_idx++) {
             const auto& schema = *arrow_schema.children[col_idx];
             if (!schema.release) {
-                return core::error_t(core::error_code_t::conversion_failure,
+                return core::error_t(core::error_code_t::invalid_parameter,
                                      std::pmr::string("arrow_scan: released schema passed", resource));
             }
             auto name = std::string(schema.name);
@@ -330,7 +330,7 @@ namespace components::vector::arrow {
         for (uint64_t col_idx = 0; col_idx < static_cast<uint64_t>(arrow_schema.n_children); col_idx++) {
             auto& schema = *arrow_schema.children[col_idx];
             if (!schema.release) {
-                return core::error_t(core::error_code_t::conversion_failure,
+                return core::error_t(core::error_code_t::invalid_parameter,
                                      std::pmr::string("arrow_scan: released schema passed", resource));
             }
             auto arrow_type_res = arrow_logical_type(resource, schema);

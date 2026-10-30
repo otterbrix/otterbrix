@@ -48,7 +48,7 @@ namespace components::operators {
             std::unique_ptr<execution_dag::execution_dag_t> graph;
         };
 
-        // Refuses with invalid_constraint, naming `constraint_name` (see class comment).
+        // Refuses with internal_error, naming `constraint_name` (see class comment).
         // TODO: constraint should recive already remapped expressions or properrly filled data_chunk_t
         [[nodiscard]] core::result_wrapper_t<expressions::expression_ptr>
         bind_to_write_set_(const expressions::expression_ptr& predicate,

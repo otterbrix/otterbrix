@@ -13,7 +13,7 @@ namespace components::catalog::alter_column_validators {
                 msg.append("column \"");
                 msg.append(new_column_name);
                 msg.append("\" already exists");
-                return core::error_t{core::error_code_t::already_exists, std::move(msg)};
+                return core::error_t{core::error_code_t::duplicate_column, std::move(msg)};
             }
         }
         return core::error_t::no_error();
@@ -33,7 +33,7 @@ namespace components::catalog::alter_column_validators {
         if (default_value->type() != column_type) {
             std::pmr::string msg{resource};
             msg.append("default value type mismatch");
-            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+            return core::error_t{core::error_code_t::datatype_mismatch, std::move(msg)};
         }
         return core::error_t::no_error();
     }

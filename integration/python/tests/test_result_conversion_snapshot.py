@@ -838,7 +838,7 @@ ENTRY_POINTS = {'named': {"getitem 's'": ('ok', "'a'"),
              'iteration': ('ok', "[{0: 1, 1: 'x'}]"),
              'len': ('ok', '1')}}
 
-UUID_INSERT_ERROR = ('',
+UUID_INSERT_ERROR = ('datatype_mismatch',
  "insert_node: column 'v' is of type uuid but the inserted value is of type text; no cast between them may "
  'be applied on assignment')
 

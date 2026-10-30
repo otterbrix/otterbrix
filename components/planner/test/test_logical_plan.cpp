@@ -310,12 +310,12 @@ TEST_CASE("components::planner::limit_t_validate") {
     auto negative_limit = limit_t(-1).validate(&resource);
     REQUIRE(negative_limit.contains_error());
     REQUIRE(negative_limit.what == "LIMIT must not be negative");
-    REQUIRE(negative_limit.type == core::error_code_t::invalid_parameter);
+    REQUIRE(negative_limit.type == core::error_code_t::invalid_row_count_in_limit_clause);
 
     auto negative_offset = limit_t::all_from(-1).validate(&resource);
     REQUIRE(negative_offset.contains_error());
     REQUIRE(negative_offset.what == "OFFSET must not be negative");
-    REQUIRE(negative_offset.type == core::error_code_t::invalid_parameter);
+    REQUIRE(negative_offset.type == core::error_code_t::invalid_row_count_in_result_offset_clause);
 
     // OFFSET is checked first
     auto both = limit_t(-1, -1).validate(&resource);

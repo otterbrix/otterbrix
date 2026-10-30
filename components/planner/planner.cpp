@@ -530,7 +530,7 @@ namespace components::planner {
                 msg.append(" already exists (oid ");
                 msg.append(std::to_string(static_cast<std::uint64_t>(ci->name_conflict_oid())));
                 msg.append("); no index was created");
-                return core::error_t{core::error_code_t::index_create_fail, std::move(msg)};
+                return core::error_t{core::error_code_t::table_already_exists, std::move(msg)};
             }
 
             const catalog::oid_t index_oid = oid_batch.allocate();
@@ -569,7 +569,7 @@ namespace components::planner {
                 msg.append(".");
                 msg.append(di->index_name().t);
                 msg.append(" does not exist");
-                return core::error_t{core::error_code_t::index_not_exists, std::move(msg)};
+                return core::error_t{core::error_code_t::undefined_object, std::move(msg)};
             }
 
             constexpr catalog::oid_t pg_idx_coll = catalog::well_known_oid::pg_index_table;
@@ -680,7 +680,7 @@ namespace components::planner {
                         std::pmr::string msg{"ALTER TABLE ... DROP CONSTRAINT ", r};
                         msg.append(sub.constraint_name.data(), sub.constraint_name.size());
                         msg.append(": constraint oid unresolved — nothing was dropped");
-                        return core::error_t(core::error_code_t::invalid_constraint, std::move(msg));
+                        return core::error_t(core::error_code_t::internal_error, std::move(msg));
                     }
                     seq->append_child(boost::intrusive_ptr(new logical_plan::node_dynamic_cascade_delete_t(
                         r,
@@ -774,7 +774,7 @@ namespace components::planner {
         // compute_oid_demand and rewrite_* have drifted apart: parts of `rewritten` carry INVALID_OID.
         if (oid_batch.overrun()) {
             return core::error_t{
-                core::error_code_t::create_physical_plan_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"DDL rewrite consumed more OIDs than the statement asked for "
                                  "(compute_oid_demand and the rewrite disagree); the statement is refused "
                                  "rather than written with an invalid catalog identity",

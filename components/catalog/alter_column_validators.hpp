@@ -11,7 +11,7 @@
 
 namespace components::catalog::alter_column_validators {
 
-    // Reject duplicate column names; returns already_exists if new_column_name is in the visible set.
+    // Reject duplicate column names; returns duplicate_column if new_column_name is in the visible set.
     core::error_t validate_column_not_duplicate(std::pmr::memory_resource* resource,
                                                 const std::pmr::vector<std::string>& visible_column_names,
                                                 const std::string& new_column_name);

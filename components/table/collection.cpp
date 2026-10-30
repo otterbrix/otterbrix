@@ -471,7 +471,7 @@ namespace components::table {
 
     core::result_wrapper_t<bool> collection_t::revert_append(int64_t row_start, uint64_t count) {
         if (!is_tail(row_start, count)) {
-            return core::error_t(core::error_code_t::invalid_parameter,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string("table revert: the range is not the table's tail", resource_));
         }
         if (count == 0) {
@@ -482,7 +482,7 @@ namespace components::table {
         auto cut_it = session_cuts_.find(row_start);
         if (cut_it == session_cuts_.end()) {
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string("table revert: no append session started at the revert row", resource_));
         }
         uint64_t segment_index;
@@ -553,7 +553,7 @@ namespace components::table {
                 // must not read back as a completed one -- the count alone cannot tell them apart
                 // (see the repeat-delete case in services/disk/tests/test_error_handling.cpp).
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string("table delete: a row id names no row group of this table", resource_));
             }
             for (pos++; pos < count; pos++) {

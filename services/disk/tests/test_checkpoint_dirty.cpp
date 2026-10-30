@@ -387,7 +387,7 @@ TEST_CASE("services::disk::checkpoint_dirty::a_refused_message_writes_none_of_it
                                  std::move(chunks),
                                  false);
         REQUIRE(refused.has_error());
-        CHECK(refused.error().type == core::error_code_t::invalid_constraint);
+        CHECK(refused.error().type == core::error_code_t::not_null_violation);
 
         auto rows = fd.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid);
         REQUIRE_FALSE(rows.has_error());

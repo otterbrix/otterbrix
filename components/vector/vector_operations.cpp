@@ -1382,7 +1382,7 @@ namespace components::vector::vector_ops {
             message.append(" -> ");
             message.append(std::to_string(static_cast<int>(target_type.type())).c_str());
             message.append(")");
-            return core::error_t{core::error_code_t::conversion_failure, std::move(message)};
+            return core::error_t{core::error_code_t::datatype_mismatch, std::move(message)};
         }
     } // namespace
 
@@ -1432,7 +1432,7 @@ namespace components::vector::vector_ops {
             message.append(" -> ");
             message.append(std::to_string(static_cast<int>(target_type.type())).c_str());
             message.append(")");
-            return core::error_t{core::error_code_t::conversion_failure, std::move(message)};
+            return core::error_t{core::error_code_t::numeric_value_out_of_range, std::move(message)};
         }
         return target;
     }
@@ -1524,7 +1524,7 @@ namespace components::vector::vector_ops {
         // Refuses the type up front — both callbacks' string leg was `assert(false)`, UNINITIALIZED under NDEBUG.
         if (src.type().to_physical_type() == types::physical_type::STRING) {
             std::pmr::string msg{"apply_unary_vector_op: string operand has no numeric reading", resource};
-            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+            return core::error_t{core::error_code_t::internal_error, std::move(msg)};
         }
         const bool to_double =
             op == unary_vector_op::sqr_root || op == unary_vector_op::cube_root || op == unary_vector_op::factorial;
@@ -1653,7 +1653,7 @@ namespace components::vector::vector_ops {
         if (!integral_lhs) {
             std::pmr::string msg{"apply_binary_vector_op: bitwise/shift ops are defined for integer types only",
                                  resource};
-            return core::error_t{core::error_code_t::invalid_parameter, std::move(msg)};
+            return core::error_t{core::error_code_t::internal_error, std::move(msg)};
         }
         std::optional<vector_t> rhs_casted;
         const vector_t* rhs_ptr = &rhs;

@@ -39,7 +39,7 @@ typedef struct config_t {
 // - out_error and rows are never nullptr, params is nullptr only with param_count 0.
 // No call throws (each is noexcept): a refusal is an error_message or an error cursor.
 // Running out of memory terminates the process, so a call that answers a cursor never answers nullptr.
-// When the OS refuses a thread, otterbrix_create answers thread_start_failed for a manager loop thread and
+// When the OS refuses a thread, otterbrix_create answers insufficient_resources for a manager loop thread and
 // terminates the process for an actor-zeta scheduler thread (actor-zeta#188).
 // A const char* answered from a cursor or a value is borrowed: it stays valid until release_cursor or release_value
 // of that handle and is never passed to otterbrix_free_string.

@@ -64,7 +64,7 @@ namespace components::table::storage {
 
     core::result_wrapper_t<uint64_t> temporary_spill_file_t::write(const std::byte* data, uint64_t size) {
         if (size == 0) {
-            return core::error_t(core::error_code_t::invalid_parameter,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"temporary_spill_file_t::write: zero-length buffer", resource_});
         }
         if (construction_error_.contains_error()) {

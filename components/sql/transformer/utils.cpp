@@ -93,7 +93,7 @@ namespace components::sql::transform {
             switch (reason) {
                 case refusal_reason::ambiguous:
                     message = "column reference \"" + reference + "\" is ambiguous: " + detail + " all answer to it";
-                    return core::error_t{core::error_code_t::ambiguous_name, std::pmr::string{message, resource}};
+                    return core::error_t{core::error_code_t::ambiguous_alias, std::pmr::string{message, resource}};
                 case refusal_reason::hidden_by_alias:
                     message = "invalid reference to FROM-clause entry for \"" + reference +
                               "\": the table is there under the alias \"" + detail + "\" — write \"" + detail + "." +
@@ -252,7 +252,7 @@ namespace components::sql::transform {
                                                 outer->name->database == inner->name->database &&
                                                 outer->name->schema == inner->name->schema;
                 if (!outer->alias->empty() || !inner->alias->empty() || same_qualification) {
-                    return core::error_t{core::error_code_t::ambiguous_name,
+                    return core::error_t{core::error_code_t::duplicate_alias,
                                          std::pmr::string{"table name \"" + outer->visible_name() +
                                                               "\" specified more than once — give one of them an alias",
                                                           resource}};
@@ -739,7 +739,7 @@ namespace components::sql::transform {
             msg += ", ";
             msg += std::to_string(static_cast<unsigned>(scale));
             msg += ")";
-            return core::error_t(core::error_code_t::invalid_parameter, std::move(msg));
+            return core::error_t(core::error_code_t::numeric_value_out_of_range, std::move(msg));
         };
         // PostgreSQL trims whitespace and reads an exponent; a stray character is a refusal, never a partial read.
         size_t begin = 0;
@@ -1442,7 +1442,7 @@ namespace components::sql::transform {
                                                             types::complex_logical_type{types::logical_type::DOUBLE},
                                                             1));
             if (std::fpclassify(as_double.get_value<double>(0)) == FP_ZERO) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::division_by_zero,
                                      std::pmr::string{"division by zero", resource});
             }
         }
@@ -1472,7 +1472,7 @@ namespace components::sql::transform {
         }();
         const auto result_type = types::arithmetic_result_type(lhs_type, rhs_type, kind);
         if (result_type == types::logical_type::NA) {
-            return core::error_t(core::error_code_t::invalid_parameter,
+            return core::error_t(core::error_code_t::unrecognized_function,
                                  std::pmr::string{"operator " + std::string(op_str) + " is not defined for " +
                                                       components::catalog::format_type_be(lhs.type()) + " and " +
                                                       components::catalog::format_type_be(rhs.type()),
@@ -1902,7 +1902,7 @@ namespace components::sql::transform {
     core::result_wrapper_t<std::string>
     slice_check_expression(std::pmr::memory_resource* resource, const char* raw_sql, int check_location) {
         if (!raw_sql) {
-            return core::error_t{core::error_code_t::invalid_constraint,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"CHECK constraint cannot be stored: the statement text is not "
                                                   "available to read the expression from",
                                                   resource}};
@@ -1910,7 +1910,7 @@ namespace components::sql::transform {
         const std::string_view sql{raw_sql};
         if (check_location < 0 || static_cast<std::size_t>(check_location) >= sql.size()) {
             return core::error_t{
-                core::error_code_t::invalid_constraint,
+                core::error_code_t::internal_error,
                 std::pmr::string{"CHECK constraint cannot be stored: its position in the statement is unknown",
                                  resource}};
         }
@@ -1922,7 +1922,7 @@ namespace components::sql::transform {
         }
         if (cursor >= sql.size()) {
             return core::error_t{
-                core::error_code_t::invalid_constraint,
+                core::error_code_t::internal_error,
                 std::pmr::string{"CHECK constraint cannot be stored: no '(' follows the CHECK keyword", resource}};
         }
 
@@ -1947,13 +1947,13 @@ namespace components::sql::transform {
         }
         if (depth != 0) {
             return core::error_t{
-                core::error_code_t::invalid_constraint,
+                core::error_code_t::internal_error,
                 std::pmr::string{"CHECK constraint cannot be stored: its parentheses are unbalanced", resource}};
         }
 
         const auto expression = trim_view(sql.substr(begin, cursor - begin));
         if (expression.empty()) {
-            return core::error_t{core::error_code_t::invalid_constraint,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"CHECK constraint carries no expression", resource}};
         }
         return std::string{expression};

@@ -146,7 +146,7 @@ TEST_CASE("integration::cpp::empty_statement_transaction::without_if_exists_each
          core::error_code_t::table_not_exists,
          "relation \"leakdb.nosuch\" does not exist"},
         {"DROP TABLE nosuchdb.nosuch;", core::error_code_t::schema_not_exists, "schema \"nosuchdb\" does not exist"},
-        {"DROP TYPE nosuch_type;", core::error_code_t::type_not_exists, "type \"nosuch_type\" does not exist"},
+        {"DROP TYPE nosuch_type;", core::error_code_t::undefined_object, "type \"nosuch_type\" does not exist"},
         {"DROP SEQUENCE leakdb.nosuch;",
          core::error_code_t::table_not_exists,
          "relation \"leakdb.nosuch\" does not exist"},
@@ -158,16 +158,16 @@ TEST_CASE("integration::cpp::empty_statement_transaction::without_if_exists_each
          core::error_code_t::table_not_exists,
          "relation \"leakdb.nosuch\" does not exist"},
         {"DROP INDEX leakdb.t.nosuch;",
-         core::error_code_t::index_not_exists,
+         core::error_code_t::undefined_object,
          "DROP INDEX: index leakdb.t.nosuch does not exist"},
         {"ALTER TABLE leakdb.nosuch ADD CONSTRAINT c UNIQUE (id);",
          core::error_code_t::table_not_exists,
          "relation \"leakdb.nosuch\" does not exist"},
         {"ALTER TABLE leakdb.t DROP COLUMN nosuch;",
-         core::error_code_t::schema_error,
+         core::error_code_t::undefined_column,
          "column \"nosuch\" of relation \"t\" does not exist; use DROP COLUMN IF EXISTS to ignore it"},
         {"ALTER TABLE leakdb.t DROP CONSTRAINT nosuch;",
-         core::error_code_t::invalid_constraint,
+         core::error_code_t::undefined_object,
          "constraint \"nosuch\" of relation \"t\" does not exist"},
         {"ALTER TABLE leakdb.nosuch ADD COLUMN x bigint;",
          core::error_code_t::table_not_exists,
@@ -217,7 +217,7 @@ TEST_CASE("integration::cpp::empty_statement_transaction::an_existing_table_is_d
     require_ok(connection, "CREATE TABLE IF NOT EXISTS leakdb.t (a int, a int);");
     auto refused = connection.execute("CREATE TABLE leakdb.t (a int, a int);");
     REQUIRE(refused->is_error());
-    CHECK(refused->get_error().type == core::error_code_t::duplicate_field);
+    CHECK(refused->get_error().type == core::error_code_t::duplicate_column);
     CHECK(std::string(refused->get_error().what) == "column \"a\" specified more than once");
 }
 

@@ -19,8 +19,8 @@ namespace otterbrix { namespace util {
 
     namespace {
 
-        core::error_t make_error(std::pmr::memory_resource* r, const char* what) {
-            return core::error_t{core::error_code_t::other_error, std::pmr::string{what, r}};
+        core::error_t make_error(core::error_code_t code, std::pmr::memory_resource* r, const char* what) {
+            return core::error_t{code, std::pmr::string{what, r}};
         }
 
         // An integer or FLOAT cell as the double a DOUBLE column answers with.
@@ -104,9 +104,13 @@ namespace otterbrix { namespace util {
                 case logical_type::UBIGINT:
                     return py::object(py::cast(leaf.data<uint64_t>()[index]));
                 case logical_type::HUGEINT:
-                    return make_error(r, "OtterBrix doen\'t support hugeint conversation to python object");
+                    return make_error(core::error_code_t::unimplemented_yet,
+                                      r,
+                                      "OtterBrix doen\'t support hugeint conversation to python object");
                 case logical_type::UHUGEINT:
-                    return make_error(r, "OtterBrix doen\'t support uhugeint conversation to python object");
+                    return make_error(core::error_code_t::unimplemented_yet,
+                                      r,
+                                      "OtterBrix doen\'t support uhugeint conversation to python object");
                 case logical_type::FLOAT:
                     return py::object(py::cast(leaf.data<float>()[index]));
                 case logical_type::DOUBLE:
@@ -119,15 +123,15 @@ namespace otterbrix { namespace util {
                     return py::object(pydigits.attr("__truediv__")(py::int_(extension->scale())));
                 }
                 case logical_type::ENUM:
-                    return make_error(r, "OtterBrix doen\'t support enum type");
+                    return make_error(core::error_code_t::unimplemented_yet, r, "OtterBrix doen\'t support enum type");
                 case logical_type::UNION:
-                    return make_error(r, "OtterBrix doen\'t support union type");
+                    return make_error(core::error_code_t::unimplemented_yet, r, "OtterBrix doen\'t support union type");
                 case logical_type::STRING_LITERAL:
                     return python_string(leaf.data<std::string_view>()[index]);
                 case logical_type::UUID:
                 case logical_type::BLOB:
                 case logical_type::BIT:
-                    return make_error(r, "Unimplemented type for value access");
+                    return make_error(core::error_code_t::unimplemented_yet, r, "Unimplemented type for value access");
                 case logical_type::TIMESTAMP: {
                     const auto timestamp = leaf.data<int64_t>()[index];
                     if (timestamp == std::numeric_limits<int64_t>::max()) {
@@ -208,7 +212,7 @@ namespace otterbrix { namespace util {
                     return py::object(std::move(dict));
                 }
                 default:
-                    return make_error(r, "Unsupported type: ");
+                    return make_error(core::error_code_t::unimplemented_yet, r, "Unsupported type: ");
             }
         }
 

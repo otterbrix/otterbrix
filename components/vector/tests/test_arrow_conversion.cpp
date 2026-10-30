@@ -562,7 +562,7 @@ TEST_CASE("components::vector::to_arrow_array::map") {
         ArrowArray array;
         auto err = to_arrow_array(chunk, &array);
         REQUIRE(err.contains_error());
-        CHECK(err.type == core::error_code_t::conversion_failure);
+        CHECK(err.type == core::error_code_t::null_value_not_allowed);
         CHECK(err.what == "Arrow doesn't accept NULL keys on Maps");
         CHECK(array.release == nullptr);
     }
@@ -579,7 +579,7 @@ TEST_CASE("components::vector::to_arrow_array::list_offset_past_int32_is_an_erro
     ArrowArray array;
     auto err = to_arrow_array(chunk, &array);
     REQUIRE(err.contains_error());
-    CHECK(err.type == core::error_code_t::conversion_failure);
+    CHECK(err.type == core::error_code_t::program_limit_exceeded);
     CHECK(err.what == "Arrow Appender: the combined list offset 2147483648 exceeds 2147483647, the maximum of "
                       "regular list buffers");
     CHECK(array.release == nullptr);

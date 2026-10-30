@@ -33,7 +33,7 @@ namespace components::operators {
             std::pmr::string what{"the backend of connection \"", resource};
             what += address.connection();
             what += "\" answered a block with a page of other columns";
-            return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
+            return core::error_t{core::error_code_t::protocol_violation, std::move(what)};
         }
 
     } // namespace
@@ -83,7 +83,7 @@ namespace components::operators {
             std::pmr::string what{"the backend of connection \"", resource_};
             what += address_.connection();
             what += "\" answered a page without a cursor";
-            core::error_t refused{core::error_code_t::invalid_parameter, std::move(what)};
+            core::error_t refused{core::error_code_t::protocol_violation, std::move(what)};
             set_error(refused);
             mark_failed();
             co_return refused;

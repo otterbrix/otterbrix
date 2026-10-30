@@ -19,7 +19,7 @@ namespace {
         INFO(sql);
         REQUIRE(cur);
         REQUIRE(cur->is_error());
-        CHECK(cur->get_error().type == core::error_code_t::index_create_fail);
+        CHECK(cur->get_error().type == core::error_code_t::undefined_object);
     }
 
 } // namespace

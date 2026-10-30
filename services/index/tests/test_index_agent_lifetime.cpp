@@ -170,7 +170,7 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
     auto answer = std::move(read_future).take_ready();
     REQUIRE(answer.has_error());
     INFO("error was: " << answer.error().what.c_str());
-    CHECK(answer.error().type == core::error_code_t::index_not_exists);
+    CHECK(answer.error().type == core::error_code_t::internal_error);
 
     std::filesystem::remove_all(path);
 }

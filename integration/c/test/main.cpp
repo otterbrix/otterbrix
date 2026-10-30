@@ -16,6 +16,7 @@
 #include <thread>
 #include <type_traits>
 #include <unistd.h>
+#include <utility>
 
 namespace {
 
@@ -678,7 +679,7 @@ TEST_CASE("c-api: a second engine on the same main_path is refused", "[c-api][li
 
     error_message refusal{};
     REQUIRE(otterbrix_create(cfg, &refusal) == nullptr);
-    REQUIRE(refusal.code != 0);
+    CHECK(refusal.code == EC_LOCK_FILE_EXISTS);
     REQUIRE(refusal.message != nullptr);
     const std::string reason{refusal.message};
     otterbrix_free_string(refusal.message);
@@ -1034,6 +1035,47 @@ TEST_CASE("c-api: ALTER SYSTEM inside a transaction block answers active_sql_tra
                          EC_ACTIVE_SQL_TRANSACTION,
                          "ALTER SYSTEM cannot run inside a transaction block");
     run_ok(t.ptr, "ROLLBACK;");
+}
+
+TEST_CASE("c-api: ADD COLUMN of a name the table has answers duplicate_column", "[c-api][errors]") {
+    test_db_t t("duplicate_column");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE SCHEMA s;");
+    run_ok(t.ptr, "CREATE TABLE s.t (a BIGINT);");
+    const std::string add = "ALTER TABLE s.t ADD COLUMN a BIGINT;";
+    require_error_cursor(execute_sql(t.ptr, sv(add)), EC_DUPLICATE_COLUMN, "column \"a\" already exists");
+}
+
+TEST_CASE("c-api: CREATE SCHEMA of a name the database has answers schema_already_exists", "[c-api][errors]") {
+    test_db_t t("schema_already_exists");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE SCHEMA s;");
+    const std::string again = "CREATE SCHEMA s;";
+    require_error_cursor(execute_sql(t.ptr, sv(again)), EC_SCHEMA_ALREADY_EXISTS, "schema \"s\" already exists");
+}
+
+TEST_CASE("c-api: division by zero and a duplicate key and SAVEPOINT outside a block answer their codes",
+          "[c-api][errors]") {
+    test_db_t t("sqlstate_codes");
+    REQUIRE(t.ptr != nullptr);
+
+    run_ok(t.ptr, "CREATE SCHEMA s;");
+    run_ok(t.ptr, "CREATE TABLE s.t (a BIGINT);");
+    run_ok(t.ptr, "ALTER TABLE s.t ADD CONSTRAINT pk_t PRIMARY KEY (a);");
+    run_ok(t.ptr, "INSERT INTO s.t (a) VALUES (1);");
+    for (const auto& [query, code] :
+         {std::pair<std::string, int32_t>{"SELECT 1 / 0;", EC_DIVISION_BY_ZERO},
+          std::pair<std::string, int32_t>{"INSERT INTO s.t (a) VALUES (1);", EC_UNIQUE_VIOLATION},
+          std::pair<std::string, int32_t>{"SAVEPOINT a;", EC_NO_ACTIVE_SQL_TRANSACTION}}) {
+        cursor_ptr cur = execute_sql(t.ptr, sv(query));
+        REQUIRE(cur != nullptr);
+        REQUIRE(cursor_is_error(cur));
+        INFO(query << " -> " << cursor_error_message(cur));
+        CHECK(cursor_error_code(cur) == code);
+        release_cursor(cur);
+    }
 }
 
 TEST_CASE("c-api: DROP of a built-in type answers dependent_objects_still_exist", "[c-api][errors]") {

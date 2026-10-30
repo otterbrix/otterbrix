@@ -328,7 +328,7 @@ TEST_CASE("integration::cpp::current_place::a_type_lives_in_its_place_and_its_sc
                      "ON t.typnamespace = n.oid WHERE t.typname = 'pair_t';") == std::vector<std::string>{"s"});
     db.ok(in_public, "CREATE TABLE more_pairs (p s.pair_t);");
     const auto bare = db.refused(in_public, "CREATE TABLE no_pairs (p pair_t);");
-    CHECK(bare.type == code::schema_error);
+    CHECK(bare.type == code::undefined_object);
     db.ok(in_public, "CREATE TYPE public.pair_t AS (z BIGINT);");
     CHECK(db.ints(in_public, "SELECT count(*) FROM pg_catalog.pg_type WHERE typname = 'pair_t';") ==
           std::vector<std::int64_t>{2});

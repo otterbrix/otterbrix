@@ -125,6 +125,34 @@ TEST_CASE("services::disk::error::duplicate_namespace_name_refused_at_write") {
     REQUIRE(r.oid == a);
 }
 
+// A second live pg_attribute row of one name in one relation is a duplicate column.
+TEST_CASE("services::disk::error::duplicate_column_name_refused_at_write") {
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "dup_col");
+    std::vector<components::table::column_definition_t> cols;
+    cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    const auto table_oid = test_create_table(fx, ns_oid, "t", std::move(cols));
+
+    auto attoids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+    auto row = catalog::build_pg_attribute_row(&fx.resource,
+                                               attoids[0],
+                                               table_oid,
+                                               std::string("id"),
+                                               well_known_oid::int64_type,
+                                               /*attnum*/ 2,
+                                               /*not_null*/ false,
+                                               /*has_default*/ false,
+                                               /*is_dropped*/ false,
+                                               /*typspec*/ std::string{},
+                                               /*defspec*/ std::string{});
+    auto second = fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                            fx.ctx(),
+                            catalog::well_known_oid::pg_attribute_table,
+                            std::move(row));
+    REQUIRE(second.has_error());
+    CHECK(second.error().type == core::error_code_t::duplicate_column);
+}
+
 TEST_CASE("services::disk::error::topological_drop_empty") {
     core::pmr::otterbrix_resource resource;
     auto edges = [](std::pmr::memory_resource* mr, oid_t /*cls*/, oid_t /*oid*/) {

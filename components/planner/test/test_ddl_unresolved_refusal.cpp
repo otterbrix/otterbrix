@@ -58,7 +58,7 @@ TEST_CASE("components::planner::ddl_unresolved::drop_index_on_a_missing_index_is
 
     INFO("DROP INDEX on an index enrich could not resolve must refuse, not report success");
     REQUIRE(rewritten.has_error());
-    REQUIRE(rewritten.error().type == core::error_code_t::index_not_exists);
+    REQUIRE(rewritten.error().type == core::error_code_t::undefined_object);
 }
 
 // IF EXISTS rides the DROP node (node_drop_t::if_exists): the planner refuses a missing index either way, and
@@ -73,5 +73,5 @@ TEST_CASE("components::planner::ddl_unresolved::drop_index_if_exists_on_a_missin
     auto rewritten = planner.create_plan(&resource, node, std::vector<oid_t>{}, 0);
 
     REQUIRE(rewritten.has_error());
-    REQUIRE(rewritten.error().type == core::error_code_t::index_not_exists);
+    REQUIRE(rewritten.error().type == core::error_code_t::undefined_object);
 }

@@ -478,7 +478,7 @@ namespace services::dispatcher {
             const auto& unique_keys = constraints ? constraints->unique_constraints : no_keys;
             if (on_conflict.action == on_conflict_action_t::do_update && on_conflict.constraint_name.empty() &&
                 on_conflict.target_columns.empty()) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::sql_parse_error,
                                      std::pmr::string{"ON CONFLICT DO UPDATE requires a conflict target: a column "
                                                       "list or ON CONSTRAINT",
                                                       resource});
@@ -492,10 +492,21 @@ namespace services::dispatcher {
                     }
                 }
                 if (arbiters.empty()) {
-                    std::pmr::string what{"ON CONFLICT: constraint \"", resource};
+                    const bool named =
+                        constraints && std::any_of(constraints->constraint_oids.begin(),
+                                                   constraints->constraint_oids.end(),
+                                                   [wanted](const auto& held) { return held.first == wanted; });
+                    if (named) {
+                        return core::error_t(
+                            core::error_code_t::wrong_object_type,
+                            std::pmr::string{"constraint in ON CONFLICT clause has no associated index", resource});
+                    }
+                    std::pmr::string what{"constraint \"", resource};
                     what += on_conflict.constraint_name;
-                    what += "\" is not a UNIQUE or PRIMARY KEY constraint of the target table";
-                    return core::error_t(core::error_code_t::do_not_exists, std::move(what));
+                    what += "\" for table \"";
+                    what += table->name;
+                    what += "\" does not exist";
+                    return core::error_t(core::error_code_t::undefined_object, std::move(what));
                 }
             } else if (!on_conflict.target_columns.empty()) {
                 std::set<std::string_view> target(on_conflict.target_columns.begin(), on_conflict.target_columns.end());
@@ -505,7 +516,7 @@ namespace services::dispatcher {
                     }
                 }
                 if (arbiters.empty()) {
-                    return core::error_t(core::error_code_t::invalid_constraint,
+                    return core::error_t(core::error_code_t::invalid_column_reference,
                                          std::pmr::string{"ON CONFLICT: no UNIQUE or PRIMARY KEY constraint matches "
                                                           "the conflict target",
                                                           resource});
@@ -542,7 +553,7 @@ namespace services::dispatcher {
         }
 
         core::error_t column_read_without_a_column(std::pmr::memory_resource* resource) {
-            return core::error_t(core::error_code_t::invalid_parameter,
+            return core::error_t(core::error_code_t::protocol_violation,
                                  std::pmr::string{"a column read holds an operand that is not a column", resource});
         }
 
@@ -569,7 +580,7 @@ namespace services::dispatcher {
 
         core::error_t ambiguous_order_key(std::pmr::memory_resource* resource,
                                           const components::expressions::key_t& key) {
-            return core::error_t(core::error_code_t::ambiguous_name,
+            return core::error_t(core::error_code_t::ambiguous_column,
                                  std::pmr::string{"ORDER BY \"" + key.as_string() + "\" is ambiguous", resource});
         }
 
@@ -593,7 +604,7 @@ namespace services::dispatcher {
             }
             if (!components::expressions::is_expr(sort_key->operand()) ||
                 !components::expressions::as_expr(sort_key->operand())) {
-                return core::error_t(core::error_code_t::invalid_parameter,
+                return core::error_t(core::error_code_t::protocol_violation,
                                      std::pmr::string{"ORDER BY key is neither a column nor an expression", resource});
             }
             return core::error_t::no_error();
@@ -689,7 +700,7 @@ namespace services::dispatcher {
                                                                const storage_parameters& parameters) {
             if (entry->group() != expression_group::scalar) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::protocol_violation,
                     std::pmr::string{"ORDER BY holds an entry that is not a sort key", context.resource});
             }
             return resolve_scalar_output_type(
@@ -1155,7 +1166,7 @@ namespace services::dispatcher {
                     }
                     default:
                         return core::error_t(
-                            core::error_code_t::invalid_parameter,
+                            core::error_code_t::protocol_violation,
                             std::pmr::string{"ORDER BY holds an expression it cannot bind to the groups", resource});
                 }
             };
@@ -1254,7 +1265,7 @@ namespace services::dispatcher {
                         : components::expressions::is_expr(operand) &&
                               components::expressions::as_expr(operand)->result_type().type() != logical_type::INVALID;
                 if (sort_key->ordinal() != 0 || !bound) {
-                    return core::error_t(core::error_code_t::invalid_parameter,
+                    return core::error_t(core::error_code_t::protocol_violation,
                                          std::pmr::string{"ORDER BY key is not bound to a column", resource});
                 }
             }
@@ -1601,7 +1612,7 @@ namespace services::dispatcher {
                 std::pmr::string msg{"column \"", resource};
                 msg.append(columns[later].name().c_str());
                 msg.append("\" specified more than once");
-                return core::error_t{core::error_code_t::duplicate_field, std::move(msg)};
+                return core::error_t{core::error_code_t::duplicate_column, std::move(msg)};
             }
         }
         return core::error_t::no_error();
@@ -1636,7 +1647,7 @@ namespace services::dispatcher {
             return core::error_t::no_error();
         }
         return core::error_t(
-            core::error_code_t::schema_error,
+            core::error_code_t::undefined_object,
             std::pmr::string{"type: \'" + written.to_string() + "\' is not registered in catalog", resource});
     }
 
@@ -1655,7 +1666,7 @@ namespace services::dispatcher {
             auto conversion =
                 cast_registry->resolve(written.type(), column.type(), components::casts::cast_type::assignment);
             if (!conversion.has_value()) {
-                return core::error_t(core::error_code_t::conversion_failure,
+                return core::error_t(core::error_code_t::datatype_mismatch,
                                      std::pmr::string{"DEFAULT for column '" + column.name() +
                                                           "' may not be converted to the column's type on assignment",
                                                       resource});
@@ -1678,7 +1689,7 @@ namespace services::dispatcher {
         auto encoded = components::types::encode_type_spec(type, spec);
         if (encoded.has_error()) {
             return core::error_t(
-                core::error_code_t::schema_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{subject + " cannot be persisted: " + std::string(encoded.error().what.c_str()),
                                  resource});
         }
@@ -1690,7 +1701,7 @@ namespace services::dispatcher {
                                      const components::types::complex_logical_type& type) {
         if (auto refused = components::table::column_data_t::validate_column_type(type, resource);
             refused.contains_error()) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::unimplemented_yet,
                                  std::pmr::string{subject + " of type " + components::catalog::describe_type(type) +
                                                       " cannot be stored: " + std::string(refused.what.c_str()),
                                                   resource});
@@ -1745,7 +1756,7 @@ namespace services::dispatcher {
                         what += " rows exceeds the ";
                         what += std::to_string(components::vector::DEFAULT_VECTOR_CAPACITY);
                         what += "-row limit per chunk; split it into a batch of chunks";
-                        result = core::error_t(core::error_code_t::invalid_parameter, std::move(what));
+                        result = core::error_t(core::error_code_t::protocol_violation, std::move(what));
                         return false;
                     }
                 }
@@ -1780,7 +1791,7 @@ namespace services::dispatcher {
                                    cols.end());
                         if (dropped_count != 0 && names_readable) {
                             result = core::error_t(
-                                core::error_code_t::schema_error,
+                                core::error_code_t::indeterminate_datatype,
                                 std::pmr::string{
                                     insert_arity_disagreement(written_column_list->key_translation().size(),
                                                               cols.size()) +
@@ -1887,7 +1898,7 @@ namespace services::dispatcher {
                         }
                         auto* se = reinterpret_cast<scalar_expression_t*>(expr.get());
                         if (se->type() == scalar_type::jsonb_expand || se->type() == scalar_type::jsonb_delete) {
-                            return core::error_t(core::error_code_t::schema_error,
+                            return core::error_t(core::error_code_t::unimplemented_yet,
                                                  std::pmr::string{"table-valued jsonb operator ('->'/'#>'/'-'/'#-') "
                                                                   "is not supported with GROUP BY or aggregation",
                                                                   resource});
@@ -2067,7 +2078,7 @@ namespace services::dispatcher {
                                     }
                                 }
                                 if (matched.empty()) {
-                                    return core::error_t(core::error_code_t::schema_error,
+                                    return core::error_t(core::error_code_t::table_not_exists,
                                                          std::pmr::string{(std::string{"alias '"} + alias.c_str() +
                                                                            "' has no columns in scope")
                                                                               .c_str(),
@@ -2195,7 +2206,7 @@ namespace services::dispatcher {
                             }
                             if (is_expand && cols.empty()) {
                                 return core::error_t(
-                                    core::error_code_t::schema_error,
+                                    core::error_code_t::undefined_column,
                                     std::pmr::string{
                                         (std::string{"jsonb expand: path '"} + prefix + "' matches no column").c_str(),
                                         resource});
@@ -2245,7 +2256,7 @@ namespace services::dispatcher {
                                 for (size_t j = 1; j < key.path().size(); j++) {
                                     if (!res_type->is_nested()) {
                                         return core::error_t(
-                                            core::error_code_t::schema_error,
+                                            core::error_code_t::wrong_object_type,
                                             std::pmr::string{"trying to access field of non-nested type", resource});
                                     } else if (res_type->type() == logical_type::STRUCT) {
                                         res_type = &res_type->child_types()[key.path()[j]];
@@ -2292,7 +2303,7 @@ namespace services::dispatcher {
                             column_key key{col.result_alias, col_alias, col.type.type(), col.side};
                             if (!seen_cols.insert(std::move(key)).second) {
                                 return core::error_t(
-                                    core::error_code_t::schema_error,
+                                    core::error_code_t::ambiguous_column,
                                     std::pmr::string{"column '" + col_alias +
                                                          "' has multiple types; use explicit type selection",
                                                      resource});
@@ -2488,7 +2499,7 @@ namespace services::dispatcher {
                         if (!components::expressions::is_expr(scalar_expr->params().front()) ||
                             !components::expressions::as_expr(scalar_expr->params().front())) {
                             return core::error_t(
-                                core::error_code_t::invalid_parameter,
+                                core::error_code_t::protocol_violation,
                                 std::pmr::string{"GROUP BY key holds an operand that is not an expression", resource});
                         }
                         auto& operand = components::expressions::as_expr(scalar_expr->params().front());
@@ -2612,7 +2623,7 @@ namespace services::dispatcher {
                                 for (size_t j = 1; j < key.path().size(); j++) {
                                     if (!res_type->is_nested()) {
                                         return core::error_t(
-                                            core::error_code_t::schema_error,
+                                            core::error_code_t::wrong_object_type,
 
                                             std::pmr::string{"trying to access field of non-nested type", resource});
                                     } else if (res_type->type() == logical_type::STRUCT) {
@@ -2642,7 +2653,7 @@ namespace services::dispatcher {
                                 if (scalar_expr->params().empty() ||
                                     !components::expressions::is_parameter(scalar_expr->params().front())) {
                                     return core::error_t(
-                                        core::error_code_t::invalid_parameter,
+                                        core::error_code_t::protocol_violation,
                                         std::pmr::string{"constant in a grouped projection carries no parameter",
                                                          resource});
                                 }
@@ -2950,7 +2961,7 @@ namespace services::dispatcher {
                         if (!found) {
                             const std::string written =
                                 key.has_qualifier() ? std::string(key.qualifier()) + "." + full : full;
-                            return core::error_t(core::error_code_t::field_not_exists,
+                            return core::error_t(core::error_code_t::undefined_column,
                                                  std::pmr::string{"column " + written + " does not exist", resource});
                         }
                     }
@@ -3046,7 +3057,7 @@ namespace services::dispatcher {
                 };
                 if (is_computed && !is_simple_chunk()) {
                     return core::error_t(
-                        core::error_code_t::schema_error,
+                        core::error_code_t::unimplemented_yet,
                         std::pmr::string{"insert_node: complex types (ARRAY/STRUCT/UNION/LIST/MAP) "
                                          "are not yet supported on relkind='g' (dynamic-schema) tables",
                                          resource});
@@ -3068,7 +3079,7 @@ namespace services::dispatcher {
                         std::string named =
                             column_name.empty() ? std::string{} : std::string{" \""} + column_name + "\"";
                         return core::error_t(
-                            core::error_code_t::schema_error,
+                            core::error_code_t::indeterminate_datatype,
                             std::pmr::string{"insert_node: INSERT into dynamic-schema table '" + target_relname_ins +
                                                  "': source column " + std::to_string(i + 1) + named +
                                                  " is NULL in every row, so there is no type to create the "
@@ -3082,7 +3093,7 @@ namespace services::dispatcher {
                     }
                     if (insert_node->key_translation().size() != incoming_schema.value().size()) {
                         return core::error_t(
-                            core::error_code_t::schema_error,
+                            core::error_code_t::sql_parse_error,
                             std::pmr::string{insert_arity_disagreement(insert_node->key_translation().size(),
                                                                        incoming_schema.value().size()),
                                              resource});
@@ -3112,7 +3123,7 @@ namespace services::dispatcher {
                 // VALUES without a column list names its columns by position only; a dynamic-schema table
                 // takes its column names from the INSERT.
                 if (is_computed && !insert_node->deferred_cells().empty()) {
-                    return core::error_t(core::error_code_t::schema_error,
+                    return core::error_t(core::error_code_t::datatype_mismatch,
                                          std::pmr::string{"INSERT into dynamic-schema table \"" + target_relname_ins +
                                                               "\": a column holds values of differing types, so "
                                                               "there is no declared type to coerce them to",
@@ -3120,7 +3131,7 @@ namespace services::dispatcher {
                 }
                 if (is_computed && insert_node->key_translation().empty() &&
                     node->children().front()->type() == node_type::data_t) {
-                    return core::error_t(core::error_code_t::schema_error,
+                    return core::error_t(core::error_code_t::unimplemented_yet,
                                          std::pmr::string{"INSERT into dynamic-schema table \"" + target_relname_ins +
                                                               "\" needs a column list: its columns are named "
                                                               "by the INSERT",
@@ -3129,7 +3140,7 @@ namespace services::dispatcher {
                 if (table_schema.empty()) {
                     // Must stay relkind='r' (test_persistence::zero_column_regular_table_stays_regular).
                     if (!is_computed) {
-                        return core::error_t(core::error_code_t::schema_error,
+                        return core::error_t(core::error_code_t::sql_parse_error,
                                              std::pmr::string{"insert_node: table '" + target_relname_ins +
                                                                   "' has no columns; INSERT needs at least one column",
                                                               resource});
@@ -3177,7 +3188,7 @@ namespace services::dispatcher {
                                 return key.as_string() == written_name;
                             });
                             if (key_it == keys.end()) {
-                                return core::error_t(core::error_code_t::schema_error,
+                                return core::error_t(core::error_code_t::undefined_column,
                                                      std::pmr::string{"insert_node: VALUES column '" + written_name +
                                                                           "' is not in the INSERT column list",
                                                                       resource});
@@ -3204,7 +3215,7 @@ namespace services::dispatcher {
                                                                components::casts::cast_type::assignment);
                             if (!cast.has_value()) {
                                 return core::error_t(
-                                    core::error_code_t::conversion_failure,
+                                    core::error_code_t::datatype_mismatch,
                                     std::pmr::string{"insert_node: column '" + tbl_ins->columns[index].attname +
                                                          "' is of type " +
                                                          components::catalog::describe_type(corresponding_table_type) +
@@ -3224,7 +3235,7 @@ namespace services::dispatcher {
                     // unknown (quoted) literal; `x::text` has no assignment cast to it.
                     for (auto& cell : insert_node->deferred_cells()) {
                         if (cell.column >= insert_node->column_bindings().size()) {
-                            return core::error_t(core::error_code_t::schema_error,
+                            return core::error_t(core::error_code_t::internal_error,
                                                  std::pmr::string{"insert_node: a deferred VALUES cell points outside "
                                                                   "the INSERT columns",
                                                                   resource});
@@ -3241,7 +3252,7 @@ namespace services::dispatcher {
                                                            components::casts::cast_type::assignment);
                         if (text_to_other || !cast.has_value()) {
                             return core::error_t(
-                                core::error_code_t::conversion_failure,
+                                core::error_code_t::datatype_mismatch,
                                 std::pmr::string{"column \"" + std::string(binding.target_name) + "\" is of type " +
                                                      components::catalog::format_type_be(binding.target_type, false) +
                                                      " but expression is of type " +
@@ -3321,7 +3332,7 @@ namespace services::dispatcher {
                             const std::string column_name(storage.front().data(), storage.front().size());
                             if (live_columns.find(column_name) == live_columns.end()) {
                                 return core::error_t{
-                                    core::error_code_t::schema_error,
+                                    core::error_code_t::undefined_column,
                                     std::pmr::string{
                                         ("UPDATE on dynamic-schema (relkind='g') table '" + target_relname +
                                          "' references column '" + column_name +
@@ -3371,7 +3382,7 @@ namespace services::dispatcher {
                     }
                 } else {
                     return core::error_t(
-                        core::error_code_t::schema_error,
+                        core::error_code_t::internal_error,
                         std::pmr::string{"update_node: invalid node, node_match is not present", resource});
                 }
                 if (node->type() == node_type::update_t) {
@@ -3411,7 +3422,7 @@ namespace services::dispatcher {
                                                                components::casts::cast_type::assignment);
                             if (!cast.has_value()) {
                                 return core::error_t(
-                                    core::error_code_t::conversion_failure,
+                                    core::error_code_t::datatype_mismatch,
                                     std::pmr::string{("update_node: column '" + expr->key().as_string() +
                                                       "' is of type " +
                                                       components::catalog::describe_type(target_type) +
@@ -3474,7 +3485,7 @@ namespace services::dispatcher {
 
                 named_schema table_schema{resource};
                 if (tbl_idx && tbl_idx->relkind == 'g' && tbl_idx->columns.empty()) {
-                    return core::error_t{core::error_code_t::index_create_fail,
+                    return core::error_t{core::error_code_t::undefined_column,
                                          "CREATE INDEX requires at least one column registered on the table; "
                                          "INSERT data first to register a schema on this dynamic-schema "
                                          "(relkind='g') table."};
@@ -3499,7 +3510,7 @@ namespace services::dispatcher {
                         if (ordered_index && key_type.type() == components::types::logical_type::DECIMAL) {
                             message += " in an ordered index (USING hash carries DECIMAL)";
                         }
-                        return core::error_t{core::error_code_t::index_create_fail,
+                        return core::error_t{core::error_code_t::undefined_object,
                                              std::pmr::string{message.c_str(), resource}};
                     }
                 }
@@ -3544,7 +3555,7 @@ namespace services::dispatcher {
                 }
                 if (saw_reduction) {
                     return core::error_t(
-                        core::error_code_t::invalid_constraint,
+                        core::error_code_t::grouping_error,
                         std::pmr::string{"CHECK constraint \"" + constraint_node->name().t +
                                              "\" uses an aggregate; a CHECK is evaluated for one row at a time",
                                          resource});

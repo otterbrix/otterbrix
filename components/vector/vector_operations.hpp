@@ -38,7 +38,7 @@ namespace components::vector::vector_ops {
 
     // Returns a new FLAT vector of target_type with each element cast from source.
     // Numeric physical types cast with a per-element RANGE CHECK -- a value that does not fit
-    // the target is a conversion_failure error, never a silent truncation. A string source
+    // the target is a numeric_value_out_of_range error, never a silent truncation. A string source
     // casts only to a string target (deep copy); every other string pair is refused through
     // the error channel. Validity travels per row in every supported pair.
     core::result_wrapper_t<vector_t> cast_vector(std::pmr::memory_resource* resource,
@@ -73,7 +73,7 @@ namespace components::vector::vector_ops {
     // Element-wise binary op. exp returns DOUBLE; bitwise/shift ops preserve lhs type and are
     // defined only for BOOL and the integer widths (string/float operands refuse). A
     // mixed-type rhs is cast to lhs's type first; a value that does not fit is a
-    // conversion_failure error (see cast_vector).
+    // numeric_value_out_of_range error (see cast_vector).
     core::result_wrapper_t<vector_t> apply_binary_vector_op(std::pmr::memory_resource* resource,
                                                             binary_vector_op op,
                                                             const vector_t& lhs,

@@ -484,7 +484,7 @@ namespace components::sql::transform {
                         VALUE_OR_RETURN(auto expr, transform_predicate(constr->raw_expr, names, plan));
                         if (plan->sub_queries.size() != sub_queries_before) {
                             return core::error_t(
-                                core::error_code_t::invalid_constraint,
+                                core::error_code_t::unimplemented_yet,
                                 std::pmr::string{"CHECK constraint contains a sub-query; a CHECK may only read "
                                                  "the row it judges",
                                                  resource_});
@@ -492,7 +492,7 @@ namespace components::sql::transform {
                         VALUE_OR_RETURN(auto expr_text, slice_check_expression(resource_, raw_sql_, constr->location));
                         if (expr_text.empty()) {
                             return core::error_t(
-                                core::error_code_t::invalid_constraint,
+                                core::error_code_t::unimplemented_yet,
                                 std::pmr::string{"CHECK constraint expression cannot be stored: it contains a "
                                                  "construct that cannot be written back to SQL",
                                                  resource_});

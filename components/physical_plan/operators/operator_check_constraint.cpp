@@ -62,7 +62,7 @@ namespace components::operators {
         if (!bound) {
             // Only a null predicate (or the unreachable `invalid` group) clones to nothing. Passing
             // it on would classify as condition_kind::always and skip the constraint entirely.
-            return core::error_t{core::error_code_t::invalid_constraint,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"CHECK constraint \"" + std::string{constraint_name} +
                                                       "\" carries no predicate to evaluate",
                                                   resource_}};
@@ -130,7 +130,7 @@ namespace components::operators {
         };
         walk(bound.get(), walk);
         if (!missing_column.empty()) {
-            return core::error_t{core::error_code_t::invalid_constraint,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"CHECK constraint \"" + std::string{constraint_name} +
                                                       "\" cannot be evaluated: the column \"" + missing_column +
                                                       "\" is not in the written row",
@@ -219,7 +219,7 @@ namespace components::operators {
                         }
                         if (has_null_element) {
                             set_error(
-                                core::error_t{core::error_code_t::other_error,
+                                core::error_t{core::error_code_t::not_null_violation,
                                               std::pmr::string{"NOT NULL array column '" + col_name + "' requires " +
                                                                    std::to_string(required_size) + " non-null elements",
                                                                resource_}});
@@ -255,7 +255,7 @@ namespace components::operators {
                         decisions != nullptr && (decisions->is_null(row) || decisions->get_value<bool>(row));
                     if (!passed) {
                         set_error(core::error_t{
-                            core::error_code_t::other_error,
+                            core::error_code_t::check_violation,
                             std::pmr::string{"CHECK constraint \"" + check_predicates_[index].first + "\" violated",
                                              resource_}});
                         return;

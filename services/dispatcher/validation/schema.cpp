@@ -25,7 +25,7 @@ namespace services::dispatcher::validation {
                                                   const components::expressions::key_t& key,
                                                   std::source_location location = std::source_location::current()) {
             return core::error_t(
-                core::error_code_t::ambiguous_name,
+                core::error_code_t::ambiguous_column,
                 std::pmr::string{"path: \'" + key.as_string() + "\' is ambiguous. Use aliases or full path", resource},
                 location);
         }
@@ -58,7 +58,7 @@ namespace services::dispatcher::validation {
                                                   const named_schema& schema,
                                                   column_uses_t* uses) {
         if (key.storage().empty()) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"key has empty storage: " + key.as_string(), resource});
         }
         auto found = find_types_in(resource, key, schema);
@@ -228,18 +228,14 @@ namespace services::dispatcher::validation {
         }
         if (!result.empty()) {
             if (key.storage().back() == "*") {
-                if (result.empty()) {
-                    return core::error_t(core::error_code_t::schema_error,
-                                         std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource});
-                }
                 if (!result.front().type.is_nested()) {
-                    return core::error_t(core::error_code_t::schema_error,
+                    return core::error_t(core::error_code_t::wrong_object_type,
                                          std::pmr::string{"path: \'" + truncated_key.as_string() +
                                                               "\' is not nested, and \'*\' can not be applied",
                                                           resource});
                 }
                 if (result.front().type.type() == logical_type::LIST) {
-                    return core::error_t(core::error_code_t::schema_error,
+                    return core::error_t(core::error_code_t::wrong_object_type,
                                          std::pmr::string{"path: \'" + truncated_key.as_string() +
                                                               "\' is a list type, and \'*\' can not be applied",
                                                           resource});
@@ -268,7 +264,7 @@ namespace services::dispatcher::validation {
         }
 
         if (result.empty()) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::undefined_column,
                                  std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource});
         }
         key.set_path(result.front().path);
@@ -298,11 +294,11 @@ namespace services::dispatcher::validation {
         auto column_path_right = find_types(resource, key, *schema_right, uses);
         // TODO Stop erasing errors from right and left
         if (column_path_left.has_error() && column_path_right.has_error()) {
-            if (column_path_left.error().type == core::error_code_t::ambiguous_name ||
-                column_path_right.error().type == core::error_code_t::ambiguous_name) {
+            if (column_path_left.error().type == core::error_code_t::ambiguous_column ||
+                column_path_right.error().type == core::error_code_t::ambiguous_column) {
                 return ambiguous_key(resource, key);
             }
-            return core::error_t(core::error_code_t::field_not_exists,
+            return core::error_t(core::error_code_t::undefined_column,
                                  std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource});
         }
         if (!column_path_left.has_error() && !column_path_right.has_error()) {

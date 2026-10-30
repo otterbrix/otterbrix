@@ -96,7 +96,7 @@ namespace services::engine {
                 ::close(fd);
                 if (flock_errno == EWOULDBLOCK) {
                     return startup_error(resource,
-                                         core::error_code_t::already_exists,
+                                         core::error_code_t::lock_file_exists,
                                          "engine startup REFUSED , another engine already owns " + directory.string() +
                                              ": otterbrix instance has to have unique directory");
                 }

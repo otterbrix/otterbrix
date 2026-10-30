@@ -12,11 +12,11 @@ namespace components::logical_plan {
 
     core::error_t limit_t::validate(std::pmr::memory_resource* resource) const {
         if (offset_ < 0) {
-            return core::error_t(core::error_code_t::invalid_parameter,
+            return core::error_t(core::error_code_t::invalid_row_count_in_result_offset_clause,
                                  std::pmr::string{"OFFSET must not be negative", resource});
         }
         if (count_.has_value() && *count_ < 0) {
-            return core::error_t(core::error_code_t::invalid_parameter,
+            return core::error_t(core::error_code_t::invalid_row_count_in_limit_clause,
                                  std::pmr::string{"LIMIT must not be negative", resource});
         }
         return core::error_t::no_error();

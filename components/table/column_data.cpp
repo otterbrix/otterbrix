@@ -134,7 +134,7 @@ namespace components::table {
         if (!state.current) {
             state.initialized = false;
             state.scan_error =
-                core::error_t(core::error_code_t::invalid_parameter,
+                core::error_t(core::error_code_t::internal_error,
                               std::pmr::string("column scan: the seek row names no segment of this column", resource_));
             return;
         }
@@ -350,7 +350,7 @@ namespace components::table {
         if (!state.current) {
             // get_segment's miss (null) rides the scan state's error channel every fetch() caller reads.
             state.scan_error =
-                core::error_t(core::error_code_t::invalid_parameter,
+                core::error_t(core::error_code_t::internal_error,
                               std::pmr::string("column fetch: the row id names no segment of this column", resource_));
             return 0;
         }
@@ -363,7 +363,7 @@ namespace components::table {
         auto segment = data_.get_segment(row_id);
         if (!segment) {
             state.fetch_error =
-                core::error_t(core::error_code_t::invalid_parameter,
+                core::error_t(core::error_code_t::internal_error,
                               std::pmr::string("column fetch: the row id names no segment of this column", resource_));
             return;
         }
@@ -422,7 +422,7 @@ namespace components::table {
             case types::physical_type::INVALID:
             case types::physical_type::BIT:
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::unimplemented_yet,
                     std::pmr::string("a table column cannot be built from a type without storage", resource));
             default:
                 break;
@@ -430,7 +430,7 @@ namespace components::table {
         if (physical == types::physical_type::STRUCT) {
             if (type.type() != types::logical_type::UNION && type.is_unnamed()) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::unimplemented_yet,
                     std::pmr::string("a table column cannot be built from an unnamed struct type", resource));
             }
             // child_types() is an unchecked cast on non-struct extensions, valid only under the STRUCT test above.
@@ -445,7 +445,7 @@ namespace components::table {
             const auto* array = type.extension_as<types::array_logical_type_extension>();
             if (array == nullptr || array->size() == 0) {
                 return core::error_t(
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::unimplemented_yet,
                     std::pmr::string("a table column cannot be built from an array of no elements", resource));
             }
         }
@@ -732,7 +732,7 @@ namespace components::table {
         if (scan_type == scan_vector_type::SCAN_FLAT_VECTOR && result.get_vector_type() != vector::vector_type::FLAT) {
             // Unreachable today (callers only pass flat results); kept as a live guard, not a comment.
             state.scan_error = core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string("column scan: a flat-vector scan was asked for a non-flat result", resource_));
             return 0;
         }
@@ -741,7 +741,7 @@ namespace components::table {
             if (!state.current) {
                 if (!state.has_error()) {
                     state.scan_error =
-                        core::error_t(core::error_code_t::invalid_parameter,
+                        core::error_t(core::error_code_t::internal_error,
                                       std::pmr::string("column scan: no current segment to scan", resource_));
                 }
                 return 0;

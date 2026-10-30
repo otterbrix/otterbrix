@@ -218,7 +218,7 @@ TEST_CASE("integration::cpp::host_transactions::a_vanished_connection") {
     for (const std::string& sql : {"SELECT id FROM m2.shop.public.orders;",
                                    "INSERT INTO m2.shop.public.orders (id) VALUES (1);",
                                    "CREATE TABLE m2.shop.public.more (id BIGINT);"}) {
-        host.db.check_refused(any(), sql, code::do_not_exists, "connection \"m2\" does not exist");
+        host.db.check_refused(any(), sql, code::undefined_object, "connection \"m2\" does not exist");
     }
     host.db.ok(any(), "DROP TABLE m2.shop.public.orders;");
     CHECK(host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'orders';") ==
@@ -236,7 +236,7 @@ TEST_CASE("integration::cpp::host_transactions::a_matview_in_a_connections_datab
     host.db.check_refused(
         any(),
         "CREATE MATERIALIZED VIEW m2.shop.public.mv AS SELECT id FROM m2.shop.public.orders WITH NO DATA;",
-        code::invalid_parameter,
+        code::unimplemented_yet,
         "only tables can be created in a schema of connection \"m2\"");
     CHECK(host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_class WHERE relname = 'mv';") ==
           std::vector<std::int64_t>{0});

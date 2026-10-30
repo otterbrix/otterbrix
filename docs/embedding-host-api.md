@@ -62,7 +62,7 @@ so the array need not outlive the call. The backend actors belong to the host an
   };
   otterbrix::base_otterbrix_t::open(config, components::planner::primitives_t{map});
   ```
-- **A connection the map does not hold.** `CREATE DATABASE` of it is refused with `do_not_exists`,
+- **A connection the map does not hold.** `CREATE DATABASE` of it is refused with `undefined_object` (PostgreSQL 42704),
   `connection "c" does not exist`. A database of it that the catalog already has (the host's map lost the
   connection, say after a restart) keeps only its catalog rows: every statement that reaches one of its tables is
   refused with the same error, and the engine keeps running; `DROP TABLE`, `DROP SCHEMA` and the host's DROP of the
@@ -231,7 +231,7 @@ block (see "Pushdown").
   is computed before the first write, as PostgreSQL 18 folds it while planning
   (`a_constant_returning_errs_before_the_write`).
 - **NOT NULL** is the storage's: the disk refuses a NULL in a NOT NULL column when it writes the row (after the row is
-  widened to the table's columns) with `invalid_constraint`, PostgreSQL 18's 23502 `null value in column "c" of
+  widened to the table's columns) with `not_null_violation`, PostgreSQL 18's 23502 `null value in column "c" of
   relation "t" violates not-null constraint`; otterbrix does not check it before. A backend checks its own and
   answers the same way. A PRIMARY KEY column is NOT NULL, as in PostgreSQL (`test_not_null.cpp`). The disk takes
   NOT NULL from `pg_attribute.attnotnull` when it comes up, so a crash before the checkpoint after the DDL keeps it
@@ -462,11 +462,11 @@ SQL names through the C ABI are those of "Names and the current place": two part
 
 Every entry point of `integration/c/otterbrix.h` is `noexcept` (`OTTERBRIX_NOEXCEPT`, empty under C): a refusal is
 an `error_message` or an error cursor, and running out of memory terminates the process. When the OS refuses a
-thread, `otterbrix_create` answers `thread_start_failed` for a manager loop thread and terminates the process for an
-actor-zeta scheduler thread (actor-zeta#188). A `const char*` answered from a cursor or a value (`cursor_column_name`,
-`cursor_error_message`, `value_get_string`) is borrowed: it stays valid until `release_cursor` / `release_value` of
-that handle and is never passed to `otterbrix_free_string`. The only owned string is `otterbrix_create`'s
-`error_message.message`, freed with `otterbrix_free_string`.
+thread, `otterbrix_create` answers `insufficient_resources` (PostgreSQL 53000) for a manager loop thread and
+terminates the process for an actor-zeta scheduler thread (actor-zeta#188). A `const char*` answered from a cursor
+or a value (`cursor_column_name`, `cursor_error_message`, `value_get_string`) is borrowed: it stays valid until
+`release_cursor` / `release_value` of that handle and is never passed to `otterbrix_free_string`. The only owned
+string is `otterbrix_create`'s `error_message.message`, freed with `otterbrix_free_string`.
 
 ## Plans built by the host
 

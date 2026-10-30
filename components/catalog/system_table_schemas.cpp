@@ -1234,14 +1234,14 @@ namespace components::catalog {
         }
         if (!cell_codec::is_encodable_type(v.type())) {
             return default_spec_error(resource,
-                                      core::error_code_t::schema_error,
+                                      core::error_code_t::unimplemented_yet,
                                       std::string{"DEFAULT of type "} + describe_default_type(v.type()) +
                                           " cannot be persisted");
         }
         std::pmr::string payload{resource};
         if (!cell_codec::append_cell(payload, v, 0)) {
             return default_spec_error(resource,
-                                      core::error_code_t::schema_error,
+                                      core::error_code_t::internal_error,
                                       std::string{"DEFAULT of type "} + describe_default_type(v.type()) +
                                           " cannot be persisted");
         }

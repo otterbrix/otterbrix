@@ -54,7 +54,7 @@ namespace components::operators {
             std::pmr::string what{"the storage of table \"", resource_};
             what += name_;
             what += "\" answered a page without a cursor";
-            core::error_t refused{core::error_code_t::invalid_parameter, std::move(what)};
+            core::error_t refused{core::error_code_t::protocol_violation, std::move(what)};
             set_error(refused);
             mark_failed();
             co_return refused;

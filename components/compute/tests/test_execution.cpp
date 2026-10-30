@@ -16,7 +16,7 @@ using namespace components::types;
 using namespace components::vector;
 
 constexpr int MAGIC_MULTIPLIER = 1234;
-static const auto TEST_ERROR = core::error_t(core::error_code_t::kernel_error, std::pmr::string{"error!"});
+static const auto TEST_ERROR = core::error_t(core::error_code_t::internal_error, std::pmr::string{"error!"});
 
 struct test_options : function_options {
     int multiplier;
@@ -218,7 +218,7 @@ TEST_CASE("components::compute::vector::output_resolver_refusal_reaches_the_call
         {parameter_type::exact(logical_type::INTEGER)},
         {output_type::computed(
             [](std::pmr::memory_resource* r, const std::pmr::vector<fixed_t>&) -> core::result_wrapper_t<fixed_t> {
-                return core::error_t(core::error_code_t::kernel_error,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"output type cannot be resolved", r});
             })});
     vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
@@ -465,7 +465,7 @@ TEST_CASE("components::compute::options_required") {
 
     auto res = fn->execute(chunk, nullptr, ctx);
     REQUIRE(res.has_error());
-    REQUIRE(res.error().type == core::error_code_t::kernel_error);
+    REQUIRE(res.error().type == core::error_code_t::internal_error);
 }
 
 TEST_CASE("components::compute::errors") {
@@ -485,7 +485,7 @@ TEST_CASE("components::compute::errors") {
                                {parameter_type::exact(logical_type::INTEGER), parameter_type::exact(logical_type::NA)},
                                {output_type::fixed(logical_type::INTEGER)});
         vector_kernel k(std::move(sig), vector_exec, vector_init, vector_finalize);
-        REQUIRE(fn->add_kernel(&resource, std::move(k)).type == core::error_code_t::kernel_error);
+        REQUIRE(fn->add_kernel(&resource, std::move(k)).type == core::error_code_t::internal_error);
     }
 
     SECTION("type mismatch") {
@@ -508,7 +508,7 @@ TEST_CASE("components::compute::errors") {
 
         auto res = fn->execute(try_chunk, nullptr, ctx);
         REQUIRE(res.has_error());
-        REQUIRE(res.error().type == core::error_code_t::kernel_error);
+        REQUIRE(res.error().type == core::error_code_t::internal_error);
     }
 
     SECTION("faulty vector exec") {
@@ -527,7 +527,7 @@ TEST_CASE("components::compute::errors") {
         REQUIRE_FALSE(fn->add_kernel(&resource, std::move(k)).contains_error());
 
         auto status = fn->execute(chunk, &opts, ctx).error().type;
-        REQUIRE(status == core::error_code_t::kernel_error);
+        REQUIRE(status == core::error_code_t::internal_error);
     }
 
     SECTION("faulty update") {
@@ -537,7 +537,7 @@ TEST_CASE("components::compute::errors") {
         chunks.emplace_back(two_ints(&resource, 1, 2));
 
         auto status = run_aggregate(&resource, *fn, chunks, {{0, 0}}, 1).error().type;
-        REQUIRE(status == core::error_code_t::kernel_error);
+        REQUIRE(status == core::error_code_t::internal_error);
     }
 }
 
@@ -1009,7 +1009,7 @@ TEST_CASE("components::compute::string::regexp_replace_over_invalid_utf8") {
     REQUIRE(replaced(fx, {a::text("\xFF" "a"), a::text(""), a::text("-"), a::text("g")}) == "-\xFF-a-");
     REQUIRE(replaced(fx, {a::text("\xE9" "a"), a::text(""), a::text("-"), a::text("g")}) == "-\xE9" "a-");
     auto pattern = refused(fx, {a::text("a"), a::text("\xE9"), a::text("x")});
-    REQUIRE(pattern.type == core::error_code_t::comparison_failure);
+    REQUIRE(pattern.type == core::error_code_t::invalid_regular_expression);
     REQUIRE(pattern.what == "invalid regular expression: invalid UTF-8");
 }
 
@@ -1420,7 +1420,7 @@ TEST_CASE("components::compute::vector::batch_refuses_chunks_of_unequal_height")
 
     auto res = fn->execute(batch, &opts, ctx);
     REQUIRE(res.has_error());
-    REQUIRE(res.error().type == core::error_code_t::kernel_error);
+    REQUIRE(res.error().type == core::error_code_t::internal_error);
 }
 
 // A reused executor (one per function node, driven chunk after chunk) must not carry a produced

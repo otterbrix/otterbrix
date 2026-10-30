@@ -347,7 +347,7 @@ namespace components::operators {
             if (plan.status == catalog::ddl_status::cycle_detected) {
                 std::string msg = "DROP: pg_depend cycle detected at oid ";
                 msg += std::to_string(plan.blocking_oid);
-                co_return core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource}};
+                co_return core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource}};
             }
             co_return std::move(plan);
         }
@@ -378,7 +378,7 @@ namespace components::operators {
             std::pmr::string what{"DROP reached table oid ", resource};
             what += std::to_string(static_cast<unsigned>(table_oid));
             what += " that its plan did not stamp with a storage";
-            return core::error_t{core::error_code_t::physical_plan_error, std::move(what)};
+            return core::error_t{core::error_code_t::internal_error, std::move(what)};
         };
         execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
         auto planned =
@@ -484,7 +484,7 @@ namespace components::operators {
                 msg += " count(s) for ";
                 msg += std::to_string(spec_count);
                 msg += " spec(s) — the reply cannot be matched to the plan";
-                co_return core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource}};
+                co_return core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource}};
             }
             for (const auto& own : own_rows) {
                 if (deleted_counts[own.spec_idx] != 0) {
@@ -496,7 +496,7 @@ namespace components::operators {
                 msg += std::to_string(static_cast<unsigned>(own.objid));
                 msg += ") has no catalog row to delete — the pg_depend graph names an object "
                        "the catalog does not hold";
-                co_return core::error_t{core::error_code_t::other_error, std::pmr::string{std::move(msg), resource}};
+                co_return core::error_t{core::error_code_t::internal_error, std::pmr::string{std::move(msg), resource}};
             }
         }
 
@@ -674,7 +674,7 @@ namespace components::operators {
             }
         }
         if (!found) {
-            co_return core::error_t{core::error_code_t::other_error,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"DROP COLUMN: no live pg_attribute row for attoid " +
                                                          std::to_string(attoid) + " — the column is not in the catalog",
                                                      resource}};
@@ -692,7 +692,7 @@ namespace components::operators {
             co_return deleted.error();
         }
         if (deleted.value().empty() || deleted.value().front() == 0) {
-            co_return core::error_t{core::error_code_t::other_error,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"DROP COLUMN: no pg_attribute row was deleted for attoid " +
                                                          std::to_string(attoid) +
                                                          " — the column is still live in the catalog",
@@ -752,7 +752,7 @@ namespace components::operators {
         }
         if (appended.value().count == 0) {
             co_return core::error_t{
-                core::error_code_t::other_error,
+                core::error_code_t::internal_error,
                 std::pmr::string{"DROP COLUMN: tombstone append produced no rows for attoid " + std::to_string(attoid),
                                  resource}};
         }
@@ -878,7 +878,7 @@ namespace components::operators {
         // Every pg_proc spec is at an even index, its own edges right after it.
         for (std::size_t i = 0; i < deleted.value().size(); i += 2) {
             if (deleted.value()[i] == 0) {
-                co_return core::error_t{core::error_code_t::other_error,
+                co_return core::error_t{core::error_code_t::internal_error,
                                         std::pmr::string{"register_udf: no pg_proc row was deleted for '" +
                                                              function_name + "' — the function is still in the catalog",
                                                          resource}};

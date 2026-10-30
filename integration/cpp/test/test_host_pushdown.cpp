@@ -414,3 +414,32 @@ TEST_CASE("integration::cpp::host_pushdown::two_connections_of_one_actor_are_two
     CHECK(host.backend("pg_main").offers() - offers_before == 2);
     CHECK(host.backend("pg_main").journal("abort") == strings{"abort 0", "abort 0"});
 }
+
+// The WHERE of a join's side reaches the backend of that side's table; the null-padded side of a LEFT join gets none.
+TEST_CASE("integration::cpp::host_pushdown::a_per_side_where_of_a_join_reaches_each_backend") {
+    host_t host("host_pushdown/per_side_where", nullptr, {"m2", "pg"});
+    shop(host);
+    host.backend().set_take_policy({.whole_select = true});
+    host.register_database("pg", "db");
+    host.db.ok(any(), "CREATE TABLE pg.db.public.notes (id BIGINT, note BIGINT);");
+    host.backend("pg").set_rows("pg.db.public.notes", {{2, 22}, {3, 33}});
+    host.backend("pg").set_take_policy({.whole_select = true});
+    host.backend().clear_journal();
+    host.backend("pg").clear_journal();
+    auto inner = host.db.ok(any(),
+                            "SELECT o.amount, n.note FROM m2.shop.public.orders AS o JOIN pg.db.public.notes AS n "
+                            "ON o.id = n.id WHERE o.id = 2;");
+    CHECK(sorted_rows(inner) == rows_t{{200, 22}});
+    // The derived n.id = 2 reaches the other backend as well.
+    CHECK(host.backend().journal("run") == strings{"run select m2.shop.public.orders where column 0"});
+    CHECK(host.backend("pg").journal("run") == strings{"run select pg.db.public.notes where column 0"});
+
+    host.backend().clear_journal();
+    host.backend("pg").clear_journal();
+    auto left = host.db.ok(any(),
+                           "SELECT o.amount, n.note FROM m2.shop.public.orders AS o LEFT JOIN pg.db.public.notes AS n "
+                           "ON o.id = n.id WHERE o.id = 1;");
+    CHECK(left->size() == 1);
+    CHECK(host.backend().journal("run") == strings{"run select m2.shop.public.orders where column 0"});
+    CHECK(host.backend("pg").journal("run") == strings{"run select pg.db.public.notes"});
+}

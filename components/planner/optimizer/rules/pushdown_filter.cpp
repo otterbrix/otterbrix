@@ -622,6 +622,27 @@ namespace components::planner::optimizer {
                    agg.projected_cols().empty();
         }
 
+        // A per-side WHERE of a join lands on the side's own table block, so every owner sees the one form
+        // aggregate{T}{match}; any other side is wrapped in an aggregate of its own.
+        node_ptr put_where_on_side(std::pmr::memory_resource* resource,
+                                   const node_ptr& side,
+                                   const qualified_name_t& match_name,
+                                   expression_ptr where) {
+            if (side->type() == node_type::aggregate_t && side->table_oid() != components::catalog::INVALID_OID &&
+                side->children().empty() && !static_cast<node_aggregate_t&>(*side).is_distinct() &&
+                static_cast<node_aggregate_t&>(*side).distinct_on_keys().empty()) {
+                auto match = make_node_match(resource, match_name, std::move(where));
+                match->set_table_oid(side->table_oid());
+                match->set_table_metadata(side->table_metadata());
+                side->append_child(match);
+                return side;
+            }
+            auto wrapper = make_node_aggregate(resource, node_cfn(side));
+            wrapper->append_child(side);
+            wrapper->append_child(make_node_match(resource, match_name, std::move(where)));
+            return boost::static_pointer_cast<node_t>(wrapper);
+        }
+
         node_ptr pushdown_filter_impl(std::pmr::memory_resource* resource, node_ptr node) {
             if (!node) {
                 return node;
@@ -807,7 +828,7 @@ namespace components::planner::optimizer {
                     collect_subtree_columns(join->children()[0], left_cols);
                     collect_subtree_columns(join->children()[1], right_cols);
 
-                    // Must be captured before the left bucket wraps children()[0] in an unstamped aggregate.
+                    // Must be captured before the left bucket wraps a non-table children()[0] in an unstamped aggregate.
                     const bool left_width_known = join->children()[0]->has_output_types();
                     const size_t left_width = left_width_known ? join->children()[0]->output_types().size() : 0;
 
@@ -849,26 +870,20 @@ namespace components::planner::optimizer {
                     if (!left_bucket.empty() || !right_bucket.empty()) {
                         auto m_name = node_cfn(match_child);
                         if (!left_bucket.empty()) {
-                            auto l_name = node_cfn(join->children()[0]);
-                            auto new_agg = make_node_aggregate(resource, l_name);
-                            new_agg->append_child(join->children()[0]);
-                            new_agg->append_child(make_node_match(resource,
-                                                                  m_name,
-                                                                  rebuild_conjunction(resource, left_bucket)));
-                            join->children()[0] = boost::static_pointer_cast<node_t>(new_agg);
+                            join->children()[0] = put_where_on_side(resource,
+                                                                    join->children()[0],
+                                                                    m_name,
+                                                                    rebuild_conjunction(resource, left_bucket));
                         }
                         if (!right_bucket.empty()) {
-                            auto r_name = node_cfn(join->children()[1]);
                             // Each conjunct lands in exactly one bucket, so mutating keys in place is safe.
                             for (const auto& conj : right_bucket) {
                                 relocalize_keys(conj, left_width);
                             }
-                            auto new_agg = make_node_aggregate(resource, r_name);
-                            new_agg->append_child(join->children()[1]);
-                            new_agg->append_child(make_node_match(resource,
-                                                                  m_name,
-                                                                  rebuild_conjunction(resource, right_bucket)));
-                            join->children()[1] = boost::static_pointer_cast<node_t>(new_agg);
+                            join->children()[1] = put_where_on_side(resource,
+                                                                    join->children()[1],
+                                                                    m_name,
+                                                                    rebuild_conjunction(resource, right_bucket));
                         }
                         auto residual_expr = rebuild_conjunction(resource, residual);
                         if (!residual_expr) {
@@ -1015,8 +1030,6 @@ namespace components::planner::optimizer {
             return node;
         }
 
-        // Runs before pushdown_filter_impl: that rule synthesizes join wrappers this pass would otherwise
-        // fuse into their scans, altering the join EXPLAIN shape.
         node_ptr pushdown_cte_filter_impl(std::pmr::memory_resource* resource, node_ptr node) {
             if (!node) {
                 return node;

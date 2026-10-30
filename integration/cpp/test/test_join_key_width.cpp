@@ -1,6 +1,7 @@
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <services/disk/agent_disk.hpp>
 #include <algorithm>
 #include <string>
 #include <string_view>
@@ -20,6 +21,17 @@ namespace {
         INFO((c->is_success() ? std::string{} : std::string{c->get_error().what}));
         REQUIRE(c->is_success());
         return c->size();
+    }
+
+    // The rows the disk answered for `sql`: the WHEREs it took.
+    template<typename D>
+    uint64_t disk_rows(D* d, const std::string& sql) {
+        services::disk::reset_disk_block_rows();
+        auto c = exec(d, sql);
+        REQUIRE(c);
+        INFO(sql);
+        REQUIRE(c->is_success());
+        return services::disk::disk_block_rows();
     }
 } // namespace
 
@@ -177,14 +189,16 @@ TEST_CASE("integration::cpp::join_key_width::cast_key_transitive_filter") {
     const auto plan = plan_text(d, on_wide);
     INFO(plan);
     CHECK(contains(plan, "Hash Join"));
-    CHECK(occurrences(plan, "Filter") == 2);
+    CHECK(occurrences(plan, "Filter") == 0);
+    CHECK(disk_rows(d, on_wide) == 3); // both scans take their WHERE: a.k = 3 (1 row), b.k = 3 (2 rows)
 
     const std::string on_narrow =
         "SELECT x.id, y.id FROM m.a x JOIN m.b y ON x.k = y.k WHERE x.k = 3 ORDER BY x.id, y.id";
     CHECK(table_text(d, on_narrow) == "3,12;3,13;");
     const auto narrow_plan = plan_text(d, on_narrow);
     INFO(narrow_plan);
-    CHECK(occurrences(narrow_plan, "Filter") == 2);
+    CHECK(occurrences(narrow_plan, "Filter") == 0);
+    CHECK(disk_rows(d, on_narrow) == 3);
 
     // An INT constant leaves x.k bare, so y.k gets CAST(3 AS BIGINT) instead of the same cast of x.k.
     const std::string on_bare_narrow = "SELECT x.id, y.id FROM m.a x JOIN m.b y ON x.k = y.k "
@@ -192,7 +206,8 @@ TEST_CASE("integration::cpp::join_key_width::cast_key_transitive_filter") {
     CHECK(table_text(d, on_bare_narrow) == "3,12;3,13;");
     const auto bare_plan = plan_text(d, on_bare_narrow);
     INFO(bare_plan);
-    CHECK(occurrences(bare_plan, "Filter") == 2);
+    CHECK(occurrences(bare_plan, "Filter") == 0);
+    CHECK(disk_rows(d, on_bare_narrow) == 3);
 }
 
 // Column pruning keeps the key column under the cast while dropping the columns nobody reads.
@@ -368,7 +383,8 @@ TEST_CASE("integration::cpp::join_key_width::cast_key_transitive_filter_wide_sid
     CHECK(table_text(d, sql) == "3,12;3,13;");
     const auto plan = plan_text(d, sql);
     INFO(plan);
-    CHECK(occurrences(plan, "Filter") == 2);
+    CHECK(occurrences(plan, "Filter") == 0);
+    CHECK(disk_rows(d, sql) == 3);
 }
 
 // A LEFT join keeps every probe row when the build side yields no rows at all, whether the table is empty or a

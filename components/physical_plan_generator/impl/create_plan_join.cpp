@@ -18,23 +18,26 @@ namespace services::planner::impl {
 
     namespace {
         // has_join marks an unbounded join sub-tree (never tie-broken); has_filter is evidence for the tie-break below.
+        // A WHERE (or GROUP BY) a storage took stands as the node_remote_t its table's block reads: it filters as well.
         struct subplan_shape_t {
             bool has_join{false};
             bool has_filter{false};
         };
 
-        void probe_subplan_shape(const components::logical_plan::node_ptr& n, subplan_shape_t& out) {
+        void probe_subplan_shape(const components::logical_plan::node_ptr& n,
+                                 subplan_shape_t& out,
+                                 bool under_block = false) {
             if (!n) {
                 return;
             }
             using components::logical_plan::node_type;
             if (n->type() == node_type::join_t) {
                 out.has_join = true;
-            } else if (n->type() == node_type::match_t) {
+            } else if (n->type() == node_type::match_t || (under_block && n->type() == node_type::remote_t)) {
                 out.has_filter = true;
             }
             for (const auto& child : n->children()) {
-                probe_subplan_shape(child, out);
+                probe_subplan_shape(child, out, n->type() == node_type::aggregate_t);
             }
         }
 

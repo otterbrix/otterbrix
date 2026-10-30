@@ -37,17 +37,16 @@ namespace components::planner {
         // clearing it early lets column_pruning / pushdown_limit see the simpler plan.
         node = optimizer::drop_redundant_distinct(resource, std::move(node));
         // Promote comma-join CROSS joins to INNER before pushdown_filter: its join
-        // branch wraps the join's children in fresh, unstamped aggregates whose
-        // output_types() is empty (validation already ran), which would collapse the
-        // promote rule's left_width to 0. fold_constants (above) never restructures
+        // branch wraps a join side that is not a bare table scan in a fresh, unstamped
+        // aggregate whose output_types() is empty (validation already ran), which would
+        // collapse the promote rule's left_width to 0. fold_constants (above) never restructures
         // joins, so the children stay stamped for the range classification.
         node = optimizer::promote_cross_joins(resource, std::move(node));
         // Push the outer WHERE INTO an inlined single-table CTE / FROM-subquery body so the
         // filter reaches the base scan (disk pushdown + column pruning) instead of a Filter
         // above the body's Project. Runs BEFORE pushdown_filter and on a DISJOINT source
-        // shape (a table-scan aggregate) — deliberately not folded into pushdown_filter,
-        // whose join branch synthesizes `aggregate{scan, match}` wrappers that this rule must
-        // not fuse (that would change the join lowering / EXPLAIN shape). Conservative: never
+        // shape (a table-scan aggregate) — deliberately not folded into pushdown_filter.
+        // Conservative: never
         // pushes below a LIMIT/GROUP/HAVING/DISTINCT, and only through a leading-prefix
         // identity projection; recursive-CTE and multi-referenced bodies are untouched
         // (each non-recursive reference is inlined as its own copy, so per-copy pushes never

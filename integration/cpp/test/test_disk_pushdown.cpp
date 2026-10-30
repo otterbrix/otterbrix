@@ -142,6 +142,30 @@ TEST_CASE("integration::cpp::disk_pushdown::a_join_of_disk_tables_takes_each_sid
     CHECK(services::disk::disk_block_rows() == 18 + 3);
 }
 
+TEST_CASE("integration::cpp::disk_pushdown::a_per_side_where_of_a_join_is_taken") {
+    auto config = make_test_config(integration_fixture_path("test_disk_pushdown/join_where"));
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    seed(d);
+    REQUIRE(exec(d, "CREATE TABLE dp.u (k bigint, w bigint);")->is_success());
+    REQUIRE(exec(d, "INSERT INTO dp.u (k, w) VALUES (1, 7), (2, 8), (3, 9), (17, 5);")->is_success());
+
+    const std::string sql = "SELECT a.v, b.w FROM dp.t a JOIN dp.u b ON a.id = b.k WHERE a.id > 1 AND b.w < 9;";
+    const auto plan = plan_of(d, sql);
+    INFO(plan);
+    CHECK(has(plan, "Hash Join"));
+    CHECK(has(plan, "Seq Scan on t"));
+    CHECK(has(plan, "Seq Scan on u"));
+    CHECK_FALSE(has(plan, "Filter"));
+
+    services::disk::reset_disk_block_rows();
+    auto cur = exec(d, sql);
+    REQUIRE(cur->is_success());
+    // t: ids 2..19 (18 rows); u: w < 9 and the derived k > 1 leave k 2, 17 (2 rows); joined: k 2 and 17.
+    CHECK(column_of(cur, 0) == std::multiset<int64_t>{20, 170});
+    CHECK(services::disk::disk_block_rows() == 18 + 2);
+}
+
 TEST_CASE("integration::cpp::disk_pushdown::an_indexed_where_is_not_offered") {
     auto config = make_test_config(integration_fixture_path("test_disk_pushdown/index"));
     test_spaces space(config);
@@ -159,6 +183,28 @@ TEST_CASE("integration::cpp::disk_pushdown::an_indexed_where_is_not_offered") {
     REQUIRE(cur->is_success());
     CHECK(column_of(cur, 0) == std::multiset<int64_t>{70});
     CHECK(services::disk::disk_block_rows() == 0);
+}
+
+TEST_CASE("integration::cpp::disk_pushdown::an_indexed_where_of_a_join_side_is_an_index_scan") {
+    auto config = make_test_config(integration_fixture_path("test_disk_pushdown/join_index"));
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    seed(d);
+    REQUIRE(exec(d, "CREATE TABLE dp.u (k bigint, w bigint);")->is_success());
+    REQUIRE(exec(d, "INSERT INTO dp.u (k, w) VALUES (1, 7), (2, 8), (3, 9), (17, 5);")->is_success());
+    REQUIRE(exec(d, "CREATE INDEX t_id ON dp.t (id);")->is_success());
+
+    const std::string sql = "SELECT a.v, b.w FROM dp.t a JOIN dp.u b ON a.id = b.k WHERE a.id = 17;";
+    const auto plan = plan_of(d, sql);
+    INFO(plan);
+    CHECK(has(plan, "Index Scan"));
+
+    services::disk::reset_disk_block_rows();
+    auto cur = exec(d, sql);
+    REQUIRE(cur->is_success());
+    CHECK(column_of(cur, 0) == std::multiset<int64_t>{170});
+    // The index answers t's side; only u's derived WHERE is taken.
+    CHECK(services::disk::disk_block_rows() == 1);
 }
 
 TEST_CASE("integration::cpp::disk_pushdown::explain_takes_without_running") {
@@ -229,6 +275,16 @@ TEST_CASE("integration::cpp::disk_pushdown::a_lateral_inner_reruns_per_drive") {
         CHECK(services::disk::disk_block_rows() == 2);
         CHECK(sums(cur) == std::multiset<std::pair<int64_t, int64_t>>{{1, 201}, {2, 200}});
         CHECK(test_helpers::wait_until([] { return services::disk::disk_held_takes() == 0; }));
+    }
+    INFO("a WHERE on the outer table is taken by the disk, the lateral inner is driven by the rows left");
+    {
+        const std::string sql = "SELECT o.id, sub.s FROM s.outer_t o, "
+                                "LATERAL (SELECT sum(inner_t.v) AS s FROM s.inner_t WHERE inner_t.k = o.id) sub "
+                                "WHERE o.n > 15;";
+        auto cur = exec(d, sql);
+        INFO("error: " << (cur->is_error() ? cur->get_error().what.c_str() : "none"));
+        REQUIRE(cur->is_success());
+        CHECK(sums(cur) == std::multiset<std::pair<int64_t, int64_t>>{{2, 200}});
     }
 }
 

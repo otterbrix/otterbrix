@@ -113,7 +113,7 @@ namespace services::disk {
         storage_offer(execution_context_t ctx,
                       components::logical_plan::detached_block_t block,
                       components::vector::storage_parameters parameters);
-        // A taken read runs under ctx.txn's snapshot; a released take is refused with invalid_parameter.
+        // A taken read runs under ctx.txn's snapshot; a released take is refused with internal_error.
         unique_future<core::result_wrapper_t<fetch_batch_t>>
         storage_run_block(execution_context_t ctx,
                           std::pmr::string request,

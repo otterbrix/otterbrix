@@ -153,24 +153,24 @@ namespace services::collection::executor {
 
     // Internal only — never crosses an actor boundary; drained from pipeline::context_t::dml_*.
     struct sub_plan_result_t {
-        std::vector<dml_append_range_t> dml_appends;
-        std::vector<dml_delete_range_t> dml_deletes;
-        std::vector<components::catalog::oid_t> dropped_storage_oids;
-        std::vector<components::catalog::oid_t> created_storage_oids;
-        std::vector<components::table::created_index_t> created_indexes;
-        std::vector<components::table::referenced_delete_t> referenced_deletes;
+        std::vector<dml_append_range_t> dml_appends{};
+        std::vector<dml_delete_range_t> dml_deletes{};
+        std::vector<components::catalog::oid_t> dropped_storage_oids{};
+        std::vector<components::catalog::oid_t> created_storage_oids{};
+        std::vector<components::table::created_index_t> created_indexes{};
+        std::vector<components::table::referenced_delete_t> referenced_deletes{};
 
-        std::vector<components::pg_catalog_append_range_t> pg_catalog_appends;
-        std::set<components::catalog::oid_t> pg_catalog_delete_tables;
-        std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills;
+        std::vector<components::pg_catalog_append_range_t> pg_catalog_appends{};
+        std::set<components::catalog::oid_t> pg_catalog_delete_tables{};
+        std::vector<components::pg_attribute_commit_id_backfill_t> pg_attribute_commit_id_backfills{};
         uint64_t commit_id{0};
         components::catalog::setting_scope_t applied_setting_scope{};
         std::pmr::vector<components::catalog::setting_assignment_t> applied_settings;
         uint64_t written{0};
-        std::vector<components::table::participant_t> participants;
-        std::vector<components::host_rows_t> host_rows;
-        std::vector<components::pipeline::dropped_function_t> dropped_functions;
-        components::logical_plan::prepared_change_t prepared_change;
+        std::vector<components::table::participant_t> participants{};
+        std::vector<components::host_rows_t> host_rows{};
+        std::vector<components::pipeline::dropped_function_t> dropped_functions{};
+        components::logical_plan::prepared_change_t prepared_change{};
     };
 
     // A piece is what one pipeline runs: the left chain from its root down to the first operator with a right input

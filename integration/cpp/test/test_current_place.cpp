@@ -230,8 +230,8 @@ TEST_CASE("integration::cpp::current_place::pg_catalog_is_one_whichever_database
     db.ok(session, "CREATE DATABASE d5;");
     db.ok(session, "SET search_path = 'd5.public';");
     for (const std::string sql : {"SELECT relname FROM pg_catalog.pg_class WHERE relname = 'pg_class';",
-                                  "SELECT relname FROM pg_class WHERE relname = 'pg_class';",
-                                  "SELECT relname FROM d5.pg_catalog.pg_class WHERE relname = 'pg_class';"}) {
+                                 "SELECT relname FROM pg_class WHERE relname = 'pg_class';",
+                                 "SELECT relname FROM d5.pg_catalog.pg_class WHERE relname = 'pg_class';"}) {
         INFO(sql);
         CHECK(db.strings(session, sql) == std::vector<std::string>{"pg_class"});
     }
@@ -390,10 +390,10 @@ TEST_CASE("integration::cpp::current_place::a_bare_call_in_set_and_returning_rea
         db.dispatcher()->register_udf(in_s, make_plus_one(db.dispatcher()->resource(), "plus_one")).contains_error());
     db.ok(in_public, "CREATE TABLE t (a BIGINT);");
     db.ok(in_public, "INSERT INTO t (a) VALUES (1);");
-    for (const std::string& sql : {"UPDATE t SET a = plus_one(a);",
-                                   "UPDATE t SET a = 5 RETURNING plus_one(a);",
-                                   "INSERT INTO t (a) VALUES (2) RETURNING plus_one(a);",
-                                   "DELETE FROM t WHERE a = 7 RETURNING plus_one(a);"}) {
+    for (const std::string sql : {"UPDATE t SET a = plus_one(a);",
+                                  "UPDATE t SET a = 5 RETURNING plus_one(a);",
+                                  "INSERT INTO t (a) VALUES (2) RETURNING plus_one(a);",
+                                  "DELETE FROM t WHERE a = 7 RETURNING plus_one(a);"}) {
         INFO(sql);
         CHECK(db.refused(in_public, sql).type == code::unrecognized_function);
     }
@@ -461,18 +461,18 @@ TEST_CASE("integration::cpp::current_place::drop_in_a_missing_database_answers_a
 TEST_CASE("integration::cpp::current_place::a_write_into_a_missing_database_or_schema") {
     fixture_t db("test_current_place/write_missing");
     const auto session = otterbrix::session_id_t();
-    for (const std::string& sql : {"INSERT INTO nodb.s.t (a) VALUES (1);",
-                                   "UPDATE nodb.s.t SET a = 1;",
-                                   "DELETE FROM nodb.s.t;",
-                                   "ALTER TABLE nodb.s.t ADD COLUMN b BIGINT;",
-                                   "ALTER TABLE nodb.s.t ADD CONSTRAINT c CHECK (a > 0);"}) {
+    for (const std::string sql : {"INSERT INTO nodb.s.t (a) VALUES (1);",
+                                  "UPDATE nodb.s.t SET a = 1;",
+                                  "DELETE FROM nodb.s.t;",
+                                  "ALTER TABLE nodb.s.t ADD COLUMN b BIGINT;",
+                                  "ALTER TABLE nodb.s.t ADD CONSTRAINT c CHECK (a > 0);"}) {
         db.check_refused(session, sql, code::database_not_exists, "database \"nodb\" does not exist");
     }
-    for (const std::string& sql : {"INSERT INTO nosuch.t (a) VALUES (1);",
-                                   "UPDATE nosuch.t SET a = 1;",
-                                   "DELETE FROM nosuch.t;",
-                                   "ALTER TABLE nosuch.t ADD COLUMN b BIGINT;",
-                                   "ALTER TABLE nosuch.t ADD CONSTRAINT c CHECK (a > 0);"}) {
+    for (const std::string sql : {"INSERT INTO nosuch.t (a) VALUES (1);",
+                                  "UPDATE nosuch.t SET a = 1;",
+                                  "DELETE FROM nosuch.t;",
+                                  "ALTER TABLE nosuch.t ADD COLUMN b BIGINT;",
+                                  "ALTER TABLE nosuch.t ADD CONSTRAINT c CHECK (a > 0);"}) {
         db.check_refused(session, sql, code::schema_not_exists, "schema \"nosuch\" does not exist");
     }
 }
@@ -509,7 +509,7 @@ TEST_CASE("integration::cpp::current_place::a_check_calls_the_functions_of_its_t
     db.ok(in_public, "CREATE TABLE s.v (a BIGINT CHECK (plus_one(a) > 1));");
     db.ok(in_public, "CREATE TABLE w (a BIGINT);");
     db.ok(in_public, "ALTER TABLE w ADD CONSTRAINT c CHECK (s.plus_one(a) > 1);");
-    for (const std::string& table : {"s.t", "s.u", "s.v", "w"}) {
+    for (const std::string table : {"s.t", "s.u", "s.v", "w"}) {
         INFO(table);
         db.ok(in_public, "INSERT INTO " + table + " (a) VALUES (5);");
         const auto refused = db.refused(in_public, "INSERT INTO " + table + " (a) VALUES (0);");
@@ -532,7 +532,7 @@ TEST_CASE("integration::cpp::current_place::a_column_depends_on_its_type") {
     db.ok(session, "CREATE VIEW v AS SELECT id, m FROM t;");
     db.ok(session, "CREATE TABLE u (id BIGINT);");
     db.ok(session, "ALTER TABLE u ADD COLUMN m mood;");
-    for (const std::string& sql : {"DROP TYPE mood;", "DROP TYPE mood RESTRICT;"}) {
+    for (const std::string sql : {"DROP TYPE mood;", "DROP TYPE mood RESTRICT;"}) {
         const auto refused = db.refused(session, sql);
         INFO(sql);
         CHECK(refused.type == code::dependent_objects_still_exist);

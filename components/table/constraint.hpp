@@ -30,7 +30,10 @@ namespace components::table {
         char fk_del_action{'a'}; // 'a' NO ACTION / 'r' RESTRICT / 'c' CASCADE / 'n' SET NULL / 'd' SET DEFAULT
         char fk_upd_action{'a'}; // same alphabet as fk_del_action
     };
-    // Layout guard: libstdc++ (string==32) → 184; libc++ (string==24) → 152.
-    static_assert(sizeof(table_constraint_t) <= 184, "table_constraint_t layout regression");
+    // Layout guard: the enum and the three flags share one alignment slot after the strings
+    // (libstdc++ 216, libc++ 176).
+    static_assert(sizeof(table_constraint_t) <=
+                      2 * sizeof(std::vector<std::string>) + 5 * sizeof(std::string) + alignof(std::string),
+                  "table_constraint_t layout regression");
 
 } // namespace components::table

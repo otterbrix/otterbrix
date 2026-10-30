@@ -1,5 +1,6 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_floating_point.hpp>
 
 #include <components/casts/composite_cast.hpp>
 #include <components/casts/default_casts.hpp>
@@ -3008,7 +3009,7 @@ TEST_CASE("numeric cast kernels: flat input without NULLs") {
         REQUIRE_FALSE(numeric_entry(registry, logical_type::BIGINT, logical_type::FLOAT)
                           .fn.invoke(cast_kind::cast, bigints, &narrowed, context, 1)
                           .contains_error());
-        REQUIRE(narrowed.get_value<float>(0) == 16777216.0f);
+        REQUIRE_THAT(narrowed.get_value<float>(0), Catch::Matchers::WithinULP(16777216.0f, 0));
     }
 
     SECTION("BOOLEAN <-> INTEGER") {

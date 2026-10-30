@@ -201,7 +201,7 @@ TEST_CASE("integration::cpp::remote_databases::a_schema_of_a_database_of_a_conne
     CHECK(restricted.type == code::dependent_objects_still_exist);
     CHECK(std::string{restricted.what}.starts_with(
         "cannot drop schema m2.shop.public because other objects depend on it"));
-    for (const std::string& sql : {"CREATE SCHEMA s2;", "DROP SCHEMA s;"}) {
+    for (const std::string sql : {"CREATE SCHEMA s2;", "DROP SCHEMA s;"}) {
         INFO(sql);
         host.db.ok(session, "BEGIN;");
         host.db.check_refused(session,
@@ -245,7 +245,7 @@ TEST_CASE("integration::cpp::remote_databases::three_parts_are_a_local_database"
 TEST_CASE("integration::cpp::remote_databases::nothing_is_created_in_pg_catalog") {
     host_t host("test_remote_databases/pg_catalog");
     host.db.ok(any(), "CREATE DATABASE d2;");
-    for (const std::string& sql :
+    for (const std::string sql :
          {"CREATE TABLE pg_catalog.x (a BIGINT);", "CREATE TABLE d2.pg_catalog.y (a BIGINT);"}) {
         const auto error = host.db.refused(any(), sql);
         INFO(sql);
@@ -272,9 +272,9 @@ TEST_CASE("integration::cpp::remote_databases::a_missing_database_of_a_connectio
              {"CREATE TABLE m2.nodb.public.t3 (id BIGINT);", "database \"m2.nodb\" does not exist"}}) {
         host.db.check_refused(any(), sql, code::database_not_exists, what);
     }
-    for (const std::string& sql : {"DROP TABLE IF EXISTS u.d.s.t3;",
-                                   "DROP TABLE IF EXISTS m2.nodb.public.t3;",
-                                   "ALTER TABLE IF EXISTS u.d.s.t3 ADD COLUMN x BIGINT;"}) {
+    for (const std::string sql : {"DROP TABLE IF EXISTS u.d.s.t3;",
+                                  "DROP TABLE IF EXISTS m2.nodb.public.t3;",
+                                  "ALTER TABLE IF EXISTS u.d.s.t3 ADD COLUMN x BIGINT;"}) {
         host.db.ok(any(), sql);
     }
     // The checks of a name come before the refusals of what a connection's database takes.
@@ -363,10 +363,10 @@ TEST_CASE("integration::cpp::remote_databases::only_tables_in_a_database_of_a_co
     const auto session = otterbrix::session_id_t();
     host.db.ok(session, "SET search_path = 'm2.shop.public';");
     const std::string refusal = "only tables can be created in a schema of connection \"m2\"";
-    for (const std::string& sql : {"CREATE VIEW v AS SELECT id FROM orders;",
-                                   "CREATE SEQUENCE q;",
-                                   "CREATE FUNCTION f(x INT) RETURNS INT AS 'x -> x';",
-                                   "CREATE TYPE pair_t AS (x BIGINT);"}) {
+    for (const std::string sql : {"CREATE VIEW v AS SELECT id FROM orders;",
+                                  "CREATE SEQUENCE q;",
+                                  "CREATE FUNCTION f(x INT) RETURNS INT AS 'x -> x';",
+                                  "CREATE TYPE pair_t AS (x BIGINT);"}) {
         host.db.check_refused(session, sql, code::unimplemented_yet, refusal);
     }
     host.db.check_refused(any(),

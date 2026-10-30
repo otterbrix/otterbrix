@@ -35,10 +35,10 @@ TEST_CASE("integration::cpp::not_null::every_write_of_a_null_is_refused_by_the_s
     db.ok(any(), "CREATE TABLE s.src (id BIGINT, v BIGINT);");
     db.ok(any(), "INSERT INTO s.t (id, v) VALUES (1, 10);");
     db.ok(any(), "INSERT INTO s.src (id, v) VALUES (NULL, 20);");
-    for (const std::string& sql : {"INSERT INTO s.t (id, v) VALUES (NULL, 2);",
-                                   "INSERT INTO s.t (v) VALUES (3);",
-                                   "INSERT INTO s.t (id, v) SELECT id, v FROM s.src;",
-                                   "UPDATE s.t SET id = NULL WHERE v = 10;"}) {
+    for (const std::string sql : {"INSERT INTO s.t (id, v) VALUES (NULL, 2);",
+                                  "INSERT INTO s.t (v) VALUES (3);",
+                                  "INSERT INTO s.t (id, v) SELECT id, v FROM s.src;",
+                                  "UPDATE s.t SET id = NULL WHERE v = 10;"}) {
         db.check_refused(any(), sql, code::not_null_violation, null_in("id", "t"));
     }
     CHECK(db.ints(any(), "SELECT id FROM s.t;") == ints{1});

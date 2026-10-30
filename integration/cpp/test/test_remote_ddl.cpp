@@ -49,10 +49,10 @@ TEST_CASE("integration::cpp::remote_ddl::only_in_autocommit") {
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t1 (id BIGINT);");
     host.backend().clear_journal();
     const std::string refusal = "connection \"m2\" only supports DDL in autocommit";
-    for (const std::string& begin : {"BEGIN;", "SET autocommit = off;"}) {
-        for (const std::string& sql : {"CREATE TABLE m2.shop.public.t3 (id BIGINT);",
-                                       "ALTER TABLE m2.shop.public.t1 ADD COLUMN x BIGINT;",
-                                       "DROP TABLE m2.shop.public.t1;"}) {
+    for (const std::string begin : {"BEGIN;", "SET autocommit = off;"}) {
+        for (const std::string sql : {"CREATE TABLE m2.shop.public.t3 (id BIGINT);",
+                                      "ALTER TABLE m2.shop.public.t1 ADD COLUMN x BIGINT;",
+                                      "DROP TABLE m2.shop.public.t1;"}) {
             INFO(begin << " " << sql);
             const auto session = otterbrix::session_id_t();
             host.db.ok(session, begin);
@@ -91,8 +91,8 @@ TEST_CASE("integration::cpp::remote_ddl::other_alters_are_refused") {
     registered(host);
     host.db.ok(any(), "CREATE TABLE m2.shop.public.t2 (id BIGINT);");
     host.backend().clear_journal();
-    for (const std::string& sql : {"ALTER TABLE m2.shop.public.t2 RENAME COLUMN id TO id2;",
-                                   "ALTER TABLE m2.shop.public.t2 ALTER COLUMN id TYPE TEXT;"}) {
+    for (const std::string sql : {"ALTER TABLE m2.shop.public.t2 RENAME COLUMN id TO id2;",
+                                  "ALTER TABLE m2.shop.public.t2 ALTER COLUMN id TYPE TEXT;"}) {
         const auto error = host.db.refused(any(), sql);
         INFO(sql);
         CHECK(error.type == code::unimplemented_yet);
@@ -113,10 +113,10 @@ TEST_CASE("integration::cpp::remote_ddl::create_table_as_is_refused") {
 TEST_CASE("integration::cpp::remote_ddl::constraints_but_not_null_are_refused") {
     host_t host("test_remote_ddl/constraints");
     registered(host);
-    for (const std::string& sql : {"CREATE TABLE m2.shop.public.t5 (id BIGINT PRIMARY KEY);",
-                                   "CREATE TABLE m2.shop.public.t5 (id BIGINT UNIQUE);",
-                                   "CREATE TABLE m2.shop.public.t5 (id BIGINT CHECK (id > 0));",
-                                   "CREATE TABLE m2.shop.public.t5 (id BIGINT DEFAULT 1);"}) {
+    for (const std::string sql : {"CREATE TABLE m2.shop.public.t5 (id BIGINT PRIMARY KEY);",
+                                  "CREATE TABLE m2.shop.public.t5 (id BIGINT UNIQUE);",
+                                  "CREATE TABLE m2.shop.public.t5 (id BIGINT CHECK (id > 0));",
+                                  "CREATE TABLE m2.shop.public.t5 (id BIGINT DEFAULT 1);"}) {
         const auto error = host.db.refused(any(), sql);
         INFO(sql);
         CHECK(error.type == code::unimplemented_yet);

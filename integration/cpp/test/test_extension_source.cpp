@@ -211,7 +211,7 @@ TEST_CASE("integration::cpp::extension_source::a_page_of_other_columns_errors_no
     REQUIRE(space.execute_sql("CREATE TABLE extdb.local_t (key BIGINT, amount BIGINT);")->is_success());
     space.table("t1", {"key", "name"}, {{1, 11}});
     space.backend().set_short_pages("ext.remote.public.t1");
-    for (const std::string& sql :
+    for (const std::string sql :
          {"SELECT e.name, t.amount FROM ext.remote.public.t1 AS e JOIN extdb.local_t AS t ON e.key = t.key;",
           "SELECT key, count(name) FROM ext.remote.public.t1 GROUP BY key;"}) {
         INFO(sql);

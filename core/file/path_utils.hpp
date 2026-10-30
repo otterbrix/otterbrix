@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstdint>
-
+#include <string>
 #include <vector>
 
 namespace core::filesystem::path_utils {

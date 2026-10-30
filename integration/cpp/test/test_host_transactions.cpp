@@ -215,9 +215,9 @@ TEST_CASE("integration::cpp::host_transactions::a_vanished_connection") {
     host.db.ok(any(), "CREATE TABLE m2.shop.public.items (id BIGINT);");
     host.restart_with({});
     host.backend().clear_journal();
-    for (const std::string& sql : {"SELECT id FROM m2.shop.public.orders;",
-                                   "INSERT INTO m2.shop.public.orders (id) VALUES (1);",
-                                   "CREATE TABLE m2.shop.public.more (id BIGINT);"}) {
+    for (const std::string sql : {"SELECT id FROM m2.shop.public.orders;",
+                                  "INSERT INTO m2.shop.public.orders (id) VALUES (1);",
+                                  "CREATE TABLE m2.shop.public.more (id BIGINT);"}) {
         host.db.check_refused(any(), sql, code::undefined_object, "connection \"m2\" does not exist");
     }
     host.db.ok(any(), "DROP TABLE m2.shop.public.orders;");

@@ -7,6 +7,7 @@
 #include <components/catalog/catalog_oids.hpp>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -1993,6 +1994,71 @@ TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_removes_storage_file
         REQUIRE(after_gc_files.find(f) != after_gc_files.end());
     }
     CHECK_FIND_SQL("SELECT * FROM TestDatabase.GcSurvivor;", 2);
+}
+
+// A crash between a DROP's catalog commit and its file removal leaves the table directory behind, with a
+// `.wal_id.tmp` if a checkpoint was staging its sidecar. The reopen rebuilds the dropped entry from pg_class
+// and the first commit's horizon must sweep the whole directory, staging sidecar included.
+TEST_CASE("integration::cpp::test_persistence::disk_drop_gc_after_reopen_removes_a_staged_sidecar") {
+    auto config = test_create_config(integration_fixture_path("test_persistence/disk_drop_gc_reopen_src"));
+    test_clear_directory(config);
+    const auto crash_dir = integration_fixture_path("test_persistence/disk_drop_gc_reopen_crash");
+
+    std::filesystem::path victim_relative;
+    INFO("phase 1: a checkpointed table is dropped; the crash image is taken before any later checkpoint");
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        auto run = [&](const std::string& sql) {
+            auto session = otterbrix::session_id_t();
+            return dispatcher->execute_sql(session, sql);
+        };
+        REQUIRE(run("CREATE SCHEMA " + database_name.t + ";")->is_success());
+        REQUIRE(run("CREATE TABLE TestDatabase.GcSurvivor (val bigint);")->is_success());
+        REQUIRE(run("CHECKPOINT;")->is_success());
+        const auto baseline_files = scan_otbx_files(config.disk.path);
+
+        REQUIRE(run("CREATE TABLE TestDatabase.GcVictim (val bigint);")->is_success());
+        REQUIRE(run("INSERT INTO TestDatabase.GcVictim (val) VALUES (1), (2);")->is_success());
+        REQUIRE(run("CHECKPOINT;")->is_success());
+        for (const auto& f : scan_otbx_files(config.disk.path)) {
+            if (baseline_files.find(f) == baseline_files.end()) {
+                victim_relative = std::filesystem::relative(f.parent_path(), config.main_path);
+            }
+        }
+        REQUIRE_FALSE(victim_relative.empty());
+
+        REQUIRE(run("DROP TABLE TestDatabase.GcVictim;")->is_success());
+        test_helpers::copy_crash_image(config.main_path, crash_dir);
+    }
+
+    auto crash_config = test_create_config(crash_dir);
+    const auto victim_dir = crash_config.main_path / victim_relative;
+    INFO("crash leftovers: the table directory with both checkpoint sidecars, the .otbx already gone");
+    REQUIRE_FALSE(std::filesystem::exists(victim_dir));
+    std::filesystem::create_directories(victim_dir);
+    for (const char* name : {"table.otbx.wal_id", "table.otbx.wal_id.tmp"}) {
+        std::ofstream out(victim_dir / name, std::ios::binary);
+        out << "12345678";
+    }
+
+    INFO("phase 2: reopen the crash image; one commit advances the horizon past the rebuilt dropped entry");
+    {
+        test_spaces space(crash_config);
+        auto* dispatcher = space.dispatcher();
+        {
+            auto session = otterbrix::session_id_t();
+            REQUIRE(dispatcher->execute_sql(session, "INSERT INTO TestDatabase.GcSurvivor (val) VALUES (7);")
+                        ->is_success());
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (std::filesystem::exists(victim_dir) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+        INFO("victim directory: " << victim_dir.string());
+        CHECK_FALSE(std::filesystem::exists(victim_dir));
+        CHECK_FIND_SQL("SELECT * FROM TestDatabase.GcSurvivor;", 1);
+    }
 }
 
 // A DROP TABLE inside an explicit transaction is revertible until COMMIT: the catalog delete is

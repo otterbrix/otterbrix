@@ -300,10 +300,10 @@ namespace services::disk {
         unique_future<void> storage_drop_aborted_inner(uint64_t txn_id,
                                                        std::pmr::vector<components::catalog::oid_t> oids);
 
+        // The checkpoint sidecars to sweep are derived from `path` here, the one place both DROP paths share.
         void register_dropped_storage_inner_sync(components::catalog::oid_t oid,
                                                  uint64_t dropped_at_commit_id,
-                                                 std::filesystem::path path,
-                                                 std::pmr::vector<std::filesystem::path> sidecar_paths);
+                                                 std::filesystem::path path);
 
         unique_future<void> drop_storage_many_inner(std::pmr::vector<components::catalog::oid_t> oids);
 

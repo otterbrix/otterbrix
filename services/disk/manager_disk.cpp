@@ -699,20 +699,11 @@ namespace services::disk {
 
     void manager_disk_t::register_dropped_storage_sync(components::catalog::oid_t oid,
                                                        uint64_t dropped_at_commit_id,
-                                                       std::filesystem::path path,
-                                                       std::pmr::vector<std::filesystem::path> sidecar_paths) {
+                                                       std::filesystem::path path) {
         // Bootstrap-only (base_spaces catalog rebuild); runtime DROP uses mark_storage_dropped_many below.
         if (!agents_.empty()) {
             const auto idx = pool_idx_for_oid(oid, agents_.size());
-            std::pmr::vector<std::filesystem::path> agent_sidecars{resource()};
-            agent_sidecars.reserve(sidecar_paths.size());
-            for (const auto& sidecar : sidecar_paths) {
-                agent_sidecars.push_back(sidecar);
-            }
-            agents_[idx]->register_dropped_storage_inner_sync(oid,
-                                                              dropped_at_commit_id,
-                                                              std::move(path),
-                                                              std::move(agent_sidecars));
+            agents_[idx]->register_dropped_storage_inner_sync(oid, dropped_at_commit_id, std::move(path));
         }
     }
 

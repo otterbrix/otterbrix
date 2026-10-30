@@ -658,8 +658,7 @@ namespace services::disk {
         /// mark_storage_dropped_many).
         void register_dropped_storage_sync(components::catalog::oid_t oid,
                                            uint64_t dropped_at_commit_id,
-                                           std::filesystem::path path,
-                                           std::pmr::vector<std::filesystem::path> sidecar_paths);
+                                           std::filesystem::path path);
 
         /// Bootstrap helper: fans the dispatcher address to every agent (no manager-side mirror).
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
@@ -842,12 +841,8 @@ namespace services::disk {
         }
         void register_dropped_storage_sync(components::catalog::oid_t oid,
                                            uint64_t dropped_at_commit_id,
-                                           std::filesystem::path path,
-                                           std::pmr::vector<std::filesystem::path> sidecar_paths) {
-            manager_.register_dropped_storage_sync(oid,
-                                                   dropped_at_commit_id,
-                                                   std::move(path),
-                                                   std::move(sidecar_paths));
+                                           std::filesystem::path path) {
+            manager_.register_dropped_storage_sync(oid, dropped_at_commit_id, std::move(path));
         }
         void set_manager_dispatcher_sync(actor_zeta::address_t address) {
             manager_.set_manager_dispatcher_sync(std::move(address));

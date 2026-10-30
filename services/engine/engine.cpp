@@ -860,14 +860,7 @@ namespace services::engine {
                 for (const auto& row : dropped_oids) {
                     auto base = db_root / std::to_string(static_cast<unsigned>(row.namespace_oid)) /
                                 std::to_string(static_cast<unsigned>(row.oid));
-                    auto otbx = base / "table.otbx";
-                    std::pmr::vector<std::filesystem::path> sidecars{parts.resource};
-                    {
-                        auto wal_id_sidecar = otbx;
-                        wal_id_sidecar += ".wal_id";
-                        sidecars.push_back(std::move(wal_id_sidecar));
-                    }
-                    disk.register_dropped_storage_sync(row.oid, row.delete_id, std::move(otbx), std::move(sidecars));
+                    disk.register_dropped_storage_sync(row.oid, row.delete_id, base / "table.otbx");
                     index.mark_table_dropped_sync(row.oid, row.delete_id);
                 }
                 // on_horizon_advanced can't be called inline (not yet running); arm flags for the first commit.

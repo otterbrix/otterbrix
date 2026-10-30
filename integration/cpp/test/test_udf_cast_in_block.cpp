@@ -80,6 +80,14 @@ namespace {
         return host.db.ints(any(), "SELECT count(*) FROM pg_catalog.pg_cast;").front();
     }
 
+    // Statements go round-robin over the executor pool and each executor's mailbox keeps the order, so one statement per
+    // executor leaves every registry change published before it applied.
+    void after_every_executor_applied(host_t& host) {
+        for (std::size_t i = 0; i < host.db.config.execution.executor_pool_size; ++i) {
+            host.db.ok(any(), "SELECT count(*) FROM pg_catalog.pg_cast;");
+        }
+    }
+
     bool waited_beyond(std::uint64_t count) {
         return test_helpers::wait_until([count] { return services::dispatcher::dev_statements_waited_turn() > count; });
     }
@@ -403,6 +411,7 @@ TEST_CASE("integration::cpp::udf_cast_in_block::drop_schema_cascade_drops_its_fu
     REQUIRE_FALSE(host.db.dispatcher()->register_udf(session, twice_function(host.resource())).contains_error());
     REQUIRE(services::collection::executor::dev_user_functions_held() > before);
     host.db.ok(any(), "DROP SCHEMA s CASCADE;");
+    after_every_executor_applied(host);
     CHECK(services::collection::executor::dev_user_functions_held() == before);
     CHECK(twice_rows(host) == 0);
 }
@@ -417,6 +426,7 @@ TEST_CASE("integration::cpp::udf_cast_in_block::drop_schema_cascade_in_a_block_d
     REQUIRE_FALSE(host.db.dispatcher()->register_udf(session, twice_function(host.resource())).contains_error());
     host.db.ok(session, "DROP SCHEMA s CASCADE;");
     host.db.ok(session, "COMMIT;");
+    after_every_executor_applied(host);
     CHECK(services::collection::executor::dev_user_functions_held() == before);
     CHECK(twice_rows(host) == 0);
 }
@@ -487,6 +497,7 @@ TEST_CASE("integration::cpp::udf_cast_in_block::a_refused_commit_leaves_the_regi
                           "COMMIT;",
                           core::error_code_t::connection_closed,
                           "server m2: serialization failure");
+    after_every_executor_applied(host);
     CHECK(services::collection::executor::dev_user_functions_held() == before);
     CHECK(host.db.run(any(), "SELECT twice(id) FROM t;")->is_error());
     CHECK(twice_rows(host) == 0);

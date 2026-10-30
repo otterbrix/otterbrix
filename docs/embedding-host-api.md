@@ -116,7 +116,7 @@ Inside a connection's database:
 - `CREATE SCHEMA` / `DROP SCHEMA` (through the place: a schema name is simple) write the catalog only;
   `DROP SCHEMA … CASCADE` drops each of its tables in the backend first.
 - Only tables are created: views, materialized views, sequences, functions and types are refused with
-  `invalid_parameter`, `only tables can be created in a schema of connection "c"`; a view over a connection's table
+  `unimplemented_yet`, `only tables can be created in a schema of connection "c"`; a view over a connection's table
   lives in a local schema, and depends on the table in `pg_depend` as on a local one.
 - A table has no storage in otterbrix, before and after a restart: its catalog rows are all otterbrix keeps.
 - Keys, checks, defaults (ADD COLUMN … DEFAULT included), CREATE INDEX, ADD CONSTRAINT and ALTERs other than ADD /
@@ -354,6 +354,16 @@ subcommands are checked: `ALTER TABLE IF EXISTS nosuch ADD COLUMN c nosuchtype` 
 (a int, a int)` over an existing `t` succeed. Inside a block such a statement leaves the block as it was. A DROP that
 RESTRICT refuses for its dependents, and a DROP of a built-in type, answer `dependent_objects_still_exist`
 (PostgreSQL 2BP01).
+
+`register_udf`, `unregister_udf`, `register_cast` and `unregister_cast` are statements of their session, as PostgreSQL
+18 CREATE / DROP FUNCTION and CREATE / DROP CAST are: each waits for the session's turn, writes pg_proc / pg_cast in
+the session's transaction, and inside a block runs alone, after the statements of the session already running and
+before the ones sent after it. The transaction's own statements call a function it registered from its next statement
+on; another session finds the function and its pg_proc row together once the transaction commits; ROLLBACK, ROLLBACK
+TO SAVEPOINT and `close_session` drop what the transaction registered, and a DROP ... CASCADE that takes a function's
+rows takes the function. Unlike PostgreSQL, which waits for the transaction that holds the signature, a registration
+of a signature (or a cast of a pair of types) that another open transaction registered is refused at once with
+`duplicate_function` (`duplicate_object` for a cast) (`test_udf_cast_in_block.cpp`).
 
 ## Transaction status
 

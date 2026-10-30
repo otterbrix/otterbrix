@@ -262,7 +262,7 @@ namespace components::operators {
                         break;
                     }
                     if (matched && single_match_) {
-                        return join_detail::more_than_one_row(resource_);
+                        return vector::more_than_one_row(resource_);
                     }
                     builder_.emit_matched(probe, li, build_chunks[ref.chunk_index], ref.row_index);
                     matched = true;

@@ -132,6 +132,32 @@ namespace {
         return fn;
     }
 
+    core::error_t probe_exec_text(compute::kernel_context&, const vector::data_chunk_t& in, vector::vector_t& out) {
+        auto* destination = out.data<int64_t>();
+        for (uint64_t row = 0; row < in.size(); ++row) {
+            destination[row] = 7;
+        }
+        return core::error_t::no_error();
+    }
+
+    // The overload of kFuncName over TEXT.
+    compute::function_ptr make_probe_text(std::pmr::memory_resource* resource) {
+        compute::function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
+        auto fn = core::pmr::make_polymorphic_unique<compute::vector_function>(resource,
+                                                                               kFuncName,
+                                                                               compute::arity::unary(),
+                                                                               doc,
+                                                                               size_t{1},
+                                                                               compute::volatility_t::volatile_);
+        compute::kernel_signature_t sig(compute::function_type_t::vector,
+                                        {compute::parameter_type::exact(types::logical_type::STRING_LITERAL)},
+                                        {compute::output_type::fixed(types::logical_type::BIGINT)});
+        compute::vector_kernel k{std::move(sig), probe_exec_text};
+        auto added = fn->add_kernel(resource, std::move(k));
+        REQUIRE_FALSE(added.contains_error());
+        return fn;
+    }
+
     // "the read refused" — distinct from every honest row count, including zero.
     constexpr std::size_t kReadRefused = static_cast<std::size_t>(-1);
 
@@ -220,8 +246,7 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
         CHECK(rows == 0);
     }
 
-    // A restart, not a retry: register_udf's per-executor fan-out survives the refusal, so a same-engine
-    // retry is rejected as already-registered (a separate defect in services/dispatcher + services/collection).
+    // With the fault cleared, after a restart the registration reaches pg_proc and the registries.
     plan.fail_reads_at_location = std::numeric_limits<uint64_t>::max();
     {
         test_spaces restarted(config);
@@ -361,4 +386,37 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_refused_unregist
         REQUIRE(called->is_success());
         CHECK(called->size() == 3);
     }
+}
+
+// A row a previous process left names that process's uid, which a live function of another signature may have now:
+// dropping the row drops only the overload whose signature it is.
+TEST_CASE("integration::cpp::test_udf_refusal_registry_state::a_dropped_leftover_keeps_the_live_overload") {
+    const std::filesystem::path dir = integration_fixture_path("test_udf_refusal_registry_state/leftover_uid_reused");
+    std::filesystem::remove_all(dir);
+    auto config = test_helpers::make_test_config(dir);
+    config.log.level = log_t::level::off;
+
+    {
+        test_spaces space(config);
+        auto* dispatcher = space.dispatcher();
+        REQUIRE_FALSE(dispatcher->register_udf(otterbrix::session_id_t(), make_probe_unary(dispatcher->resource()))
+                          .contains_error());
+    }
+
+    test_spaces restarted(config);
+    auto* dispatcher = restarted.dispatcher();
+    REQUIRE_FALSE(
+        dispatcher->register_udf(otterbrix::session_id_t(), make_probe_text(dispatcher->resource())).contains_error());
+    REQUIRE(pg_proc_rows_named(restarted, kFuncName) == 2);
+    auto dropped = dispatcher->unregister_udf(otterbrix::session_id_t(), kFuncName, {types::logical_type::BIGINT});
+    INFO("unregister_udf of the leftover: " << dropped.what.c_str());
+    REQUIRE_FALSE(dropped.contains_error());
+    CHECK(pg_proc_rows_named(restarted, kFuncName) == 1);
+
+    auto called = test_helpers::exec(dispatcher, "SELECT " + kFuncName + "('x');");
+    INFO("call of the live overload: " << (called->is_error() ? called->get_error().what.c_str() : "<ok>"));
+    REQUIRE(called->is_success());
+    auto cell = called->get<int64_t>(0, 0);
+    REQUIRE_FALSE(cell.has_error());
+    CHECK(cell.value() == 7);
 }

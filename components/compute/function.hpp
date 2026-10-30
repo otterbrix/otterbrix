@@ -353,8 +353,13 @@ namespace components::compute {
     class function_registry_t {
     public:
         explicit function_registry_t(std::pmr::memory_resource* resource);
+        // Every function copied onto `resource`, under the uid and in the schema it has here.
+        function_registry_t(const function_registry_t& other, std::pmr::memory_resource* resource);
 
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function(function_ptr function);
+        // A uid no function of this registry has nor will be given by add_function: the uid
+        // add_function_with_uid adds a function under later.
+        [[nodiscard]] function_uid reserve_uid() noexcept { return current_uid_++; }
         // Used when the canonical UID was chosen by the executors' copies, so the dispatcher's master
         // names a function by the same uid they do.
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function_with_uid(function_uid uid,
@@ -382,11 +387,6 @@ namespace components::compute {
 
         // Remove a function by uid (DROP FUNCTION / unregister_udf path). No-op if uid not present.
         bool remove_function(function_uid uid);
-        // Remove a user function of `schema_oid` by (name, input types) signature match — used by dispatcher to
-        // drop a single overload.
-        bool remove_function_by_signature(const std::string& name,
-                                          const std::pmr::vector<types::complex_logical_type>& inputs,
-                                          std::uint32_t schema_oid);
 
         std::pmr::memory_resource* resource() const noexcept;
 

@@ -104,6 +104,8 @@ namespace components::vector {
     core::result_wrapper_t<vector_t> compact_to_bool_value(std::pmr::memory_resource* resource,
                                                            const std::pmr::vector<data_chunk_t>& chunks,
                                                            const types::complex_logical_type& result_type);
+    // A scalar sub-query, or a join that stands for one, gave more than one row: PostgreSQL 18 nodeSubplan.c.
+    core::error_t more_than_one_row(std::pmr::memory_resource* resource);
     // A scalar sub-query: its one cell, NULL for no row
     core::result_wrapper_t<vector_t> compact_to_single_value(std::pmr::memory_resource* resource,
                                                              const std::pmr::vector<data_chunk_t>& chunks,

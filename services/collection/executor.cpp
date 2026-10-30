@@ -52,10 +52,12 @@
 #include <components/logical_plan/node_match.hpp>
 #include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_register_cast.hpp>
+#include <components/logical_plan/node_register_udf.hpp>
 #include <components/logical_plan/node_remote.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_set_setting.hpp>
 #include <components/logical_plan/node_transaction.hpp>
+#include <components/logical_plan/node_unregister_udf.hpp>
 #include <components/logical_plan/node_update.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
@@ -84,6 +86,7 @@ namespace services::collection::executor {
         std::atomic<uint64_t> g_index_reconcile_staged_ranges{0};
         std::atomic<void (*)(uint64_t)> g_dml_pre_drive_hook{nullptr};
         std::atomic<source_await_hook_fn> g_source_await_hook{nullptr};
+        std::atomic<std::int64_t> g_user_functions_held{0};
         oid_alloc_interposer_t* g_oid_alloc_interposer = nullptr;
     } // namespace
 
@@ -95,6 +98,7 @@ namespace services::collection::executor {
     }
     void dev_set_dml_pre_drive_hook(void (*hook)(uint64_t)) noexcept { g_dml_pre_drive_hook.store(hook); }
     void dev_set_source_await_hook(source_await_hook_fn hook) noexcept { g_source_await_hook.store(hook); }
+    std::int64_t dev_user_functions_held() noexcept { return g_user_functions_held.load(); }
 
     void dev_set_oid_alloc_interposer(oid_alloc_interposer_t* interposer) { g_oid_alloc_interposer = interposer; }
     oid_alloc_interposer_t* dev_oid_alloc_interposer() { return g_oid_alloc_interposer; }
@@ -115,12 +119,8 @@ namespace services::collection::executor {
 
         constexpr std::array kBehaviorHandledIds{
             actor_zeta::msg_id<executor_t, &executor_t::execute_plan_full>,
-            actor_zeta::msg_id<executor_t, &executor_t::register_udf>,
-            actor_zeta::msg_id<executor_t, &executor_t::unregister_udf>,
-            actor_zeta::msg_id<executor_t, &executor_t::register_cast>,
-            actor_zeta::msg_id<executor_t, &executor_t::unregister_cast>,
+            actor_zeta::msg_id<executor_t, &executor_t::apply_registry_changes>,
             actor_zeta::msg_id<executor_t, &executor_t::set_explain_renderer>,
-            actor_zeta::msg_id<executor_t, &executor_t::unregister_udf_uid>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -292,28 +292,12 @@ namespace services::collection::executor {
                 co_await actor_zeta::dispatch(this, &executor_t::execute_plan_full, msg);
                 break;
             }
-            case actor_zeta::msg_id<executor_t, &executor_t::register_udf>: {
-                co_await actor_zeta::dispatch(this, &executor_t::register_udf, msg);
-                break;
-            }
-            case actor_zeta::msg_id<executor_t, &executor_t::unregister_udf>: {
-                co_await actor_zeta::dispatch(this, &executor_t::unregister_udf, msg);
-                break;
-            }
-            case actor_zeta::msg_id<executor_t, &executor_t::register_cast>: {
-                co_await actor_zeta::dispatch(this, &executor_t::register_cast, msg);
-                break;
-            }
-            case actor_zeta::msg_id<executor_t, &executor_t::unregister_cast>: {
-                co_await actor_zeta::dispatch(this, &executor_t::unregister_cast, msg);
+            case actor_zeta::msg_id<executor_t, &executor_t::apply_registry_changes>: {
+                co_await actor_zeta::dispatch(this, &executor_t::apply_registry_changes, msg);
                 break;
             }
             case actor_zeta::msg_id<executor_t, &executor_t::set_explain_renderer>: {
                 co_await actor_zeta::dispatch(this, &executor_t::set_explain_renderer, msg);
-                break;
-            }
-            case actor_zeta::msg_id<executor_t, &executor_t::unregister_udf_uid>: {
-                co_await actor_zeta::dispatch(this, &executor_t::unregister_udf_uid, msg);
                 break;
             }
             default:
@@ -327,6 +311,7 @@ namespace services::collection::executor {
     executor_t::execute_plan(components::session::session_id_t session,
                              components::logical_plan::execution_plan_t plan,
                              services::context_storage_t context_storage,
+                             statement_registries_t registries,
                              components::table::transaction_data txn,
                              uint64_t lowest_active_start_time,
                              std::pmr::vector<explain_plan_node> captured_subplans) {
@@ -356,8 +341,9 @@ namespace services::collection::executor {
         }
 
         context_storage.parameters = &plan.parameters->parameters();
+        context_storage.functions = registries.functions;
         auto planned = planner::create_plan(context_storage,
-                                            function_registry_,
+                                            *registries.functions,
                                             plan.sub_queries.back(),
                                             limit,
                                             &plan.parameters->parameters());
@@ -430,6 +416,7 @@ namespace services::collection::executor {
         out.written = result.written;
         out.participants = std::move(result.participants);
         out.host_rows = std::move(result.host_rows);
+        out.dropped_functions = std::move(result.dropped_functions);
         co_return std::move(out);
     }
 
@@ -460,11 +447,42 @@ namespace services::collection::executor {
     executor_t::unique_future<execute_result_t>
     executor_t::execute_plan_full(components::session::session_id_t session,
                                   components::logical_plan::execution_plan_t plan,
-                                  services::dispatcher::txn_session_context_t session_ctx) {
+                                  services::dispatcher::txn_session_context_t session_ctx,
+                                  services::dispatcher::registry_changes_t own_changes) {
+        if (own_changes.empty()) {
+            co_return co_await execute_statement_(session,
+                                                  std::move(plan),
+                                                  std::move(session_ctx),
+                                                  own_registries_(),
+                                                  std::pmr::vector<expanded_view_t>{resource()});
+        }
+        components::compute::function_registry_t functions{function_registry_, resource()};
+        components::casts::cast_registry_t casts{cast_registry_, resource()};
+        if (auto refused = own_changes.apply_to(functions, &casts, resource()); refused.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(refused))};
+        }
         co_return co_await execute_statement_(session,
                                               std::move(plan),
                                               std::move(session_ctx),
+                                              statement_registries_t{&functions, &casts},
                                               std::pmr::vector<expanded_view_t>{resource()});
+    }
+
+    executor_t::unique_future<core::error_t>
+    executor_t::apply_registry_changes(services::dispatcher::registry_changes_t changes) {
+        trace(log_,
+              "executor::apply_registry_changes: {} functions, {} casts",
+              changes.functions.size(),
+              changes.casts.size());
+        auto applied = changes.apply_to(function_registry_, &cast_registry_, resource());
+#ifdef DEV_MODE
+        if (!applied.contains_error()) {
+            for (const auto& change : changes.functions) {
+                g_user_functions_held.fetch_add(change.function ? 1 : -1);
+            }
+        }
+#endif
+        co_return applied;
     }
 
     executor_t::unique_future<execute_result_t>
@@ -482,9 +500,11 @@ namespace services::collection::executor {
         services::context_storage_t cstor{resource(), log_.clone(), statement.execution_context};
         cstor.place = statement.place;
         cstor.catalog_resolves = resolves;
+        // The resolve operators read no registry.
         co_return co_await execute_plan(session,
                                         components::logical_plan::execution_plan_t{resource(), root, params},
                                         std::move(cstor),
+                                        own_registries_(),
                                         session_ctx.txn,
                                         session_ctx.lowest_active_start_time,
                                         std::pmr::vector<explain_plan_node>{resource()});
@@ -695,6 +715,7 @@ namespace services::collection::executor {
     executor_t::unique_future<core::error_t>
     executor_t::write_host_rows_(components::session::session_id_t session,
                                  const services::dispatcher::txn_session_context_t& session_ctx,
+                                 statement_registries_t registries,
                                  std::vector<components::host_rows_t> rows) {
         for (const auto& written : rows) {
             for (const auto* chunks : {&written.insert, &written.delete_keys}) {
@@ -756,6 +777,7 @@ namespace services::collection::executor {
                     session,
                     plan_of(std::move(insert), components::logical_plan::make_parameter_node(resource())),
                     session_ctx,
+                    registries,
                     std::pmr::vector<expanded_view_t>{resource()});
                 if (done.cursor->is_error()) {
                     co_return done.cursor->get_error();
@@ -797,6 +819,7 @@ namespace services::collection::executor {
                     auto done = co_await execute_statement_(session,
                                                             plan_of(std::move(erase), std::move(parameters)),
                                                             session_ctx,
+                                                            registries,
                                                             std::pmr::vector<expanded_view_t>{resource()});
                     if (done.cursor->is_error()) {
                         co_return done.cursor->get_error();
@@ -1107,6 +1130,7 @@ namespace services::collection::executor {
     executor_t::unique_future<core::error_t>
     executor_t::pin_functions_(components::session::session_id_t session,
                                components::table::transaction_data txn,
+                               const components::compute::function_registry_t& functions,
                                const components::logical_plan::resolved_table_metadata_t* view,
                                components::logical_plan::node_t* body) {
         auto function_oids = view_function_oids(resource(), *view);
@@ -1126,7 +1150,7 @@ namespace services::collection::executor {
         if (proc_chunks.has_error()) {
             co_return core::error_on(resource(), proc_chunks.error());
         }
-        co_return pin_view_functions(resource(), *view, proc_chunks.value(), function_registry_, body);
+        co_return pin_view_functions(resource(), *view, proc_chunks.value(), functions, body);
     }
 
     // REFRESH MATERIALIZED VIEW (PostgreSQL 18 matview.c): the matview's rows are deleted and its stored body is
@@ -1135,6 +1159,7 @@ namespace services::collection::executor {
     executor_t::refresh_matview_(components::session::session_id_t session,
                                  const components::logical_plan::execution_plan_t& plan,
                                  const services::dispatcher::txn_session_context_t& session_ctx,
+                                 statement_registries_t registries,
                                  const components::graph_execution_context& settings) {
         const auto* refresh =
             static_cast<const components::logical_plan::node_refresh_matview_t*>(plan.sub_queries.back().get());
@@ -1155,6 +1180,7 @@ namespace services::collection::executor {
                 co_await execute_statement_(session,
                                             components::planner::refresh_matview_delete_plan(resource(), *matview),
                                             session_ctx,
+                                            registries,
                                             std::pmr::vector<expanded_view_t>{resource()});
             if (done.cursor->is_error()) {
                 co_return done;
@@ -1168,6 +1194,7 @@ namespace services::collection::executor {
             auto insert = std::move(refill.value());
             if (auto pinned = co_await pin_functions_(session,
                                                       session_ctx.txn,
+                                                      *registries.functions,
                                                       matview,
                                                       insert.reference->children().front().get());
                 pinned.contains_error()) {
@@ -1179,6 +1206,7 @@ namespace services::collection::executor {
             auto done = co_await execute_statement_(session,
                                                     std::move(insert.plan),
                                                     session_ctx,
+                                                    registries,
                                                     std::move(stored_body));
             if (done.cursor->is_error()) {
                 co_return done;
@@ -1199,6 +1227,7 @@ namespace services::collection::executor {
 
     core::error_t executor_t::prepare_column_(const components::logical_plan::catalog_resolves_t& resolves,
                                               const components::graph_execution_context& settings,
+                                              const components::casts::cast_registry_t& casts,
                                               components::table::column_definition_t& column) {
         using components::types::logical_type;
         auto& type = column.type();
@@ -1232,7 +1261,7 @@ namespace services::collection::executor {
             unstorable.contains_error()) {
             return unstorable;
         }
-        return services::dispatcher::convert_column_default(resource(), &cast_registry_, settings, column);
+        return services::dispatcher::convert_column_default(resource(), &casts, settings, column);
     }
 
     executor_t::own_entries_t
@@ -1416,6 +1445,15 @@ namespace services::collection::executor {
         }
     }
 
+    namespace {
+        core::error_t only_tables_in_connection(std::pmr::memory_resource* resource, std::string_view connection) {
+            std::pmr::string msg{"only tables can be created in a schema of connection \"", resource};
+            msg.append(connection);
+            msg.append("\"");
+            return core::error_t{core::error_code_t::unimplemented_yet, std::move(msg)};
+        }
+    } // namespace
+
     core::error_t executor_t::check_connection_target_(const components::logical_plan::execution_plan_t& plan,
                                                        const qualified_name_t& target) const {
         using components::logical_plan::node_type;
@@ -1463,9 +1501,7 @@ namespace services::collection::executor {
             case node_type::create_sequence_t:
             case node_type::create_macro_t:
             case node_type::create_type_t:
-                return refuse(core::error_code_t::unimplemented_yet,
-                              "only tables can be created in a schema of connection",
-                              connection);
+                return only_tables_in_connection(resource(), connection);
             case node_type::create_index_t:
             case node_type::create_constraint_t:
                 return refuse(core::error_code_t::unimplemented_yet,
@@ -1652,6 +1688,7 @@ namespace services::collection::executor {
                                       components::table::transaction_data txn,
                                       components::logical_plan::execution_plan_t& plan,
                                       const components::graph_execution_context& settings,
+                                      statement_registries_t registries,
                                       own_entries_t own,
                                       const std::pmr::vector<expanded_view_t>& expanded_views) {
         auto* view = static_cast<components::logical_plan::node_create_view_t*>(plan.sub_queries.back().get());
@@ -1665,8 +1702,8 @@ namespace services::collection::executor {
         services::dispatcher::validation::column_uses_t uses{resource()};
         const services::dispatcher::validation::validation_context_t validation_context{resource(),
                                                                                         &plan.catalog_resolves,
-                                                                                        cast_registry_,
-                                                                                        function_registry_,
+                                                                                        *registries.casts,
+                                                                                        *registries.functions,
                                                                                         settings,
                                                                                         &uses};
         auto output =
@@ -1712,7 +1749,7 @@ namespace services::collection::executor {
         std::pmr::vector<std::string> names{resource()};
         std::pmr::vector<services::disk::resolve_function_result_t> rows{resource()};
         for (const auto& use : functions) {
-            const auto* function = function_registry_.get_function(use.uid);
+            const auto* function = registries.functions->get_function(use.uid);
             if (function == nullptr || std::find(names.begin(), names.end(), function->name()) != names.end()) {
                 continue;
             }
@@ -1727,7 +1764,7 @@ namespace services::collection::executor {
             }
             rows.insert(rows.end(), procs.value().begin(), procs.value().end());
         }
-        co_return describe_view_functions(resource(), *view, function_registry_, functions, rows);
+        co_return describe_view_functions(resource(), *view, *registries.functions, functions, rows);
     }
 
     // ALTER TABLE's subcommands against what resolve found, before any operator runs. A DROP CONSTRAINT gets its
@@ -1859,6 +1896,58 @@ namespace services::collection::executor {
             };
             auto visit = [&](const auto& call, const auto&, bool) { register_schema(call.full_name()); };
             components::logical_plan::for_each_plan_call(root, visit);
+        }
+
+        // Whether a pg_proc row of `function` has these proargmatchers; a function without a signature has one row,
+        // with none (proc_signatures).
+        bool has_signature(const components::compute::function& function, std::string_view proargmatchers) {
+            const auto signatures = function.get_signatures();
+            if (signatures.empty()) {
+                return proargmatchers.empty();
+            }
+            return std::any_of(signatures.begin(), signatures.end(), [proargmatchers](const auto& signature) {
+                return components::catalog::encode_proargmatchers(signature.input_types) == proargmatchers;
+            });
+        }
+
+        // A function is registered in and dropped from the session's place; the types of a cast the host named are
+        // read from the catalog.
+        void register_registry_change_names(std::pmr::memory_resource* resource,
+                                            const components::logical_plan::node_t* root,
+                                            components::logical_plan::catalog_resolves_t& resolves) {
+            using components::logical_plan::node_type;
+            if (root == nullptr) {
+                return;
+            }
+            const auto register_types = [&](const components::types::complex_logical_type& source,
+                                            const components::types::complex_logical_type& target) {
+                std::vector<qualified_name_t> written;
+                for (const auto* type : {&source, &target}) {
+                    if (type->type() == components::types::logical_type::UNKNOWN) {
+                        written.push_back(components::sql::transform::type_reference_of(*type));
+                    }
+                }
+                components::sql::transform::register_catalog_resolve_types(resource, &resolves, written);
+            };
+            switch (root->type()) {
+                case node_type::register_udf_t:
+                case node_type::unregister_udf_t:
+                    resolves.ensure(resource, components::logical_plan::resolve_kind::namespace_)
+                        .add(components::logical_plan::resolve_entry_t{});
+                    return;
+                case node_type::register_cast_t: {
+                    const auto* cast = static_cast<const components::logical_plan::node_register_cast_t*>(root);
+                    register_types(cast->source(), cast->target());
+                    return;
+                }
+                case node_type::unregister_cast_t: {
+                    const auto* cast = static_cast<const components::logical_plan::node_unregister_cast_t*>(root);
+                    register_types(cast->source(), cast->target());
+                    return;
+                }
+                default:
+                    return;
+            }
         }
 
         // The schema a call is looked up in: a qualified call's own; a bare call the place's, a bare call in a CHECK
@@ -2086,10 +2175,155 @@ namespace services::collection::executor {
         return described;
     }
 
+    core::result_wrapper_t<services::dispatcher::registry_changes_t>
+    executor_t::prepare_registry_change_(components::logical_plan::execution_plan_t& plan,
+                                         statement_registries_t registries,
+                                         components::compute::function_uid reserved_uid) {
+        using components::logical_plan::node_type;
+        using components::types::logical_type;
+        services::dispatcher::registry_changes_t change;
+        auto* root = plan.sub_queries.back().get();
+        if (root == nullptr) {
+            return change;
+        }
+        const auto& resolves = plan.catalog_resolves;
+        const auto place_schema = [&]() -> core::result_wrapper_t<components::catalog::oid_t> {
+            if (auto missing = services::dispatcher::check_namespace_exists(resource(), &resolves, qualified_name_t{});
+                missing.contains_error()) {
+                return missing;
+            }
+            if (!resolves.place.connection.empty()) {
+                return only_tables_in_connection(resource(), resolves.place.connection);
+            }
+            return resolves.namespace_oid(qualified_name_t{});
+        };
+        const auto cast_types = [&](const components::types::complex_logical_type& source,
+                                    const components::types::complex_logical_type& target)
+            -> core::result_wrapper_t<
+                std::pair<components::types::complex_logical_type, components::types::complex_logical_type>> {
+            auto resolved_source = source;
+            auto resolved_target = target;
+            services::dispatcher::resolve_one_type(resolved_source, &resolves);
+            services::dispatcher::resolve_one_type(resolved_target, &resolves);
+            if (resolved_source.type() == logical_type::UNKNOWN || resolved_target.type() == logical_type::UNKNOWN) {
+                return core::error_t{core::error_code_t::undefined_object,
+                                     std::pmr::string{"cast source or target type is not registered", resource()}};
+            }
+            return std::make_pair(std::move(resolved_source), std::move(resolved_target));
+        };
+        switch (root->type()) {
+            case node_type::register_udf_t: {
+                auto* node = static_cast<components::logical_plan::node_register_udf_t*>(root);
+                if (node->function() == nullptr) {
+                    return core::error_t{core::error_code_t::invalid_parameter,
+                                         std::pmr::string{"register_udf: no function to register", resource()}};
+                }
+                auto schema = place_schema();
+                if (schema.has_error()) {
+                    return schema.error();
+                }
+                const std::string name{node->function()->name()};
+                const auto signatures = node->function()->get_signatures();
+                for (const auto& [registered_name, uid] : registries.functions->get_functions()) {
+                    if (registered_name != name || (!components::compute::is_builtin(uid) &&
+                                                    registries.functions->schema_of(uid) != schema.value())) {
+                        continue;
+                    }
+                    const auto* registered = registries.functions->get_function(uid);
+                    if (registered == nullptr ||
+                        components::compute::check_signature_conflicts(registered->get_signatures(), signatures)) {
+                        continue;
+                    }
+                    return core::error_t{
+                        core::error_code_t::duplicate_function,
+                        std::pmr::string{"function '" + name + "' is already registered with this signature",
+                                         resource()}};
+                }
+                assert(reserved_uid != components::compute::invalid_function_uid &&
+                       "the dispatcher reserves the uid of every register_udf");
+                node->set_identity(reserved_uid, schema.value());
+                change.functions.push_back(
+                    services::dispatcher::function_change_t{reserved_uid,
+                                                            schema.value(),
+                                                            node->function()->get_copy(resource())});
+                return change;
+            }
+            case node_type::unregister_udf_t: {
+                auto* node = static_cast<components::logical_plan::node_unregister_udf_t*>(root);
+                const auto& name = node->function_name();
+                // A builtin is required by the system, as in PostgreSQL, which refuses to drop one.
+                const auto named = registries.functions->find_functions(name);
+                const auto builtin_overload = [&](components::compute::function_uid uid) {
+                    const auto* function = registries.functions->get_function(uid);
+                    if (!components::compute::is_builtin(uid) || function == nullptr) {
+                        return false;
+                    }
+                    const auto signatures = function->get_signatures();
+                    return std::any_of(signatures.begin(), signatures.end(), [&](const auto& signature) {
+                        return signature.matches_inputs(node->inputs());
+                    });
+                };
+                const bool builtin = std::any_of(named.begin(), named.end(), builtin_overload);
+                if (builtin) {
+                    return core::error_t{core::error_code_t::dependent_objects_still_exist,
+                                         std::pmr::string{"unregister_udf: '" + name +
+                                                              "' is a builtin function and cannot be unregistered",
+                                                          resource()}};
+                }
+                auto schema = place_schema();
+                if (schema.has_error()) {
+                    return schema.error();
+                }
+                node->set_schema_oid(schema.value());
+                const auto uid = registries.functions->find_overload(name, node->inputs(), schema.value());
+                if (uid != components::compute::invalid_function_uid) {
+                    change.functions.push_back(
+                        services::dispatcher::function_change_t{uid,
+                                                                schema.value(),
+                                                                components::compute::no_function()});
+                }
+                return change;
+            }
+            case node_type::register_cast_t: {
+                auto* node = static_cast<components::logical_plan::node_register_cast_t*>(root);
+                auto types = cast_types(node->source(), node->target());
+                if (types.has_error()) {
+                    return types.error();
+                }
+                auto& [source, target] = types.value();
+                if (registries.casts->contains(source, target)) {
+                    return core::error_t{core::error_code_t::duplicate_object,
+                                         std::pmr::string{"cast is already registered", resource()}};
+                }
+                change.casts.push_back(services::dispatcher::cast_change_t{source, target, node->entry()});
+                node->set_types(std::move(source), std::move(target));
+                return change;
+            }
+            case node_type::unregister_cast_t: {
+                auto* node = static_cast<components::logical_plan::node_unregister_cast_t*>(root);
+                auto types = cast_types(node->source(), node->target());
+                if (types.has_error()) {
+                    return types.error();
+                }
+                auto& [source, target] = types.value();
+                if (!registries.casts->contains(source, target)) {
+                    return core::error_t{core::error_code_t::undefined_object,
+                                         std::pmr::string{"cast is not registered", resource()}};
+                }
+                change.casts.push_back(services::dispatcher::cast_change_t{source, target, std::nullopt});
+                node->set_types(std::move(source), std::move(target));
+                return change;
+            }
+            default:
+                return change;
+        }
+    }
+
     executor_t::unique_future<execute_result_t>
     executor_t::execute_statement_(components::session::session_id_t session,
                                    components::logical_plan::execution_plan_t plan,
                                    services::dispatcher::txn_session_context_t session_ctx,
+                                   statement_registries_t registries,
                                    std::pmr::vector<expanded_view_t> expanded_views,
                                    bool sub_query) {
         using node_type = components::logical_plan::node_type;
@@ -2134,6 +2368,7 @@ namespace services::collection::executor {
             auto sub_result = co_await execute_statement_(session,
                                                           std::move(sub_plan),
                                                           session_ctx,
+                                                          registries,
                                                           std::pmr::vector<expanded_view_t>{resource()},
                                                           true);
             if (sub_result.cursor->is_error()) {
@@ -2218,7 +2453,8 @@ namespace services::collection::executor {
         }
 
         services::dispatcher::register_plan_targets(resource(), plan.sub_queries.back().get(), &plan.catalog_resolves);
-        register_call_schemas(resource(), plan.sub_queries.back().get(), function_registry_, plan.catalog_resolves);
+        register_call_schemas(resource(), plan.sub_queries.back().get(), *registries.functions, plan.catalog_resolves);
+        register_registry_change_names(resource(), plan.sub_queries.back().get(), plan.catalog_resolves);
         services::context_storage_t context_storage(resource(), log_.clone(), session_ctx.settings);
         context_storage.place = place;
         context_storage.disk_address = disk_address_;
@@ -2239,7 +2475,9 @@ namespace services::collection::executor {
             original_type == node_type::create_macro_t || original_type == node_type::create_type_t ||
             original_type == node_type::create_index_t || original_type == node_type::drop_t ||
             original_type == node_type::create_database_t || original_type == node_type::create_schema_t ||
-            original_type == node_type::alter_table_t;
+            original_type == node_type::alter_table_t || original_type == node_type::register_udf_t ||
+            original_type == node_type::unregister_udf_t || original_type == node_type::register_cast_t ||
+            original_type == node_type::unregister_cast_t;
         const bool is_plan_only_explain = plan.explain == components::logical_plan::explain_type::plan;
         const bool needs_dml_txn =
             !is_plan_only_explain &&
@@ -2293,7 +2531,11 @@ namespace services::collection::executor {
                 with_full_place(resource(), plan.sub_queries.back().get(), set_place.value().place);
         }
         if (original_type == node_type::refresh_matview_t) {
-            co_return co_await refresh_matview_(session, plan, session_ctx, context_storage.execution_context);
+            co_return co_await refresh_matview_(session,
+                                                plan,
+                                                session_ctx,
+                                                registries,
+                                                context_storage.execution_context);
         }
         if (plan.sub_queries.back()) {
             auto* root = plan.sub_queries.back().get();
@@ -2327,7 +2569,11 @@ namespace services::collection::executor {
                     }
                     auto& body = bound.value();
                     services::dispatcher::register_plan_targets(resource(), body.plan.get(), &body.resolves);
-                    if (auto err = co_await pin_functions_(session, resolve_txn, &views[i], body.plan.get());
+                    if (auto err = co_await pin_functions_(session,
+                                                           resolve_txn,
+                                                           *registries.functions,
+                                                           &views[i],
+                                                           body.plan.get());
                         err.contains_error()) {
                         co_return execute_result_t{make_cursor(resource(), std::move(err))};
                     }
@@ -2347,7 +2593,7 @@ namespace services::collection::executor {
                     }
                     expanded_views.push_back({components::logical_plan::node_ptr{ref.node}, std::move(views[i])});
                 }
-                register_call_schemas(resource(), root, function_registry_, plan.catalog_resolves);
+                register_call_schemas(resource(), root, *registries.functions, plan.catalog_resolves);
                 // The resolve operators leave what an earlier pass resolved: this reads the bodies' names only.
                 {
                     std::pmr::vector<components::logical_plan::node_ptr> resolve_nodes{resource()};
@@ -2398,44 +2644,11 @@ namespace services::collection::executor {
         using components::logical_plan::node_create_type_t;
         using components::types::logical_type;
 
-        if (original_type == node_type::register_cast_t || original_type == node_type::unregister_cast_t) {
-            auto* root = plan.sub_queries.back().get();
-            components::types::complex_logical_type src;
-            components::types::complex_logical_type tgt;
-            if (original_type == node_type::register_cast_t) {
-                auto* rc = static_cast<components::logical_plan::node_register_cast_t*>(root);
-                src = rc->source();
-                tgt = rc->target();
-            } else {
-                auto* uc = static_cast<components::logical_plan::node_unregister_cast_t*>(root);
-                src = uc->source();
-                tgt = uc->target();
-            }
-            services::dispatcher::resolve_one_type(src, &plan.catalog_resolves);
-            services::dispatcher::resolve_one_type(tgt, &plan.catalog_resolves);
-            if (src.type() == logical_type::UNKNOWN || tgt.type() == logical_type::UNKNOWN) {
-                co_return execute_result_t{make_cursor(
-                    resource(),
-                    core::error_t{core::error_code_t::undefined_object,
-                                  std::pmr::string{"cast source or target type is not registered", resource()}})};
-            }
-            const bool exists = cast_registry_.contains(src, tgt);
-            if (original_type == node_type::register_cast_t && exists) {
-                co_return execute_result_t{
-                    make_cursor(resource(),
-                                core::error_t{core::error_code_t::duplicate_object,
-                                              std::pmr::string{"cast is already registered", resource()}})};
-            }
-            if (original_type == node_type::unregister_cast_t && !exists) {
-                co_return execute_result_t{
-                    make_cursor(resource(),
-                                core::error_t{core::error_code_t::undefined_object,
-                                              std::pmr::string{"cast is not registered", resource()}})};
-            }
-            execute_result_t ok{make_cursor(resource())};
-            ok.resolved_cast = std::make_pair(std::move(src), std::move(tgt));
-            co_return ok;
+        auto registry_change = prepare_registry_change_(plan, registries, session_ctx.function_uid);
+        if (registry_change.has_error()) {
+            co_return execute_result_t{make_cursor(resource(), registry_change.error())};
         }
+        auto statement_changes = std::move(registry_change.value());
 
         const qualified_name_t target =
             plan.sub_queries.back() ? plan.sub_queries.back()->target() : qualified_name_t{};
@@ -2505,8 +2718,10 @@ namespace services::collection::executor {
                 }
                 n->set_storage_address(std::move(storage.value()));
                 for (auto& col_def : n->column_definitions()) {
-                    if (auto invalid =
-                            prepare_column_(plan.catalog_resolves, context_storage.execution_context, col_def);
+                    if (auto invalid = prepare_column_(plan.catalog_resolves,
+                                                       context_storage.execution_context,
+                                                       *registries.casts,
+                                                       col_def);
                         invalid.contains_error()) {
                         error = make_cursor(resource(), std::move(invalid));
                         break;
@@ -2577,6 +2792,11 @@ namespace services::collection::executor {
                                                                        resource()}});
                 }
                 break;
+            // Checked by prepare_registry_change_.
+            case node_type::register_udf_t:
+            case node_type::unregister_udf_t:
+            case node_type::register_cast_t:
+            case node_type::unregister_cast_t:
             case node_type::checkpoint_t:
             case node_type::vacuum_t:
             // Leaf control nodes like checkpoint/vacuum — omitting this hits validate_schema's default assert(false).
@@ -2589,6 +2809,7 @@ namespace services::collection::executor {
                                                                   resolve_txn,
                                                                   plan,
                                                                   context_storage.execution_context,
+                                                                  registries,
                                                                   own,
                                                                   expanded_views);
                     invalid.contains_error()) {
@@ -2602,8 +2823,10 @@ namespace services::collection::executor {
                     if (cmd.kind != components::logical_plan::alter_table_kind::add_column) {
                         continue;
                     }
-                    if (auto invalid =
-                            prepare_column_(plan.catalog_resolves, context_storage.execution_context, cmd.column);
+                    if (auto invalid = prepare_column_(plan.catalog_resolves,
+                                                       context_storage.execution_context,
+                                                       *registries.casts,
+                                                       cmd.column);
                         invalid.contains_error()) {
                         error = make_cursor(resource(), std::move(invalid));
                         break;
@@ -2662,8 +2885,8 @@ namespace services::collection::executor {
                             services::dispatcher::validation::validation_context_t validation_context{
                                 resource(),
                                 &plan.catalog_resolves,
-                                cast_registry_,
-                                function_registry_,
+                                *registries.casts,
+                                *registries.functions,
                                 context_storage.execution_context};
                             auto schema_res = services::dispatcher::validate_schema(validation_context,
                                                                                     plan.sub_queries.back().get(),
@@ -2702,8 +2925,8 @@ namespace services::collection::executor {
                     services::dispatcher::validation::validation_context_t validation_context{
                         resource(),
                         &plan.catalog_resolves,
-                        cast_registry_,
-                        function_registry_,
+                        *registries.casts,
+                        *registries.functions,
                         context_storage.execution_context};
                     validation_context.parameter_types = &parameter_types;
                     validation_context.returning = &returning;
@@ -2797,8 +3020,8 @@ namespace services::collection::executor {
                 services::dispatcher::validation::validation_context_t constraint_context{
                     resource(),
                     &plan.catalog_resolves,
-                    cast_registry_,
-                    function_registry_,
+                    *registries.casts,
+                    *registries.functions,
                     context_storage.execution_context};
                 if (auto bind_err = services::dispatcher::resolve_constraint_predicates(constraint_context,
                                                                                         plan.sub_queries.back().get(),
@@ -2828,13 +3051,13 @@ namespace services::collection::executor {
 
             // DDL OID-batch allocation via node_allocate_oids_t; `self` supplies the coroutine frame its memory_resource.
             // Must not `co_return {}` on failure — that reads as success and stamps a garbage identity.
-            auto allocate_oids_inline = [this, session, &context_storage]([[maybe_unused]] executor_t* self,
-                                                                          std::size_t count)
+            auto allocate_oids_inline = [this, session, &context_storage, registries]([[maybe_unused]] executor_t* self,
+                                                                                      std::size_t count)
                 -> executor_t::unique_future<core::result_wrapper_t<std::vector<components::catalog::oid_t>>> {
                 auto node = components::logical_plan::make_node_allocate_oids(resource(), count);
                 services::context_storage_t cstor{resource(), log_.clone(), context_storage.execution_context};
                 auto planned = services::planner::create_plan(cstor,
-                                                              function_registry_,
+                                                              *registries.functions,
                                                               node,
                                                               components::logical_plan::limit_t::all(),
                                                               /*params=*/nullptr);
@@ -3097,9 +3320,32 @@ namespace services::collection::executor {
         auto exec_result = co_await execute_plan(session,
                                                  plan,
                                                  std::move(context_storage),
+                                                 registries,
                                                  resolve_txn,
                                                  session_ctx.lowest_active_start_time,
                                                  std::move(captured_subplans));
+        // The functions a DROP took with its dependents leave the registries with their rows; a function of a previous
+        // process has rows only, and one the statement drops itself is in its changes already.
+        if (exec_result.cursor->is_success()) {
+            for (const auto& dropped : exec_result.dropped_functions) {
+                const auto uid = static_cast<components::compute::function_uid>(dropped.prouid);
+                const auto* function = registries.functions->get_function(uid);
+                const bool held = !components::compute::is_builtin(uid) && function != nullptr &&
+                                  function->name() == dropped.name &&
+                                  registries.functions->schema_of(uid) == dropped.namespace_oid &&
+                                  has_signature(*function, dropped.proargmatchers);
+                const bool known = std::any_of(
+                    statement_changes.functions.begin(),
+                    statement_changes.functions.end(),
+                    [uid](const services::dispatcher::function_change_t& change) { return change.uid == uid; });
+                if (held && !known) {
+                    statement_changes.functions.push_back(
+                        services::dispatcher::function_change_t{uid,
+                                                                registries.functions->schema_of(uid),
+                                                                components::compute::no_function()});
+                }
+            }
+        }
         // The type before the offer: a backend may have taken the UPDATE / DELETE node.
         if (modified_rows && plan.explain == components::logical_plan::explain_type::none &&
             exec_result.cursor->is_success()) {
@@ -3228,10 +3474,15 @@ namespace services::collection::executor {
         };
 
         // something failed, but transaction may be recovered in the future
-        auto park_in_transaction = [this, session, resolve_txn, &plan, &revert_failed_txn](
+        auto park_in_transaction = [this, session, resolve_txn, &plan, &revert_failed_txn, &statement_changes](
                                        [[maybe_unused]] executor_t* self,
                                        execute_result_t& exec_result) -> executor_t::unique_future<void> {
             services::dispatcher::txn_accumulate_payload_t payload;
+            // The transaction's own statements see them from now on; the registries of the others take them before
+            // its commit is published.
+            if (exec_result.cursor->is_success()) {
+                payload.registry_changes = std::move(statement_changes);
+            }
             payload.base_appends.reserve(exec_result.dml_appends.size());
             for (const auto& app : exec_result.dml_appends) {
                 payload.base_appends.push_back(
@@ -3308,7 +3559,8 @@ namespace services::collection::executor {
         }
 
         if (needs_ddl_txn && exec_result.cursor->is_success() && !exec_result.host_rows.empty()) {
-            if (auto written = co_await write_host_rows_(session, session_ctx, std::move(exec_result.host_rows));
+            if (auto written =
+                    co_await write_host_rows_(session, session_ctx, registries, std::move(exec_result.host_rows));
                 written.contains_error()) {
                 exec_result.cursor = make_cursor(resource(), std::move(written));
             }
@@ -3407,65 +3659,6 @@ namespace services::collection::executor {
         }
 
         co_return std::move(exec_result);
-    }
-
-    executor_t::unique_future<std::unique_ptr<function_result_t>>
-    executor_t::register_udf(components::session::session_id_t session,
-                             components::compute::function_ptr function,
-                             components::catalog::oid_t schema_oid) {
-        trace(log_, "executor::register_udf, session: {}, {}", session.data(), function->name());
-        std::string name{function->name()};
-        auto signatures = function->get_signatures();
-        for (const auto& [registered_name, uid] : function_registry_.get_functions()) {
-            if (registered_name != name ||
-                (!components::compute::is_builtin(uid) && function_registry_.schema_of(uid) != schema_oid)) {
-                continue;
-            }
-            const auto* registered = function_registry_.get_function(uid);
-            if (registered == nullptr ||
-                components::compute::check_signature_conflicts(registered->get_signatures(), signatures)) {
-                continue;
-            }
-            co_return std::make_unique<function_result_t>(core::error_t(
-                core::error_code_t::duplicate_function,
-                std::pmr::string{"function '" + name + "' is already registered with this signature", resource()}));
-        }
-        auto res = function_registry_.add_function(std::move(function));
-        if (!res.has_error()) {
-            function_registry_.set_schema(res.value(), schema_oid);
-        }
-        co_return std::make_unique<function_result_t>(std::move(res));
-    }
-
-    executor_t::unique_future<bool>
-    executor_t::unregister_udf(components::session::session_id_t session,
-                               core::function_name_t name,
-                               std::pmr::vector<components::types::complex_logical_type> inputs,
-                               components::catalog::oid_t schema_oid) {
-        trace(log_, "executor::unregister_udf, session: {}, {}", session.data(), name.t);
-        co_return function_registry_.remove_function_by_signature(name.t, inputs, schema_oid);
-    }
-
-    executor_t::unique_future<bool> executor_t::unregister_udf_uid(components::session::session_id_t session,
-                                                                   components::compute::function_uid uid) {
-        trace(log_, "executor::unregister_udf_uid, session: {}, uid: {}", session.data(), uid);
-        co_return function_registry_.remove_function(uid);
-    }
-
-    executor_t::unique_future<bool> executor_t::register_cast(components::session::session_id_t session,
-                                                              components::types::complex_logical_type source,
-                                                              components::types::complex_logical_type target,
-                                                              components::casts::cast_entry entry) {
-        trace(log_, "executor::register_cast, session: {}", session.data());
-        auto err = cast_registry_.add(source, target, components::casts::cast_entry(entry));
-        co_return !err.contains_error();
-    }
-
-    executor_t::unique_future<bool> executor_t::unregister_cast(components::session::session_id_t session,
-                                                                components::types::complex_logical_type source,
-                                                                components::types::complex_logical_type target) {
-        trace(log_, "executor::unregister_cast, session: {}", session.data());
-        co_return cast_registry_.remove(source, target);
     }
 
     executor_t::unique_future<bool> executor_t::set_explain_renderer(uint32_t id, explain_render_fn fn) {
@@ -3914,7 +4107,7 @@ namespace services::collection::executor {
         components::pipeline::context_t context{session,
                                                 address(),
                                                 parent_address_,
-                                                nullptr,
+                                                plan_data.context_storage_.functions,
                                                 *plan_data.parameters,
                                                 disk_address_,
                                                 index_address_,
@@ -4248,6 +4441,10 @@ namespace services::collection::executor {
                 result_tracking.referenced_deletes.push_back(std::move(rows));
             }
             pipeline_context.referenced_deletes.clear();
+            for (auto& dropped : pipeline_context.dropped_functions) {
+                result_tracking.dropped_functions.push_back(std::move(dropped));
+            }
+            pipeline_context.dropped_functions.clear();
             for (auto& rows : pipeline_context.host_rows) {
                 result_tracking.host_rows.push_back(std::move(rows));
             }
@@ -4344,6 +4541,7 @@ namespace services::collection::executor {
                                                            std::move(root),
                                                            components::logical_plan::make_parameter_node(resource())},
                 std::move(resolve_storage),
+                own_registries_(),
                 drain.commit_view.snapshot,
                 lowest_active_start_time,
                 std::pmr::vector<explain_plan_node>{resource()});
@@ -4369,6 +4567,7 @@ namespace services::collection::executor {
             session,
             components::logical_plan::execution_plan_t{resource(), std::move(commit_node), std::move(cparams)},
             std::move(cstor),
+            own_registries_(),
             txn,
             lowest_active_start_time,
             std::pmr::vector<explain_plan_node>{resource()});

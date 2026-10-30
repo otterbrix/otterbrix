@@ -11,20 +11,17 @@
 
 namespace components::operators {
 
-    // Writes pg_proc only; the dispatcher adds the function to its master registry once this succeeds.
+    // Writes pg_proc only, in the statement's transaction; the registries take the function when it commits.
     class operator_register_udf_t final : public read_only_operator_t {
     public:
-        // One non-invalid, mutually-equal uid per executor on success; empty when there are none.
-        using executor_uids_t = std::pmr::vector<components::compute::function_uid>;
-
-        // `schema_oid`: the schema of the registering session's place, where the pg_proc rows go.
+        // `uid`: the one the dispatcher reserved, the prouid of the rows; `schema_oid`: the schema of the
+        // registering session's place, where the rows go.
         operator_register_udf_t(std::pmr::memory_resource* resource,
                                 log_t log,
                                 components::compute::function_ptr function,
-                                executor_uids_t executor_uids,
+                                components::compute::function_uid uid,
                                 components::catalog::oid_t schema_oid);
 
-        // Sourceless SINK leaf: all work runs in the single await_async_and_resume the dispatcher drives directly.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
     private:
@@ -32,7 +29,7 @@ namespace components::operators {
 
         components::catalog::oid_t schema_oid_;
         components::compute::function_ptr function_;
-        executor_uids_t executor_uids_;
+        components::compute::function_uid uid_;
     };
 
 } // namespace components::operators

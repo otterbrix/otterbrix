@@ -373,8 +373,13 @@ namespace components::vector {
         if (total_rows == 0 || cols == 0) {
             return make_null(resource, result_type);
         }
-        return core::error_t(core::error_code_t::cardinality_violation,
-                             std::pmr::string{"could not convert data_chunk_t to a single value", resource});
+        return more_than_one_row(resource);
+    }
+
+    core::error_t more_than_one_row(std::pmr::memory_resource* resource) {
+        return core::error_t{
+            core::error_code_t::cardinality_violation,
+            std::pmr::string{"more than one row returned by a subquery used as an expression", resource}};
     }
 
     core::result_wrapper_t<vector_t> compact_to_list_value(std::pmr::memory_resource* resource,

@@ -15,6 +15,10 @@
 #include <unordered_map>
 #include <unordered_set>
 
+namespace components::compute {
+    class function_registry_t;
+} // namespace components::compute
+
 namespace services {
 
     struct commit_input_t {
@@ -48,6 +52,8 @@ namespace services {
         const components::logical_plan::storage_parameters* parameters = nullptr;
         // Every catalog lookup the plan depends on, owned by the execution_plan_t
         const components::logical_plan::catalog_resolves_t* catalog_resolves = nullptr;
+        // The functions the statement sees, which the executor sets as it lowers the plan.
+        const components::compute::function_registry_t* functions = nullptr;
         // Set for a COMMIT plan only;
         commit_input_t* commit_input = nullptr;
         // oid -> resolved_table_metadata_t* stamped by Pass 1's

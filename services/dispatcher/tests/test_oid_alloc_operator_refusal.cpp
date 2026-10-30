@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "registry_statements.hpp"
+
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -348,9 +350,7 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_udf_refuse
     // CONTROL: registration must succeed with a real identity, so the failure below is attributable to the injection.
     const std::string ok_name = "oidround_probe_ok";
     {
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
-                                          session_id_t{},
-                                          components::compute::function_ptr{make_probe_func(mr.get(), ok_name)});
+        auto err = registry_statements::register_udf(test, make_probe_func(mr.get(), ok_name));
         REQUIRE_FALSE(err.contains_error());
     }
     REQUIRE(fault.rounds_seen == 1);
@@ -364,9 +364,7 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_udf_refuse
     // FAULT — the round delivers nothing at all.
     const std::string broken_name = "oidround_probe_broken";
     fault.arm = true;
-    auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
-                                      session_id_t{},
-                                      components::compute::function_ptr{make_probe_func(mr.get(), broken_name)});
+    auto err = registry_statements::register_udf(test, make_probe_func(mr.get(), broken_name));
     fault.arm = false;
 
     // The catalog is checked first: unchecked, this leaves a pg_proc row stamped oid=0.
@@ -401,11 +399,7 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_cast_refus
     oid_alloc_fault_scope_t fault;
 
     {
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_cast,
-                                          session_id_t{},
-                                          kCastSource,
-                                          kCastTargetOk,
-                                          make_cast_entry());
+        auto err = registry_statements::register_cast(test, kCastSource, kCastTargetOk, make_cast_entry());
         REQUIRE_FALSE(err.contains_error());
     }
     REQUIRE(fault.rounds_seen == 1);
@@ -417,11 +411,7 @@ TEST_CASE("services::dispatcher::oid_alloc_operator_refusal::register_cast_refus
     }
 
     fault.arm = true;
-    auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_cast,
-                                      session_id_t{},
-                                      kCastSource,
-                                      kCastTargetBroken,
-                                      make_cast_entry());
+    auto err = registry_statements::register_cast(test, kCastSource, kCastTargetBroken, make_cast_entry());
     fault.arm = false;
 
     // The catalog first: unchecked, this pg_cast row is stamped 0, which find_cast_oid reads as "no such cast".

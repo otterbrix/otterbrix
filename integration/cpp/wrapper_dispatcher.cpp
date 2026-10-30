@@ -1,5 +1,8 @@
 #include "wrapper_dispatcher.hpp"
+#include <components/logical_plan/node_register_cast.hpp>
+#include <components/logical_plan/node_register_udf.hpp>
 #include <components/logical_plan/node_set_setting.hpp>
+#include <components/logical_plan/node_unregister_udf.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transform_result.hpp>
 #include <components/sql/transformer/utils.hpp>
@@ -42,11 +45,9 @@ namespace otterbrix {
               "wrapper_dispatcher_t::register_udf session: {}, function name : {} ",
               session.data(),
               function->name());
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                       &services::dispatcher::manager_dispatcher_t::register_udf,
-                                                       session,
-                                                       std::move(function));
-        return actor_zeta::otterbrix::wait_ready(future);
+        return execute_node_(
+            session,
+            boost::intrusive_ptr(new components::logical_plan::node_register_udf_t(resource(), std::move(function))));
     }
 
     auto wrapper_dispatcher_t::set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn)
@@ -69,13 +70,12 @@ namespace otterbrix {
               "wrapper_dispatcher_t::unregister_udf session: {}, function name : {} ",
               session.data(),
               function_name);
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                       &services::dispatcher::manager_dispatcher_t::unregister_udf,
-                                                       session,
-                                                       function_name,
-                                                       inputs,
-                                                       behavior);
-        return actor_zeta::otterbrix::wait_ready(future);
+        return execute_node_(session,
+                             boost::intrusive_ptr(new components::logical_plan::node_unregister_udf_t(
+                                 resource(),
+                                 core::function_name_t{function_name},
+                                 std::pmr::vector<components::types::complex_logical_type>(inputs, resource()),
+                                 behavior)));
     }
 
     auto wrapper_dispatcher_t::register_cast(const session_id_t& session,
@@ -83,25 +83,29 @@ namespace otterbrix {
                                              const components::types::complex_logical_type& target,
                                              components::casts::cast_entry entry) -> core::error_t {
         trace(log_, "wrapper_dispatcher_t::register_cast session: {}", session.data());
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                       &services::dispatcher::manager_dispatcher_t::register_cast,
-                                                       session,
-                                                       source,
-                                                       target,
-                                                       entry);
-        return actor_zeta::otterbrix::wait_ready(future);
+        return execute_node_(
+            session,
+            boost::intrusive_ptr(
+                new components::logical_plan::node_register_cast_t(resource(), source, target, entry)));
     }
 
     auto wrapper_dispatcher_t::unregister_cast(const session_id_t& session,
                                                const components::types::complex_logical_type& source,
                                                const components::types::complex_logical_type& target) -> core::error_t {
         trace(log_, "wrapper_dispatcher_t::unregister_cast session: {}", session.data());
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                       &services::dispatcher::manager_dispatcher_t::unregister_cast,
-                                                       session,
-                                                       source,
-                                                       target);
-        return actor_zeta::otterbrix::wait_ready(future);
+        return execute_node_(
+            session,
+            boost::intrusive_ptr(new components::logical_plan::node_unregister_cast_t(resource(), source, target)));
+    }
+
+    auto wrapper_dispatcher_t::execute_node_(const session_id_t& session, components::logical_plan::node_ptr node)
+        -> core::error_t {
+        auto cursor = execute_plan(
+            session,
+            components::logical_plan::execution_plan_t{resource(),
+                                                       std::move(node),
+                                                       components::logical_plan::make_parameter_node(resource())});
+        return cursor->is_error() ? core::error_on(resource(), cursor->get_error()) : core::error_t::no_error();
     }
 
     auto wrapper_dispatcher_t::execute_plan(const session_id_t& session,

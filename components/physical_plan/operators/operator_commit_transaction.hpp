@@ -11,6 +11,11 @@
 
 namespace components::operators {
 
+#ifdef DEV_MODE
+    // Test seam: runs once, in the next commit, right after the dispatcher published it.
+    void dev_set_after_publish_hook(void (*hook)()) noexcept;
+#endif
+
     struct commit_table_checks_t {
         components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
         std::vector<components::catalog::unique_key_t> unique_constraints;

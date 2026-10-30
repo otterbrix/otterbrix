@@ -16,6 +16,7 @@
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <optional>
+#include <services/dispatcher/registry_changes.hpp>
 #include <services/dispatcher/txn_messages.hpp>
 #include <set>
 
@@ -62,6 +63,9 @@ namespace services::collection::executor {
     // Test seam: the executor is about to await what `source` promised, its open or its next batch.
     using source_await_hook_fn = void (*)(const components::operators::operator_t* source);
     void dev_set_source_await_hook(source_await_hook_fn hook) noexcept; // nullptr = off
+
+    // Test seam: the user functions the registries of every executor of the process hold together.
+    std::int64_t dev_user_functions_held() noexcept;
 #endif
 
     // A view the statement reads, as its catalog row described it before the expansion; the body is read back as the
@@ -103,8 +107,6 @@ namespace services::collection::executor {
         // Move-only, and everything from here down is appended at the END: a brace initializer that sets
         // only a prefix of the members has to keep compiling.
         std::optional<explain_plan_node> captured_explain_ir{};
-        std::optional<std::pair<components::types::complex_logical_type, components::types::complex_logical_type>>
-            resolved_cast{};
         std::vector<components::table::referenced_delete_t> referenced_deletes{};
         // written() of the plan root; the cursor reports it only for an INSERT / UPDATE / DELETE.
         uint64_t written{0};
@@ -112,9 +114,16 @@ namespace services::collection::executor {
         std::vector<components::table::participant_t> participants{};
         // A host's rows its DDL replies brought, still to be written in the statement's transaction.
         std::vector<components::host_rows_t> host_rows{};
+        // Every pg_proc row the statement's DROPs took with their dependents.
+        std::vector<components::pipeline::dropped_function_t> dropped_functions{};
     };
 
-    using function_result_t = core::result_wrapper_t<components::compute::function_uid>;
+    // The registries a statement sees: the executor's own, or copies of them with its transaction's own changes over
+    // them (PostgreSQL 18 inval.c:1409 CommandEndInvalidationMessages).
+    struct statement_registries_t {
+        const components::compute::function_registry_t* functions;
+        const components::casts::cast_registry_t* casts;
+    };
 
     struct plan_t {
         components::operators::operator_ptr root;
@@ -155,6 +164,7 @@ namespace services::collection::executor {
         uint64_t written{0};
         std::vector<components::table::participant_t> participants;
         std::vector<components::host_rows_t> host_rows;
+        std::vector<components::pipeline::dropped_function_t> dropped_functions;
     };
 
     // Implements subplan_runner_t: an operator inside this executor's coroutine drives a child sub-plan via
@@ -181,6 +191,7 @@ namespace services::collection::executor {
         unique_future<execute_result_t> execute_plan(components::session::session_id_t session,
                                                      components::logical_plan::execution_plan_t plan,
                                                      services::context_storage_t context_storage,
+                                                     statement_registries_t registries,
                                                      components::table::transaction_data txn,
                                                      uint64_t lowest_active_start_time,
                                                      std::pmr::vector<explain_plan_node> captured_subplans);
@@ -188,31 +199,14 @@ namespace services::collection::executor {
         // The per-query entry point (the dispatcher's only execute send); txn-state access rides
         // txn_*_msg to the dispatcher, the sole transaction_manager_t owner.
         // The dispatcher resolves the transaction and hands it down: a statement never opens its own.
+        // `own_changes`: what the statement's open transaction registered and dropped before it.
         unique_future<execute_result_t> execute_plan_full(components::session::session_id_t session,
                                                           components::logical_plan::execution_plan_t plan,
-                                                          services::dispatcher::txn_session_context_t session_ctx);
+                                                          services::dispatcher::txn_session_context_t session_ctx,
+                                                          services::dispatcher::registry_changes_t own_changes);
 
-        // `schema_oid`: the schema the function is registered in.
-        unique_future<std::unique_ptr<function_result_t>> register_udf(components::session::session_id_t session,
-                                                                       components::compute::function_ptr function,
-                                                                       components::catalog::oid_t schema_oid);
-
-        unique_future<bool> unregister_udf(components::session::session_id_t session,
-                                           core::function_name_t name,
-                                           std::pmr::vector<components::types::complex_logical_type> inputs,
-                                           components::catalog::oid_t schema_oid);
-
-        // Compensation for a failed register_udf fan-out; appended last in dispatch_traits (message ids positional).
-        unique_future<bool> unregister_udf_uid(components::session::session_id_t session,
-                                               components::compute::function_uid uid);
-
-        unique_future<bool> register_cast(components::session::session_id_t session,
-                                          components::types::complex_logical_type source,
-                                          components::types::complex_logical_type target,
-                                          components::casts::cast_entry entry);
-        unique_future<bool> unregister_cast(components::session::session_id_t session,
-                                            components::types::complex_logical_type source,
-                                            components::types::complex_logical_type target);
+        // What a committed transaction registered and dropped.
+        unique_future<core::error_t> apply_registry_changes(services::dispatcher::registry_changes_t changes);
 
         // Fanned out from the dispatcher; POD fn-pointers stored per-executor, so there's no shared mutable state.
         unique_future<bool> set_explain_renderer(uint32_t id, explain_render_fn fn);
@@ -222,12 +216,8 @@ namespace services::collection::executor {
         run_subplan(components::operators::operator_ptr root, components::pipeline::context_t* ctx) override;
 
         using dispatch_traits = actor_zeta::dispatch_traits<&executor_t::execute_plan_full,
-                                                            &executor_t::register_udf,
-                                                            &executor_t::unregister_udf,
-                                                            &executor_t::register_cast,
-                                                            &executor_t::unregister_cast,
-                                                            &executor_t::set_explain_renderer,
-                                                            &executor_t::unregister_udf_uid>;
+                                                            &executor_t::apply_registry_changes,
+                                                            &executor_t::set_explain_renderer>;
 
         auto make_type() const noexcept -> const char*;
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
@@ -238,8 +228,18 @@ namespace services::collection::executor {
         unique_future<execute_result_t> execute_statement_(components::session::session_id_t session,
                                                            components::logical_plan::execution_plan_t plan,
                                                            services::dispatcher::txn_session_context_t session_ctx,
+                                                           statement_registries_t registries,
                                                            std::pmr::vector<expanded_view_t> expanded_views,
                                                            bool sub_query = false);
+
+        statement_registries_t own_registries_() const noexcept { return {&function_registry_, &cast_registry_}; }
+
+        // A registration or a drop of a function or a cast, checked against the statement's registries, with the
+        // identity the plan is lowered with stamped on its node; the change the statement makes when it succeeds.
+        core::result_wrapper_t<services::dispatcher::registry_changes_t>
+        prepare_registry_change_(components::logical_plan::execution_plan_t& plan,
+                                 statement_registries_t registries,
+                                 components::compute::function_uid reserved_uid);
 
         unique_future<execute_result_t>
         run_resolve_subplan_(components::session::session_id_t session,
@@ -261,12 +261,14 @@ namespace services::collection::executor {
         // The functions a view body calls are the ones CREATE bound it to (pg_proc read by the 'f' rows' oids).
         unique_future<core::error_t> pin_functions_(components::session::session_id_t session,
                                                     components::table::transaction_data txn,
+                                                    const components::compute::function_registry_t& functions,
                                                     const components::logical_plan::resolved_table_metadata_t* view,
                                                     components::logical_plan::node_t* body);
 
         unique_future<execute_result_t> refresh_matview_(components::session::session_id_t session,
                                                          const components::logical_plan::execution_plan_t& plan,
                                                          const services::dispatcher::txn_session_context_t& session_ctx,
+                                                         statement_registries_t registries,
                                                          const components::graph_execution_context& settings);
 
         // The storage of a database of `connection`: the disk for otterbrix's own (no connection), else the backend the
@@ -297,6 +299,7 @@ namespace services::collection::executor {
         // The host's rows its DDL replies brought: written by the statement, in its transaction.
         unique_future<core::error_t> write_host_rows_(components::session::session_id_t session,
                                                       const services::dispatcher::txn_session_context_t& session_ctx,
+                                                      statement_registries_t registries,
                                                       std::vector<components::host_rows_t> rows);
 
         // After optimize: every largest sub-tree that reads only one backend's tables is offered to that backend,
@@ -339,6 +342,7 @@ namespace services::collection::executor {
                                                            components::table::transaction_data txn,
                                                            components::logical_plan::execution_plan_t& plan,
                                                            const components::graph_execution_context& settings,
+                                                           statement_registries_t registries,
                                                            own_entries_t own,
                                                            const std::pmr::vector<expanded_view_t>& expanded_views);
 
@@ -347,6 +351,7 @@ namespace services::collection::executor {
         // the type must be persistable and the DEFAULT is cast to it.
         core::error_t prepare_column_(const components::logical_plan::catalog_resolves_t& resolves,
                                       const components::graph_execution_context& settings,
+                                      const components::casts::cast_registry_t& casts,
                                       components::table::column_definition_t& column);
 
         enum class alter_subcommands_t : bool

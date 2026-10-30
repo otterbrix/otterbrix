@@ -437,6 +437,51 @@ namespace components::operators {
             }
         }
 
+        // The functions the drop takes, by the prouid of their pg_proc rows: the registries drop them too.
+        std::pmr::vector<catalog::oid_t> function_oids(resource);
+        for (const auto& step : steps) {
+            if (step.classid == catalog::well_known_oid::pg_proc_table) {
+                function_oids.push_back(step.objid);
+            }
+        }
+        if (!function_oids.empty()) {
+            std::pmr::vector<std::uint64_t> keys(resource);
+            keys.emplace_back(catalog::pg_proc_col::oid);
+            std::pmr::vector<std::uint64_t> columns(resource);
+            columns.emplace_back(catalog::pg_proc_col::prouid);
+            columns.emplace_back(catalog::pg_proc_col::proname);
+            columns.emplace_back(catalog::pg_proc_col::pronamespace);
+            columns.emplace_back(catalog::pg_proc_col::proargmatchers);
+            auto batch = components::operators::make_keys_batch(resource, function_oids);
+            auto [_pp, ppf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::read_chunks_by_keys,
+                                                          exec_ctx,
+                                                          catalog::well_known_oid::pg_proc_table,
+                                                          std::move(keys),
+                                                          std::move(batch),
+                                                          std::move(columns));
+            auto procs = co_await std::move(ppf);
+            if (procs.has_error()) {
+                co_return procs.error();
+            }
+            for (const auto& batches : procs.value()) {
+                for (const auto& chunk : batches) {
+                    for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+                        if (chunk.is_null(0, i) || chunk.is_null(1, i) || chunk.is_null(2, i)) {
+                            continue;
+                        }
+                        const auto matchers =
+                            chunk.is_null(3, i) ? std::string_view{} : chunk.get_value<std::string_view>(3, i);
+                        ctx->dropped_functions.push_back(
+                            pipeline::dropped_function_t{chunk.get_value<std::int64_t>(0, i),
+                                                         std::string{chunk.get_value<std::string_view>(1, i)},
+                                                         chunk.get_value<std::uint32_t>(2, i),
+                                                         std::string{matchers}});
+                    }
+                }
+            }
+        }
+
         struct own_row_spec_t {
             std::size_t spec_idx;
             catalog::oid_t classid;

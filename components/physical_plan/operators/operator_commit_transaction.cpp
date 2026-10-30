@@ -14,12 +14,21 @@
 #include <services/wal/manager_wal_replicate.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <iterator>
 #include <map>
 #include <set>
 #include <vector>
 
 namespace components::operators {
+
+#ifdef DEV_MODE
+    namespace {
+        std::atomic<void (*)()> g_after_publish_hook{nullptr};
+    } // namespace
+
+    void dev_set_after_publish_hook(void (*hook)()) noexcept { g_after_publish_hook.store(hook); }
+#endif
 
     namespace {
         std::pmr::set<components::catalog::oid_t> tables_to_prepare(const components::table::txn_abort_drain_t& undo,
@@ -318,6 +327,11 @@ namespace components::operators {
                                                         &services::dispatcher::manager_dispatcher_t::txn_publish_msg,
                                                         commit_id_);
             compact_watermark = co_await std::move(pf);
+#ifdef DEV_MODE
+            if (auto* hook = g_after_publish_hook.exchange(nullptr)) {
+                hook();
+            }
+#endif
         }
 
         // Physical DROP happens only now, past the publish barrier; indexes are unregistered and awaited before

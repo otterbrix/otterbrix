@@ -42,6 +42,28 @@ namespace components::casts {
 
     } // namespace
 
+    namespace {
+        template<typename Map>
+        void copy_buckets(const Map& from, Map& to, std::pmr::memory_resource* resource) {
+            to.reserve(from.size());
+            for (const auto& [source, targets] : from) {
+                typename Map::mapped_type copied{resource};
+                copied.entries.assign(targets.entries.begin(), targets.entries.end());
+                copied.sorted_count = targets.sorted_count;
+                copied.implicit_count = targets.implicit_count;
+                to.emplace(source, std::move(copied));
+            }
+        }
+    } // namespace
+
+    cast_registry_t::cast_registry_t(const cast_registry_t& other, std::pmr::memory_resource* resource)
+        : resource_(resource)
+        , entries_(resource)
+        , complex_entries_(resource) {
+        copy_buckets(other.entries_, entries_, resource_);
+        copy_buckets(other.complex_entries_, complex_entries_, resource_);
+    }
+
     core::error_t cast_registry_t::add(const types::complex_logical_type& source,
                                        const types::complex_logical_type& target,
                                        cast_entry&& entry) {

@@ -154,7 +154,7 @@ namespace components::operators {
                             break;
                         }
                         if (matched && single_match_) {
-                            set_error(join_detail::more_than_one_row(resource_));
+                            set_error(vector::more_than_one_row(resource_));
                             builder_.gather();
                             return;
                         }

@@ -29,6 +29,8 @@
 #include "impl/create_plan_join.hpp"
 #include "impl/create_plan_match.hpp"
 #include "impl/create_plan_recursive_cte.hpp"
+#include "impl/create_plan_register_cast.hpp"
+#include "impl/create_plan_register_udf.hpp"
 #include "impl/create_plan_remote.hpp"
 #include "impl/create_plan_resolve_constraint.hpp"
 #include "impl/create_plan_resolve_database.hpp"
@@ -263,8 +265,14 @@ namespace services::planner {
                 return impl::create_plan_vacuum(context, node);
             case node_type::create_matview_t:
                 return impl::create_plan_create_matview(context, node);
+            case node_type::register_udf_t:
+                return impl::create_plan_register_udf(context, node);
             case node_type::unregister_udf_t:
                 return impl::create_plan_unregister_udf(context, node);
+            case node_type::register_cast_t:
+                return impl::create_plan_register_cast(context, node);
+            case node_type::unregister_cast_t:
+                return impl::create_plan_unregister_cast(context, node);
             case node_type::transaction_t: {
                 const auto* txn = static_cast<const components::logical_plan::node_transaction_t*>(node.get());
                 switch (txn->op()) {

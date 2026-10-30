@@ -18,12 +18,6 @@ namespace components::operators::join_detail {
         out.emplace_back(std::move(rows));
     }
 
-    core::error_t more_than_one_row(std::pmr::memory_resource* resource) {
-        return core::error_t{
-            core::error_code_t::cardinality_violation,
-            std::pmr::string{"more than one row returned by a subquery used as an expression", resource}};
-    }
-
     vector::vector_t broadcast_row(std::pmr::memory_resource* resource, const vector::vector_t& source, uint64_t row) {
         vector::vector_t value(resource, source.type(), 1);
         // copy's third argument is the END index in the source, not a length

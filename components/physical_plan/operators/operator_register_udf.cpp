@@ -23,12 +23,12 @@ namespace components::operators {
     operator_register_udf_t::operator_register_udf_t(std::pmr::memory_resource* resource,
                                                      log_t log,
                                                      components::compute::function_ptr function,
-                                                     executor_uids_t executor_uids,
+                                                     components::compute::function_uid uid,
                                                      components::catalog::oid_t schema_oid)
         : read_only_operator_t(resource, std::move(log), operator_type::register_udf)
         , schema_oid_(schema_oid)
         , function_(std::move(function))
-        , executor_uids_(std::move(executor_uids)) {}
+        , uid_(uid) {}
 
     actor_zeta::unique_future<void> operator_register_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
         if (!function_) {
@@ -47,7 +47,7 @@ namespace components::operators {
         // 1. PostgreSQL 18 ProcedureCreate, one pg_proc row per kernel signature: a row with this name and these
         //    inputs is kept (oid, and the edges of what depends on it) and rewritten, because prouid belongs to this
         //    process; other inputs are another function, a row of its own next to the old ones. A name the engine
-        //    seeded (pg_catalog) is not taken. A signature the executors already hold was refused before this runs.
+        //    seeded (pg_catalog) is not taken. A signature the statement's registry holds was refused before this runs.
         std::pmr::vector<catalog::oid_t> row_oids(signatures.size(), catalog::INVALID_OID, resource_);
         std::pmr::vector<catalog::oid_t> rewritten(resource_);
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
@@ -95,29 +95,7 @@ namespace components::operators {
             }
         }
 
-        // 2. Validate the per-executor uids the dispatcher pre-collected (it already dropped any executor
-        //    that errored). Empty means nothing to mirror; non-empty must agree on one non-invalid uid
-        //    across all executors, or the registration is rejected.
-        const auto& uids = executor_uids_;
-        if (!uids.empty()) {
-            const auto first_uid = uids.front();
-            const bool agree = std::all_of(uids.begin(), uids.end(), [first_uid](components::compute::function_uid u) {
-                return u != components::compute::invalid_function_uid && u == first_uid;
-            });
-            if (!agree) {
-                set_error(core::error_t{core::error_code_t::internal_error,
-                                        std::pmr::string{"register_udf: the executor registries did not agree on a "
-                                                         "single valid uid for '" +
-                                                             func_name + "'",
-                                                         resource_}});
-                mark_failed();
-                co_return;
-            }
-        }
-
-        // 3. Everything that can refuse (oid round, namespace lookup/resolve, pg_proc/pg_depend appends) runs
-        //    here, before the dispatcher adds the function to its master registry, so a refusal leaves the
-        //    master without a function the catalog has no row for.
+        // 2. The oid of each new row.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             for (auto& oid : row_oids) {
                 if (oid != catalog::INVALID_OID) {
@@ -135,10 +113,9 @@ namespace components::operators {
                 }
             }
 
-            // 4. Persist to pg_proc, in the schema of the registering session's place.
+            // 3. Persist to pg_proc, in the schema of the registering session's place.
             const catalog::oid_t target_ns = schema_oid_;
-
-            const std::int64_t prouid = uids.empty() ? std::int64_t{0} : static_cast<std::int64_t>(uids.front());
+            const auto prouid = static_cast<std::int64_t>(uid_);
 
             if (!rewritten.empty()) {
                 if (auto ec = co_await drop_function_rows(resource_,

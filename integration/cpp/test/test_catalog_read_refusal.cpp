@@ -156,8 +156,8 @@ namespace {
         return fn;
     }
 
-    // Same name, different signature: manager_dispatcher_t::register_udf refuses an identical
-    // signature in the per-executor registries first, so only a new overload reaches pg_proc.
+    // Same name, different signature: the executor refuses an identical signature its registry holds
+    // first, so only a new overload reaches pg_proc.
     compute::function_ptr make_probe_binary(std::pmr::memory_resource* resource) {
         compute::function_doc doc{resource, "short_doc", "full_doc", {"arg1", "arg2"}, false};
         auto fn = core::pmr::make_polymorphic_unique<compute::vector_function>(resource,

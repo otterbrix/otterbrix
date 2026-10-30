@@ -2554,6 +2554,12 @@ namespace services::disk {
             int64_t tombstone_col;
             // The scope column is text (pg_database.datconnection), not an oid.
             bool text_scope{false};
+            // The name column is an oid (pg_cast.castsource), not text.
+            bool oid_name{false};
+            // A text column that tells apart rows of one name and scope (pg_proc.proargmatchers: one row per argument
+            // list); -1 when the key has none.
+            int64_t match_col{-1};
+            const char* match_alias{nullptr};
         };
 
         const catalog_name_key_t* catalog_name_key_for(components::catalog::oid_t table_oid) {
@@ -2598,6 +2604,27 @@ namespace services::disk {
                 core::error_code_t::duplicate_column,
                 "column",
                 static_cast<int64_t>(cat::pg_attribute_col::attisdropped)};
+            // PostgreSQL 18 pg_proc_proname_args_nsp_index and pg_cast_source_target_index.
+            static constexpr catalog_name_key_t pg_proc_key{cat::pg_proc_col::proname,
+                                                            static_cast<int64_t>(cat::pg_proc_col::pronamespace),
+                                                            "proname",
+                                                            "pronamespace",
+                                                            core::error_code_t::duplicate_function,
+                                                            "function",
+                                                            int64_t{-1},
+                                                            false,
+                                                            false,
+                                                            static_cast<int64_t>(cat::pg_proc_col::proargmatchers),
+                                                            "proargmatchers"};
+            static constexpr catalog_name_key_t pg_cast_key{cat::pg_cast_col::castsource,
+                                                            static_cast<int64_t>(cat::pg_cast_col::casttarget),
+                                                            "castsource",
+                                                            "casttarget",
+                                                            core::error_code_t::duplicate_object,
+                                                            "cast",
+                                                            int64_t{-1},
+                                                            false,
+                                                            true};
             switch (table_oid) {
                 case cat::well_known_oid::pg_class_table:
                     return &pg_class_key;
@@ -2609,6 +2636,10 @@ namespace services::disk {
                     return &pg_type_key;
                 case cat::well_known_oid::pg_attribute_table:
                     return &pg_attribute_key;
+                case cat::well_known_oid::pg_proc_table:
+                    return &pg_proc_key;
+                case cat::well_known_oid::pg_cast_table:
+                    return &pg_cast_key;
                 default:
                     return nullptr;
             }
@@ -2637,10 +2668,12 @@ namespace services::disk {
             int64_t in_name_col = -1;
             int64_t in_ns_col = -1;
             int64_t in_tombstone_col = -1;
+            int64_t in_match_col = -1;
             if (row.column_count() == def->columns.size()) {
                 in_name_col = static_cast<int64_t>(key.name_col);
                 in_ns_col = key.ns_col;
                 in_tombstone_col = key.tombstone_col;
+                in_match_col = key.match_col;
             } else {
                 for (uint64_t c = 0; c < row.column_count(); c++) {
                     if (!row.data[c].type().has_alias()) {
@@ -2651,6 +2684,8 @@ namespace services::disk {
                         in_name_col = static_cast<int64_t>(c);
                     } else if (key.ns_alias != nullptr && alias == key.ns_alias) {
                         in_ns_col = static_cast<int64_t>(c);
+                    } else if (key.match_alias != nullptr && alias == key.match_alias) {
+                        in_match_col = static_cast<int64_t>(c);
                     }
                 }
             }
@@ -2665,6 +2700,7 @@ namespace services::disk {
             uint64_t held_name_col = 0;
             int64_t held_ns_col = -1;
             int64_t held_tombstone_col = -1;
+            int64_t held_match_col = -1;
             if (key.ns_col >= 0) {
                 held_ns_col = static_cast<int64_t>(projected.size());
                 projected.push_back(static_cast<size_t>(key.ns_col));
@@ -2672,6 +2708,10 @@ namespace services::disk {
             if (key.tombstone_col >= 0) {
                 held_tombstone_col = static_cast<int64_t>(projected.size());
                 projected.push_back(static_cast<size_t>(key.tombstone_col));
+            }
+            if (key.match_col >= 0) {
+                held_match_col = static_cast<int64_t>(projected.size());
+                projected.push_back(static_cast<size_t>(key.match_col));
             }
             auto types = entry.storage->read_types(&projected, txn);
             auto is_tombstone = [](const components::vector::data_chunk_t& rows, int64_t column, uint64_t index) {
@@ -2681,9 +2721,22 @@ namespace services::disk {
 
             struct incoming_name_t {
                 std::string_view name;
+                std::uint32_t name_oid;
                 bool has_ns;
                 std::uint32_t ns;
                 std::string_view ns_text;
+                std::string_view match;
+            };
+            const auto text_name = [&key](const components::vector::data_chunk_t& rows, uint64_t column, uint64_t i) {
+                return key.oid_name ? std::string_view{} : rows.get_value<std::string_view>(column, i);
+            };
+            const auto oid_name = [&key](const components::vector::data_chunk_t& rows, uint64_t column, uint64_t i) {
+                return key.oid_name ? rows.get_value<std::uint32_t>(column, i) : std::uint32_t{0};
+            };
+            const auto match_of = [](const components::vector::data_chunk_t& rows, int64_t column, uint64_t i) {
+                return column < 0 || rows.is_null(static_cast<uint64_t>(column), i)
+                           ? std::string_view{}
+                           : rows.get_value<std::string_view>(static_cast<uint64_t>(column), i);
             };
             const auto oid_scope = [&key](const components::vector::data_chunk_t& rows, uint64_t column, uint64_t i) {
                 return key.text_scope ? std::uint32_t{0} : rows.get_value<std::uint32_t>(column, i);
@@ -2700,11 +2753,13 @@ namespace services::disk {
                 const bool has_ns =
                     key.ns_col >= 0 && in_ns_col >= 0 && !row.is_null(static_cast<uint64_t>(in_ns_col), in_r);
                 const auto ns_col = static_cast<uint64_t>(in_ns_col);
-                incoming.push_back(
-                    incoming_name_t{row.get_value<std::string_view>(static_cast<uint64_t>(in_name_col), in_r),
-                                    has_ns,
-                                    has_ns ? oid_scope(row, ns_col, in_r) : 0,
-                                    has_ns ? text_scope(row, ns_col, in_r) : std::string_view{}});
+                const auto name_col = static_cast<uint64_t>(in_name_col);
+                incoming.push_back(incoming_name_t{text_name(row, name_col, in_r),
+                                                   oid_name(row, name_col, in_r),
+                                                   has_ns,
+                                                   has_ns ? oid_scope(row, ns_col, in_r) : 0,
+                                                   has_ns ? text_scope(row, ns_col, in_r) : std::string_view{},
+                                                   match_of(row, in_match_col, in_r)});
             }
             if (incoming.empty()) {
                 return core::error_t::no_error();
@@ -2733,14 +2788,17 @@ namespace services::disk {
                     if (chunk.is_null(held_name_col, i) || is_tombstone(chunk, held_tombstone_col, i)) {
                         continue;
                     }
-                    auto held_name = chunk.get_value<std::string_view>(held_name_col, i);
+                    const auto held_name = text_name(chunk, held_name_col, i);
+                    const auto held_name_oid = oid_name(chunk, held_name_col, i);
+                    const auto held_match = match_of(chunk, held_match_col, i);
                     bool held_has_ns = held_ns_col >= 0 && !chunk.is_null(static_cast<uint64_t>(held_ns_col), i);
                     const auto ns_col = static_cast<uint64_t>(held_ns_col);
                     const std::uint32_t held_ns = held_has_ns ? oid_scope(chunk, ns_col, i) : 0;
                     const std::string_view held_ns_text =
                         held_has_ns ? text_scope(chunk, ns_col, i) : std::string_view{};
                     for (const auto& wanted : incoming) {
-                        if (held_name != wanted.name) {
+                        if (held_name != wanted.name || held_name_oid != wanted.name_oid ||
+                            held_match != wanted.match) {
                             continue;
                         }
                         if (wanted.has_ns && held_has_ns && (held_ns != wanted.ns || held_ns_text != wanted.ns_text)) {
@@ -2752,7 +2810,11 @@ namespace services::disk {
                         }
                         std::pmr::string msg{key.kind, resource};
                         msg += " '";
-                        msg.append(wanted.name.data(), wanted.name.size());
+                        if (key.oid_name) {
+                            msg += std::to_string(wanted.name_oid) + "' -> '" + std::to_string(wanted.ns);
+                        } else {
+                            msg.append(wanted.name.data(), wanted.name.size());
+                        }
                         msg += "' already exists: the catalog holds a live row under this name "
                                "(committed, or pending in another transaction)";
                         return core::error_t{key.code, std::move(msg)};

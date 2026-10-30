@@ -2,24 +2,9 @@
 #include <atomic>
 #include <services/dev_pump.hpp>
 
-#include <components/casts/default_casts.hpp>
-#include <components/context/context.hpp>
-#include <components/logical_plan/node_catalog_resolve.hpp>
-#include <components/logical_plan/node_register_cast.hpp>
-#include <components/logical_plan/node_register_udf.hpp>
-#include <components/logical_plan/node_sequence.hpp>
 #include <components/logical_plan/node_set_setting.hpp>
 #include <components/logical_plan/node_transaction.hpp>
-#include <components/logical_plan/node_unregister_udf.hpp>
 #include <components/logical_plan/param_storage.hpp>
-#include <components/physical_plan/operators/operator_register_cast.hpp>
-#include <components/physical_plan/operators/operator_register_udf.hpp>
-#include <components/physical_plan/operators/operator_resolve_namespace.hpp>
-#include <components/physical_plan/operators/operator_unregister_udf.hpp>
-#include <components/physical_plan_generator/create_plan.hpp>
-#include <components/physical_plan_generator/impl/create_plan_register_cast.hpp>
-#include <components/physical_plan_generator/impl/create_plan_register_udf.hpp>
-#include <components/sql/transformer/utils.hpp>
 #include <core/executor.hpp>
 #include <core/tracy/tracy.hpp>
 
@@ -59,10 +44,6 @@ namespace services::dispatcher {
         constexpr std::array kBehaviorHandledIds{
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::execute_plan>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::refuse_statement>,
-            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_udf>,
-            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_udf>,
-            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_cast>,
-            actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_cast>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::set_explain_renderer>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_mark_explicit_msg>,
             actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::txn_commit_drain_msg>,
@@ -122,7 +103,6 @@ namespace services::dispatcher {
         , index_address_(std::move(index_address))
         , pump_(execution.pump)
         , txn_manager_(resource_ptr)
-        , cast_registry_(resource_ptr)
         , function_registry_(resource_ptr)
         , pending_void_(resource_ptr) {
         ZoneScoped;
@@ -138,7 +118,6 @@ namespace services::dispatcher {
         default_settings_ = std::move(seed.settings);
         disk_has_dropped_ = seed.disk_has_dropped;
         index_has_dropped_ = seed.index_has_dropped;
-        components::casts::register_default_casts(cast_registry_);
         components::compute::register_default_functions(function_registry_);
 
         assert(execution.executor_pool_size != 0 && "the engine factory refuses a zero executor pool before spawning");
@@ -276,6 +255,22 @@ namespace services::dispatcher {
         pending_void_.erase(
             std::remove_if(pending_void_.begin(), pending_void_.end(), [](auto& f) { return f.is_ready(); }),
             pending_void_.end());
+        // Every executor's registry is a copy of the master's: one that refuses what the master took has diverged.
+        for (auto& ack : registry_acks_) {
+            // A failed one was cancelled: the executor is gone.
+            if (!ack.is_ready() || ack.failed()) {
+                continue;
+            }
+            if (const auto refused = std::move(ack).take_ready(); refused.contains_error()) {
+                std::fprintf(stderr, "dispatcher: an executor refused a committed change: %s\n", refused.what.c_str());
+                assert(false && "dispatcher: an executor's registry diverged from the master");
+                std::abort();
+            }
+        }
+        registry_acks_.erase(std::remove_if(registry_acks_.begin(),
+                                            registry_acks_.end(),
+                                            [](auto& f) { return !f.valid() || f.is_ready(); }),
+                             registry_acks_.end());
     }
 
     actor_zeta::behavior_t manager_dispatcher_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -286,22 +281,6 @@ namespace services::dispatcher {
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::refuse_statement>: {
                 co_await actor_zeta::dispatch(this, &manager_dispatcher_t::refuse_statement, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_udf>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::register_udf, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_udf>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::unregister_udf, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::register_cast>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::register_cast, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::unregister_cast>: {
-                co_await actor_zeta::dispatch(this, &manager_dispatcher_t::unregister_cast, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_dispatcher_t, &manager_dispatcher_t::set_explain_renderer>: {
@@ -468,6 +447,25 @@ namespace services::dispatcher {
             return components::table::transaction_control_t::none;
         }
 
+        // The registries a statement sees are its session's: one that changes them runs alone, as the end of a
+        // transaction does.
+        bool changes_registries(const components::logical_plan::execution_plan_t& plan) {
+            using components::logical_plan::node_type;
+            const auto* root = plan.sub_queries.back().get();
+            if (root == nullptr || describes(plan)) {
+                return false;
+            }
+            switch (root->type()) {
+                case node_type::register_udf_t:
+                case node_type::unregister_udf_t:
+                case node_type::register_cast_t:
+                case node_type::unregister_cast_t:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         components::logical_plan::execution_plan_t make_rollback_plan(std::pmr::memory_resource* resource) {
             return components::logical_plan::execution_plan_t{
                 resource,
@@ -498,9 +496,12 @@ namespace services::dispatcher {
                         std::pmr::string{"the engine is shutting down: only CHECKPOINT is admitted", resource()}}));
         }
         const auto control = transaction_control_of(plan);
+        const auto turn_of_plan = control != components::table::transaction_control_t::none || changes_registries(plan)
+                                      ? turn_t::alone
+                                      : turn_t::beside;
         const bool after_close = is_closed_(session);
-        co_await take_turn_(session, control);
-        session_turn_t turn{this, session, control};
+        co_await take_turn_(session, turn_of_plan);
+        session_turn_t turn{this, session, turn_of_plan};
         if (after_close) {
             co_return refuse_closed_(session);
         }
@@ -528,6 +529,14 @@ namespace services::dispatcher {
             co_return stamp_transaction_status_(session, components::cursor::make_cursor(resource(), resolved.error()));
         }
         auto session_ctx = std::move(resolved.value());
+        if (executed.sub_queries.back()->type() == components::logical_plan::node_type::register_udf_t) {
+            session_ctx.function_uid = function_registry_.reserve_uid();
+        }
+        // The end of a transaction or a savepoint calls no function.
+        const auto own = control == components::table::transaction_control_t::none ? registry_changes_.find(session)
+                                                                                   : registry_changes_.end();
+        auto own_changes =
+            own == registry_changes_.end() ? registry_changes_t{} : own->second.changes().copy(resource());
         const uint64_t statement_txn_id = session_ctx.txn.transaction_id;
         const std::size_t pool_idx = next_executor_index();
         trace(log_, "manager_dispatcher_t::run_statement_: routing to executor[{}]", pool_idx);
@@ -535,7 +544,8 @@ namespace services::dispatcher {
                                                                  &collection::executor::executor_t::execute_plan_full,
                                                                  session,
                                                                  std::move(executed),
-                                                                 std::move(session_ctx));
+                                                                 std::move(session_ctx),
+                                                                 std::move(own_changes));
         if (needs_sched && executors_[pool_idx]) {
             scheduler_->enqueue(executors_[pool_idx].get());
         }
@@ -557,6 +567,7 @@ namespace services::dispatcher {
         } else {
             end_statement_transaction_(session, statement_txn_id);
         }
+        finish_registry_changes_(session, settings_statement, exec_result);
         finish_settings_(session, settings_statement, commits_failed, exec_result);
         co_return stamp_transaction_status_(session, std::move(exec_result.cursor));
     }
@@ -564,10 +575,9 @@ namespace services::dispatcher {
     manager_dispatcher_t::unique_future<components::cursor::cursor_t_ptr>
     manager_dispatcher_t::refuse_statement(components::session::session_id_t session, core::error_t error) {
         trace(log_, "manager_dispatcher_t::refuse_statement session: {}, {}", session.data(), error.what);
-        const auto control = components::table::transaction_control_t::none;
         const bool after_close = is_closed_(session);
-        co_await take_turn_(session, control);
-        session_turn_t turn{this, session, control};
+        co_await take_turn_(session, turn_t::beside);
+        session_turn_t turn{this, session, turn_t::beside};
         if (after_close) {
             co_return refuse_closed_(session);
         }
@@ -596,8 +606,8 @@ namespace services::dispatcher {
         trace(log_, "manager_dispatcher_t::close_session session: {}", session.data());
         const auto control = components::table::transaction_control_t::rollback;
         session_order_.try_emplace(session, resource()).first->second.closed = true;
-        co_await take_turn_(session, control);
-        session_turn_t turn{this, session, control};
+        co_await take_turn_(session, turn_t::alone);
+        session_turn_t turn{this, session, turn_t::alone};
         if (txn_manager_.find_transaction(session) != nullptr) {
             auto cursor = co_await run_statement_(session, control, make_rollback_plan(resource()));
             if (cursor->is_error()) {
@@ -615,175 +625,6 @@ namespace services::dispatcher {
             }
         }
         session_settings_.erase(session);
-    }
-
-    manager_dispatcher_t::unique_future<core::error_t>
-    manager_dispatcher_t::register_udf(components::session::session_id_t session,
-                                       components::compute::function_ptr function) {
-        if (is_closed_(session)) {
-            co_return session_closed_();
-        }
-        if (!function) {
-            co_return core::error_t{core::error_code_t::invalid_parameter,
-                                    std::pmr::string{"register_udf: no function to register", resource()}};
-        }
-        trace(log_, "dispatcher_t::register_udf session: {}, function name: {}", session.data(), function->name());
-
-        auto schema = co_await place_schema_of_(session);
-        if (schema.has_error()) {
-            co_return schema.error();
-        }
-        const auto schema_oid = schema.value();
-
-        auto plan =
-            boost::intrusive_ptr(new components::logical_plan::node_register_udf_t(resource(), std::move(function)));
-
-        components::operators::operator_register_udf_t::executor_uids_t executor_uids(resource());
-        executor_uids.reserve(executor_addresses_.size());
-        std::pmr::vector<actor_zeta::unique_future<std::unique_ptr<collection::executor::function_result_t>>>
-            ack_futures(resource());
-        ack_futures.reserve(executor_addresses_.size());
-        for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[i],
-                                                                  &collection::executor::executor_t::register_udf,
-                                                                  session,
-                                                                  plan->function()->get_copy(resource()),
-                                                                  schema_oid);
-            if (needs_sched && executors_[i]) {
-                scheduler_->enqueue(executors_[i].get());
-            }
-            ack_futures.push_back(std::move(fut));
-        }
-        core::error_t fanout_error = core::error_t::no_error();
-        std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered(resource());
-        registered.reserve(ack_futures.size());
-        for (std::size_t i = 0; i < ack_futures.size(); ++i) {
-            auto res = co_await std::move(ack_futures[i]);
-            if (!res) {
-                if (!fanout_error.contains_error()) {
-                    fanout_error = core::error_t{core::error_code_t::internal_error,
-                                                 std::pmr::string{"register_udf: executor " + std::to_string(i) +
-                                                                      " of " + std::to_string(ack_futures.size()) +
-                                                                      " returned no registration result",
-                                                                  resource()}};
-                }
-                continue;
-            }
-            if (res->has_error()) {
-                if (!fanout_error.contains_error()) {
-                    fanout_error = res->error();
-                }
-                continue;
-            }
-            executor_uids.push_back(res->value());
-            registered.emplace_back(i, res->value());
-        }
-        if (fanout_error.contains_error()) {
-            error(log_, "dispatcher_t::register_udf: executor fan-out refused: {}", fanout_error.what);
-            co_await unwind_udf_fanout_(session, std::move(registered));
-            co_return fanout_error;
-        }
-
-        auto master_copy = plan->function()->get_copy(resource());
-        const auto uid = executor_uids.front();
-        services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
-        auto op = services::planner::impl::create_plan_register_udf(cstor, plan, std::move(executor_uids), schema_oid);
-        if (auto op_error = co_await run_catalog_op_(session, std::move(op), "register_udf");
-            op_error.contains_error()) {
-            co_await unwind_udf_fanout_(session, std::move(registered));
-            co_return op_error;
-        }
-        if (auto added = function_registry_.add_function_with_uid(uid, std::move(master_copy)); added.has_error()) {
-            error(log_, "dispatcher_t::register_udf: the master registry refused: {}", added.error().what);
-            co_await unwind_udf_fanout_(session, std::move(registered));
-            co_return added.error();
-        }
-        function_registry_.set_schema(uid, schema_oid);
-        co_return core::error_t::no_error();
-    }
-
-    manager_dispatcher_t::unique_future<core::error_t>
-    manager_dispatcher_t::run_catalog_op_(components::session::session_id_t session,
-                                          components::operators::operator_ptr op,
-                                          std::string_view what) {
-        op->set_as_root();
-        components::logical_plan::storage_parameters params(resource());
-        components::pipeline::context_t pctx{session,
-                                             actor_zeta::address_t::empty_address(),
-                                             actor_zeta::address_t::empty_address(),
-                                             &function_registry_,
-                                             params,
-                                             disk_address_,
-                                             index_address_,
-                                             wal_address_};
-        pctx.txn = components::table::transaction_data::committed();
-        pctx.place = place_of(session);
-        op->prepare();
-        co_await op->await_async_and_resume(&pctx);
-        if (pctx.has_pending_disk_futures()) {
-            auto futures = pctx.take_pending_disk_futures();
-            for (auto& f : futures) {
-                co_await std::move(f);
-            }
-        }
-        if (op->has_error()) {
-            error(log_, "dispatcher_t::{}: {}", what, op->get_error().what);
-            co_return op->get_error();
-        }
-        co_return core::error_t::no_error();
-    }
-
-    manager_dispatcher_t::unique_future<core::result_wrapper_t<components::catalog::oid_t>>
-    manager_dispatcher_t::place_schema_of_(components::session::session_id_t session) {
-        components::logical_plan::catalog_resolves_t resolves;
-        resolves.place = place_of(session);
-        resolves.ensure(resource(), components::logical_plan::resolve_kind::namespace_)
-            .add(components::logical_plan::resolve_entry_t{});
-        auto op =
-            boost::intrusive_ptr(new components::operators::operator_resolve_namespace_t(resource(),
-                                                                                         log_.clone(),
-                                                                                         resolves.namespaces.get()));
-        if (auto failed = co_await run_catalog_op_(session, std::move(op), "place schema"); failed.contains_error()) {
-            co_return failed;
-        }
-        if (auto missing = check_namespace_exists(resource(), &resolves, qualified_name_t{});
-            missing.contains_error()) {
-            co_return missing;
-        }
-        if (!resolves.place.connection.empty()) {
-            std::pmr::string msg{"only tables can be created in a schema of connection \"", resource()};
-            msg.append(resolves.place.connection);
-            msg.append("\"");
-            co_return core::error_t{core::error_code_t::unimplemented_yet, std::move(msg)};
-        }
-        co_return resolves.namespaces->entries().front().namespace_oid;
-    }
-
-    manager_dispatcher_t::unique_future<void> manager_dispatcher_t::unwind_udf_fanout_(
-        components::session::session_id_t session,
-        std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered) {
-        std::pmr::vector<actor_zeta::unique_future<bool>> acks(resource());
-        acks.reserve(registered.size());
-        for (const auto& [idx, uid] : registered) {
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[idx],
-                                                                  &collection::executor::executor_t::unregister_udf_uid,
-                                                                  session,
-                                                                  uid);
-            if (needs_sched && executors_[idx]) {
-                scheduler_->enqueue(executors_[idx].get());
-            }
-            acks.push_back(std::move(fut));
-        }
-        for (std::size_t k = 0; k < acks.size(); ++k) {
-            const bool dropped = co_await std::move(acks[k]);
-            if (!dropped) {
-                error(log_,
-                      "dispatcher_t::register_udf unwind: executor {} did not hold uid {} it had just answered",
-                      registered[k].first,
-                      registered[k].second);
-            }
-        }
-        co_return;
     }
 
     manager_dispatcher_t::unique_future<core::error_t>
@@ -817,317 +658,6 @@ namespace services::dispatcher {
             error(log_, "dispatcher_t::set_explain_renderer: {}", fanout_error.what);
         }
         co_return fanout_error;
-    }
-
-    manager_dispatcher_t::unique_future<core::error_t>
-    manager_dispatcher_t::unregister_udf(components::session::session_id_t session,
-                                         std::string function_name,
-                                         std::pmr::vector<components::types::complex_logical_type> inputs,
-                                         components::catalog::drop_behavior_t behavior) {
-        trace(log_, "dispatcher_t::unregister_udf: session {}, {}", session.data(), function_name);
-        if (is_closed_(session)) {
-            co_return session_closed_();
-        }
-
-        // A builtin is required by the system, as in PostgreSQL, which refuses to drop one.
-        const auto named = function_registry_.find_functions(function_name);
-        const bool builtin = std::any_of(named.begin(), named.end(), [&](components::compute::function_uid uid) {
-            const auto* function = function_registry_.get_function(uid);
-            if (!components::compute::is_builtin(uid) || function == nullptr) {
-                return false;
-            }
-            const auto signatures = function->get_signatures();
-            return std::any_of(signatures.begin(), signatures.end(), [&inputs](const auto& signature) {
-                return signature.matches_inputs(inputs);
-            });
-        });
-        if (builtin) {
-            core::error_t refused{core::error_code_t::dependent_objects_still_exist,
-                                  std::pmr::string{"unregister_udf: '" + function_name +
-                                                       "' is a builtin function and cannot be unregistered",
-                                                   resource()}};
-            error(log_, "dispatcher_t::unregister_udf: {}", refused.what);
-            co_return refused;
-        }
-        auto schema = co_await place_schema_of_(session);
-        if (schema.has_error()) {
-            co_return schema.error();
-        }
-        const auto schema_oid = schema.value();
-        // Catalog first: every executor holds a copy of the master, so the master answers for them, and
-        // nothing is dropped from any registry until the pg_proc purge below has succeeded.
-        const auto overload = function_registry_.find_overload(function_name, inputs, schema_oid);
-        const bool registered = overload != components::compute::invalid_function_uid;
-        auto plan = boost::intrusive_ptr(
-            new components::logical_plan::node_unregister_udf_t(resource(),
-                                                                core::function_name_t{std::move(function_name)},
-                                                                std::move(inputs),
-                                                                behavior,
-                                                                schema_oid));
-
-        services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
-        auto planned = services::planner::create_plan(cstor,
-                                                      function_registry_,
-                                                      plan,
-                                                      components::logical_plan::limit_t::all(),
-                                                      /*params=*/nullptr);
-        if (planned.has_error()) {
-            co_return core::error_on(resource(), planned.error());
-        }
-        if (auto op_error = co_await run_catalog_op_(session, std::move(planned.value()), "unregister_udf");
-            op_error.contains_error()) {
-            co_return op_error;
-        }
-        // The rows of a function no process holds were all there was to drop.
-        if (!registered) {
-            co_return core::error_t::no_error();
-        }
-        [[maybe_unused]] const bool master_dropped = function_registry_.remove_function(overload);
-        assert(master_dropped && "the overload checked above left the master registry");
-
-        std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
-        ack_futures.reserve(executor_addresses_.size());
-        for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
-            auto [needs_sched, fut] = actor_zeta::otterbrix::send(
-                executor_addresses_[i],
-                &collection::executor::executor_t::unregister_udf,
-                session,
-                core::function_name_t{plan->function_name()},
-                std::pmr::vector<components::types::complex_logical_type>(plan->inputs(), resource()),
-                schema_oid);
-            if (needs_sched && executors_[i]) {
-                scheduler_->enqueue(executors_[i].get());
-            }
-            ack_futures.push_back(std::move(fut));
-        }
-        for (auto& ack : ack_futures) {
-            // Executors copy the master, so a copy without the overload is a broken invariant, not a refusal.
-            [[maybe_unused]] const bool dropped = co_await std::move(ack);
-            assert(dropped && "an executor's registry diverged from the master");
-        }
-        co_return core::error_t::no_error();
-    }
-
-    namespace {
-        components::logical_plan::execution_plan_t
-        make_cast_resolve_plan(std::pmr::memory_resource* resource,
-                               components::logical_plan::node_ptr leaf,
-                               const components::types::complex_logical_type& source,
-                               const components::types::complex_logical_type& target) {
-            components::logical_plan::execution_plan_t plan{resource,
-                                                            std::move(leaf),
-                                                            components::logical_plan::make_parameter_node(resource)};
-            std::vector<qualified_name_t> written;
-            for (const auto* type : {&source, &target}) {
-                if (type->type() == components::types::logical_type::UNKNOWN) {
-                    written.push_back(components::sql::transform::type_reference_of(*type));
-                }
-            }
-            components::sql::transform::register_catalog_resolve_types(resource, &plan.catalog_resolves, written);
-            return plan;
-        }
-    } // namespace
-
-    manager_dispatcher_t::unique_future<core::error_t>
-    manager_dispatcher_t::register_cast(components::session::session_id_t session,
-                                        components::types::complex_logical_type source,
-                                        components::types::complex_logical_type target,
-                                        components::casts::cast_entry entry) {
-        trace(log_, "dispatcher_t::register_cast session: {}", session.data());
-
-        auto leaf =
-            boost::intrusive_ptr(new components::logical_plan::node_register_cast_t(resource(), source, target, entry));
-        auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
-        const bool after_close = is_closed_(session);
-        co_await take_turn_(session, components::table::transaction_control_t::none);
-        session_turn_t turn{this, session, components::table::transaction_control_t::none};
-        if (after_close) {
-            co_return session_closed_();
-        }
-        auto resolved = create_session_context(session, &plan);
-        if (resolved.has_error()) {
-            co_return resolved.error();
-        }
-        auto session_ctx = std::move(resolved.value());
-        const uint64_t statement_txn_id = session_ctx.txn.transaction_id;
-        const std::size_t pool_idx = next_executor_index();
-        auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
-                                                              &collection::executor::executor_t::execute_plan_full,
-                                                              session,
-                                                              std::move(plan),
-                                                              std::move(session_ctx));
-        if (needs_sched && executors_[pool_idx]) {
-            scheduler_->enqueue(executors_[pool_idx].get());
-        }
-        auto res = co_await std::move(fut);
-        if (!res.cursor || res.cursor->is_error()) {
-            co_await finish_failed_statement_(session, statement_txn_id);
-        } else {
-            end_statement_transaction_(session, statement_txn_id);
-        }
-        if (!res.cursor) {
-            co_return core::error_t{core::error_code_t::internal_error,
-                                    std::pmr::string{"register_cast: the resolve pass returned no cursor", resource()}};
-        }
-        if (res.cursor->is_error()) {
-            co_return res.cursor->get_error();
-        }
-        if (!res.resolved_cast) {
-            co_return core::error_t{
-                core::error_code_t::internal_error,
-                std::pmr::string{"register_cast: the resolve pass returned no resolved (source, target) pair",
-                                 resource()}};
-        }
-        const auto resolved_source = res.resolved_cast->first;
-        const auto resolved_target = res.resolved_cast->second;
-
-        // Registries set first: a crash before the pg_cast write can never leave a durable row with no live cast.
-        std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
-        ack_futures.reserve(executor_addresses_.size());
-        for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
-            auto [ns, ack] = actor_zeta::otterbrix::send(executor_addresses_[i],
-                                                         &collection::executor::executor_t::register_cast,
-                                                         session,
-                                                         resolved_source,
-                                                         resolved_target,
-                                                         entry);
-            if (ns && executors_[i]) {
-                scheduler_->enqueue(executors_[i].get());
-            }
-            ack_futures.push_back(std::move(ack));
-        }
-        core::error_t fanout_error = core::error_t::no_error();
-        for (std::size_t i = 0; i < ack_futures.size(); ++i) {
-            const bool accepted = co_await std::move(ack_futures[i]);
-            if (!accepted && !fanout_error.contains_error()) {
-                fanout_error = core::error_t{core::error_code_t::internal_error,
-                                             std::pmr::string{"register_cast: executor " + std::to_string(i) + " of " +
-                                                                  std::to_string(ack_futures.size()) +
-                                                                  " refused the cast entry; pg_cast left unwritten",
-                                                              resource()}};
-            }
-        }
-        if (fanout_error.contains_error()) {
-            error(log_, "dispatcher_t::register_cast: {}", fanout_error.what);
-            co_return fanout_error;
-        }
-        if (auto err = cast_registry_.add(resolved_source, resolved_target, components::casts::cast_entry(entry));
-            err.contains_error()) {
-            error(log_, "register_cast: cast registry refused the entry: {}", err.what);
-            co_return err;
-        }
-
-        auto write_leaf = boost::intrusive_ptr(
-            new components::logical_plan::node_register_cast_t(resource(), resolved_source, resolved_target, entry));
-        services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
-        auto op = services::planner::impl::create_plan_register_cast(cstor, write_leaf);
-        if (auto op_error = co_await run_catalog_op_(session, std::move(op), "register_cast");
-            op_error.contains_error()) {
-            co_return op_error;
-        }
-        co_return core::error_t::no_error();
-    }
-
-    manager_dispatcher_t::unique_future<core::error_t>
-    manager_dispatcher_t::unregister_cast(components::session::session_id_t session,
-                                          components::types::complex_logical_type source,
-                                          components::types::complex_logical_type target) {
-        trace(log_, "dispatcher_t::unregister_cast session: {}", session.data());
-
-        auto leaf =
-            boost::intrusive_ptr(new components::logical_plan::node_unregister_cast_t(resource(), source, target));
-        auto plan = make_cast_resolve_plan(resource(), leaf, source, target);
-        const bool after_close = is_closed_(session);
-        co_await take_turn_(session, components::table::transaction_control_t::none);
-        session_turn_t turn{this, session, components::table::transaction_control_t::none};
-        if (after_close) {
-            co_return session_closed_();
-        }
-        auto resolved = create_session_context(session, &plan);
-        if (resolved.has_error()) {
-            co_return resolved.error();
-        }
-        auto session_ctx = std::move(resolved.value());
-        const uint64_t statement_txn_id = session_ctx.txn.transaction_id;
-        const std::size_t pool_idx = next_executor_index();
-        auto [needs_sched, fut] = actor_zeta::otterbrix::send(executor_addresses_[pool_idx],
-                                                              &collection::executor::executor_t::execute_plan_full,
-                                                              session,
-                                                              std::move(plan),
-                                                              std::move(session_ctx));
-        if (needs_sched && executors_[pool_idx]) {
-            scheduler_->enqueue(executors_[pool_idx].get());
-        }
-        auto res = co_await std::move(fut);
-        if (!res.cursor || res.cursor->is_error()) {
-            co_await finish_failed_statement_(session, statement_txn_id);
-        } else {
-            end_statement_transaction_(session, statement_txn_id);
-        }
-        if (!res.cursor) {
-            co_return core::error_t{
-                core::error_code_t::internal_error,
-                std::pmr::string{"unregister_cast: the resolve pass returned no cursor", resource()}};
-        }
-        if (res.cursor->is_error()) {
-            co_return res.cursor->get_error();
-        }
-        if (!res.resolved_cast) {
-            co_return core::error_t{
-                core::error_code_t::internal_error,
-                std::pmr::string{"unregister_cast: the resolve pass returned no resolved (source, target) pair",
-                                 resource()}};
-        }
-        const auto resolved_source = res.resolved_cast->first;
-        const auto resolved_target = res.resolved_cast->second;
-
-        std::pmr::vector<actor_zeta::unique_future<bool>> ack_futures(resource());
-        ack_futures.reserve(executor_addresses_.size());
-        for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
-            auto [ns, ack] = actor_zeta::otterbrix::send(executor_addresses_[i],
-                                                         &collection::executor::executor_t::unregister_cast,
-                                                         session,
-                                                         resolved_source,
-                                                         resolved_target);
-            if (ns && executors_[i]) {
-                scheduler_->enqueue(executors_[i].get());
-            }
-            ack_futures.push_back(std::move(ack));
-        }
-        core::error_t fanout_error = core::error_t::no_error();
-        for (std::size_t i = 0; i < ack_futures.size(); ++i) {
-            const bool removed = co_await std::move(ack_futures[i]);
-            if (!removed && !fanout_error.contains_error()) {
-                fanout_error = core::error_t{core::error_code_t::internal_error,
-                                             std::pmr::string{"unregister_cast: executor " + std::to_string(i) +
-                                                                  " of " + std::to_string(ack_futures.size()) +
-                                                                  " did not drop the cast; pg_cast row left in place",
-                                                              resource()}};
-            }
-        }
-        if (fanout_error.contains_error()) {
-            error(log_, "dispatcher_t::unregister_cast: {}", fanout_error.what);
-            co_return fanout_error;
-        }
-        if (!cast_registry_.remove(resolved_source, resolved_target)) {
-            auto own_error = core::error_t{
-                core::error_code_t::internal_error,
-                std::pmr::string{"unregister_cast: the dispatcher's own cast registry did not hold the cast; "
-                                 "pg_cast row left in place",
-                                 resource()}};
-            error(log_, "dispatcher_t::unregister_cast: {}", own_error.what);
-            co_return own_error;
-        }
-
-        auto write_leaf = boost::intrusive_ptr(
-            new components::logical_plan::node_unregister_cast_t(resource(), resolved_source, resolved_target));
-        services::context_storage_t cstor{resource(), log_.clone(), session_settings(session)};
-        auto op = services::planner::impl::create_plan_unregister_cast(cstor, write_leaf);
-        if (auto op_error = co_await run_catalog_op_(session, std::move(op), "unregister_cast");
-            op_error.contains_error()) {
-            co_return op_error;
-        }
-        co_return core::error_t::no_error();
     }
 
     core::result_wrapper_t<txn_session_context_t>
@@ -1286,6 +816,73 @@ namespace services::dispatcher {
         }
     }
 
+    void manager_dispatcher_t::finish_registry_changes_(components::session::session_id_t session,
+                                                        const settings_statement_t& statement,
+                                                        const collection::executor::execute_result_t& result) {
+        using components::logical_plan::transaction_op;
+        const bool succeeded = result.cursor && result.cursor->is_success();
+        auto pending = registry_changes_.find(session);
+        if (succeeded && statement.is_transaction_control && statement.op == transaction_op::savepoint) {
+            pending = registry_changes_.try_emplace(session).first;
+        }
+        if (pending == registry_changes_.end()) {
+            return;
+        }
+        if (succeeded && statement.is_transaction_control) {
+            switch (statement.op) {
+                case transaction_op::savepoint:
+                    pending->second.savepoint(statement.savepoint);
+                    break;
+                case transaction_op::release_savepoint:
+                    pending->second.release_savepoint(statement.savepoint);
+                    break;
+                case transaction_op::rollback_to_savepoint:
+                    pending->second.rollback_to_savepoint(statement.savepoint);
+                    break;
+                case transaction_op::begin:
+                case transaction_op::commit:
+                case transaction_op::abort:
+                    break;
+            }
+        }
+        // A commit took its changes at its drain: what is left of an ended transaction was not committed.
+        if (txn_manager_.find_transaction(session) == nullptr) {
+            registry_changes_.erase(pending);
+        }
+    }
+
+    registry_changes_t manager_dispatcher_t::take_registry_changes_(components::session::session_id_t session) {
+        const auto pending = registry_changes_.find(session);
+        if (pending == registry_changes_.end()) {
+            return registry_changes_t{};
+        }
+        auto changes = pending->second.take();
+        registry_changes_.erase(pending);
+        return changes;
+    }
+
+    void manager_dispatcher_t::publish_registry_changes_(registry_changes_t changes) {
+        if (auto refused = changes.apply_to(function_registry_, nullptr, resource()); refused.contains_error()) {
+            std::fprintf(stderr,
+                         "dispatcher: the master registry refused a committed change: %s\n",
+                         refused.what.c_str());
+            assert(false && "dispatcher: the master registry refused a committed change");
+            std::abort();
+        }
+        // Sent before anything else this loop step sends: every statement routed after it finds the change applied on
+        // its executor, whose mailbox keeps the order.
+        for (std::size_t i = 0; i < executor_addresses_.size(); ++i) {
+            auto [needs_sched, ack] =
+                actor_zeta::otterbrix::send(executor_addresses_[i],
+                                            &collection::executor::executor_t::apply_registry_changes,
+                                            changes.copy(resource()));
+            if (needs_sched && executors_[i]) {
+                scheduler_->enqueue(executors_[i].get());
+            }
+            registry_acks_.push_back(std::move(ack));
+        }
+    }
+
     void manager_dispatcher_t::end_statement_transaction_(components::session::session_id_t session,
                                                           uint64_t transaction_id) {
         auto* txn = statement_transaction_(session, transaction_id);
@@ -1337,11 +934,10 @@ namespace services::dispatcher {
 #endif
 
     manager_dispatcher_t::unique_future<void>
-    manager_dispatcher_t::take_turn_(components::session::session_id_t session,
-                                     components::table::transaction_control_t control) {
+    manager_dispatcher_t::take_turn_(components::session::session_id_t session, turn_t turn) {
         auto& order = session_order_.try_emplace(session, resource()).first->second;
-        if (order.waiting.empty() && may_start_(session, order, control)) {
-            start_(&order, control);
+        if (order.waiting.empty() && may_start_(session, order, turn)) {
+            start_(&order, turn);
             co_return;
         }
         trace(log_, "manager_dispatcher_t::take_turn_: session {} waits for its running transaction", session.data());
@@ -1349,14 +945,14 @@ namespace services::dispatcher {
         g_statements_waited_turn.fetch_add(1);
 #endif
         actor_zeta::promise<void> admitted(resource());
-        auto turn = admitted.get_future();
-        order.waiting.push_back(waiting_statement_t{control, std::move(admitted)});
+        auto admission = admitted.get_future();
+        order.waiting.push_back(waiting_statement_t{turn, std::move(admitted)});
         // The entry outlives this coroutine, and only the statement running in it touches the flag.
         in_flight_entry_t* entry = current_entry_;
         if (entry != nullptr) {
             entry->waiting = true;
         }
-        co_await std::move(turn);
+        co_await std::move(admission);
         if (entry != nullptr) {
             entry->waiting = false;
         }
@@ -1364,7 +960,7 @@ namespace services::dispatcher {
 
     bool manager_dispatcher_t::may_start_(components::session::session_id_t session,
                                           const session_order_t& order,
-                                          components::table::transaction_control_t control) {
+                                          turn_t turn) {
         if (order.closing) {
             return false;
         }
@@ -1376,29 +972,28 @@ namespace services::dispatcher {
         if (txn == nullptr || txn->scope() == components::table::transaction_scope_t::statement) {
             return false;
         }
-        return control == components::table::transaction_control_t::none;
+        return turn == turn_t::beside;
     }
 
-    void manager_dispatcher_t::start_(session_order_t* order, components::table::transaction_control_t control) {
+    void manager_dispatcher_t::start_(session_order_t* order, turn_t turn) {
         ++order->running;
-        if (control != components::table::transaction_control_t::none) {
+        if (turn == turn_t::alone) {
             order->closing = true;
         }
     }
 
-    void manager_dispatcher_t::end_turn_(components::session::session_id_t session,
-                                         components::table::transaction_control_t control) {
+    void manager_dispatcher_t::end_turn_(components::session::session_id_t session, turn_t turn) {
         auto it = session_order_.find(session);
         assert(it != session_order_.end() && it->second.running > 0);
         auto& order = it->second;
         --order.running;
-        if (control != components::table::transaction_control_t::none) {
+        if (turn == turn_t::alone) {
             order.closing = false;
         }
-        while (!order.waiting.empty() && may_start_(session, order, order.waiting.front().control)) {
+        while (!order.waiting.empty() && may_start_(session, order, order.waiting.front().turn)) {
             auto next = std::move(order.waiting.front());
             order.waiting.pop_front();
-            start_(&order, next.control);
+            start_(&order, next.turn);
             next.admitted.set_value();
         }
         if (order.running == 0 && order.waiting.empty()) {
@@ -1428,13 +1023,17 @@ namespace services::dispatcher {
         txn_commit_drain_t out;
         auto* txn_t = statement_transaction_(session, transaction_id);
         assert(txn_t != nullptr);
+        auto committing = take_registry_changes_(session);
         if (!txn_t->has_accumulated()) {
             // Empty COMMIT aborts instead of committing: it must not allocate a commit_id or advance the horizon. The
-            // storages it read still get its end.
+            // storages it read still get its end. With no catalog row to publish, its registrations go now.
             out.txn = txn_t->data();
             out.participants = txn_t->drain_participants();
             txn_manager_.abort(session);
             try_trigger_cleanup_if_horizon_advanced();
+            if (!committing.empty()) {
+                publish_registry_changes_(std::move(committing));
+            }
             co_return out;
         }
         out.txn = txn_t->data();
@@ -1456,6 +1055,9 @@ namespace services::dispatcher {
         out.participants = txn_t->drain_participants();
         // No publish barrier here — txn_publish_msg runs it after storage/WAL, so no snapshot sees it half-flipped.
         out.commit_id = txn_manager_.commit(session, &out.commit_view);
+        if (!committing.empty()) {
+            committing_registry_changes_.insert_or_assign(out.commit_id, std::move(committing));
+        }
         co_return out;
     }
 
@@ -1547,6 +1149,9 @@ namespace services::dispatcher {
         for (const auto& participant : payload.participants) {
             txn_t->accumulate_participant(participant);
         }
+        if (!payload.registry_changes.empty()) {
+            registry_changes_.try_emplace(session).first->second.add(std::move(payload.registry_changes));
+        }
         co_return core::error_t::no_error();
     }
 
@@ -1618,6 +1223,13 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<uint64_t> manager_dispatcher_t::txn_publish_msg(uint64_t commit_id) {
         trace(log_, "manager_dispatcher_t::txn_publish_msg, commit_id: {}", commit_id);
+        // The registries take the commit's changes before any statement can see its catalog rows.
+        if (auto committing = committing_registry_changes_.find(commit_id);
+            committing != committing_registry_changes_.end()) {
+            auto changes = std::move(committing->second);
+            committing_registry_changes_.erase(committing);
+            publish_registry_changes_(std::move(changes));
+        }
         txn_manager_.publish(commit_id);
         try_trigger_cleanup_if_horizon_advanced();
         co_return txn_manager_.compact_watermark();
@@ -1625,6 +1237,7 @@ namespace services::dispatcher {
 
     manager_dispatcher_t::unique_future<void> manager_dispatcher_t::txn_discard_msg(uint64_t commit_id) {
         trace(log_, "manager_dispatcher_t::txn_discard_msg, commit_id: {}", commit_id);
+        committing_registry_changes_.erase(commit_id);
         txn_manager_.discard(commit_id);
         try_trigger_cleanup_if_horizon_advanced();
         co_return;

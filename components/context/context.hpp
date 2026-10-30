@@ -14,6 +14,7 @@
 #include <components/table/row_version_manager.hpp>
 #include <components/table/transaction.hpp>
 #include <set>
+#include <string>
 #include <vector>
 
 namespace components::compute {
@@ -27,6 +28,15 @@ namespace components::pipeline {
 
     // Spelled as a word so a call site that drives send-free operators, or runs with the WAL off, reads as a choice.
     inline actor_zeta::address_t no_mailbox() { return actor_zeta::address_t::empty_address(); }
+
+    // A pg_proc row a DROP took: a registry holds the function of `prouid` only under its name, schema and signature,
+    // since a row of a previous process names that process's uid.
+    struct dropped_function_t {
+        std::int64_t prouid{0};
+        std::string name;
+        catalog::oid_t namespace_oid{catalog::INVALID_OID};
+        std::string proargmatchers;
+    };
 
     class context_t {
     public:
@@ -74,6 +84,8 @@ namespace components::pipeline {
         std::vector<components::table::created_index_t> created_indexes;
         // Recorded by operator_fk_cascade_t
         std::vector<components::table::referenced_delete_t> referenced_deletes;
+        // Every pg_proc row a DROP took with its dependents.
+        std::vector<dropped_function_t> dropped_functions;
         // commit_id drained by operator_commit_transaction_t, for follow-ups like an inline CREATE INDEX commit.
         uint64_t committed_id{0};
         // Storages that keep state of the transaction, as the statement's reads and writes found them.

@@ -141,6 +141,11 @@ namespace components::catalog {
         constexpr std::uint64_t proargmatchers = 5;
         constexpr std::uint64_t prorettype = 6;
     } // namespace pg_proc_col
+    namespace pg_cast_col {
+        constexpr std::uint64_t oid = 0;
+        constexpr std::uint64_t castsource = 1;
+        constexpr std::uint64_t casttarget = 2;
+    } // namespace pg_cast_col
 
     // One pg_proc row of a chunk read with every column.
     services::disk::resolve_function_result_t decode_pg_proc_row(const vector::data_chunk_t& chunk, std::uint64_t row);

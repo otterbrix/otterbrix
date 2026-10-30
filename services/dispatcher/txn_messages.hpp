@@ -2,10 +2,12 @@
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/session_catalog.hpp>
+#include <components/compute/function.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/table/transaction.hpp>
 #include <core/date/date_types.hpp>
 #include <core/result_wrapper.hpp>
+#include <services/dispatcher/registry_changes.hpp>
 
 #include <set>
 #include <string>
@@ -30,11 +32,13 @@ namespace services::dispatcher {
     //   lowest_active_start_time — VACUUM/MVCC GC gate value for pipeline ctx.
     //   write_connection — the connection the transaction already wrote to; a write to another one is refused
     //              before it reaches that connection's backend.
+    //   function_uid — the uid the master registry reserved for the function a register_udf statement registers.
     struct txn_session_context_t {
         components::table::transaction_data txn{0, 0};
         components::catalog::session_catalog_t settings{};
         uint64_t lowest_active_start_time{0};
         std::string write_connection{};
+        components::compute::function_uid function_uid{components::compute::invalid_function_uid};
     };
 
     // Result of txn_commit_drain_msg: the dispatcher snapshots txn_data, drains
@@ -109,12 +113,14 @@ namespace services::dispatcher {
         std::vector<components::table::created_index_t> created_indexes{};
         std::vector<components::table::referenced_delete_t> referenced_deletes{};
         std::vector<components::table::participant_t> participants{};
+        // The functions and casts the statement registered or dropped.
+        registry_changes_t registry_changes{};
 
         bool empty() const noexcept {
             return base_appends.empty() && base_deletes.empty() && pg_catalog_appends.empty() &&
                    pg_catalog_delete_tables.empty() && backfills.empty() && dropped_storage_oids.empty() &&
                    created_storage_oids.empty() && created_indexes.empty() && referenced_deletes.empty() &&
-                   participants.empty();
+                   participants.empty() && registry_changes.empty();
         }
     };
 

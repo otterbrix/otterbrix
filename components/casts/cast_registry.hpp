@@ -100,6 +100,8 @@ namespace components::casts {
             : resource_(resource)
             , entries_(resource)
             , complex_entries_(resource) {}
+        // Every cast copied onto `resource`.
+        cast_registry_t(const cast_registry_t& other, std::pmr::memory_resource* resource);
 
         core::error_t
         add(const types::complex_logical_type& source, const types::complex_logical_type& target, cast_entry&& entry);

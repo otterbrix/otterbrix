@@ -323,7 +323,6 @@ TEST_CASE("integration::cpp::close_session::a_cast_sent_after_close_is_refused")
     CHECK(std::string{unregistered.what} == "the session is closed");
 }
 
-// A function's registration takes no turn: it is answered while the statement before close still runs.
 TEST_CASE("integration::cpp::close_session::a_function_sent_after_close_is_refused") {
     host_t host("test_close_session/udf");
     shop(host);
@@ -340,21 +339,23 @@ TEST_CASE("integration::cpp::close_session::a_function_sent_after_close_is_refus
     REQUIRE(waited_beyond(waited));
 
     core::error_t registered = core::error_t::no_error();
+    std::thread registering(
+        [&] { registered = host.db.dispatcher()->register_udf(session, twice_function(host.resource())); });
+    REQUIRE(waited_beyond(waited + 1));
+
     core::error_t unregistered = core::error_t::no_error();
-    std::atomic<bool> answered{false};
-    std::thread registering([&] {
-        registered = host.db.dispatcher()->register_udf(session, twice_function(host.resource()));
+    std::thread unregistering([&] {
         std::pmr::vector<components::types::complex_logical_type> inputs(host.resource());
         inputs.emplace_back(components::types::logical_type::BIGINT);
         unregistered = host.db.dispatcher()->unregister_udf(session, "twice", inputs);
-        answered.store(true);
     });
-    CHECK(test_helpers::wait_until([&] { return answered.load(); }, std::chrono::seconds(30)));
+    REQUIRE(waited_beyond(waited + 2));
 
     host.db.ok(any(), "SELECT id FROM m2.shop.public.orders;");
     reader.join();
     closer.join();
     registering.join();
+    unregistering.join();
 
     CHECK(running->is_success());
     CHECK(registered.type == code::connection_closed);

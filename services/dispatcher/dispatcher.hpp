@@ -22,7 +22,6 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include <components/casts/cast_registry.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/place.hpp>
 #include <components/catalog/results/ddl_result.hpp>
@@ -38,6 +37,7 @@
 #include <components/table/transaction_manager.hpp>
 #include <core/result_wrapper.hpp>
 #include <services/collection/executor.hpp>
+#include <services/dispatcher/registry_changes.hpp>
 #include <services/dispatcher/txn_messages.hpp>
 #include <services/loop_thread.hpp>
 
@@ -105,20 +105,6 @@ namespace services::dispatcher {
         unique_future<components::cursor::cursor_t_ptr> refuse_statement(components::session::session_id_t session,
                                                                          core::error_t error);
 
-        unique_future<core::error_t> register_udf(components::session::session_id_t session,
-                                                  components::compute::function_ptr function);
-        unique_future<core::error_t> unregister_udf(components::session::session_id_t session,
-                                                    std::string function_name,
-                                                    std::pmr::vector<components::types::complex_logical_type> inputs,
-                                                    components::catalog::drop_behavior_t behavior);
-        // pg_cast is written/deleted only after every executor confirms, so none applies a stale cast.
-        unique_future<core::error_t> register_cast(components::session::session_id_t session,
-                                                   components::types::complex_logical_type source,
-                                                   components::types::complex_logical_type target,
-                                                   components::casts::cast_entry entry);
-        unique_future<core::error_t> unregister_cast(components::session::session_id_t session,
-                                                     components::types::complex_logical_type source,
-                                                     components::types::complex_logical_type target);
         // Fans a renderer to every executor at slot `id`; selection rides
         // execution_plan_t::explain_render_id.
         unique_future<core::error_t> set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn);
@@ -164,10 +150,6 @@ namespace services::dispatcher {
 
         using dispatch_traits = actor_zeta::dispatch_traits<&manager_dispatcher_t::execute_plan,
                                                             &manager_dispatcher_t::refuse_statement,
-                                                            &manager_dispatcher_t::register_udf,
-                                                            &manager_dispatcher_t::unregister_udf,
-                                                            &manager_dispatcher_t::register_cast,
-                                                            &manager_dispatcher_t::unregister_cast,
                                                             &manager_dispatcher_t::set_explain_renderer,
                                                             &manager_dispatcher_t::txn_mark_explicit_msg,
                                                             &manager_dispatcher_t::txn_commit_drain_msg,
@@ -185,21 +167,10 @@ namespace services::dispatcher {
                                                             &manager_dispatcher_t::close_session>;
 
     private:
-        // Member coroutine, not a lambda, so `this` supplies the frame memory_resource.
-        unique_future<void>
-        unwind_udf_fanout_(components::session::session_id_t session,
-                           std::pmr::vector<std::pair<std::size_t, components::compute::function_uid>> registered);
-
-        // Runs a catalog write operator (UDF / cast register and unregister) to completion in the committed snapshot;
-        // its error, logged under `what`, is the answer.
-        unique_future<core::error_t> run_catalog_op_(components::session::session_id_t session,
-                                                     components::operators::operator_ptr op,
-                                                     std::string_view what);
-
-        // The schema of the session's place, where a user function is registered and unregistered; refused when the
-        // place is gone or is in a connection's database.
-        unique_future<core::result_wrapper_t<components::catalog::oid_t>>
-        place_schema_of_(components::session::session_id_t session);
+        // What a committed transaction registered and dropped, given to the master and sent to every executor before
+        // its commit is published.
+        void publish_registry_changes_(registry_changes_t changes);
+        registry_changes_t take_registry_changes_(components::session::session_id_t session);
 
         void try_trigger_cleanup_if_horizon_advanced() noexcept;
 
@@ -235,6 +206,10 @@ namespace services::dispatcher {
                               const settings_statement_t& statement,
                               bool commit_rolled_back,
                               const collection::executor::execute_result_t& result);
+        // The savepoints of the transaction's registrations, and the end of those it did not commit.
+        void finish_registry_changes_(components::session::session_id_t session,
+                                      const settings_statement_t& statement,
+                                      const collection::executor::execute_result_t& result);
 
         unique_future<void> finish_failed_statement_(components::session::session_id_t session,
                                                      uint64_t transaction_id);
@@ -249,8 +224,15 @@ namespace services::dispatcher {
         components::table::transaction_t* statement_transaction_(components::session::session_id_t session,
                                                                  uint64_t transaction_id);
 
+        // A statement that runs alone in its session: the end of a transaction or a savepoint, and the registration or
+        // drop of a function or a cast; the others of a transaction block may run beside one another.
+        enum class turn_t : bool
+        {
+            beside,
+            alone
+        };
         struct waiting_statement_t {
-            components::table::transaction_control_t control;
+            turn_t turn;
             actor_zeta::promise<void> admitted;
         };
         struct session_order_t {
@@ -266,29 +248,24 @@ namespace services::dispatcher {
 
         class session_turn_t {
         public:
-            session_turn_t(manager_dispatcher_t* dispatcher,
-                           components::session::session_id_t session,
-                           components::table::transaction_control_t control)
+            session_turn_t(manager_dispatcher_t* dispatcher, components::session::session_id_t session, turn_t turn)
                 : dispatcher_(dispatcher)
                 , session_(session)
-                , control_(control) {}
-            ~session_turn_t() { dispatcher_->end_turn_(session_, control_); }
+                , turn_(turn) {}
+            ~session_turn_t() { dispatcher_->end_turn_(session_, turn_); }
             session_turn_t(const session_turn_t&) = delete;
             session_turn_t& operator=(const session_turn_t&) = delete;
 
         private:
             manager_dispatcher_t* dispatcher_;
             components::session::session_id_t session_;
-            components::table::transaction_control_t control_;
+            turn_t turn_;
         };
 
-        unique_future<void> take_turn_(components::session::session_id_t session,
-                                       components::table::transaction_control_t control);
-        void end_turn_(components::session::session_id_t session, components::table::transaction_control_t control);
-        bool may_start_(components::session::session_id_t session,
-                        const session_order_t& order,
-                        components::table::transaction_control_t control);
-        void start_(session_order_t* order, components::table::transaction_control_t control);
+        unique_future<void> take_turn_(components::session::session_id_t session, turn_t turn);
+        void end_turn_(components::session::session_id_t session, turn_t turn);
+        bool may_start_(components::session::session_id_t session, const session_order_t& order, turn_t turn);
+        void start_(session_order_t* order, turn_t turn);
 
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
@@ -327,9 +304,15 @@ namespace services::dispatcher {
         // Their transaction failed and was rolled back; only ROLLBACK or COMMIT is accepted until one ends it.
         std::pmr::unordered_set<components::session::session_id_t> failed_sessions_{resource_};
         in_flight_entry_t* current_entry_{nullptr};
-        components::casts::cast_registry_t cast_registry_;
-        // The engine's master: builtins plus host UDFs. Executors hold copies, updated by fan-out.
+        // The engine's master: builtins plus host UDFs, the uids of which it reserves. Executors hold copies, updated
+        // by fan-out when a transaction commits.
         components::compute::function_registry_t function_registry_;
+        // Only sessions inside a transaction that registered, dropped or set a savepoint have an entry.
+        std::pmr::unordered_map<components::session::session_id_t, pending_registry_changes_t> registry_changes_{
+            resource_};
+        // The changes of the commits between their drain and their publish, by commit_id.
+        std::pmr::unordered_map<uint64_t, registry_changes_t> committing_registry_changes_{resource_};
+        std::pmr::vector<actor_zeta::unique_future<core::error_t>> registry_acks_{resource_};
         // What pg_settings holds: the value of a setting for every session that has none of its own.
         components::catalog::session_catalog_t default_settings_;
         // Only sessions that set something or are inside a transaction block have an entry.

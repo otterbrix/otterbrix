@@ -376,6 +376,18 @@ namespace components::compute {
         , functions_(resource_)
         , schemas_(resource_) {}
 
+    function_registry_t::function_registry_t(const function_registry_t& other, std::pmr::memory_resource* resource)
+        : resource_(resource)
+        , functions_(resource_)
+        , schemas_(other.schemas_.begin(), other.schemas_.end(), other.schemas_.size(), resource_)
+        , current_uid_(other.current_uid_)
+        , builtin_error_(core::error_on(resource_, other.builtin_error_)) {
+        functions_.reserve(other.functions_.size());
+        for (const auto& [uid, function] : other.functions_) {
+            functions_.emplace(uid, function->get_copy(resource_));
+        }
+    }
+
     core::result_wrapper_t<function_uid> function_registry_t::add_function(function_ptr function) {
         if (builtin_error_.contains_error()) {
             // Poisoned: a broken builtin table must stay empty (see add_builtin).
@@ -422,13 +434,6 @@ namespace components::compute {
     bool function_registry_t::remove_function(function_uid uid) {
         schemas_.erase(uid);
         return functions_.erase(uid) > 0;
-    }
-
-    bool function_registry_t::remove_function_by_signature(const std::string& name,
-                                                           const std::pmr::vector<types::complex_logical_type>& inputs,
-                                                           std::uint32_t schema_oid) {
-        const auto uid = find_overload(name, inputs, schema_oid);
-        return uid != invalid_function_uid && remove_function(uid);
     }
 
     void function_registry_t::set_schema(function_uid uid, std::uint32_t schema_oid) { schemas_[uid] = schema_oid; }

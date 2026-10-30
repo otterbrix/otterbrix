@@ -27,6 +27,7 @@ set(${PROJECT_NAME}_SOURCES
 
     # dispatcher
        dispatcher/dispatcher.cpp
+       dispatcher/registry_changes.cpp
        dispatcher/enrich_logical_plan.cpp
        dispatcher/resolve_type.cpp
        dispatcher/resolve_arithmetic.cpp

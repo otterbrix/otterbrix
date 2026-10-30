@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "registry_statements.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -352,8 +354,8 @@ TEST_CASE("services::dispatcher::cross_db_foreign_key_binds") {
     }
 }
 
-// register_udf fans out to every per-executor registry BEFORE the operator's catalog work.
-TEST_CASE("services::dispatcher::register_udf_operator_refusal_unwinds_executors") {
+// A registration the operator refuses leaves no registry holding the function: the next one meets the catalog again.
+TEST_CASE("services::dispatcher::register_udf_operator_refusal_leaves_no_registry_entry") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("udf_unwind"));
 
@@ -361,16 +363,12 @@ TEST_CASE("services::dispatcher::register_udf_operator_refusal_unwinds_executors
     test.seed_pg_proc_row(fname);
 
     {
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
-                                          session_id_t{},
-                                          components::compute::function_ptr{make_probe_func(mr.get(), fname)});
+        auto err = registry_statements::register_udf(test, make_probe_func(mr.get(), fname));
         REQUIRE(err.contains_error());
         REQUIRE(mentions(err, "already exists in the catalog"));
     }
     {
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
-                                          session_id_t{},
-                                          components::compute::function_ptr{make_probe_func(mr.get(), fname)});
+        auto err = registry_statements::register_udf(test, make_probe_func(mr.get(), fname));
         REQUIRE(err.contains_error());
         REQUIRE(mentions(err, "already exists in the catalog"));
         REQUIRE(err.type == core::error_code_t::duplicate_function);

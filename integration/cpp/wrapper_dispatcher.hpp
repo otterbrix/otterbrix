@@ -106,6 +106,8 @@ namespace otterbrix {
             -> components::cursor::cursor_t_ptr;
         // Invalid query still have to go through regular transaction path
         auto send_failed_plan(const session_id_t& session, core::error_t error) -> components::cursor::cursor_t_ptr;
+        // A plan of the one node, the way a parsed statement goes.
+        auto execute_node_(const session_id_t& session, components::logical_plan::node_ptr node) -> core::error_t;
     };
 
 } // namespace otterbrix

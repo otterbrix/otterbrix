@@ -25,6 +25,7 @@
     { "name": "asan", "inherits": "sanitizer", "cacheVariables": { "ENABLE_ASAN": "ON" } },
     { "name": "tsan", "inherits": "sanitizer", "cacheVariables": { "ENABLE_TSAN": "ON" } },
     { "name": "ubsan", "inherits": "sanitizer", "cacheVariables": { "ENABLE_UBSAN": "ON" } },
+    { "name": "valgrind", "inherits": "sanitizer" },
     {
       "name": "bench",
       "inherits": "base",
@@ -42,6 +43,7 @@
     { "name": "asan", "configurePreset": "asan" },
     { "name": "tsan", "configurePreset": "tsan" },
     { "name": "ubsan", "configurePreset": "ubsan" },
+    { "name": "valgrind", "configurePreset": "valgrind" },
     { "name": "bench", "configurePreset": "bench" }
   ],
   "testPresets": [

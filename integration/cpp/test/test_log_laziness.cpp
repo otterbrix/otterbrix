@@ -19,7 +19,7 @@ TEST_CASE("integration::cpp::test_log_laziness::plan_is_not_stringified_when_log
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE lz;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA lz;")->is_success());
     REQUIRE(exec("CREATE TABLE lz.t (id bigint, v bigint);")->is_success());
 
     components::logical_plan::reset_node_to_string_calls();

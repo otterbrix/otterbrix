@@ -49,9 +49,10 @@ _exported_symbols.extend([
     "map_type",
 ])
 
-from .otterbrix import connect
+from .otterbrix import connect, TransactionStatus
 _exported_symbols.extend([
     "connect",
+    "TransactionStatus",
 ])
 
 # The sql-based bindings. main.cpp defines Client / Connection / Cursor / to_aggregate

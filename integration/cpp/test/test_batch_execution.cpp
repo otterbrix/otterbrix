@@ -37,7 +37,12 @@ static core::error_t double_val_exec(kernel_context&, const vector::data_chunk_t
 core::pmr::polymorphic_unique_ptr<vector_function> make_double_val_func(std::pmr::memory_resource* resource) {
     function_doc doc{resource, "double_val", "multiplies by 2", {"arg"}, false};
     auto fn =
-        core::pmr::make_polymorphic_unique<vector_function>(resource, "double_val", arity::unary(), doc, size_t{1});
+        core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                            "double_val",
+                                                            arity::unary(),
+                                                            doc,
+                                                            size_t{1},
+                                                            components::compute::volatility_t::volatile_);
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BIGINT)});
@@ -59,7 +64,12 @@ static core::error_t gt_threshold_exec(kernel_context&, const vector::data_chunk
 core::pmr::polymorphic_unique_ptr<vector_function> make_gt_threshold_func(std::pmr::memory_resource* resource) {
     function_doc doc{resource, "gt_threshold", "x > y", {"arg1", "arg2"}, false};
     auto fn =
-        core::pmr::make_polymorphic_unique<vector_function>(resource, "gt_threshold", arity::binary(), doc, size_t{1});
+        core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                            "gt_threshold",
+                                                            arity::binary(),
+                                                            doc,
+                                                            size_t{1},
+                                                            components::compute::volatility_t::volatile_);
     kernel_signature_t sig(
         function_type_t::vector,
         {parameter_type::exact(types::logical_type::BIGINT), parameter_type::exact(types::logical_type::BIGINT)},
@@ -81,7 +91,12 @@ static core::error_t vec_negate_exec(kernel_context&, const vector::data_chunk_t
 core::pmr::polymorphic_unique_ptr<vector_function> make_vec_negate_func(std::pmr::memory_resource* resource) {
     function_doc doc{resource, "vec_negate", "negates column", {"arg"}, false};
     auto fn =
-        core::pmr::make_polymorphic_unique<vector_function>(resource, "vec_negate", arity::unary(), doc, size_t{1});
+        core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                            "vec_negate",
+                                                            arity::unary(),
+                                                            doc,
+                                                            size_t{1},
+                                                            components::compute::volatility_t::volatile_);
     kernel_signature_t sig(function_type_t::vector,
                            {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::BIGINT)});
@@ -128,7 +143,8 @@ core::pmr::polymorphic_unique_ptr<aggregate_function> make_sum_squares_func(std:
                                                                      arity::unary(),
                                                                      doc,
                                                                      size_t{1},
-                                                                     false);
+                                                                     false,
+                                                                     components::compute::volatility_t::volatile_);
     kernel_signature_t sig(function_type_t::aggregate,
                            {parameter_type::exact(types::logical_type::BIGINT)},
                            {output_type::fixed(types::logical_type::DOUBLE)});
@@ -179,7 +195,8 @@ core::pmr::polymorphic_unique_ptr<aggregate_function> make_call_counter_func(std
                                                                      arity::unary(),
                                                                      doc,
                                                                      size_t{1},
-                                                                     false);
+                                                                     false,
+                                                                     components::compute::volatility_t::volatile_);
     kernel_signature_t sig(function_type_t::aggregate,
                            {parameter_type::variable(0)},
                            {output_type::fixed(types::logical_type::BIGINT)});
@@ -200,7 +217,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
+            dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -211,7 +228,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
             }
             test_create_collection(dispatcher,
                                    session,
-                                   core::dbname_t{database_name},
+                                   core::schema_t{database_name},
                                    core::relname_t{collection_name},
                                    columns);
         }
@@ -221,7 +238,7 @@ TEST_CASE("integration::cpp::test_batch_where") {
     {
         auto chunk = gen_data_chunk(N, dispatcher->resource());
         auto ins = components::sql::transform::name_catalog_target(
-            core::dbname_t{database_name},
+            core::schema_t{database_name},
             core::relname_t{collection_name},
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
@@ -328,7 +345,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
+            dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -339,7 +356,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
             }
             test_create_collection(dispatcher,
                                    session,
-                                   core::dbname_t{database_name},
+                                   core::schema_t{database_name},
                                    core::relname_t{collection_name},
                                    columns);
         }
@@ -350,7 +367,7 @@ TEST_CASE("integration::cpp::test_batch_aggregate") {
         for (int batch = 0; batch < 2; batch++) {
             auto chunk = gen_data_chunk(N, dispatcher->resource());
             auto ins = components::sql::transform::name_catalog_target(
-                core::dbname_t{database_name},
+                core::schema_t{database_name},
                 core::relname_t{collection_name},
                 logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
             auto session = otterbrix::session_id_t();
@@ -531,7 +548,7 @@ TEST_CASE("integration::cpp::test_batch_join") {
     INFO("initialization");
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, "CREATE DATABASE " + std::string(database_name) + ";");
+        dispatcher->execute_sql(session, "CREATE SCHEMA " + std::string(database_name) + ";");
         dispatcher->execute_sql(session,
                                 "CREATE TABLE " + std::string(database_name) + "." + std::string(join_left_name) +
                                     "();");
@@ -683,7 +700,7 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
     {
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
+            dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + database_name + ";");
         }
         {
             auto session = otterbrix::session_id_t();
@@ -694,7 +711,7 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
             }
             test_create_collection(dispatcher,
                                    session,
-                                   core::dbname_t{database_name},
+                                   core::schema_t{database_name},
                                    core::relname_t{collection_name},
                                    columns);
         }
@@ -704,7 +721,7 @@ TEST_CASE("integration::cpp::test_batch_edge_cases") {
     {
         auto chunk = gen_data_chunk(1, dispatcher->resource());
         auto ins = components::sql::transform::name_catalog_target(
-            core::dbname_t{database_name},
+            core::schema_t{database_name},
             core::relname_t{collection_name},
             logical_plan::make_node_insert(dispatcher->resource(), std::move(chunk)));
         auto session = otterbrix::session_id_t();
@@ -791,11 +808,11 @@ TEST_CASE("integration::cpp::test_batch_boundaries") {
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + database_name + ";");
+        dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + database_name + ";");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{database_name}, core::relname_t{collection_name});
+        test_create_collection(dispatcher, session, core::schema_t{database_name}, core::relname_t{collection_name});
     }
     {
         auto session = otterbrix::session_id_t();

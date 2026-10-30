@@ -1,6 +1,7 @@
 #pragma once
 
 #include "node.hpp"
+#include "node_catalog_resolve.hpp"
 #include <components/base/identifier_types.hpp>
 
 #include <components/catalog/catalog_codes.hpp>
@@ -17,7 +18,9 @@ namespace components::logical_plan {
     {
         add,
         rename,
-        drop
+        drop,
+        // The NOT NULL of a PRIMARY KEY added by ALTER, on the column attoid().
+        set_not_null
     };
 
     // Lowered from node_alter_table_t by rewrite_alter_table; computed_ (relkind='g') routes add/drop through

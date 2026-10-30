@@ -5,6 +5,19 @@
 
 namespace components::operators::join_detail {
 
+    void emit_probe_rows(std::pmr::memory_resource* resource,
+                         const vector::data_chunk_t& probe,
+                         const vector::indexing_vector_t& kept,
+                         uint64_t count,
+                         chunks_vector_t& out) {
+        if (count == 0) {
+            return;
+        }
+        vector::data_chunk_t rows(resource, probe.types(), count);
+        probe.copy(rows, kept, count, 0);
+        out.emplace_back(std::move(rows));
+    }
+
     vector::vector_t broadcast_row(std::pmr::memory_resource* resource, const vector::vector_t& source, uint64_t row) {
         vector::vector_t value(resource, source.type(), 1);
         // copy's third argument is the END index in the source, not a length

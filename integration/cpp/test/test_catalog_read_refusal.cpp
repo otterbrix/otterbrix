@@ -145,7 +145,8 @@ namespace {
                                                                                kFuncName,
                                                                                compute::arity::unary(),
                                                                                doc,
-                                                                               size_t{1});
+                                                                               size_t{1},
+                                                                               compute::volatility_t::volatile_);
         compute::kernel_signature_t sig(compute::function_type_t::vector,
                                         {compute::parameter_type::exact(types::logical_type::BIGINT)},
                                         {compute::output_type::fixed(types::logical_type::BIGINT)});
@@ -155,15 +156,16 @@ namespace {
         return fn;
     }
 
-    // Same name, different signature: manager_dispatcher_t::register_udf refuses an identical
-    // signature in the per-executor registries first, so only a new overload reaches pg_proc.
+    // Same name, different signature: the executor refuses an identical signature its registry holds
+    // first, so only a new overload reaches pg_proc.
     compute::function_ptr make_probe_binary(std::pmr::memory_resource* resource) {
         compute::function_doc doc{resource, "short_doc", "full_doc", {"arg1", "arg2"}, false};
         auto fn = core::pmr::make_polymorphic_unique<compute::vector_function>(resource,
                                                                                kFuncName,
                                                                                compute::arity::binary(),
                                                                                doc,
-                                                                               size_t{1});
+                                                                               size_t{1},
+                                                                               compute::volatility_t::volatile_);
         compute::kernel_signature_t sig(compute::function_type_t::vector,
                                         {compute::parameter_type::exact(types::logical_type::BIGINT),
                                          compute::parameter_type::exact(types::logical_type::BIGINT)},
@@ -217,17 +219,10 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     }
     REQUIRE_FALSE(reads.empty());
 
-    // Load offsets are read twice (probe construction + agent reopen); restore_oid_generator_sync's
-    // block is read once. Exactly one such offset must exist, or this case needs re-deriving,
-    // not silently skipping.
-    std::vector<uint64_t> read_once;
-    for (const auto off : reads) {
-        if (std::count(reads.begin(), reads.end(), off) == 1) {
-            read_once.push_back(off);
-        }
-    }
-    REQUIRE(read_once.size() == 1);
-    const uint64_t data_block = read_once.front();
+    // A start opens pg_proc once (its header and metadata blocks), then restore_oid_generator_sync scans it: the
+    // last block read is the data block. A load block here would refuse the start below, not survive it.
+    const uint64_t data_block = reads.back();
+    REQUIRE(std::count(reads.begin(), reads.end(), data_block) == 1);
 
     otterbrix_test::fault_plan_t plan;
     plan.fail_reads_at_location = data_block;

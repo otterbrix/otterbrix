@@ -99,6 +99,7 @@ namespace {
         exhaustion_t e;
         e.blocks = exhaust_pool(env);
         e.small = top_up_pool(env, uint64_t(1) << 12);
+        REQUIRE_FALSE(env.buffer_pool.set_limit(env.buffer_pool.used_memory()).has_error());
         return e;
     }
 
@@ -615,7 +616,7 @@ TEST_CASE("list_revert_pin: a revert from inside an append session is refused", 
 
         auto inside = table->revert_append(3, 2);
         REQUIRE(inside.has_error());
-        CHECK(inside.error().type == core::error_code_t::invalid_parameter);
+        CHECK(inside.error().type == core::error_code_t::internal_error);
         CHECK(column_of(*table, 1).count() == 5);
 
         auto whole = table->revert_append(1, 4);

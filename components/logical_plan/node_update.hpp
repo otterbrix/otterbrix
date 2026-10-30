@@ -30,8 +30,6 @@ namespace components::logical_plan {
         const std::pmr::vector<expressions::expression_ptr>& returning() const;
 
         // Catalog metadata attached by the dispatcher's enrich pass.
-        void set_not_null_cols(std::vector<std::string> v) { not_null_cols_ = std::move(v); }
-        const std::vector<std::string>& not_null_cols() const { return not_null_cols_; }
 
         void set_outgoing_fks(std::vector<catalog::fk_info_t> v) { outgoing_fks_ = std::move(v); }
         const std::vector<catalog::fk_info_t>& outgoing_fks() const { return outgoing_fks_; }
@@ -78,7 +76,6 @@ namespace components::logical_plan {
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::vector<std::string> not_null_cols_;
         std::vector<catalog::fk_info_t> outgoing_fks_;
         std::vector<std::pair<std::string, std::string>> check_exprs_; // (name, expr)
         std::vector<std::pair<std::string, expressions::expression_ptr>> check_predicates_;

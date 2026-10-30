@@ -54,7 +54,7 @@ namespace components::operators {
             what.append(" referencing column(s) vs ");
             what.append(std::to_string(fk_.parent_col_names.size()).c_str());
             what.append(" referenced column(s)");
-            co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
 
         // Different defect from the arity check: an unresolved position takes the QUIETEST path (every row
@@ -62,7 +62,7 @@ namespace components::operators {
         // nothing. Refuse and name the column instead. (Positions are constant per FK.)
         if (indices.empty()) {
             co_return core::error_t{
-                core::error_code_t::invalid_constraint,
+                core::error_code_t::internal_error,
                 std::pmr::string{"FK constraint: no referencing column resolved to a position in the written row",
                                  resource_}};
         }
@@ -73,7 +73,7 @@ namespace components::operators {
             std::pmr::string what{"FK constraint: referencing column \"", resource_};
             what.append(i < fk_.child_col_names.size() ? fk_.child_col_names[i].c_str() : "?");
             what.append("\" has no position in the written row");
-            co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
 
         // Parent key column names are the same for every row; hoist them once.
@@ -104,7 +104,7 @@ namespace components::operators {
                     std::pmr::string what{"FK constraint: referencing column \"", resource_};
                     what.append(i < fk_.child_col_names.size() ? fk_.child_col_names[i].c_str() : "?");
                     what.append("\" is outside the written row");
-                    co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+                    co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
                 }
             }
             components::vector::indexing_vector_t selection(resource_, chunk.size() == 0 ? 1 : chunk.size());
@@ -127,7 +127,7 @@ namespace components::operators {
                         continue;
                     if (any_null) {
                         co_return core::error_t{
-                            core::error_code_t::other_error,
+                            core::error_code_t::foreign_key_violation,
                             std::pmr::string{"FK MATCH FULL: partial null in foreign key columns", resource_}};
                     }
                 } else {
@@ -195,7 +195,7 @@ namespace components::operators {
             for (std::size_t i = 0; i < matches.size(); ++i) {
                 if (matches[i].empty()) {
                     co_return core::error_t{
-                        core::error_code_t::other_error,
+                        core::error_code_t::foreign_key_violation,
                         std::pmr::string{"FK constraint violated: referenced row not found in parent table",
                                          resource_}};
                 }

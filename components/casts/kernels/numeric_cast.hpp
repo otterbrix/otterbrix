@@ -5,14 +5,101 @@
 
 #include <cmath>
 #include <limits>
+#include <type_traits>
 
 namespace components::casts::kernels {
+
+    namespace detail {
+
+        [[nodiscard]] inline bool both_flat(const vector::vector_t& source, const vector::vector_t& result) noexcept {
+            return source.get_vector_type() == vector::vector_type::FLAT &&
+                   result.get_vector_type() == vector::vector_type::FLAT;
+        }
+
+        [[nodiscard]] inline bool flat_row_valid(const uint64_t* mask, uint64_t row) noexcept {
+            constexpr uint64_t bits = vector::validity_mask_t::BITS_PER_VALUE;
+            return !mask || ((mask[row / bits] >> (row % bits)) & 1) != 0;
+        }
+
+        [[nodiscard]] inline bool flat_has_null(const uint64_t* mask, uint64_t count) noexcept {
+            if (!mask) {
+                return false;
+            }
+            constexpr uint64_t bits = vector::validity_mask_t::BITS_PER_VALUE;
+            const uint64_t full_entries = count / bits;
+            for (uint64_t entry = 0; entry < full_entries; ++entry) {
+                if (mask[entry] != ~uint64_t{0}) {
+                    return true;
+                }
+            }
+            const uint64_t ragged = count % bits;
+            return ragged != 0 && (~mask[full_entries] & ((uint64_t{1} << ragged) - 1)) != 0;
+        }
+
+        inline void
+        copy_flat_validity(const vector::vector_t& source, vector::vector_t* result, uint64_t count) noexcept {
+            if (!result->validity().is_mask_set() && !flat_has_null(source.validity().data(), count)) {
+                return;
+            }
+            result->validity().slice_in_place(source.validity(), 0, 0, count);
+        }
+
+        template<typename Source, typename Target, typename Convert>
+        [[nodiscard]] inline bool
+        cast_flat(const vector::vector_t& source, vector::vector_t* result, uint64_t count, Convert convert) noexcept {
+            const Source* in = source.data<Source>();
+            Target* out = result->data<Target>();
+            const uint64_t* mask = source.validity().data();
+            for (uint64_t row = 0; row < count; ++row) {
+                if (flat_row_valid(mask, row) && !convert(in[row], &out[row])) {
+                    return false;
+                }
+            }
+            copy_flat_validity(source, result, count);
+            return true;
+        }
+
+        template<typename Source, typename Target, typename Convert>
+        inline void try_cast_flat(const vector::vector_t& source,
+                                  vector::vector_t* result,
+                                  uint64_t count,
+                                  Convert convert) noexcept {
+            copy_flat_validity(source, result, count);
+            const Source* in = source.data<Source>();
+            Target* out = result->data<Target>();
+            const uint64_t* mask = source.validity().data();
+            for (uint64_t row = 0; row < count; ++row) {
+                if (flat_row_valid(mask, row) && !convert(in[row], &out[row])) {
+                    result->set_null(row, true);
+                }
+            }
+        }
+
+    } // namespace detail
 
     template<typename Source, typename Target>
     core::error_t numeric_cast(const vector::vector_t& source,
                                vector::vector_t* result,
                                const graph_execution_context&,
                                uint64_t count) noexcept {
+        if (detail::both_flat(source, *result)) {
+            detail::copy_flat_validity(source, result, count);
+            const Source* in = source.data<Source>();
+            Target* out = result->data<Target>();
+            if constexpr (std::is_same_v<Source, bool>) {
+                const uint64_t* mask = source.validity().data();
+                for (uint64_t row = 0; row < count; ++row) {
+                    if (detail::flat_row_valid(mask, row)) {
+                        out[row] = detail::numeric_convert<Target>(in[row]);
+                    }
+                }
+            } else {
+                for (uint64_t row = 0; row < count; ++row) {
+                    out[row] = detail::numeric_convert<Target>(in[row]);
+                }
+            }
+            return core::error_t::no_error();
+        }
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
                 result->set_null(row, true);
@@ -63,6 +150,15 @@ namespace components::casts::kernels {
                                            uint64_t count) noexcept {
         const Source lower = detail::integer_lower_bound<Source, Target>();
         const Source upper = detail::integer_upper_bound_exclusive<Source, Target>();
+        if (detail::both_flat(source, *result)) {
+            if (!detail::cast_flat<Source, Target>(source, result, count, [lower, upper](Source v, Target* out) {
+                    return detail::round_to_integer<Source, Target>(v, lower, upper, out);
+                })) {
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
+                                     std::pmr::string{"out of range", result->resource()}};
+            }
+            return core::error_t::no_error();
+        }
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
                 result->set_null(row, true);
@@ -70,7 +166,7 @@ namespace components::casts::kernels {
             }
             Target value;
             if (!detail::round_to_integer<Source, Target>(source.get_value<Source>(row), lower, upper, &value)) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             result->set_value(row, value);
@@ -85,6 +181,12 @@ namespace components::casts::kernels {
                                       uint64_t count) noexcept {
         const Source lower = detail::integer_lower_bound<Source, Target>();
         const Source upper = detail::integer_upper_bound_exclusive<Source, Target>();
+        if (detail::both_flat(source, *result)) {
+            detail::try_cast_flat<Source, Target>(source, result, count, [lower, upper](Source v, Target* out) {
+                return detail::round_to_integer<Source, Target>(v, lower, upper, out);
+            });
+            return;
+        }
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
                 result->set_null(row, true);
@@ -135,6 +237,13 @@ namespace components::casts::kernels {
                                        vector::vector_t* result,
                                        const graph_execution_context&,
                                        uint64_t count) noexcept {
+        if (detail::both_flat(source, *result)) {
+            if (!detail::cast_flat<Source, Target>(source, result, count, detail::floating_fits<Source, Target>)) {
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
+                                     std::pmr::string{"out of range", result->resource()}};
+            }
+            return core::error_t::no_error();
+        }
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
                 result->set_null(row, true);
@@ -142,7 +251,7 @@ namespace components::casts::kernels {
             }
             Target value;
             if (!detail::floating_fits<Source, Target>(source.get_value<Source>(row), &value)) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             result->set_value(row, value);
@@ -155,6 +264,10 @@ namespace components::casts::kernels {
                                   vector::vector_t* result,
                                   const graph_execution_context&,
                                   uint64_t count) noexcept {
+        if (detail::both_flat(source, *result)) {
+            detail::try_cast_flat<Source, Target>(source, result, count, detail::floating_fits<Source, Target>);
+            return;
+        }
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
                 result->set_null(row, true);
@@ -188,6 +301,15 @@ namespace components::casts::kernels {
                        numeric_convert<types::uint128_t>(std::numeric_limits<Target>::max());
             }
         }
+
+        template<typename Source, typename Target>
+        [[nodiscard]] inline bool integer_narrow(Source value, Target* out) noexcept {
+            if (!integer_fits<Source, Target>(value)) {
+                return false;
+            }
+            *out = static_cast<Target>(value);
+            return true;
+        }
     } // namespace detail
 
     template<typename Source, typename Target>
@@ -208,6 +330,13 @@ namespace components::casts::kernels {
                                       vector::vector_t* result,
                                       const graph_execution_context&,
                                       uint64_t count) noexcept {
+        if (detail::both_flat(source, *result)) {
+            if (!detail::cast_flat<Source, Target>(source, result, count, detail::integer_narrow<Source, Target>)) {
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
+                                     std::pmr::string{"out of range", result->resource()}};
+            }
+            return core::error_t::no_error();
+        }
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
                 result->set_null(row, true);
@@ -215,7 +344,7 @@ namespace components::casts::kernels {
             }
             const Source value = source.get_value<Source>(row);
             if (!detail::integer_fits<Source, Target>(value)) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::numeric_value_out_of_range,
                                      std::pmr::string{"out of range", result->resource()}};
             }
             result->set_value(row, static_cast<Target>(value));
@@ -228,6 +357,10 @@ namespace components::casts::kernels {
                                  vector::vector_t* result,
                                  const graph_execution_context&,
                                  uint64_t count) noexcept {
+        if (detail::both_flat(source, *result)) {
+            detail::try_cast_flat<Source, Target>(source, result, count, detail::integer_narrow<Source, Target>);
+            return;
+        }
         for (uint64_t row = 0; row < count; ++row) {
             if (source.is_null(row)) {
                 result->set_null(row, true);

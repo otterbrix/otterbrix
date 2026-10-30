@@ -65,7 +65,7 @@ namespace core::b_plus_tree {
         }
     }
 
-    block_t::block_t(std::pmr::memory_resource* resource, index_t (*func)(const item_data&))
+    block_t::block_t(core::pmr::budget_resource_t* resource, index_t (*func)(const item_data&))
         : resource_(resource)
         , key_func_(func) {}
 
@@ -76,11 +76,15 @@ namespace core::b_plus_tree {
         resource_->deallocate(internal_buffer_, full_size_);
     }
 
-    void block_t::initialize(uint32_t size) {
+    bool block_t::initialize(uint32_t size) {
         assert(!is_valid_ && "block was already initialized!");
         assert(size < MAX_BLOCK_SIZE && "block cannot handle this size!");
         assert((size & (SECTOR_SIZE - 1)) == 0 && "block size should be a multiple of SECTOR_SIZE!");
-        internal_buffer_ = static_cast<data_ptr_t>(resource_->allocate(size));
+        auto* buffer = static_cast<data_ptr_t>(resource_->try_allocate(size));
+        if (buffer == nullptr) {
+            return false;
+        }
+        internal_buffer_ = buffer;
         full_size_ = size;
         header_ = reinterpret_cast<header_t*>(internal_buffer_);
         header_->count_ = 0;
@@ -88,6 +92,7 @@ namespace core::b_plus_tree {
         end_ = reinterpret_cast<metadata*>(internal_buffer_ + size);
 
         restore_block();
+        return true;
     }
 
     size_t block_t::available_memory() const { return available_memory_; }
@@ -323,52 +328,6 @@ namespace core::b_plus_tree {
         is_valid_ = true;
     }
 
-    void block_t::resize(uint32_t new_size) {
-        if (!is_valid_) {
-            return;
-        }
-
-        assert((new_size & (SECTOR_SIZE - 1)) == 0 && "block size should be a multiple of SECTOR_SIZE!");
-        assert(occupied_memory() < new_size && "block data won't fit in new size");
-        auto new_buffer = static_cast<data_ptr_t>(resource_->allocate(new_size));
-        std::memcpy(new_buffer, internal_buffer_, static_cast<size_t>(buffer_ - internal_buffer_));
-
-        // One metadata entry per ITEM, not per unique index (append() bumps count_ on every
-        // item; restore_block() agrees: last_metadata_ = end_ - count_). Using
-        // unique_indices_count_ here instead drops every duplicate-key entry on resize -- e.g.
-        // 2998 of 3000 on a 2-distinct-key column, tree reporting an empty root.
-        const size_t metadata_count = header_->count_;
-        auto* new_end = reinterpret_cast<metadata*>(new_buffer + new_size);
-        auto* new_last_metadata = new_end - metadata_count;
-        std::memcpy(new_last_metadata, last_metadata_, metadata_count * metadata_size);
-
-        // STRING keys borrow their bytes from the block buffer, so re-base them onto the
-        // new allocation. Walk both ranges in lockstep, bounded by the entry count.
-        {
-            metadata* src = last_metadata_;
-            metadata* dst = new_last_metadata;
-            for (size_t i = 0; i < metadata_count; ++i, ++src, ++dst) {
-                if (src->index.type() == components::types::physical_type::STRING) {
-                    auto sv = src->index.value<components::types::physical_type::STRING>();
-                    dst->index = index_t(new_buffer + (sv.data() - internal_buffer_), static_cast<uint32_t>(sv.size()));
-                }
-            }
-        }
-
-        auto buffer_offset = static_cast<size_t>(buffer_ - internal_buffer_);
-        resource_->deallocate(internal_buffer_, full_size_);
-        internal_buffer_ = new_buffer;
-        buffer_ = internal_buffer_ + buffer_offset;
-        full_size_ = new_size;
-        header_ = reinterpret_cast<header_t*>(internal_buffer_);
-        end_ = new_end;
-        last_metadata_ = new_last_metadata;
-        // Free space is what actually separates the payload from the metadata, the same
-        // definition restore_block() uses. The old `new_size - full_size_` reported only the
-        // GROWTH and silently discarded the space that was already free.
-        available_memory_ = static_cast<uint32_t>(reinterpret_cast<data_ptr_t>(last_metadata_) - buffer_);
-    }
-
     // TODO: try to split into smaller blocks if current size is greater then DEFAULT_BLOCK_SIZE
     std::pair<std::unique_ptr<block_t>, std::unique_ptr<block_t>> block_t::split_append(const index_t& index,
                                                                                         item_data item) {
@@ -405,6 +364,9 @@ namespace core::b_plus_tree {
 
         if (append_possible) {
             splited_block = split(static_cast<uint32_t>(split_item - last_metadata_));
+            if (!splited_block) {
+                return {nullptr, nullptr};
+            }
 
             if (this_block) {
                 append(index, item);
@@ -419,10 +381,16 @@ namespace core::b_plus_tree {
         if (split_item == last_metadata_) {
             splited_block =
                 create_initialize(resource_, key_func_, align_to_block_size(item.size + header_size + metadata_size));
+            if (!splited_block) {
+                return {nullptr, nullptr};
+            }
             splited_block->append(index, item); // always true
             return {std::move(splited_block), nullptr};
         } else {
             splited_block = split(static_cast<uint32_t>(split_item - last_metadata_));
+            if (!splited_block) {
+                return {nullptr, nullptr};
+            }
 
             if (append(index, item)) {
                 return {std::move(splited_block), nullptr};
@@ -433,6 +401,10 @@ namespace core::b_plus_tree {
 
             std::unique_ptr<block_t> middle_block =
                 create_initialize(resource_, key_func_, align_to_block_size(item.size + header_size + metadata_size));
+            if (!middle_block) {
+                merge(std::move(splited_block));
+                return {nullptr, nullptr};
+            }
             middle_block->append(index, item); // always true
             return {std::move(middle_block), std::move(splited_block)};
         }
@@ -443,6 +415,9 @@ namespace core::b_plus_tree {
         assert(count <= header_->count_);
 
         std::unique_ptr<block_t> splited_block = create_initialize(resource_, key_func_, full_size_);
+        if (!splited_block) {
+            return nullptr;
+        }
         if (count == 0) {
             return splited_block;
         }
@@ -482,6 +457,9 @@ namespace core::b_plus_tree {
         assert(count <= header_->unique_indices_count_);
 
         std::unique_ptr<block_t> splited_block = create_initialize(resource_, key_func_, full_size_);
+        if (!splited_block) {
+            return nullptr;
+        }
         if (count == 0) {
             return splited_block;
         }

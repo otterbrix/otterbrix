@@ -363,7 +363,7 @@ namespace components::vector::arrow::scaner {
             auto str_len = offsets[row_idx + 1] - offsets[row_idx];
             if (str_len > std::numeric_limits<uint32_t>::max()) {
                 return core::error_t(
-                    core::error_code_t::conversion_failure,
+                    core::error_code_t::program_limit_exceeded,
                     std::pmr::string("OtterBrix does not support strings over 4 GB", vector.resource()));
             }
             strings[row_idx] = std::string_view(cptr, static_cast<uint32_t>(str_len));
@@ -1358,7 +1358,7 @@ namespace components::vector::arrow::scaner {
 
                     auto out_of_range = tag >= array.n_children;
                     if (out_of_range) {
-                        return core::error_t(core::error_code_t::conversion_failure,
+                        return core::error_t(core::error_code_t::invalid_parameter,
                                              std::pmr::string("Arrow union tag out of range", vector.resource()));
                     }
 

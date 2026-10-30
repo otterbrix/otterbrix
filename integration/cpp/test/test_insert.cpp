@@ -20,7 +20,7 @@
 #include <core/operations_helper.hpp>
 #include <variant>
 
-static const core::dbname_t table_database_name{"table_testdatabase"};
+static const core::schema_t table_database_name{"table_testdatabase"};
 static const core::relname_t table_collection_name_simple{"table_testcollection_simple"};
 static const core::relname_t table_collection_name_not_null{"table_testcollection_not_null"};
 static const core::relname_t table_collection_name_null_defaults{"table_testcollection_null_defaults"};
@@ -99,7 +99,7 @@ TEST_CASE("integration::cpp::test_collection::insert") {
 
         {
             auto session = otterbrix::session_id_t();
-            dispatcher->execute_sql(session, "CREATE DATABASE " + table_database_name.t + ";");
+            dispatcher->execute_sql(session, "CREATE SCHEMA " + table_database_name.t + ";");
         }
         create_collection(table_collection_name_simple, columns_simple);
         create_collection(table_collection_name_not_null, columns_not_null);

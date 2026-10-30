@@ -61,6 +61,11 @@ target_link_libraries(
         Boost::boost
 )
 
+target_link_libraries(
+        otterbrix_${PROJECT_NAME} PUBLIC
+        actor-zeta::actor-zeta
+)
+
 target_include_directories(
         otterbrix_${PROJECT_NAME}
         PUBLIC

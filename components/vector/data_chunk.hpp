@@ -80,13 +80,6 @@ namespace components::vector {
         void resize(uint64_t new_size);
 
         [[nodiscard]] std::pmr::vector<types::complex_logical_type> types() const;
-        // Index of the column whose alias is `key`. An unknown name is a field_not_exists
-        // error, never a SIZE_MAX sentinel the public cursor API could forward as a real index.
-        [[nodiscard]] core::result_wrapper_t<size_t> column_index(std::string_view key) const;
-        // Column index + nested field/array indices along `path`; same field_not_exists channel
-        // as column_index, for the same reason.
-        [[nodiscard]] core::result_wrapper_t<std::pmr::vector<size_t>>
-        sub_column_indices(const std::pmr::vector<std::pmr::string>& path) const;
 
         std::pmr::memory_resource* resource() const;
 
@@ -100,6 +93,10 @@ namespace components::vector {
         std::vector<vector_t> data;
     };
 
+    // The chunk on `resource`: the chunk itself when it is there, else a copy. A storage's reply lives on the
+    // storage's resource, which a host's backend does not share with the engine.
+    data_chunk_t adopted(std::pmr::memory_resource* resource, data_chunk_t&& chunk);
+
     // Sub-query result compacters: fold ALL of a cursor's chunks (not just the first) into one bound
     // parameter value, so a >1024-row or multi-branch result is not silently truncated. `result_type` is the
     // type of that value, from the sub-query's schema: what a result of no row takes.
@@ -107,6 +104,8 @@ namespace components::vector {
     core::result_wrapper_t<vector_t> compact_to_bool_value(std::pmr::memory_resource* resource,
                                                            const std::pmr::vector<data_chunk_t>& chunks,
                                                            const types::complex_logical_type& result_type);
+    // A scalar sub-query, or a join that stands for one, gave more than one row: PostgreSQL 18 nodeSubplan.c.
+    core::error_t more_than_one_row(std::pmr::memory_resource* resource);
     // A scalar sub-query: its one cell, NULL for no row
     core::result_wrapper_t<vector_t> compact_to_single_value(std::pmr::memory_resource* resource,
                                                              const std::pmr::vector<data_chunk_t>& chunks,

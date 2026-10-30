@@ -8,6 +8,7 @@
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/vector/operations/apply_quantified.hpp>
 #include <components/vector/vector_builders.hpp>
 #include <core/pmr.hpp>
 #include <core/regex/like_to_regex.hpp>
@@ -222,24 +223,28 @@ namespace components::sql::transform {
             }
         }
 
-        // The comparison an ANY / ALL quantifies; a match carries regexp_like's flags as well
+        // [NOT] [I]LIKE
+        bool is_like_operator(std::string_view op_str) {
+            return op_str == "~~" || op_str == "~~*" || op_str == "!~~" || op_str == "!~~*";
+        }
+
+        uint8_t like_mode_of(std::string_view op_str) {
+            return vector::operations::match_mode_of({.glob = true,
+                                                      .case_insensitive = op_str == "~~*" || op_str == "!~~*",
+                                                      .negate = op_str == "!~~" || op_str == "!~~*"});
+        }
+
+        // The comparison an ANY / ALL quantifies; a match carries its mode as well
         struct quantified_op_t {
             compare_type op;
-            std::string flags;
+            uint8_t mode;
         };
 
         quantified_op_t quantified_op(std::string_view op_str) {
-            if (op_str == "~~" || op_str == "~~*" || op_str == "!~~" || op_str == "!~~*") {
-                std::string flags{"l"};
-                if (op_str == "~~*" || op_str == "!~~*") {
-                    flags += 'i';
-                }
-                if (op_str == "!~~" || op_str == "!~~*") {
-                    flags += 'n';
-                }
-                return {compare_type::regex, std::move(flags)};
+            if (is_like_operator(op_str)) {
+                return {compare_type::regex, like_mode_of(op_str)};
             }
-            return {get_compare_type(op_str), {}};
+            return {get_compare_type(op_str), 0};
         }
     } // namespace
 
@@ -808,9 +813,9 @@ namespace components::sql::transform {
         if (target.type() != types::logical_type::UNKNOWN) {
             return;
         }
-        const std::string& name = target.type_name();
+        auto name = type_reference_of(target);
         if (std::find(cast_type_names_.begin(), cast_type_names_.end(), name) == cast_type_names_.end()) {
-            cast_type_names_.push_back(name);
+            cast_type_names_.push_back(std::move(name));
         }
     }
 
@@ -900,7 +905,13 @@ namespace components::sql::transform {
                     return transform_a_expr_arithmetic(node, names, plan);
                 }
 
-                if (op_str == "~~" || op_str == "!~~" || op_str == "~~*" || op_str == "!~~*") {
+                if (is_like_operator(op_str)) {
+                    if (!node->lexpr || !node->rexpr) {
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"operator " + std::string(op_str) +
+                                                                  " is missing its operand",
+                                                              resource_});
+                    }
                     column_ref_t key_left(resource_);
                     if (nodeTag(node->lexpr) == T_ColumnRef) {
                         VALUE_OR_RETURN(auto resolved,
@@ -925,29 +936,31 @@ namespace components::sql::transform {
                     }
                     auto param_id =
                         plan->parameters->add_parameter(std::move(raw_val), vector::parameter_kind::literal);
-                    const bool icase = (op_str == "~~*" || op_str == "!~~*");
-                    const bool negate = (op_str == "!~~" || op_str == "!~~*");
 
-                    // NOT [I]LIKE is the `n` flag rather than a union_not, so a NULL subject stays UNKNOWN.
-                    std::string flags{"l"};
-                    if (icase) {
-                        flags += 'i';
-                    }
-                    if (negate) {
-                        flags += 'n';
-                    }
+                    // NOT [I]LIKE is the mode's negate bit rather than a union_not, so a NULL subject stays UNKNOWN.
                     std::pmr::vector<expressions::param_storage> args{resource_};
                     args.emplace_back(key_left.field);
                     args.emplace_back(param_id);
-                    args.emplace_back(plan->parameters->add_parameter(vector::make_scalar(resource_, flags),
-                                                                      vector::parameter_kind::literal));
-                    return make_function_expression(resource_,
-                                                    function_qualified_name_t{core::function_name_t{"regexp_like"}},
-                                                    std::move(args));
+                    args.emplace_back(
+                        plan->parameters->add_parameter(vector::make_scalar(resource_, like_mode_of(op_str)),
+                                                        vector::parameter_kind::literal));
+                    auto call = make_function_expression(
+                        resource_,
+                        function_qualified_name_t{core::function_name_t{std::string{compute::like_match_name}}},
+                        std::move(args));
+                    call->set_pins(
+                        std::pmr::vector<compute::function_pin_t>({{compute::like_match_uid, 0}}, resource_));
+                    return call;
                 }
 
                 if (op_str == "?" || op_str == "?|" || op_str == "?&") {
                     return transform_jsonb_exists(node, names, plan->parameters.get(), op_str);
+                }
+
+                if (is_jsonb_nav_operator(op_str) && (!node->lexpr || !node->rexpr)) {
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"operator " + std::string(op_str) + " is missing its operand",
+                                                          resource_});
                 }
 
                 auto comp_type = get_compare_type(op_str);
@@ -1039,7 +1052,7 @@ namespace components::sql::transform {
                                                     set);
                 expr->set_inner_op(inner.op);
                 if (inner.op == compare_type::regex) {
-                    expr->set_regex_flags(plan->parameters->add_parameter(vector::make_scalar(resource_, inner.flags),
+                    expr->set_regex_flags(plan->parameters->add_parameter(vector::make_scalar(resource_, inner.mode),
                                                                           vector::parameter_kind::literal));
                 }
                 return expr;
@@ -1174,7 +1187,7 @@ namespace components::sql::transform {
                 auto expr = make_compare_expression(resource_, ctype, key.field, param_id);
                 expr->set_inner_op(inner.op);
                 if (inner.op == compare_type::regex) {
-                    expr->set_regex_flags(plan->parameters->add_parameter(vector::make_scalar(resource_, inner.flags),
+                    expr->set_regex_flags(plan->parameters->add_parameter(vector::make_scalar(resource_, inner.mode),
                                                                           vector::parameter_kind::literal));
                 }
                 return expr;
@@ -1321,6 +1334,11 @@ namespace components::sql::transform {
                                                   std::pmr::vector<std::pmr::string>& segments,
                                                   expressions::side_t& side) {
         auto op = std::string_view(strVal(node->name->lst.front().data));
+        if (!node->lexpr || !node->rexpr) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"operator " + std::string(op) + " is missing its operand",
+                                                  resource_});
+        }
 
         Node* lexpr = node->lexpr;
         if (nodeTag(lexpr) == T_A_Expr) {
@@ -1395,6 +1413,11 @@ namespace components::sql::transform {
                                                                                std::string_view op) {
         std::pmr::vector<std::pmr::string> prefix(resource_);
         expressions::side_t side = expressions::side_t::undefined;
+        if (!node->lexpr || !node->rexpr) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"operator " + std::string(op) + " is missing its operand",
+                                                  resource_});
+        }
         Node* lexpr = node->lexpr;
         if (nodeTag(lexpr) == T_A_Expr) {
             auto* sub = pg_ptr_cast<A_Expr>(lexpr);
@@ -1710,35 +1733,37 @@ namespace components::sql::transform {
         }
 
         // SELECT wrapper, to reuse regular parsing mechanism
-        const std::string statement = "SELECT 1 WHERE " + expr_text + ";";
+        constexpr std::string_view wrapper = "SELECT 1 WHERE ";
+        const std::string statement = std::string{wrapper} + expr_text + ";";
         core::pmr::arena_resource_t arena(resource_);
-        Node* predicate = nullptr;
-        try {
-            auto* parsed = raw_parser(&arena, statement.c_str());
-            if (!parsed) {
-                return core::error_t(
-                    core::error_code_t::sql_parse_error,
-                    std::pmr::string{"CHECK constraint expression does not parse: " + expr_text, resource_});
-            }
-            auto* cell = linitial(parsed);
-            if (!cell) {
-                return core::error_t(
-                    core::error_code_t::sql_parse_error,
-                    std::pmr::string{"CHECK constraint expression does not parse: " + expr_text, resource_});
-            }
-            auto& parsed_node = pg_cell_to_node_cast(cell);
-            if (nodeTag(&parsed_node) != T_SelectStmt) {
-                return core::error_t(
-                    core::error_code_t::sql_parse_error,
-                    std::pmr::string{"CHECK constraint expression is not an expression: " + expr_text, resource_});
-            }
-            predicate = pg_ptr_cast<SelectStmt>(&parsed_node)->whereClause;
-        } catch (const std::exception& ex) {
+        auto parsed = raw_parser(&arena, statement.c_str());
+        if (parsed.has_error()) {
+            const int32_t wrapper_characters = static_cast<int32_t>(wrapper.size());
+            const int32_t at = parsed.error().position;
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"CHECK constraint expression does not parse: " + expr_text + " (" +
+                                                      parsed.error().what.c_str() + ")",
+                                                  resource_},
+                                 at > wrapper_characters ? at - wrapper_characters : -1);
+        }
+        if (!parsed.value()) {
             return core::error_t(
                 core::error_code_t::sql_parse_error,
-                std::pmr::string{"CHECK constraint expression does not parse: " + expr_text + " (" + ex.what() + ")",
-                                 resource_});
+                std::pmr::string{"CHECK constraint expression does not parse: " + expr_text, resource_});
         }
+        auto* cell = linitial(parsed.value());
+        if (!cell) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"CHECK constraint expression does not parse: " + expr_text, resource_});
+        }
+        auto& parsed_node = pg_cell_to_node_cast(cell);
+        if (nodeTag(&parsed_node) != T_SelectStmt) {
+            return core::error_t(
+                core::error_code_t::sql_parse_error,
+                std::pmr::string{"CHECK constraint expression is not an expression: " + expr_text, resource_});
+        }
+        Node* predicate = pg_ptr_cast<SelectStmt>(&parsed_node)->whereClause;
         if (!predicate) {
             return core::error_t(
                 core::error_code_t::sql_parse_error,

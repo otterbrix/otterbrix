@@ -42,6 +42,28 @@ namespace components::casts {
 
     } // namespace
 
+    namespace {
+        template<typename Map>
+        void copy_buckets(const Map& from, Map& to, std::pmr::memory_resource* resource) {
+            to.reserve(from.size());
+            for (const auto& [source, targets] : from) {
+                typename Map::mapped_type copied{resource};
+                copied.entries.assign(targets.entries.begin(), targets.entries.end());
+                copied.sorted_count = targets.sorted_count;
+                copied.implicit_count = targets.implicit_count;
+                to.emplace(source, std::move(copied));
+            }
+        }
+    } // namespace
+
+    cast_registry_t::cast_registry_t(const cast_registry_t& other, std::pmr::memory_resource* resource)
+        : resource_(resource)
+        , entries_(resource)
+        , complex_entries_(resource) {
+        copy_buckets(other.entries_, entries_, resource_);
+        copy_buckets(other.complex_entries_, complex_entries_, resource_);
+    }
+
     core::error_t cast_registry_t::add(const types::complex_logical_type& source,
                                        const types::complex_logical_type& target,
                                        cast_entry&& entry) {
@@ -53,7 +75,7 @@ namespace components::casts {
 
         for (const auto& existing : targets) {
             if (same_cast_type(existing.first, target)) {
-                return core::error_t{core::error_code_t::already_exists,
+                return core::error_t{core::error_code_t::duplicate_object,
                                      std::pmr::string{"cast already registered for this type pair", resource_}};
             }
         }
@@ -91,7 +113,7 @@ namespace components::casts {
         complex_target_entries_t& targets = source_iterator->second;
         for (const auto& registered : targets) {
             if (same_cast_type(registered.first, target)) {
-                return core::error_t{core::error_code_t::already_exists,
+                return core::error_t{core::error_code_t::duplicate_object,
                                      std::pmr::string{"struct cast already registered", resource_}};
             }
         }
@@ -199,8 +221,11 @@ namespace components::casts {
         if (source_fields.size() != target_fields.size()) {
             return std::nullopt;
         }
+        const bool positional = std::all_of(source_fields.begin(), source_fields.end(), [](const auto& field) {
+            return field.alias().empty();
+        });
         // if even one field is explicit, we can not create a cast
-        cast_type level = cast_type::assignment;
+        cast_type level = positional ? cast_type::implicit : cast_type::assignment;
         for (size_t index = 0; index < source_fields.size(); ++index) {
             std::optional<cast_info> field = lookup(source_fields[index], target_fields[index]);
             if (!field.has_value()) {
@@ -209,6 +234,16 @@ namespace components::casts {
             level = least_permissive(level, field->level);
         }
         return cast_info{level, no_cost};
+    }
+
+    std::optional<cast_t> cast_registry_t::resolve_assignment(const types::complex_logical_type& source,
+                                                              const types::complex_logical_type& target,
+                                                              bool quoted_literal) const {
+        if (!quoted_literal && source.type() == types::logical_type::STRING_LITERAL &&
+            target.type() != types::logical_type::STRING_LITERAL) {
+            return std::nullopt;
+        }
+        return resolve(source, target, cast_type::assignment);
     }
 
     std::optional<cast_t> cast_registry_t::resolve(const types::complex_logical_type& source,

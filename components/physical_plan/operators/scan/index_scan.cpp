@@ -52,7 +52,7 @@ namespace components::operators {
             if (key_col >= chunk.column_count()) {
                 // The fetched width disagrees with the width plan-gen resolved against: nothing here can
                 // be trusted to be the row the index meant, so refuse rather than skip the check.
-                return core::error_t{core::error_code_t::stale_index,
+                return core::error_t{core::error_code_t::internal_error,
                                      std::pmr::string{"index_scan: the fetched row is narrower than the "
                                                       "indexed column position the plan resolved; the index "
                                                       "answer cannot be verified",
@@ -84,7 +84,7 @@ namespace components::operators {
                 if (!selected.is_null(row) && selected.get_value<bool>(row)) {
                     continue;
                 }
-                return core::error_t{core::error_code_t::stale_index,
+                return core::error_t{core::error_code_t::index_corrupted,
                                      std::pmr::string{"index_scan: the index named a row that does not "
                                                       "satisfy the predicate it was searched with — its "
                                                       "row ids no longer name the rows it indexed (a "
@@ -103,6 +103,8 @@ namespace components::operators {
 
     actor_zeta::unique_future<core::error_t> index_scan::open_index_window(pipeline::context_t* ctx) {
         const auto& key = ctx->parameters.at(key_parameter_);
+        // A portal sees its transaction's deletes as of its DECLARE: the fetch below answers which rows remain.
+        const bool hides_own_deletes = ctx->txn.sees_commands_before == 0;
         auto [_s, sf] = preferred_index_type_ == logical_plan::index_type::no_valid
                             ? actor_zeta::otterbrix::send(ctx->index_address,
                                                           &services::index::manager_index_t::search,
@@ -111,8 +113,8 @@ namespace components::operators {
                                                           index::keys_base_storage_t{{key_}},
                                                           vector::make_constant_copy(resource_, key),
                                                           compare_type_,
-                                                          ctx->txn.start_time,
                                                           ctx->txn.transaction_id,
+                                                          hides_own_deletes,
                                                           ctx->execution_context.timezone_offset)
                             : actor_zeta::otterbrix::send(ctx->index_address,
                                                           &services::index::manager_index_t::search_with_preferred_type,
@@ -122,8 +124,8 @@ namespace components::operators {
                                                           vector::make_constant_copy(resource_, key),
                                                           compare_type_,
                                                           preferred_index_type_,
-                                                          ctx->txn.start_time,
                                                           ctx->txn.transaction_id,
+                                                          hides_own_deletes,
                                                           ctx->execution_context.timezone_offset);
         auto matched = co_await std::move(sf);
         if (matched.has_error()) {
@@ -159,7 +161,7 @@ namespace components::operators {
                                                     table::fetch_visibility_t::SNAPSHOT,
                                                     // -1 uncapped, else stops after this many rows.
                                                     cap_.to_disk(),
-                                                    // Epoch minted against; refuses (stale_index) if renumbered.
+                                                    // Epoch minted against; refuses (write_conflict) if renumbered.
                                                     built_compact_epoch_);
         co_return co_await std::move(ff);
     }
@@ -169,7 +171,7 @@ namespace components::operators {
             co_return;
         }
         const uint64_t id = hold_id_;
-        // Clear first so a re-entry cannot double-send (same discipline as full_scan).
+        // Clear first so a re-entry cannot double-send (same discipline as transfer_scan).
         hold_id_ = 0;
         auto [_c, cf] = actor_zeta::otterbrix::send(ctx->disk_address,
                                                     &services::disk::manager_disk_t::storage_close_cursor,
@@ -192,7 +194,7 @@ namespace components::operators {
             if (ctx->index_address == actor_zeta::address_t::empty_address()) {
                 pos_ = 0;
                 end_ = 0;
-                core::error_t unwired{core::error_code_t::index_not_exists,
+                core::error_t unwired{core::error_code_t::internal_error,
                                       std::pmr::string{"index_scan: no index service is wired into this topology; "
                                                        "a planned index_scan cannot be answered",
                                                        resource_}};

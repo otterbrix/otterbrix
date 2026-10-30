@@ -524,7 +524,7 @@ namespace services::index {
         }
         RETURN_IF_ERROR(load_from_disk());
         if (crc_failure_) {
-            return core::error_t{core::error_code_t::index_create_fail,
+            return core::error_t{core::error_code_t::data_corruption,
                                  std::pmr::string{"bitcask: CRC mismatch during recovery", resource_}};
         }
         RETURN_IF_ERROR(open_active_segment());
@@ -555,7 +555,11 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::io_failure(std::string_view message) const {
-        return core::error_t{core::error_code_t::index_create_fail,
+        return core::error_t{core::error_code_t::io_error, std::pmr::string{message.data(), message.size(), resource_}};
+    }
+
+    core::error_t bitcask_index_disk_t::damaged(std::string_view message) const {
+        return core::error_t{core::error_code_t::data_corruption,
                              std::pmr::string{message.data(), message.size(), resource_}};
     }
 
@@ -608,10 +612,15 @@ namespace services::index {
     }
 
     core::error_t bitcask_index_disk_t::initialize_storage() {
-        if (std::filesystem::exists(path_)) {
+        std::error_code ec;
+        const bool present = std::filesystem::exists(path_, ec);
+        if (ec) {
+            return io_failure("bitcask: the index directory " + path_.string() +
+                              " could not be examined: " + ec.message());
+        }
+        if (present) {
             return core::error_t::no_error();
         }
-        std::error_code ec;
         std::filesystem::create_directories(path_, ec);
         if (ec) {
             return io_failure("bitcask: the index directory " + path_.string() +
@@ -666,10 +675,10 @@ namespace services::index {
                                   " is present and could not be opened; the index is not registered while that "
                                   "lasts, and the next open retries it unchanged");
             case sidecar_state_t::damaged:
-                return io_failure("bitcask: the merge manifest " + manifest_path.string() +
-                                  " is present and its bytes could not be read as a manifest; this does not clear by "
-                                  "itself -- drop and re-create the index, or remove its directory, to rebuild it "
-                                  "from the table");
+                return damaged("bitcask: the merge manifest " + manifest_path.string() +
+                               " is present and its bytes could not be read as a manifest; this does not clear by "
+                               "itself -- drop and re-create the index, or remove its directory, to rebuild it "
+                               "from the table");
             case sidecar_state_t::ok:
                 break;
         }
@@ -754,9 +763,9 @@ namespace services::index {
                                   " is present and could not be opened; the index is not registered while that lasts, "
                                   "and the next open reads it unchanged");
             case sidecar_state_t::damaged:
-                return io_failure("bitcask: the CURRENT segment pointer " + current_segment_path(path_).string() +
-                                  " is present and does not hold a segment id; this does not clear by itself -- drop "
-                                  "and re-create the index, or remove its directory, to rebuild it from the table");
+                return damaged("bitcask: the CURRENT segment pointer " + current_segment_path(path_).string() +
+                               " is present and does not hold a segment id; this does not clear by itself -- drop "
+                               "and re-create the index, or remove its directory, to rebuild it from the table");
             case sidecar_state_t::ok:
                 break;
         }
@@ -819,13 +828,13 @@ namespace services::index {
                 std::string_view key_bytes;
                 row_ids_t rows(resource());
                 if (!deserialize_payload(payload, &key_bytes, &rows)) {
-                    return io_failure("bitcask: segment " + segment.path.string() +
-                                      " holds a record whose key could not be decoded");
+                    return damaged("bitcask: segment " + segment.path.string() +
+                                   " holds a record whose key could not be decoded");
                 }
                 auto hashed = hash_key_bytes(key_bytes);
                 if (hashed.has_error()) {
-                    return io_failure("bitcask: segment " + segment.path.string() +
-                                      " holds a record whose key could not be decoded");
+                    return damaged("bitcask: segment " + segment.path.string() +
+                                   " holds a record whose key could not be decoded");
                 }
                 uint32_t key_hash = hashed.value();
                 if (static_cast<record_kind_t>(header.kind) == record_kind_t::tombstone) {
@@ -838,8 +847,7 @@ namespace services::index {
                                                      static_cast<uint32_t>(segment.id),
                                                      payload_offset));
                 } else {
-                    return io_failure("bitcask: segment " + segment.path.string() +
-                                      " holds a record of an unknown kind");
+                    return damaged("bitcask: segment " + segment.path.string() + " holds a record of an unknown kind");
                 }
                 next_timestamp_ = std::max(next_timestamp_, header.timestamp);
                 ++segment.record_count;
@@ -1018,7 +1026,7 @@ namespace services::index {
         record_header_t header{};
         std::pmr::string payload(resource());
         if (value_offset < sizeof(record_header_t)) {
-            return io_failure("bitcask: keydir entry points inside the record header of " + segment_path.string());
+            return damaged("bitcask: keydir entry points inside the record header of " + segment_path.string());
         }
         const auto header_offset = value_offset - sizeof(record_header_t);
         if (!f->read(&header, sizeof(header), header_offset)) {
@@ -1028,9 +1036,9 @@ namespace services::index {
         }
         const auto segment_size = f->file_size();
         if (value_offset > segment_size || header.payload_size > segment_size - value_offset) {
-            return io_failure("bitcask: the record at " + std::to_string(value_offset) + " of " +
-                              segment_path.string() + " claims a payload of " + std::to_string(header.payload_size) +
-                              " bytes, which runs past the end of the segment");
+            return damaged("bitcask: the record at " + std::to_string(value_offset) + " of " + segment_path.string() +
+                           " claims a payload of " + std::to_string(header.payload_size) +
+                           " bytes, which runs past the end of the segment");
         }
         payload.resize(static_cast<size_t>(header.payload_size));
         if (header.payload_size != 0 && !f->read(payload.data(), header.payload_size, value_offset)) {
@@ -1044,13 +1052,13 @@ namespace services::index {
             calc = absl::ExtendCrc32c(calc, absl::string_view(payload.data(), payload.size()));
         }
         if (static_cast<uint32_t>(calc) != header.crc) {
-            return io_failure("bitcask: CRC mismatch on the record at " + std::to_string(value_offset) + " of " +
-                              segment_path.string());
+            return damaged("bitcask: CRC mismatch on the record at " + std::to_string(value_offset) + " of " +
+                           segment_path.string());
         }
         std::string_view key_bytes;
         if (!deserialize_payload(payload, &key_bytes, &rows)) {
-            return io_failure("bitcask: the record at " + std::to_string(value_offset) + " of " +
-                              segment_path.string() + " could not be decoded");
+            return damaged("bitcask: the record at " + std::to_string(value_offset) + " of " + segment_path.string() +
+                           " could not be decoded");
         }
         if (out_key) {
             out_key->assign(key_bytes.data(), key_bytes.size());
@@ -1174,13 +1182,13 @@ namespace services::index {
         {
             std::ofstream out(temp_path, std::ios::trunc);
             if (!out.good()) {
-                return core::error_t{core::error_code_t::index_create_fail,
+                return core::error_t{core::error_code_t::io_error,
                                      std::pmr::string{"bitcask: applied-offset sidecar open failed", resource()}};
             }
             out << offset;
             out.flush();
             if (!out.good()) {
-                return core::error_t{core::error_code_t::index_create_fail,
+                return core::error_t{core::error_code_t::io_error,
                                      std::pmr::string{"bitcask: applied-offset sidecar flush failed", resource()}};
             }
         }
@@ -1295,7 +1303,7 @@ namespace services::index {
                                               file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE,
                                               file_lock_type::NO_LOCK);
             if (!txn_log_file_) {
-                return core::error_t{core::error_code_t::index_create_fail,
+                return core::error_t{core::error_code_t::io_error,
                                      std::pmr::string{"bitcask: txn-log open failed", resource()}};
             }
             if (const auto clean_end = txn_log_clean_end_;
@@ -1341,7 +1349,13 @@ namespace services::index {
     core::error_t bitcask_index_disk_t::recover_txn_log() {
         const auto log_path = txn_log_file_path();
         txn_log_clean_end_ = no_tail_to_trim;
-        if (!std::filesystem::exists(log_path)) {
+        std::error_code exists_ec;
+        const bool present = std::filesystem::exists(log_path, exists_ec);
+        if (exists_ec) {
+            return io_failure("bitcask: the txn log " + log_path.string() +
+                              " could not be examined for recovery: " + exists_ec.message());
+        }
+        if (!present) {
             return core::error_t::no_error();
         }
 
@@ -1399,12 +1413,12 @@ namespace services::index {
             // zero is never issued and is refused rather than looked up.
             const bool committed = header.commit_id != 0 && commit_ids_.count(header.commit_id) > 0;
             if (header.op_kind != 1 && header.op_kind != 2) {
-                return io_failure("bitcask: the txn log holds a frame with an unknown op kind");
+                return damaged("bitcask: the txn log holds a frame with an unknown op kind");
             }
             if (committed) {
                 key_batch_t batch(resource());
                 if (!read_txn_batch(resource(), payload, &batch)) {
-                    return io_failure("bitcask: a committed txn-log frame could not be decoded during recovery");
+                    return damaged("bitcask: a committed txn-log frame could not be decoded during recovery");
                 }
                 RETURN_IF_ERROR(header.op_kind == 1 ? apply_inserts(batch) : apply_deletes(batch));
                 RETURN_IF_ERROR(sync_if_dirty());

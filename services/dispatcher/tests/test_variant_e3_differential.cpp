@@ -9,6 +9,7 @@
 #include <components/log/test/test_log.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/types/types.hpp>
@@ -18,6 +19,7 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/catalog_probe.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
@@ -80,12 +82,17 @@ namespace {
                                                                           manager_disk_->address(),
                                                                           manager_index_->address(),
                                                                           configuration::config_execution{},
-                                                                          components::planner::primitives_t{})) {
-            manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
-            manager_disk_->set_manager_wal_sync(manager_wal_->address());
-            manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
+                                                                          components::planner::primitives_t{},
+                                                                          services::dispatcher::dispatcher_seed_t{})) {
+            const services::bootstrap_token_t token{};
+            manager_wal_replicate_t::bootstrap_t wal_boot{*manager_wal_, token};
+            manager_disk_t::bootstrap_t disk_boot{*manager_disk_, token};
+            services::index::manager_index_t::bootstrap_t index_boot{*manager_index_, token};
+            wal_boot.set_manager_dispatcher_sync(manager_dispatcher_->address());
+            disk_boot.set_manager_wal_sync(manager_wal_->address());
+            index_boot.set_manager_dispatcher_sync(manager_dispatcher_->address());
 
-            REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
+            REQUIRE_FALSE(disk_boot.bootstrap_system_tables_sync().contains_error());
         }
 
         ~differential_fixture() {
@@ -131,17 +138,12 @@ namespace {
             return result;
         }
 
-        resolve_namespace_result_t resolve_namespace(const std::string& name) {
+        test_probe::probe_namespace_result_t resolve_namespace(const std::string& name) {
             components::execution_context_t ctx{components::session::session_id_t{},
                                                 components::table::transaction_data::committed(),
                                                 {}};
-            auto [_, fut] =
-                actor_zeta::otterbrix::send(manager_disk_->address(), &manager_disk_t::resolve_namespace, ctx, name);
-            REQUIRE(test_helpers::wait_ready(fut, scheduler_));
-            // The reader has its own error channel; a failed read must not be conflated with found=false.
-            auto r = std::move(fut).take_ready();
-            REQUIRE_FALSE(r.has_error());
-            return std::move(r.value());
+            auto adapter = probe_fx();
+            return test_probe::probe_namespace(adapter, ctx, name);
         }
 
         test_probe::probe_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
@@ -155,7 +157,7 @@ namespace {
 
         void execute_sql(const std::string& query) {
             parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
-            auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
+            auto parse_result = linitial(parse_ok(parser_arena_.get(), query.c_str()));
             // CREATE VIEW / CREATE MATERIALIZED VIEW slice their body verbatim out of this string.
             components::sql::transform::transformer local_transformer(resource_, query.c_str());
             auto _wrap =
@@ -192,7 +194,7 @@ TEST_CASE("variant-e3 differential: SELECT pass-through") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_select");
 
-    fx.execute_sql("CREATE DATABASE ve3_sel;");
+    fx.execute_sql("CREATE SCHEMA ve3_sel;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_sel.t(id int, name string);");
@@ -220,7 +222,7 @@ TEST_CASE("variant-e3 differential: CREATE TABLE basic") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_create");
 
-    fx.execute_sql("CREATE DATABASE ve3_ct;");
+    fx.execute_sql("CREATE SCHEMA ve3_ct;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_ct.users(id int, email string);");
@@ -251,7 +253,7 @@ TEST_CASE("variant-e3 differential: INSERT + SELECT round-trip") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_insert");
 
-    fx.execute_sql("CREATE DATABASE ve3_ins;");
+    fx.execute_sql("CREATE SCHEMA ve3_ins;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_ins.kv(k int, v string);");
@@ -285,7 +287,7 @@ TEST_CASE("variant-e3 differential: CREATE INDEX") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_index");
 
-    fx.execute_sql("CREATE DATABASE ve3_idx;");
+    fx.execute_sql("CREATE SCHEMA ve3_idx;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_idx.items(id int, val int);");
@@ -315,7 +317,7 @@ TEST_CASE("variant-e3 differential: DROP TABLE") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_drop");
 
-    fx.execute_sql("CREATE DATABASE ve3_drop;");
+    fx.execute_sql("CREATE SCHEMA ve3_drop;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_drop.victim(id int, name string);");
@@ -345,7 +347,7 @@ TEST_CASE("variant-e3 differential: ALTER TABLE ADD COLUMN") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_alter");
 
-    fx.execute_sql("CREATE DATABASE ve3_alt;");
+    fx.execute_sql("CREATE SCHEMA ve3_alt;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_alt.items(id int, val int);");
@@ -398,7 +400,7 @@ TEST_CASE("variant-e3 differential: CREATE TYPE STRUCT") {
         REQUIRE(cur->is_success());
     }
 
-    fx.execute_sql("CREATE DATABASE ve3_ty_db;");
+    fx.execute_sql("CREATE SCHEMA ve3_ty_db;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_ty_db.pts(id int, p ve3_point_t);");
@@ -424,7 +426,7 @@ TEST_CASE("variant-e3 differential: INSERT relkind='g' computed-column adoption"
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_computed");
 
-    fx.execute_sql("CREATE DATABASE ve3_cg;");
+    fx.execute_sql("CREATE SCHEMA ve3_cg;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_cg.events();");
@@ -465,7 +467,7 @@ TEST_CASE("variant-e3 differential: DROP DATABASE") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_drop_db");
 
-    fx.execute_sql("CREATE DATABASE ve3_dropdb;");
+    fx.execute_sql("CREATE SCHEMA ve3_dropdb;");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
@@ -473,7 +475,7 @@ TEST_CASE("variant-e3 differential: DROP DATABASE") {
         REQUIRE(rns.found);
     }
 
-    fx.execute_sql("DROP DATABASE ve3_dropdb;");
+    fx.execute_sql("DROP SCHEMA ve3_dropdb CASCADE;");
     {
         auto cur = fx.take_result();
         REQUIRE(cur->is_success());
@@ -487,7 +489,7 @@ TEST_CASE("variant-e3 differential: CREATE VIEW") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_view");
 
-    fx.execute_sql("CREATE DATABASE ve3_view;");
+    fx.execute_sql("CREATE SCHEMA ve3_view;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_view.t(col_a string, col_b bigint);");
@@ -517,7 +519,7 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT FK") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_fk");
 
-    fx.execute_sql("CREATE DATABASE ve3_fk;");
+    fx.execute_sql("CREATE SCHEMA ve3_fk;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_fk.departments(id bigint, name text);");
@@ -571,7 +573,7 @@ TEST_CASE("variant-e3 differential: CREATE MATERIALIZED VIEW") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_matview");
 
-    fx.execute_sql("CREATE DATABASE ve3_mv;");
+    fx.execute_sql("CREATE SCHEMA ve3_mv;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_mv.t(col_a string, col_b bigint);");
@@ -607,7 +609,7 @@ TEST_CASE("variant-e3 differential: CREATE CONSTRAINT CHECK") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     differential_fixture fx(mr.get(), "/tmp/test_variant_e3_diff_check");
 
-    fx.execute_sql("CREATE DATABASE ve3_chk;");
+    fx.execute_sql("CREATE SCHEMA ve3_chk;");
     (void) fx.take_result();
 
     fx.execute_sql("CREATE TABLE ve3_chk.items(id bigint, age bigint, name text);");

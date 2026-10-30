@@ -150,8 +150,8 @@ namespace components::operators {
                     msg += col.name();
                     msg += "\" cannot be persisted: ";
                     msg += persistable.error().what.c_str();
-                    set_error(
-                        core::error_t{core::error_code_t::schema_error, std::pmr::string{std::move(msg), resource_}});
+                    set_error(core::error_t{core::error_code_t::unimplemented_yet,
+                                            std::pmr::string{std::move(msg), resource_}});
                     co_return;
                 }
                 atttypspec = catalog::encode_type_spec(col.type());
@@ -174,7 +174,7 @@ namespace components::operators {
             auto oid_batch = co_await std::move(oaf);
             if (oid_batch.empty()) {
                 set_error(core::error_t{
-                    core::error_code_t::other_error,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"computed_field_register: oid allocation returned empty batch", resource_}});
                 mark_executed();
                 co_return;

@@ -237,7 +237,7 @@ int main() {
     // ---- Create DB and table ------------------------------------------------
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + DB_NAME + ";");
+        dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + DB_NAME + ";");
     }
     {
         auto session = otterbrix::session_id_t();

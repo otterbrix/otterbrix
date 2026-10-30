@@ -16,7 +16,7 @@ namespace components::compute {
                                                              std::pmr::memory_resource* resource,
                                                              const std::pmr::vector<fixed_t>& in) {
             if (in.size() <= input_index) {
-                return core::error_t(core::error_code_t::incorrect_function_argument,
+                return core::error_t(core::error_code_t::internal_error,
                                      std::pmr::string{"less inputs than expected", resource});
             }
             return in[input_index];
@@ -83,7 +83,7 @@ namespace components::compute {
                                                                  const std::pmr::vector<fixed_t>& input_types) const {
         if (empty()) {
             // Empty resolver is a caller mistake — refuse rather than guess.
-            return core::error_t(core::error_code_t::kernel_error,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"output type resolver is empty", resource});
         }
         if (indexed_ != nullptr) {

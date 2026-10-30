@@ -5,6 +5,7 @@
 
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
+#include <components/logical_plan/node_sort.hpp>
 #include <components/physical_plan/operators/operator_sort.hpp>
 #include <components/physical_plan/operators/sort/sort.hpp>
 
@@ -46,12 +47,14 @@ namespace services::planner::impl {
                 continue;
             }
             components::operators::sort_key_spec_t computed(plan_resource);
-            computed.expression = std::get<components::expressions::expression_ptr>(sort_expr->operand());
+            computed.expression = components::expressions::as_expr(sort_expr->operand());
             computed.order_ = ord;
             computed.null_order_ = nulls;
             sort->add_computed(std::move(computed));
         }
         sort->set_cap(cap);
+        sort->set_keep_computed_keys(
+            static_cast<const components::logical_plan::node_sort_t*>(node.get())->keep_computed_keys());
         return sort;
     }
 

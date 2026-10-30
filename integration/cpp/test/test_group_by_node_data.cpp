@@ -7,6 +7,7 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -77,7 +78,7 @@ namespace {
         // The raw AST lives in an arena — raw_parser allocations are never
         // freed individually.
         std::pmr::monotonic_buffer_resource arena(resource);
-        auto* raw = raw_parser(&arena, sql);
+        auto* raw = parse_ok(&arena, sql);
         REQUIRE(raw != nullptr);
         auto* res = reinterpret_cast<::Node*>(linitial(raw));
         auto binder = transformer.transform(sql::transform::pg_cell_to_node_cast(res));

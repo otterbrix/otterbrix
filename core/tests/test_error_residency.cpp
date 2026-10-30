@@ -24,7 +24,7 @@ namespace {
         "FOREIGN KEY constraint \"fk_child_parent\" still depends on it.";
 
     core::error_t produced_on(std::pmr::memory_resource* producer) {
-        return core::error_t{core::error_code_t::schema_error,
+        return core::error_t{core::error_code_t::internal_error,
                              std::pmr::string{refusal.begin(), refusal.end(), producer}};
     }
 
@@ -42,7 +42,7 @@ TEST_CASE("core::error_on_rebuilds_the_message_on_the_named_resource") {
         {
             core::error_t adopted = core::error_on(&owner, error);
 
-            CHECK(adopted.type == core::error_code_t::schema_error);
+            CHECK(adopted.type == core::error_code_t::internal_error);
             CHECK(std::string_view{adopted.what} == refusal);
             CHECK(adopted.what.get_allocator().resource() == &owner);
 
@@ -159,7 +159,7 @@ namespace {
 TEST_CASE("core::a_short_message_copied_onto_a_null_resource_is_refused") {
     REQUIRE(short_refusal.size() <= small_string_capacity());
     resource_tracer_t producer;
-    core::error_t error{core::error_code_t::schema_error,
+    core::error_t error{core::error_code_t::internal_error,
                         std::pmr::string{short_refusal.begin(), short_refusal.end(), &producer}};
     CHECK(producer.live_allocations() == 0);
 
@@ -189,3 +189,35 @@ TEST_CASE("core::a_long_message_copied_onto_a_null_resource_is_refused") {
 }
 
 #endif
+
+TEST_CASE("core::the_error_position_travels_with_every_copy_and_move") {
+    resource_tracer_t producer;
+    resource_tracer_t owner;
+
+    CHECK(core::error_t::no_error().position == -1);
+    CHECK(produced_on(&producer).position == -1);
+
+    core::error_t positioned{core::error_code_t::sql_parse_error,
+                             std::pmr::string{refusal.begin(), refusal.end(), &producer},
+                             7};
+    CHECK(positioned.position == 7);
+
+    core::error_t copied{positioned};
+    CHECK(copied.position == 7);
+    CHECK(core::error_on(&owner, positioned).position == 7);
+
+    core::error_t copy_assigned = core::error_t::no_error();
+    copy_assigned = positioned;
+    CHECK(copy_assigned.position == 7);
+
+    core::error_t move_assigned = core::error_t::no_error();
+    move_assigned = std::move(copied);
+    CHECK(move_assigned.position == 7);
+
+    core::error_t moved{std::move(move_assigned)};
+    CHECK(moved.position == 7);
+
+    core::result_wrapper_t<int> wrapped{std::move(moved)};
+    REQUIRE(wrapped.has_error());
+    CHECK(wrapped.error().position == 7);
+}

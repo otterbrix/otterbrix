@@ -1,5 +1,9 @@
 #include "wrapper_dispatcher.hpp"
+#include <components/logical_plan/node_cursor.hpp>
+#include <components/logical_plan/node_register_cast.hpp>
+#include <components/logical_plan/node_register_udf.hpp>
 #include <components/logical_plan/node_set_setting.hpp>
+#include <components/logical_plan/node_unregister_udf.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/transformer/transform_result.hpp>
 #include <components/sql/transformer/utils.hpp>
@@ -42,11 +46,9 @@ namespace otterbrix {
               "wrapper_dispatcher_t::register_udf session: {}, function name : {} ",
               session.data(),
               function->name());
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                       &services::dispatcher::manager_dispatcher_t::register_udf,
-                                                       session,
-                                                       std::move(function));
-        return actor_zeta::otterbrix::wait_ready(future);
+        return execute_node_(
+            session,
+            boost::intrusive_ptr(new components::logical_plan::node_register_udf_t(resource(), std::move(function))));
     }
 
     auto wrapper_dispatcher_t::set_explain_renderer(uint32_t id, services::collection::explain_render_fn fn)
@@ -69,13 +71,12 @@ namespace otterbrix {
               "wrapper_dispatcher_t::unregister_udf session: {}, function name : {} ",
               session.data(),
               function_name);
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                       &services::dispatcher::manager_dispatcher_t::unregister_udf,
-                                                       session,
-                                                       function_name,
-                                                       inputs,
-                                                       behavior);
-        return actor_zeta::otterbrix::wait_ready(future);
+        return execute_node_(session,
+                             boost::intrusive_ptr(new components::logical_plan::node_unregister_udf_t(
+                                 resource(),
+                                 core::function_name_t{function_name},
+                                 std::pmr::vector<components::types::complex_logical_type>(inputs, resource()),
+                                 behavior)));
     }
 
     auto wrapper_dispatcher_t::register_cast(const session_id_t& session,
@@ -83,25 +84,29 @@ namespace otterbrix {
                                              const components::types::complex_logical_type& target,
                                              components::casts::cast_entry entry) -> core::error_t {
         trace(log_, "wrapper_dispatcher_t::register_cast session: {}", session.data());
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                       &services::dispatcher::manager_dispatcher_t::register_cast,
-                                                       session,
-                                                       source,
-                                                       target,
-                                                       entry);
-        return actor_zeta::otterbrix::wait_ready(future);
+        return execute_node_(
+            session,
+            boost::intrusive_ptr(
+                new components::logical_plan::node_register_cast_t(resource(), source, target, entry)));
     }
 
     auto wrapper_dispatcher_t::unregister_cast(const session_id_t& session,
                                                const components::types::complex_logical_type& source,
                                                const components::types::complex_logical_type& target) -> core::error_t {
         trace(log_, "wrapper_dispatcher_t::unregister_cast session: {}", session.data());
-        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
-                                                       &services::dispatcher::manager_dispatcher_t::unregister_cast,
-                                                       session,
-                                                       source,
-                                                       target);
-        return actor_zeta::otterbrix::wait_ready(future);
+        return execute_node_(
+            session,
+            boost::intrusive_ptr(new components::logical_plan::node_unregister_cast_t(resource(), source, target)));
+    }
+
+    auto wrapper_dispatcher_t::execute_node_(const session_id_t& session, components::logical_plan::node_ptr node)
+        -> core::error_t {
+        auto cursor = execute_plan(
+            session,
+            components::logical_plan::execution_plan_t{resource(),
+                                                       std::move(node),
+                                                       components::logical_plan::make_parameter_node(resource())});
+        return cursor->is_error() ? core::error_on(resource(), cursor->get_error()) : core::error_t::no_error();
     }
 
     auto wrapper_dispatcher_t::execute_plan(const session_id_t& session,
@@ -121,41 +126,12 @@ namespace otterbrix {
 
         trace(log_, "wrapper_dispatcher_t::execute sql session: {}", session.data());
         core::pmr::arena_resource_t parser_arena(resource());
-        List* parse_tree;
-        try {
-            parse_tree = raw_parser(&parser_arena, query.c_str(), parser_extensions_);
-        } catch (const std::exception& exception) {
-            return send_failed_plan(
-                session,
-                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{exception.what(), resource()}));
-        }
-
-        // parser.h: the list may be EMPTY (no statement, not an error) or hold MORE than one --
-        // linitial() alone reads past the end on empty and silently drops all but the first.
-        if (list_length(parse_tree) == 0) {
-            return send_failed_plan(
-                session,
-                core::error_t(core::error_code_t::sql_parse_error,
-                              std::pmr::string{"the query contains no statement to execute (empty "
-                                               "input, a comment, or a bare ';') — nothing was executed",
-                                               resource()}));
-        }
-        if (list_length(parse_tree) > 1) {
-            std::pmr::string msg{"the query contains ", resource()};
-            msg += std::to_string(list_length(parse_tree));
-            msg += " statements; one statement per call is supported — nothing was executed";
-            return send_failed_plan(session, core::error_t(core::error_code_t::unimplemented_yet, std::move(msg)));
-        }
-        void* parse_result = linitial(parse_tree);
-        if (!parse_result) {
-            return send_failed_plan(
-                session,
-                core::error_t(core::error_code_t::sql_parse_error,
-                              std::pmr::string{"the parser produced a statement with no node in it", resource()}));
+        auto parsed = parse_statement_(&parser_arena, query);
+        if (parsed.has_error()) {
+            return send_failed_plan(session, parsed.error());
         }
         transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
-        if (auto result = local_transformer.transform(pg_cell_to_node_cast(parse_result)).finalize();
-            result.has_error()) {
+        if (auto result = local_transformer.transform(*parsed.value()).finalize(); result.has_error()) {
             return send_failed_plan(session, result.error());
         } else {
             // Stamp the host-selected EXPLAIN renderer slot onto the plan before send; it rides the
@@ -164,6 +140,65 @@ namespace otterbrix {
             plan.explain_render_id = render_id;
             return execute_plan(session, std::move(plan));
         }
+    }
+
+    cursor_t_ptr
+    wrapper_dispatcher_t::describe_sql(const components::session::session_id_t& session,
+                                       const std::string& query,
+                                       const std::vector<std::pair<size_t, components::vector::vector_t>>& params) {
+        using namespace components::sql::transform;
+
+        trace(log_, "wrapper_dispatcher_t::describe sql session: {}", session.data());
+        core::pmr::arena_resource_t parser_arena(resource());
+        auto parsed = parse_statement_(&parser_arena, query);
+        if (parsed.has_error()) {
+            return send_failed_plan(session, parsed.error());
+        }
+        transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
+        auto binder = local_transformer.transform(*parsed.value());
+        for (const auto& [id, value] : params) {
+            binder.bind(id, value);
+        }
+        auto finalized = binder.finalize_for_describe();
+        if (finalized.has_error()) {
+            return send_failed_plan(session, finalized.error());
+        }
+        auto plan = std::move(finalized.value());
+        plan.explain = plan.explain == components::logical_plan::explain_type::none
+                           ? components::logical_plan::explain_type::describe
+                           : components::logical_plan::explain_type::describe_explain;
+        return execute_plan(session, std::move(plan));
+    }
+
+    core::result_wrapper_t<Node*> wrapper_dispatcher_t::parse_statement_(std::pmr::memory_resource* arena,
+                                                                         const std::string& query) {
+        auto parsed = raw_parser(arena, query.c_str(), parser_extensions_);
+        if (parsed.has_error()) {
+            // error_on: the message lives on the arena, which ends with the caller
+            return core::error_on(resource(), parsed.error());
+        }
+        List* parse_tree = parsed.value();
+
+        // parser.h: the list may be EMPTY (no statement, not an error) or hold MORE than one --
+        // linitial() alone reads past the end on empty and silently drops all but the first.
+        if (list_length(parse_tree) == 0) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"the query contains no statement to execute (empty "
+                                                  "input, a comment, or a bare ';') — nothing was executed",
+                                                  resource()});
+        }
+        if (list_length(parse_tree) > 1) {
+            std::pmr::string msg{"the query contains ", resource()};
+            msg += std::to_string(list_length(parse_tree));
+            msg += " statements; one statement per call is supported — nothing was executed";
+            return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
+        }
+        void* parse_result = linitial(parse_tree);
+        if (!parse_result) {
+            return core::error_t(core::error_code_t::sql_parse_error,
+                                 std::pmr::string{"the parser produced a statement with no node in it", resource()});
+        }
+        return &components::sql::transform::pg_cell_to_node_cast(parse_result);
     }
 
     cursor_t_ptr wrapper_dispatcher_t::execute_sql_with_params(
@@ -175,39 +210,12 @@ namespace otterbrix {
 
         trace(log_, "wrapper_dispatcher_t::execute sql (params) session: {}", session.data());
         core::pmr::arena_resource_t parser_arena(resource());
-        List* parse_tree;
-        try {
-            parse_tree = raw_parser(&parser_arena, query.c_str(), parser_extensions_);
-        } catch (const std::exception& exception) {
-            return send_failed_plan(
-                session,
-                core::error_t(core::error_code_t::sql_parse_error, std::pmr::string{exception.what(), resource()}));
-        }
-
-        // Same seam as execute_sql above.
-        if (list_length(parse_tree) == 0) {
-            return send_failed_plan(
-                session,
-                core::error_t(core::error_code_t::sql_parse_error,
-                              std::pmr::string{"the query contains no statement to execute (empty "
-                                               "input, a comment, or a bare ';') — nothing was executed",
-                                               resource()}));
-        }
-        if (list_length(parse_tree) > 1) {
-            std::pmr::string msg{"the query contains ", resource()};
-            msg += std::to_string(list_length(parse_tree));
-            msg += " statements; one statement per call is supported — nothing was executed";
-            return send_failed_plan(session, core::error_t(core::error_code_t::unimplemented_yet, std::move(msg)));
-        }
-        void* parse_result = linitial(parse_tree);
-        if (!parse_result) {
-            return send_failed_plan(
-                session,
-                core::error_t(core::error_code_t::sql_parse_error,
-                              std::pmr::string{"the parser produced a statement with no node in it", resource()}));
+        auto parsed = parse_statement_(&parser_arena, query);
+        if (parsed.has_error()) {
+            return send_failed_plan(session, parsed.error());
         }
         transformer local_transformer(resource(), query.c_str(), &parser_extensions_);
-        auto binder = local_transformer.transform(pg_cell_to_node_cast(parse_result));
+        auto binder = local_transformer.transform(*parsed.value());
         for (const auto& [id, value] : params) {
             binder.bind(id, value);
         }
@@ -227,8 +235,26 @@ namespace otterbrix {
         return parser_extensions_.add(std::move(extension));
     }
 
+    auto wrapper_dispatcher_t::fetch_next(const session_id_t& session, std::uint64_t portal_id, std::uint64_t count)
+        -> cursor_t_ptr {
+        return send_plan(session,
+                         components::logical_plan::execution_plan_t{
+                             resource(),
+                             components::logical_plan::make_node_fetch(resource(), portal_id, count),
+                             components::logical_plan::make_parameter_node(resource())});
+    }
+
+    auto wrapper_dispatcher_t::close_cursor(const session_id_t& session, std::uint64_t portal_id) -> cursor_t_ptr {
+        return send_plan(session,
+                         components::logical_plan::execution_plan_t{
+                             resource(),
+                             components::logical_plan::make_node_close_cursor(resource(), portal_id),
+                             components::logical_plan::make_parameter_node(resource())});
+    }
+
     auto wrapper_dispatcher_t::set_timezone(const session_id_t& session, std::string timezone_name) -> cursor_t_ptr {
         auto node = components::logical_plan::make_node_set_setting(resource(),
+                                                                    components::catalog::setting_scope_t::session,
                                                                     components::catalog::setting_id::timezone,
                                                                     std::move(timezone_name));
         return send_plan(
@@ -236,6 +262,14 @@ namespace otterbrix {
             components::logical_plan::execution_plan_t{resource(),
                                                        node,
                                                        components::logical_plan::make_parameter_node(resource())});
+    }
+
+    void wrapper_dispatcher_t::close_session(const session_id_t& session) {
+        trace(log_, "wrapper_dispatcher_t::close_session session: {}", session.data());
+        auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_,
+                                                       &services::dispatcher::manager_dispatcher_t::close_session,
+                                                       session);
+        actor_zeta::otterbrix::wait_ready(future);
     }
 
     cursor_t_ptr wrapper_dispatcher_t::send_plan(const session_id_t& session,

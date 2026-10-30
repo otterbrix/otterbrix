@@ -22,7 +22,7 @@ TEST_CASE("integration::cpp::dispatcher::watchdog_quiet_on_healthy_runs") {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (a bigint, b bigint);")->is_success());
         auto cur = test_helpers::seed_rows(dispatcher, "db.t", "a, b", 5000, [](unsigned i) {
             return "(" + std::to_string(i) + ", " + std::to_string(i * 2) + ")";

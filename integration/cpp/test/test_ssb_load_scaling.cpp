@@ -137,7 +137,7 @@ namespace {
             return d->execute_sql(session, sql);
         };
 
-        REQUIRE(exec("CREATE DATABASE ssb;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA ssb;")->is_success());
         REQUIRE(exec("CREATE TABLE ssb.lineorder ("
                      "lo_orderkey bigint, lo_linenumber bigint, lo_custkey bigint, lo_partkey bigint, "
                      "lo_suppkey bigint, lo_orderdate bigint, lo_orderpriority text, lo_shippriority text, "
@@ -239,7 +239,7 @@ namespace {
             return d->execute_sql(session, sql);
         };
 
-        REQUIRE(exec("CREATE DATABASE ssb;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA ssb;")->is_success());
         REQUIRE(exec("CREATE TABLE ssb.lineorder ("
                      "lo_orderkey bigint, lo_linenumber bigint, lo_custkey bigint, lo_partkey bigint, "
                      "lo_suppkey bigint, lo_orderdate bigint, lo_orderpriority text, lo_shippriority text, "
@@ -360,7 +360,7 @@ TEST_CASE("integration::cpp::test_ssb_load_scaling::explicit_checkpoint_does_not
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE ssb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA ssb;")->is_success());
     REQUIRE(exec("CREATE TABLE ssb.lineorder ("
                  "lo_orderkey bigint, lo_linenumber bigint, lo_custkey bigint, lo_partkey bigint, "
                  "lo_suppkey bigint, lo_orderdate bigint, lo_orderpriority text, lo_shippriority text, "

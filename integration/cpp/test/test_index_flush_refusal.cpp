@@ -19,7 +19,7 @@ TEST_CASE("integration::cpp::test_index_flush_refusal::checkpoint_fails_when_an_
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE fl;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA fl;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE fl.t (id bigint, k bigint);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE INDEX k_idx ON fl.t (k);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO fl.t (id, k) VALUES (1, 10), (2, 20);")->is_success());

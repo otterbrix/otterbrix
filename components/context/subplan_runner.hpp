@@ -9,6 +9,9 @@
 // cycle); operator_t is forward-declared instead and its pointer spelled boost::intrusive_ptr<operator_t>.
 #include <components/physical_plan/operators/operator_data.hpp>
 
+#include <cstdint>
+#include <string>
+
 namespace components::operators {
     class operator_t;
 } // namespace components::operators
@@ -16,6 +19,12 @@ namespace components::operators {
 namespace components::pipeline {
 
     class context_t;
+
+    // What FETCH read from a portal: its rows; for MOVE no rows, and how many it passed.
+    struct portal_rows_t {
+        components::operators::chunks_vector_t chunks;
+        uint64_t rows{0};
+    };
 
     // Intra-actor seam, not mailbox state: operator_t is a boost::intrusive_ref_counter, not a
     // basic_actor, so calling back through this pointer is a plain call, not actor<->actor sharing.
@@ -29,9 +38,27 @@ namespace components::pipeline {
         subplan_runner_t& operator=(subplan_runner_t&&) = delete;
         virtual ~subplan_runner_t() = default;
 
-        // Same routing seam as execute_sub_plan_; caller owns `ctx` (built for this sub-plan).
+        // Runs `root` whole as a piece of the calling statement; caller owns `ctx` (built for this sub-plan).
         [[nodiscard]] virtual actor_zeta::unique_future<core::result_wrapper_t<components::operators::chunks_vector_t>>
         run_subplan(boost::intrusive_ptr<components::operators::operator_t> root, context_t* ctx) = 0;
+
+        // FETCH / MOVE of a portal of this executor, named by `portal_id` (0 when the session has none of the
+        // cursor's `name`, which only the errors print).
+        [[nodiscard]] actor_zeta::unique_future<core::result_wrapper_t<portal_rows_t>>
+        fetch_portal(context_t* ctx, uint64_t portal_id, std::string name, uint64_t count, bool is_move) {
+            return fetch_portal_impl(ctx, portal_id, std::move(name), count, is_move);
+        }
+        // CLOSE of a portal of this executor; CLOSE ALL (no id, no name) closes every portal of the session here.
+        [[nodiscard]] actor_zeta::unique_future<core::error_t>
+        close_portal(context_t* ctx, uint64_t portal_id, std::string name) {
+            return close_portal_impl(ctx, portal_id, std::move(name));
+        }
+
+    private:
+        [[nodiscard]] virtual actor_zeta::unique_future<core::result_wrapper_t<portal_rows_t>>
+        fetch_portal_impl(context_t* ctx, uint64_t portal_id, std::string name, uint64_t count, bool is_move) = 0;
+        [[nodiscard]] virtual actor_zeta::unique_future<core::error_t>
+        close_portal_impl(context_t* ctx, uint64_t portal_id, std::string name) = 0;
     };
 
 } // namespace components::pipeline

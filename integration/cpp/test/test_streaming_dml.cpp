@@ -28,7 +28,7 @@ TEST_CASE("integration::cpp::streaming_dml::insert_select_streams_and_lands") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE StreamDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA StreamDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.src (id bigint, grp int, val bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.dst (id bigint, grp int, val bigint);")->is_success());
 
@@ -82,7 +82,7 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_streams") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE StreamDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA StreamDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.t (id bigint, val bigint);")->is_success());
 
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
@@ -118,7 +118,7 @@ TEST_CASE("integration::cpp::streaming_dml::insert_values_returning_streams") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE StreamDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA StreamDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.t (id bigint, val bigint);")->is_success());
 
     const auto runs_before = services::collection::executor::streaming_pipeline_runs();
@@ -149,7 +149,7 @@ TEST_CASE("integration::cpp::streaming_dml::delete_predicate_streams_and_lands")
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE StreamDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA StreamDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.t (id bigint, val bigint);")->is_success());
     // Proves the DELETE's index mirror ran: a deleted key must no longer be found via the index.
     REQUIRE(exec(dispatcher, "CREATE INDEX idx_id ON StreamDb.t (id);")->is_success());
@@ -205,7 +205,7 @@ TEST_CASE("integration::cpp::streaming_dml::update_predicate_streams_and_lands")
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE StreamDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA StreamDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.t (id bigint, val bigint);")->is_success());
     // Proves the UPDATE's index mirror (old delete + new insert) ran for the streamed batches.
     REQUIRE(exec(dispatcher, "CREATE INDEX idx_val ON StreamDb.t (val);")->is_success());
@@ -278,7 +278,7 @@ TEST_CASE("integration::cpp::streaming_dml::fk_check_streams_insert_select") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE StreamDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA StreamDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.parent (id bigint, name text);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.child (id bigint, parent_id bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.src_ok (id bigint, parent_id bigint);")->is_success());
@@ -330,7 +330,7 @@ TEST_CASE("integration::cpp::streaming_dml::check_constraint_streams_insert_sele
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE StreamDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA StreamDb;")->is_success());
     // age is bigint so the CHECK constant compares same-type.
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.items (id bigint, age bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.src_ok (id bigint, age bigint);")->is_success());
@@ -375,7 +375,7 @@ TEST_CASE("integration::cpp::streaming_dml::fk_cascade_streams_delete") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE StreamDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA StreamDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.parent (id bigint, val text);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE StreamDb.child (id bigint, parent_id bigint);")->is_success());
     REQUIRE(exec(dispatcher,
@@ -426,7 +426,7 @@ TEST_CASE("integration::cpp::streaming_dml::dml_limit_bounds_affected_rows") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE LimDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA LimDb;")->is_success());
 
     auto seed = [&](const std::string& tbl) {
         REQUIRE(exec(dispatcher, "CREATE TABLE LimDb." + tbl + " (id bigint, a bigint, b bigint);")->is_success());

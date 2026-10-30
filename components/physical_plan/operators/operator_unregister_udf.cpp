@@ -30,16 +30,18 @@ namespace components::operators {
                                                          log_t log,
                                                          std::string function_name,
                                                          std::pmr::vector<types::complex_logical_type> inputs,
-                                                         components::catalog::drop_behavior_t behavior)
+                                                         components::catalog::drop_behavior_t behavior,
+                                                         std::uint32_t schema_oid)
         : read_only_operator_t(resource, std::move(log), operator_type::unregister_udf)
         , function_name_(std::move(function_name))
         , inputs_(std::move(inputs))
-        , behavior_(behavior) {}
+        , behavior_(behavior)
+        , schema_oid_(schema_oid) {}
 
     actor_zeta::unique_future<void> operator_unregister_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
         // 1. The overload the master registry holds, if any: its pg_proc rows are the rows of its signatures. A
         //    function a previous process registered has its rows only; they are the rows these inputs match.
-        const auto live_uid = ctx->function_registry->find_overload(function_name_, inputs_);
+        const auto live_uid = ctx->function_registry->find_overload(function_name_, inputs_, schema_oid_);
         const components::compute::function* live = live_uid == components::compute::invalid_function_uid
                                                         ? nullptr
                                                         : ctx->function_registry->get_function(live_uid);
@@ -73,6 +75,9 @@ namespace components::operators {
                                                    : std::pmr::vector<components::catalog::proc_signature_t>{resource_};
             std::pmr::vector<components::catalog::oid_t> rows{resource_};
             for (const auto& m : matches_r.value()) {
+                if (m.namespace_oid != schema_oid_) {
+                    continue;
+                }
                 bool drop = false;
                 if (live != nullptr) {
                     drop = std::any_of(live_rows.begin(), live_rows.end(), [&m](const auto& row) {

@@ -100,6 +100,8 @@ namespace components::casts {
             : resource_(resource)
             , entries_(resource)
             , complex_entries_(resource) {}
+        // Every cast copied onto `resource`.
+        cast_registry_t(const cast_registry_t& other, std::pmr::memory_resource* resource);
 
         core::error_t
         add(const types::complex_logical_type& source, const types::complex_logical_type& target, cast_entry&& entry);
@@ -113,6 +115,13 @@ namespace components::casts {
         [[nodiscard]] std::optional<cast_t> resolve(const types::complex_logical_type& source,
                                                     const types::complex_logical_type& target,
                                                     cast_type allowed) const;
+
+        // The cast a value of `source` takes on assignment to `target` (PostgreSQL 18 COERCION_ASSIGNMENT): an INSERT's
+        // VALUES cell, an EXECUTE argument. A text value reaches another type only as a quoted literal, which
+        // PostgreSQL types unknown: `'5'::text` has no assignment to bigint.
+        [[nodiscard]] std::optional<cast_t> resolve_assignment(const types::complex_logical_type& source,
+                                                               const types::complex_logical_type& target,
+                                                               bool quoted_literal) const;
 
         [[nodiscard]] std::optional<cast_type> level_of(const types::complex_logical_type& source,
                                                         const types::complex_logical_type& target) const;

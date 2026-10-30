@@ -14,7 +14,6 @@
 #include <core/spinlock/spinlock.hpp>
 
 #include <components/casts/cast_entry.hpp>
-#include <components/catalog/table_id.hpp>
 #include <components/compute/function.hpp>
 #include <components/cursor/cursor.hpp>
 #include <components/log/log.hpp>
@@ -73,7 +72,22 @@ namespace otterbrix {
                                      const std::string& query,
                                      const std::vector<std::pair<size_t, components::vector::vector_t>>& params,
                                      uint32_t render_id = 0) -> components::cursor::cursor_t_ptr;
+        // What PostgreSQL 18's Parse and Describe answer for `query`: a cursor without rows whose type_data() are the
+        // result columns and whose parameter_types()[n-1] is the type of $n. `params` are values bound as a Bind binds
+        // them (Describe of a portal); the rest are typed by their context. Nothing is planned or run, and no storage
+        // of a table gets a message.
+        auto describe_sql(const session_id_t& session,
+                          const std::string& query,
+                          const std::vector<std::pair<size_t, components::vector::vector_t>>& params = {})
+            -> components::cursor::cursor_t_ptr;
+        // The next `count` rows of the portal a window (execution_plan_t::fetch_window) left open, as FETCH count of it.
+        auto fetch_next(const session_id_t& session, std::uint64_t portal_id, std::uint64_t count)
+            -> components::cursor::cursor_t_ptr;
+        // Closes the portal a window left open, as CLOSE of it.
+        auto close_cursor(const session_id_t& session, std::uint64_t portal_id) -> components::cursor::cursor_t_ptr;
         auto set_timezone(const session_id_t& session, std::string timezone_name) -> components::cursor::cursor_t_ptr;
+        // Ends the session (manager_dispatcher_t::close_session); a failed rollback reaches only the log.
+        void close_session(const session_id_t& session);
 
         auto add_parser_extension(components::sql::parser::parser_extension_t extension)
             -> core::result_wrapper_t<const components::sql::parser::parser_extension_t*>;
@@ -90,10 +104,15 @@ namespace otterbrix {
         components::sql::parser::parser_extension_registry_t parser_extensions_;
         std::atomic_int i = 0;
 
+        // The one statement of `query`, parsed on `arena`.
+        auto parse_statement_(std::pmr::memory_resource* arena, const std::string& query)
+            -> core::result_wrapper_t<Node*>;
         auto send_plan(const session_id_t& session, components::logical_plan::execution_plan_t node)
             -> components::cursor::cursor_t_ptr;
         // Invalid query still have to go through regular transaction path
         auto send_failed_plan(const session_id_t& session, core::error_t error) -> components::cursor::cursor_t_ptr;
+        // A plan of the one node, the way a parsed statement goes.
+        auto execute_node_(const session_id_t& session, components::logical_plan::node_ptr node) -> core::error_t;
     };
 
 } // namespace otterbrix

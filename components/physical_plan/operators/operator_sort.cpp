@@ -123,7 +123,7 @@ namespace components::operators {
                 has_computed = true;
                 // The graph's columns reference its slots, which the next chunk overwrites, and
                 // every chunk stays live until the merge below — so each key is copied out.
-                const vector::vector_t& source_vec = computed.value().data[computed_column++];
+                const vector::vector_t& source_vec = computed->data[computed_column++];
                 vector::vector_t vec(resource_, source_vec.type(), chunk.size());
                 vector::vector_ops::copy(source_vec, vec, chunk.size(), 0, 0);
                 if (!keys_registered) {
@@ -147,6 +147,29 @@ namespace components::operators {
         }
         if (out_types.size() > out_cols_effective) {
             out_types.erase(out_types.begin() + static_cast<ptrdiff_t>(out_cols_effective), out_types.end());
+        }
+        std::pmr::vector<size_t> out_sources{resource_};
+        out_sources.reserve(out_cols_effective);
+        for (size_t column = 0; column < out_cols_effective; ++column) {
+            out_sources.push_back(column);
+        }
+        if (keep_computed_keys_) {
+            const vector::data_chunk_t* computed_source = nullptr;
+            for (const auto& chunk : in_chunks) {
+                if (chunk.data.size() > first_computed_col) {
+                    computed_source = &chunk;
+                    break;
+                }
+            }
+            size_t computed_column = first_computed_col;
+            for (const auto& spec : key_specs_) {
+                if (!spec.expression) {
+                    continue;
+                }
+                out_types.push_back(computed_source != nullptr ? computed_source->data[computed_column].type()
+                                                               : spec.expression->result_type());
+                out_sources.push_back(computed_column++);
+            }
         }
 
         // Phase 2: k-way merge via min-heap.
@@ -203,8 +226,8 @@ namespace components::operators {
             }
             // vector_ops::copy arg 3 is the END index (exclusive), arg 4 is the start
             // offset in the source, arg 5 is the target offset. Copy count = end - offset.
-            for (size_t c = 0; c < out_cols_effective; ++c) {
-                vector::vector_ops::copy(src_chunk.data[c], cur.data[c], row + 1, row, cur_filled);
+            for (size_t c = 0; c < out_sources.size(); ++c) {
+                vector::vector_ops::copy(src_chunk.data[out_sources[c]], cur.data[c], row + 1, row, cur_filled);
             }
             vector::vector_ops::copy(src_chunk.row_ids, cur.row_ids, row + 1, row, cur_filled);
             ++cur_filled;

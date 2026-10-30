@@ -3,7 +3,9 @@
 #include <components/casts/default_casts.hpp>
 #include <components/expressions/cast_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
+#include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/vector/vector_builders.hpp>
 #include <services/dispatcher/validate_logical_plan.hpp>
 #include <services/dispatcher/validation/resolve_expression.hpp>
 
@@ -184,4 +186,93 @@ TEST_CASE("dispatcher::stamp_scalar_types::an_unresolvable_operator_stamps_nothi
     REQUIRE(resolve(expr.get(), schema, parameters).contains_error());
 
     REQUIRE(expr->result_type().type() == logical_type::INVALID);
+}
+namespace {
+
+    // A statement whose $1 is slot 0, bound to nothing yet.
+    struct untyped_parameter_t {
+        components::logical_plan::storage_parameters parameters{resource()};
+        std::pmr::vector<components::logical_plan::external_parameter_t> external{resource()};
+        core::parameter_id_t slot;
+
+        untyped_parameter_t()
+            : slot(parameters.add(components::vector::make_null(resource(), complex_logical_type{logical_type::NA}),
+                                  components::vector::parameter_kind::external)) {
+            external.emplace_back(resource());
+            external.back().number = 1;
+            external.back().slot = slot;
+        }
+
+        scalar_expression_ptr constant() const {
+            auto expr = make_scalar_expression(resource(), scalar_type::constant, expr_key_t{resource()});
+            expr->append_param(slot);
+            return expr;
+        }
+
+        // The type the condition gives $1.
+        complex_logical_type typed_by(components::expressions::expression_ptr condition) {
+            static const components::graph_execution_context execution_context{};
+            validation::parameter_types_t types{resource(), external, parameters, nullptr};
+            const auto schema = schema_of({logical_type::BIGINT, logical_type::BIGINT});
+            validation::expression_context_t context{
+                resource(),
+                schema,
+                parameters,
+                casts(),
+                functions(),
+                execution_context,
+                components::compute::create_mask(components::compute::function_type_t::vector),
+                nullptr,
+                &types};
+            context.required_type = complex_logical_type{logical_type::BOOLEAN};
+            auto resolved = validation::resolve_expression(condition, context);
+            INFO((resolved.contains_error() ? std::string{resolved.what} : std::string{"ok"}));
+            REQUIRE_FALSE(resolved.contains_error());
+            REQUIRE_FALSE(types.check_all_typed().contains_error());
+            // The statement's own slots, as the executor holds them; the typed one is retyped.
+            components::logical_plan::parameter_node_t node{resource()};
+            const auto own =
+                node.add_parameter(components::vector::make_null(resource(), complex_logical_type{logical_type::NA}),
+                                   components::vector::parameter_kind::external);
+            REQUIRE(own == slot);
+            types.type_slots(node);
+            return node.parameter(slot).type();
+        }
+    };
+
+} // namespace
+
+TEST_CASE("dispatcher::stamp_scalar_types::an_untyped_parameter_a_condition_reads_is_boolean") {
+    using components::expressions::compare_type;
+    using components::expressions::expression_ptr;
+    untyped_parameter_t statement;
+
+    SECTION("the condition alone") {
+        CHECK(statement.typed_by(expression_ptr{statement.constant()}).type() == logical_type::BOOLEAN);
+    }
+    SECTION("an operand of AND") {
+        auto both = components::expressions::make_compare_union_expression(resource(), compare_type::union_and);
+        both->append_child(components::expressions::make_compare_expression(resource(),
+                                                                            compare_type::gt,
+                                                                            param_storage{column(0)},
+                                                                            param_storage{column(1)}));
+        both->append_child(statement.constant());
+        CHECK(statement.typed_by(expression_ptr{both}).type() == logical_type::BOOLEAN);
+    }
+    SECTION("the operand of NOT") {
+        auto negated = components::expressions::make_compare_union_expression(resource(), compare_type::union_not);
+        negated->append_child(statement.constant());
+        CHECK(statement.typed_by(expression_ptr{negated}).type() == logical_type::BOOLEAN);
+    }
+    SECTION("a WHEN of CASE") {
+        auto choice = make_scalar_expression(resource(), scalar_type::case_expr, expr_key_t{resource()});
+        choice->append_param(param_storage{expression_ptr{statement.constant()}});
+        choice->append_param(param_storage{column(0)});
+        choice->append_param(param_storage{column(1)});
+        auto is_positive = components::expressions::make_compare_expression(resource(),
+                                                                            compare_type::gt,
+                                                                            param_storage{expression_ptr{choice}},
+                                                                            param_storage{column(1)});
+        CHECK(statement.typed_by(expression_ptr{is_positive}).type() == logical_type::BOOLEAN);
+    }
 }

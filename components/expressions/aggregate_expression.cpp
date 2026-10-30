@@ -25,7 +25,7 @@ namespace components::expressions {
                 }
                 stream << "]";
             } else {
-                stream << expr->params().at(0);
+                stream << expr->params().front();
             }
             stream << "}";
         }
@@ -69,6 +69,12 @@ namespace components::expressions {
     void aggregate_expression_t::set_pins(std::pmr::vector<compute::function_pin_t> pins) {
         call()->set_pins(std::move(pins));
     }
+
+    void aggregate_expression_t::set_scope(const compute::function_scope_t& scope) noexcept {
+        call()->set_scope(scope);
+    }
+
+    const compute::function_scope_t& aggregate_expression_t::scope() const noexcept { return call()->scope(); }
 
     const std::pmr::vector<compute::function_pin_t>& aggregate_expression_t::pins() const noexcept {
         return call()->pins();

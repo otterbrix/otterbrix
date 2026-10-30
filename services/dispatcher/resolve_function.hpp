@@ -21,6 +21,7 @@ namespace services::dispatcher {
         components::types::complex_logical_type result;
         components::compute::function_type_t function_type{components::compute::function_type_t::invalid};
         bool mergeable{false};
+        components::compute::volatility_t volatility{components::compute::volatility_t::volatile_};
 
         explicit resolved_function_t(std::pmr::memory_resource* resource)
             : arguments(resource) {}
@@ -29,10 +30,10 @@ namespace services::dispatcher {
     [[nodiscard]] core::result_wrapper_t<resolved_function_t>
     resolve_function(std::pmr::memory_resource* resource,
                      const components::casts::cast_registry_t& cast_registry,
-                     const components::graph_execution_context& graph_execution_context,
                      const components::compute::function_registry_t& function_registry,
                      const function_qualified_name_t& name,
                      const std::pmr::vector<components::types::complex_logical_type>& arguments,
                      components::compute::function_types_mask allowed_function_types,
+                     const components::compute::function_scope_t& scope,
                      std::span<const components::compute::function_pin_t> pins);
 } // namespace services::dispatcher

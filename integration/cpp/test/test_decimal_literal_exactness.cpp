@@ -43,7 +43,7 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_bare_fractional_l
 
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d NUMERIC(38,20));")->is_success());
 
     REQUIRE(exec(d,
@@ -73,7 +73,7 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::an_int64_backed_col
 
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d NUMERIC(18,6));")->is_success());
 
     REQUIRE(exec(d,
@@ -102,7 +102,7 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_literal_too_wide_
 
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d NUMERIC(5,2));")->is_success());
 
     // PostgreSQL 18.6 ("Numeric Types"): refused only when digits left of the point exceed
@@ -127,7 +127,7 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::nulls_and_other_tar
 
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d NUMERIC(38,20), f DOUBLE PRECISION);")->is_success());
 
     // The DOUBLE column takes the same literal and must stay a plain double.
@@ -161,7 +161,7 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::an_integer_literal_
 
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d NUMERIC(18,6));")->is_success());
 
     REQUIRE(exec(d, "INSERT INTO w.t (id, d) VALUES (1, 0.5), (2, 7);")->is_success());
@@ -184,7 +184,7 @@ TEST_CASE("integration::cpp::test_decimal_literal_exactness::a_literal_beside_a_
     test_spaces space(config);
     auto* d = space.dispatcher();
     auto* resource = d->resource();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, d NUMERIC(38,20));")->is_success());
 
     // A parameterised INSERT rebuilds its chunks at bind time; the parameter leads on purpose so

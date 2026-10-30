@@ -131,7 +131,7 @@ namespace services::index {
                 return core::error_t::no_error();
             }
             default:
-                return core::error_t{core::error_code_t::invalid_parameter,
+                return core::error_t{core::error_code_t::internal_error,
                                      std::pmr::string{"index: the key type has no encoding", keys.resource()}};
         }
     }

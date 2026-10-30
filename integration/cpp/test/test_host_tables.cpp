@@ -42,14 +42,14 @@ TEST_CASE("integration::cpp::host_tables::sql_insert_into_node_created_table") {
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE kafka;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA kafka;")->is_success());
     }
     {
         // Node-based create, exactly like KafkaManager::ensure_sources_table.
         auto session = otterbrix::session_id_t();
         test_create_collection(dispatcher,
                                session,
-                               core::dbname_t{"kafka"},
+                               core::schema_t{"kafka"},
                                core::relname_t{"__sources"},
                                kafka_sources_columns());
     }
@@ -109,7 +109,7 @@ TEST_CASE("integration::cpp::host_tables::restart_readback") {
         auto* dispatcher = space.dispatcher();
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE __otterstax;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA __otterstax;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();

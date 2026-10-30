@@ -1,5 +1,6 @@
 #include "transform_result.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -130,10 +131,8 @@ namespace components::sql::transform {
         }
 
         // The transformer wraps DML consumers in sequence_t(resolve_*..., consumer)
-        // for catalog-resolve enrichment. The bind / finalize logic still cares
-        // about the consumer type (insert_t carries param_insert_map_; others use
-        // param_map_), so dig through the wrapper to find it.
-        // ON CONFLICT wraps the insert too; its parameters are the insert's.
+        // for catalog-resolve enrichment; ON CONFLICT wraps the insert too. finalize() digs through
+        // the wraps to the insert_t whose VALUES the bound cells replace.
         components::logical_plan::node_t* consumer_of(const components::logical_plan::node_ptr& n) noexcept {
             components::logical_plan::node_t* consumer =
                 (n && n->type() == components::logical_plan::node_type::sequence_t && !n->children().empty())
@@ -143,12 +142,6 @@ namespace components::sql::transform {
                 consumer = consumer->children().front().get();
             }
             return consumer;
-        }
-
-        components::logical_plan::node_type
-        effective_consumer_type(const components::logical_plan::node_ptr& n) noexcept {
-            const auto* consumer = consumer_of(n);
-            return consumer ? consumer->type() : components::logical_plan::node_type::alias_t;
         }
     } // namespace
 
@@ -165,27 +158,18 @@ namespace components::sql::transform {
         , param_insert_rows_(std::move(param_insert_rows))
         , deferred_limits_(std::move(deferred_limits))
         , bound_flags_(resource_)
+        , bound_types_(resource_)
         , last_error_(core::error_t::no_error())
-        , parameter_count_(effective_consumer_type(plan_.sub_queries.back()) == logical_plan::node_type::insert_t
-                               ? param_insert_map_.size()
-                               : param_map_.size())
         , finalized_(false) {
-        if (!parameter_count()) {
-            return;
+        // An INSERT's VALUES cells and the slots of its other clauses (ON CONFLICT DO UPDATE SET, RETURNING) are
+        // bound by the same numbers.
+        for (const auto& [id, _] : param_insert_map_) {
+            bound_flags_[id] = false;
         }
-
-        // TODO?: check all sub queries
-        if (effective_consumer_type(plan_.sub_queries.back()) == logical_plan::node_type::insert_t) {
-            bound_flags_.reserve(param_insert_map_.size());
-            for (auto& [id, _] : param_insert_map_) {
-                bound_flags_[id] = false;
-            }
-        } else {
-            bound_flags_.reserve(param_map_.size());
-            for (auto& [id, _] : param_map_) {
-                bound_flags_[id] = false;
-            }
+        for (const auto& [id, _] : param_map_) {
+            bound_flags_[id] = false;
         }
+        parameter_count_ = bound_flags_.size();
     }
 
     transform_result::transform_result(std::pmr::memory_resource* resource, core::error_t&& error)
@@ -195,6 +179,7 @@ namespace components::sql::transform {
         , param_insert_map_(resource)
         , param_insert_rows_(resource)
         , bound_flags_(resource_)
+        , bound_types_(resource_)
         , last_error_(std::move(error))
         , finalized_(true) {}
 
@@ -208,124 +193,138 @@ namespace components::sql::transform {
             return *this;
         }
 
-        // TODO?: check all sub queries
-        auto& node = plan_.sub_queries.back();
-        if (effective_consumer_type(node) == logical_plan::node_type::insert_t) {
-            auto it = param_insert_map_.find(id);
-            if (it == param_insert_map_.end()) {
-                last_error_ = core::error_t(
-                    core::error_code_t::sql_parse_error,
-                    std::pmr::string{"Parameter with id=" + std::to_string(id) + " not found", resource_});
+        const auto cells = param_insert_map_.find(id);
+        const auto slot = param_map_.find(id);
+        if (cells == param_insert_map_.end() && slot == param_map_.end()) {
+            last_error_ =
+                core::error_t(core::error_code_t::sql_parse_error,
+                              std::pmr::string{"Parameter with id=" + std::to_string(id) + " not found", resource_});
+            return *this;
+        }
+        if (cells != param_insert_map_.end()) {
+            if (auto refused = bind_insert_cells_(id, cells->second, value, source_row); refused.contains_error()) {
+                last_error_ = std::move(refused);
                 return *this;
             }
-
-            const auto bound = vector::make_constant_copy(resource_, value, source_row);
-            for (const auto& param : it->second) {
-                if (param.chunk_index >= param_insert_rows_.size()) {
-                    continue;
-                }
-                auto& chunk = param_insert_rows_[param.chunk_index];
-                auto column = std::find_if(chunk.data.begin(), chunk.data.end(), [&param](const vector::vector_t& col) {
-                    return col.type().alias() == param.column;
-                });
-                size_t column_index = static_cast<size_t>(column - chunk.data.begin());
-                if (column == chunk.data.end()) {
-                    // Appending the column here instead would land it after every literal column,
-                    // silently putting its values under another column's name downstream.
-                    last_error_ = core::error_t(
-                        core::error_code_t::sql_parse_error,
-                        std::pmr::string{"Parameter $" + std::to_string(id) + " routes to column '" + param.column +
-                                             "', which is missing from the INSERT working chunk",
-                                         resource_});
-                    return *this;
-                }
-                if (!bound.is_null(0) && column->type() != bound.type()) {
-                    // A cell some OTHER writer stored (a literal or another parameter) pins
-                    // the column: it must survive the retype by conversion. Cells of THIS
-                    // parameter are about to be overwritten and pin nothing.
-                    bool foreign_cells_present = false;
-                    for (size_t ci = 0; ci < param_insert_rows_.size() && !foreign_cells_present; ++ci) {
-                        const auto& col = param_insert_rows_[ci].data[column_index];
-                        for (size_t row = 0; row < param_insert_rows_[ci].size(); ++row) {
-                            if (!col.is_null(row) && !row_belongs_to_param(it->second, param.column, ci, row)) {
-                                foreign_cells_present = true;
-                                break;
-                            }
-                        }
-                    }
-                    const auto col_type = column->type().type();
-                    const auto val_type = bound.type().type();
-                    types::complex_logical_type target = bound.type();
-                    if (foreign_cells_present) {
-                        if (types::is_arithmetic_numeric(col_type) && types::is_arithmetic_numeric(val_type)) {
-                            const auto promoted = types::promote_type(col_type, val_type);
-                            target = promoted == col_type ? column->type() : types::complex_logical_type{promoted};
-                        } else {
-                            // The column already holds values of a type this parameter cannot
-                            // join; recreating the column would silently erase them.
-                            last_error_ =
-                                core::error_t(core::error_code_t::sql_parse_error,
-                                              std::pmr::string{"Parameter $" + std::to_string(id) +
-                                                                   " of an incompatible type "
-                                                                   "routes to column '" +
-                                                                   param.column +
-                                                                   "': the values already written there cannot "
-                                                                   "be converted to it",
-                                                               resource_});
-                            return *this;
-                        }
-                    }
-                    target.set_alias(param.column);
-                    if (column->type() != target) {
-                        // Retype must touch EVERY chunk so all chunks keep one type layout
-                        // (column_index is identical across chunks because they grow in lockstep).
-                        for (size_t ci = 0; ci < param_insert_rows_.size(); ++ci) {
-                            auto retype_error = retype_column_preserving_cells(param_insert_rows_[ci],
-                                                                               ci,
-                                                                               column_index,
-                                                                               target,
-                                                                               param.column,
-                                                                               it->second);
-                            if (retype_error.contains_error()) {
-                                last_error_ = std::move(retype_error);
-                                return *this;
-                            }
-                        }
-                    }
-                    if (bound.type() != target) {
-                        const auto source = vector::make_flat_copy(resource_, bound, 1);
-                        auto casted = vector::vector_ops::cast_vector(resource_, source, target, 1);
-                        if (casted.has_error()) {
-                            last_error_ = casted.error();
-                            return *this;
-                        }
-                        vector::vector_ops::copy(casted.value(), chunk.data[column_index], 1, 0, param.row);
-                        continue;
-                    }
-                }
-                if (bound.is_null(0)) {
-                    chunk.data[column_index].set_null(param.row, true);
-                } else {
-                    vector::vector_ops::copy(bound, chunk.data[column_index], 1, 0, param.row);
-                }
-            }
-        } else {
-            auto it = param_map_.find(id);
-            if (it == param_map_.end()) {
-                last_error_ = core::error_t(
-                    core::error_code_t::sql_parse_error,
-                    std::pmr::string{"Parameter with id=" + std::to_string(id) + " not found", resource_});
-                return *this;
-            }
-
-            plan_.parameters->set_parameter_cell(it->second, value, source_row);
+        }
+        if (slot != param_map_.end()) {
+            plan_.parameters->set_parameter_cell(slot->second, value, source_row);
         }
 
         bound_flags_[id] = true;
+        bound_types_.insert_or_assign(id, value.type());
+        return *this;
+    }
+
+    core::error_t transform_result::bind_insert_cells_(size_t id,
+                                                       const std::pmr::vector<insert_location_t>& locations,
+                                                       const vector::vector_t& value,
+                                                       uint64_t source_row) {
+        const auto bound = vector::make_constant_copy(resource_, value, source_row);
+        for (const auto& param : locations) {
+            if (param.chunk_index >= param_insert_rows_.size()) {
+                continue;
+            }
+            auto& chunk = param_insert_rows_[param.chunk_index];
+            auto column = std::find_if(chunk.data.begin(), chunk.data.end(), [&param](const vector::vector_t& col) {
+                return col.type().alias() == param.column;
+            });
+            size_t column_index = static_cast<size_t>(column - chunk.data.begin());
+            if (column == chunk.data.end()) {
+                // Appending the column here instead would land it after every literal column,
+                // silently putting its values under another column's name downstream.
+                return core::error_t(core::error_code_t::sql_parse_error,
+                                     std::pmr::string{"Parameter $" + std::to_string(id) + " routes to column '" +
+                                                          param.column +
+                                                          "', which is missing from the INSERT working chunk",
+                                                      resource_});
+            }
+            if (!bound.is_null(0) && column->type() != bound.type()) {
+                // A cell some OTHER writer stored (a literal or another parameter) pins
+                // the column: it must survive the retype by conversion. Cells of THIS
+                // parameter are about to be overwritten and pin nothing.
+                bool foreign_cells_present = false;
+                for (size_t ci = 0; ci < param_insert_rows_.size() && !foreign_cells_present; ++ci) {
+                    const auto& col = param_insert_rows_[ci].data[column_index];
+                    for (size_t row = 0; row < param_insert_rows_[ci].size(); ++row) {
+                        if (!col.is_null(row) && !row_belongs_to_param(locations, param.column, ci, row)) {
+                            foreign_cells_present = true;
+                            break;
+                        }
+                    }
+                }
+                const auto col_type = column->type().type();
+                const auto val_type = bound.type().type();
+                types::complex_logical_type target = bound.type();
+                if (foreign_cells_present) {
+                    if (types::is_arithmetic_numeric(col_type) && types::is_arithmetic_numeric(val_type)) {
+                        const auto promoted = types::promote_type(col_type, val_type);
+                        target = promoted == col_type ? column->type() : types::complex_logical_type{promoted};
+                    } else {
+                        // The column already holds values of a type this parameter cannot
+                        // join; recreating the column would silently erase them.
+                        return core::error_t(core::error_code_t::sql_parse_error,
+                                             std::pmr::string{"Parameter $" + std::to_string(id) +
+                                                                  " of an incompatible type "
+                                                                  "routes to column '" +
+                                                                  param.column +
+                                                                  "': the values already written there cannot "
+                                                                  "be converted to it",
+                                                              resource_});
+                    }
+                }
+                target.set_alias(param.column);
+                if (column->type() != target) {
+                    // Retype must touch EVERY chunk so all chunks keep one type layout
+                    // (column_index is identical across chunks because they grow in lockstep).
+                    for (size_t ci = 0; ci < param_insert_rows_.size(); ++ci) {
+                        auto retype_error = retype_column_preserving_cells(param_insert_rows_[ci],
+                                                                           ci,
+                                                                           column_index,
+                                                                           target,
+                                                                           param.column,
+                                                                           locations);
+                        if (retype_error.contains_error()) {
+                            return retype_error;
+                        }
+                    }
+                }
+                if (bound.type() != target) {
+                    const auto source = vector::make_flat_copy(resource_, bound, 1);
+                    auto casted = vector::vector_ops::cast_vector(resource_, source, target, 1);
+                    if (casted.has_error()) {
+                        return casted.error();
+                    }
+                    vector::vector_ops::copy(casted.value(), chunk.data[column_index], 1, 0, param.row);
+                    continue;
+                }
+            }
+            if (bound.is_null(0)) {
+                chunk.data[column_index].set_null(param.row, true);
+            } else {
+                vector::vector_ops::copy(bound, chunk.data[column_index], 1, 0, param.row);
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    transform_result& transform_result::declare(size_t id, const types::complex_logical_type& type) {
+        if (last_error_.contains_error() || bound_flags_.contains(id)) {
+            return *this;
+        }
+        if (finalized_) {
+            last_error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                        std::pmr::string{"transform_result was already finalized", resource_});
+            return *this;
+        }
+        bound_flags_[id] = true;
+        bound_types_.insert_or_assign(id, type);
         return *this;
     }
 
     size_t transform_result::parameter_count() const { return parameter_count_; }
+
+    bool transform_result::names_parameter(size_t id) const { return bound_flags_.contains(id); }
 
     bool transform_result::all_bound() const {
         return !std::any_of(bound_flags_.begin(), bound_flags_.end(), [](auto& flg) {
@@ -334,7 +333,13 @@ namespace components::sql::transform {
         });
     }
 
-    core::result_wrapper_t<logical_plan::execution_plan_t> transform_result::finalize() {
+    core::result_wrapper_t<logical_plan::execution_plan_t> transform_result::finalize() { return finalize_(true); }
+
+    core::result_wrapper_t<logical_plan::execution_plan_t> transform_result::finalize_for_describe() {
+        return finalize_(false);
+    }
+
+    core::result_wrapper_t<logical_plan::execution_plan_t> transform_result::finalize_(bool all_must_be_bound) {
         if (last_error_.contains_error()) {
             return last_error_;
         }
@@ -344,7 +349,7 @@ namespace components::sql::transform {
                                  std::pmr::string{"transform_result was already finalized", resource_});
         }
 
-        if (!all_bound()) {
+        if (all_must_be_bound && !all_bound()) {
             std::pmr::string msg = {"Not all parameters were bound:", resource_};
             for (auto& [id, bound] : bound_flags_) {
                 if (!bound) {
@@ -355,15 +360,46 @@ namespace components::sql::transform {
             return last_error_;
         }
 
-        if (parameter_count()) {
-            auto& node = plan_.sub_queries.back();
-
-            if (effective_consumer_type(node) == logical_plan::node_type::insert_t) {
-                // Reach the insert_t consumer through its wraps and rewrite its data child with the bound row chunk.
-                auto* consumer = consumer_of(node);
-                consumer->children().front() =
-                    logical_plan::make_node_raw_data(node->resource(), std::move(param_insert_rows_));
+        for (const auto& [number, _] : bound_flags_) {
+            logical_plan::external_parameter_t parameter{resource_};
+            parameter.number = number;
+            if (const auto bound = bound_types_.find(number); bound != bound_types_.end()) {
+                parameter.bound_type = bound->second;
+                parameter.bound_type.set_alias(std::string{});
             }
+            if (const auto slot = param_map_.find(number); slot != param_map_.end()) {
+                parameter.slot = slot->second;
+            }
+            if (const auto cells = param_insert_map_.find(number); cells != param_insert_map_.end()) {
+                for (const auto& cell : cells->second) {
+                    if (cell.chunk_index >= param_insert_rows_.size()) {
+                        continue;
+                    }
+                    const auto& columns = param_insert_rows_[cell.chunk_index].data;
+                    const auto column =
+                        std::find_if(columns.begin(), columns.end(), [&cell](const vector::vector_t& written) {
+                            return written.type().alias() == cell.column;
+                        });
+                    const auto index = static_cast<std::size_t>(column - columns.begin());
+                    if (column != columns.end() &&
+                        std::find(parameter.insert_columns.begin(), parameter.insert_columns.end(), index) ==
+                            parameter.insert_columns.end()) {
+                        parameter.insert_columns.push_back(index);
+                    }
+                }
+            }
+            plan_.external_parameters.push_back(std::move(parameter));
+        }
+        std::sort(plan_.external_parameters.begin(),
+                  plan_.external_parameters.end(),
+                  [](const auto& left, const auto& right) { return left.number < right.number; });
+
+        if (!param_insert_map_.empty()) {
+            auto& node = plan_.sub_queries.back();
+            // Reach the insert_t consumer through its wraps and rewrite its data child with the bound row chunk.
+            auto* consumer = consumer_of(node);
+            consumer->children().front() =
+                logical_plan::make_node_raw_data(node->resource(), std::move(param_insert_rows_));
         }
 
         for (auto& deferred : deferred_limits_) {
@@ -378,6 +414,16 @@ namespace components::sql::transform {
             }
             int64_t offset_val = written.offset();
 
+            // LIMIT and OFFSET coerce their $n to bigint (PostgreSQL 18 transformLimitClause).
+            for (const auto& limit_slot : {deferred.limit_param, deferred.offset_param}) {
+                if (limit_slot &&
+                    plan_.parameters->parameters().kind(*limit_slot) == vector::parameter_kind::external &&
+                    plan_.parameters->parameter(*limit_slot).type().type() == types::logical_type::NA) {
+                    plan_.parameters->set_parameter(
+                        *limit_slot,
+                        vector::make_null(resource_, types::complex_logical_type{types::logical_type::BIGINT}));
+                }
+            }
             // Only a value that is not an integer at all is refused here. Whether a bigint is negative is
             // for the Limit node to judge when it starts, as PostgreSQL does, so it is stored as bound.
             if (deferred.limit_param) {

@@ -309,3 +309,68 @@ TEST_CASE("components::types::complex_logical_type::decimal_helpers_name_an_aren
     CHECK(ext->scale() == 20);
     CHECK(decimal_resource() == helper_arena);
 }
+
+namespace {
+    complex_logical_type named_field(logical_type type, const char* name) {
+        complex_logical_type field{type};
+        field.set_alias(name);
+        return field;
+    }
+
+    complex_logical_type
+    struct_of(std::initializer_list<complex_logical_type> fields, std::string alias = "") {
+        std::pmr::vector<complex_logical_type> vec(fields.begin(), fields.end());
+        return complex_logical_type::create_struct("", vec, std::move(alias));
+    }
+} // namespace
+
+TEST_CASE("components::types::complex_logical_type::struct_equality_compares_field_names") {
+    const auto a = named_field(logical_type::INTEGER, "a");
+    const auto b = named_field(logical_type::INTEGER, "b");
+    const auto sa = struct_of({a});
+    const auto sb = struct_of({b});
+
+    CHECK(sa != sb);
+    CHECK(struct_of({a, b}) != struct_of({b, a}));
+    CHECK(struct_of({complex_logical_type{logical_type::INTEGER}}) != sa);
+
+    auto nested = [](const complex_logical_type& inner) {
+        auto field = inner;
+        field.set_alias("s");
+        return struct_of({field});
+    };
+    CHECK(nested(sa) != nested(sb));
+    CHECK(nested(sa) == nested(sa));
+
+    core::pmr::otterbrix_resource arena;
+    CHECK(complex_logical_type::create_list(sa) != complex_logical_type::create_list(sb));
+    CHECK(complex_logical_type::create_array(sa, 2) != complex_logical_type::create_array(sb, 2));
+    CHECK(complex_logical_type::create_map(&arena, complex_logical_type{logical_type::INTEGER}, sa) !=
+          complex_logical_type::create_map(&arena, complex_logical_type{logical_type::INTEGER}, sb));
+    CHECK(complex_logical_type::create_map(&arena, sa, complex_logical_type{logical_type::INTEGER}) !=
+          complex_logical_type::create_map(&arena, sb, complex_logical_type{logical_type::INTEGER}));
+
+    auto dec_a = try_make_decimal(10, 2, "a");
+    auto dec_b = try_make_decimal(10, 2, "b");
+    REQUIRE_FALSE(dec_a.has_error());
+    REQUIRE_FALSE(dec_b.has_error());
+    CHECK(struct_of({dec_a.value()}) != struct_of({dec_b.value()}));
+
+    std::pmr::vector<complex_logical_type> ua{a};
+    std::pmr::vector<complex_logical_type> ub{b};
+    CHECK(complex_logical_type::create_union(ua) != complex_logical_type::create_union(ub));
+}
+
+TEST_CASE("components::types::complex_logical_type::struct_equality_guards") {
+    const auto a = named_field(logical_type::INTEGER, "a");
+    const auto sa = struct_of({a});
+
+    CHECK(sa == struct_of({a}));
+    CHECK(struct_of({a}, "col1") == struct_of({a}, "col2"));
+
+    auto x = complex_logical_type{logical_type::INTEGER};
+    x.set_alias("x");
+    auto y = complex_logical_type{logical_type::INTEGER};
+    y.set_alias("y");
+    CHECK(complex_logical_type::create_list(x) == complex_logical_type::create_list(y));
+}

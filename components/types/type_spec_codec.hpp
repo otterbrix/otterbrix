@@ -34,7 +34,7 @@ namespace components::types {
     //
     // Decoding is fail-loud: any malformed byte is a data_corruption error, never a guessed type.
 
-    // schema_error for unpersistable types (FUNCTION/LAMBDA/TABLE/USER/INVALID, or a mismatched
+    // internal_error for unpersistable types (FUNCTION/LAMBDA/TABLE/USER/INVALID, or a mismatched
     // extension); `out` is left unspecified on error.
     [[nodiscard]] core::result_wrapper_t<bool> encode_type_spec(const complex_logical_type& type,
                                                                 std::pmr::vector<std::byte>& out);

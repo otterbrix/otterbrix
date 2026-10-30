@@ -2,10 +2,13 @@
 
 #include "conjunct_utils.hpp"
 
+#include <cassert>
 #include <memory_resource>
 
 #include <components/expressions/aggregate_expression.hpp>
+#include <components/expressions/cast_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
+#include <components/expressions/function_expression.hpp>
 #include <components/expressions/scalar_expression.hpp>
 #include <components/expressions/sort_expression.hpp>
 #include <components/logical_plan/node_aggregate.hpp>
@@ -22,14 +25,27 @@ namespace components::planner::optimizer {
         using namespace components::expressions;
         using namespace components::logical_plan;
 
-        // A conjunct qualifies as a promotable join key iff it is an eq(key, key)
-        // whose two single-element paths straddle the join boundary: one path in the
+        // A conjunct qualifies as a promotable join key iff it is an eq whose two operands each read one
+        // input (operand_input) and the two straddle the join boundary: one in the
         // left range [0, left_width), the other in the right range
-        // [left_width, left_width + right_width). Both keys are stamped side=left by
+        // [left_width, left_width + right_width). All keys are stamped side=left by
         // the validator (unqualified names over the merged schema), so we cannot use
         // side_t here — we classify by the merged-relative path index. Correctness of
         // the range test rests on the validator rejecting ambiguous duplicate names
         // (validate_logical_plan.cpp), so a name resolves to exactly one merged column.
+        constexpr size_t no_input = SIZE_MAX;
+
+        // 0 for the left input, 1 for the right one.
+        size_t boundary_input(param_storage& operand, size_t left_width, size_t right_width) {
+            return operand_input(
+                operand,
+                [&](const key_t& k) {
+                    const size_t root = k.path()[0];
+                    return root < left_width ? 0 : root < left_width + right_width ? 1 : no_input;
+                },
+                no_input);
+        }
+
         bool is_boundary_equi(const expression_ptr& expr, size_t left_width, size_t right_width) {
             if (!expr || expr->group() != expression_group::compare) {
                 return false;
@@ -38,22 +54,9 @@ namespace components::planner::optimizer {
             if (cmp->type() != compare_type::eq) {
                 return false;
             }
-            if (!is_key(cmp->left()) || !is_key(cmp->right())) {
-                return false;
-            }
-            const auto& kl = as_key(cmp->left());
-            const auto& kr = as_key(cmp->right());
-            if (kl.path().size() != 1 || kr.path().size() != 1) {
-                return false;
-            }
-            const size_t pl = kl.path()[0];
-            const size_t pr = kr.path()[0];
-            const size_t total = left_width + right_width;
-            const bool l_left = pl < left_width;
-            const bool l_right = pl >= left_width && pl < total;
-            const bool r_left = pr < left_width;
-            const bool r_right = pr >= left_width && pr < total;
-            return (l_left && r_right) || (l_right && r_left);
+            const size_t l = boundary_input(cmp->left(), left_width, right_width);
+            const size_t r = boundary_input(cmp->right(), left_width, right_width);
+            return l != no_input && r != no_input && l != r;
         }
 
         // Promote every CROSS join in a (left-deep / bushy) join subtree to an INNER
@@ -130,22 +133,26 @@ namespace components::planner::optimizer {
 
             auto picked = conjuncts[picked_index];
             auto* eq = static_cast<compare_expression_t*>(picked.get());
-            // Re-stamp both keys against THIS join's boundary. The right-range key
-            // becomes side=right with a right-local path (mergedIdx - left_width) built on
-            // the rule's resource (NOT set_path({...}), which pulls the default resource).
-            // The left-range key's merged path is already left-child-local, so
-            // only its side is (re)affirmed left.
-            key_t& kl = as_key(eq->left());
-            key_t& kr = as_key(eq->right());
-            const bool kl_is_right = kl.path()[0] >= left_width;
-            key_t& right_key = kl_is_right ? kl : kr;
-            key_t& left_key = kl_is_right ? kr : kl;
-            const size_t merged_idx = right_key.path()[0];
-            right_key.set_side(side_t::right);
-            std::pmr::vector<size_t> p{resource};
-            p.push_back(merged_idx - left_width);
-            right_key.set_path(std::move(p));
-            left_key.set_side(side_t::left);
+            // Re-stamp every column of both operands against THIS join's boundary. A right-range
+            // column becomes side=right with its root moved in place to mergedIdx - left_width;
+            // a left-range root is already left-child-local, so only its side is (re)affirmed left.
+            const bool left_operand_is_right = boundary_input(eq->left(), left_width, right_width) == 1;
+            struct restamp_t {
+                size_t left_width;
+                bool right;
+                void column(key_t& k) {
+                    k.set_side(right ? side_t::right : side_t::left);
+                    if (right) {
+                        k.path()[0] -= left_width;
+                    }
+                }
+                void call(const function_expression_t&) {}
+            };
+            restamp_t left_operand{left_width, left_operand_is_right};
+            restamp_t right_operand{left_width, !left_operand_is_right};
+            [[maybe_unused]] const bool restamped =
+                walk_columns(eq->left(), left_operand) && walk_columns(eq->right(), right_operand);
+            assert(restamped && "a claimed join key reads only enumerable columns");
 
             // Immutable join_type -> a fresh inner join. oid flows from the moved scan
             // children. Hash selection stays in rewrite_hash_joins (runs
@@ -287,155 +294,53 @@ namespace components::planner::optimizer {
                 }
             }
 
-            // A single operand: a key is remapped; a nested compare / scalar operand is
-            // recursed (own key of a nested scalar is an alias/sentinel -> not touched).
-            void walk_operand(param_storage& p) {
-                if (is_key(p)) {
-                    remap_key(as_key(p));
-                    return;
-                }
-                if (is_expr(p)) {
-                    auto& sub = as_expr(p);
-                    if (!sub) {
-                        return;
-                    }
-                    if (sub->group() == expression_group::compare) {
-                        walk_compare(sub);
-                    } else if (sub->group() == expression_group::scalar) {
-                        auto* s = static_cast<scalar_expression_t*>(sub.get());
-                        walk_params(s->params());
-                    }
-                }
-                // parameter_id_t: no locus
-            }
+            void column(key_t& k) { remap_key(k); }
+            void call(const function_expression_t&) {}
 
-            void walk_params(std::pmr::vector<param_storage>& params) {
-                for (auto& p : params) {
-                    walk_operand(p);
-                }
-            }
+            void walk_expression(const expression_ptr& expr) { ok = walk_columns(expr, *this) && ok; }
 
-            // A compare node: union_and / union_or / union_not carry their operands in
-            // children(); a binary compare carries them in left()/right() (either of which
-            // may itself be a nested expression, e.g. arithmetic or a CASE condition).
-            void walk_compare(const expression_ptr& expr) {
-                if (!expr || expr->group() != expression_group::compare) {
-                    return;
-                }
-                auto* cmp = static_cast<compare_expression_t*>(expr.get());
-                const compare_type t = cmp->type();
-                if (t == compare_type::union_and || t == compare_type::union_or || t == compare_type::union_not) {
-                    for (auto& child : cmp->children()) {
-                        walk_compare(child);
-                    }
-                    return;
-                }
-                walk_operand(cmp->left());
-                walk_operand(cmp->right());
-            }
+            void walk_params(std::pmr::vector<param_storage>& params) { ok = walk_columns(params, *this) && ok; }
 
             void walk_match(const node_ptr& match) {
-                if (!match || match->expressions().empty()) {
-                    return;
-                }
-                walk_compare(match->expressions()[0]);
-            }
-
-            // A group node's merged loci: group_field OWN key; get_field params().front()
-            // (else OWN key); every aggregate's params() (the merged agg-argument keys,
-            // incl. nested arithmetic like SUM(a - b)); pre-group computed operands. A
-            // post-aggregate arithmetic (path()[0] == SIZE_MAX) is group-output -> skipped
-            // whole. A group coalesce key is unresolved by group Pass 1 -> bail.
-            void walk_group_scalar(scalar_expression_t* s) {
-                switch (s->type()) {
-                    case scalar_type::group_field:
-                        if (!s->params().empty()) {
-                            walk_params(s->params());
-                        } else {
-                            remap_key(s->key());
-                        }
-                        break;
-                    case scalar_type::get_field:
-                        if (!s->params().empty() && is_key(s->params().front())) {
-                            remap_key(as_key(s->params().front()));
-                        } else {
-                            remap_key(s->key());
-                        }
-                        break;
-                    case scalar_type::coalesce:
-                        ok = false; // group Pass 1 has no coalesce handler -> unresolved -> bail
-                        break;
-                    case scalar_type::constant:
-                        break;
-                    case scalar_type::star_expand:
-                        ok = false; // must not leak merged order upward
-                        break;
-                    default:
-                        // arithmetic (add/subtract/multiply/divide/mod/case_expr/unary_minus)
-                        if (!s->key().path().empty() && s->key().path()[0] == SIZE_MAX) {
-                            break; // post-aggregate: group-output operands -> do not touch
-                        }
-                        walk_params(s->params()); // pre-group computed column operands (merged)
-                        break;
+                for (auto& expr : match->expressions()) {
+                    walk_expression(expr);
                 }
             }
 
+            // A post-aggregate scalar (own path()[0] == SIZE_MAX) reads the group's output, not the
+            // merged row. A group coalesce key is unresolved by group Pass 1 -> bail.
             void walk_group(const node_ptr& group) {
                 for (auto& expr : group->expressions()) {
-                    if (!expr) {
-                        continue;
+                    if (expr && expr->group() == expression_group::scalar) {
+                        auto* s = static_cast<scalar_expression_t*>(expr.get());
+                        if (s->type() == scalar_type::coalesce) {
+                            ok = false;
+                            continue;
+                        }
+                        const bool reads_column =
+                            s->type() == scalar_type::get_field || s->type() == scalar_type::group_field;
+                        if (!reads_column && !s->key().path().empty() && s->key().path()[0] == SIZE_MAX) {
+                            continue;
+                        }
                     }
-                    if (expr->group() == expression_group::scalar) {
-                        walk_group_scalar(static_cast<scalar_expression_t*>(expr.get()));
-                    } else if (expr->group() == expression_group::aggregate) {
-                        auto* a = static_cast<aggregate_expression_t*>(expr.get());
-                        walk_params(a->params()); // OWN key is the output alias -> not touched
-                    }
+                    walk_expression(expr);
                 }
             }
 
-            // WITHOUT a group, sort keys index the merged join schema. A plain sort key
-            // remaps its OWN key; a computed ORDER BY scalar keeps its OWN key (which
-            // encodes ASC/DESC) and remaps only its merged operands.
+            // A computed ORDER BY scalar's own key encodes ASC/DESC, so only its operands are read.
             void walk_sort_nogroup(const node_ptr& sort) {
                 for (auto& expr : sort->expressions()) {
-                    if (!expr) {
-                        continue;
-                    }
-                    if (expr->group() == expression_group::sort) {
-                        walk_operand(static_cast<sort_expression_t*>(expr.get())->operand());
-                    } else if (expr->group() == expression_group::scalar) {
+                    if (expr && expr->group() == expression_group::scalar) {
                         walk_params(static_cast<scalar_expression_t*>(expr.get())->params());
+                    } else {
+                        walk_expression(expr);
                     }
                 }
             }
 
-            // WITHOUT a group, projection columns index the merged join schema.
             void walk_select_nogroup(const node_ptr& select) {
                 for (auto& expr : select->expressions()) {
-                    if (!expr || expr->group() != expression_group::scalar) {
-                        continue;
-                    }
-                    auto* s = static_cast<scalar_expression_t*>(expr.get());
-                    switch (s->type()) {
-                        case scalar_type::group_field:
-                            remap_key(s->key());
-                            break;
-                        case scalar_type::get_field:
-                            if (!s->params().empty() && is_key(s->params().front())) {
-                                remap_key(as_key(s->params().front()));
-                            } else {
-                                remap_key(s->key());
-                            }
-                            break;
-                        case scalar_type::constant:
-                        case scalar_type::star_expand:
-                            break;
-                        default:
-                            // arithmetic / coalesce / case_expr operands (merged)
-                            walk_params(s->params());
-                            break;
-                    }
+                    walk_expression(expr);
                 }
             }
 
@@ -560,7 +465,7 @@ namespace components::planner::optimizer {
                 return leaves.size();
             };
 
-            // Classify each eq(key,key) with single-element paths into a leaf edge; drop
+            // Classify each eq of two operands that each read one leaf into a leaf edge; drop
             // same-leaf pairs and non-classifiable / non-key comparisons (filters).
             std::pmr::vector<size_t> edge_a{resource};
             std::pmr::vector<size_t> edge_b{resource};
@@ -569,16 +474,12 @@ namespace components::planner::optimizer {
                     continue;
                 }
                 auto* cmp = static_cast<compare_expression_t*>(c.get());
-                if (cmp->type() != compare_type::eq || !is_key(cmp->left()) || !is_key(cmp->right())) {
+                if (cmp->type() != compare_type::eq) {
                     continue;
                 }
-                const auto& kl = as_key(cmp->left());
-                const auto& kr = as_key(cmp->right());
-                if (kl.path().size() != 1 || kr.path().size() != 1) {
-                    continue;
-                }
-                const size_t li = leaf_of(kl.path()[0]);
-                const size_t lj = leaf_of(kr.path()[0]);
+                const auto leaf_of_column = [&](const key_t& k) { return leaf_of(k.path()[0]); };
+                const size_t li = operand_input(cmp->left(), leaf_of_column, leaves.size());
+                const size_t lj = operand_input(cmp->right(), leaf_of_column, leaves.size());
                 if (li == leaves.size() || lj == leaves.size() || li == lj) {
                     continue;
                 }

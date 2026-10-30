@@ -48,6 +48,77 @@ namespace components::sql::transform {
 
     inline Node& pg_cell_to_node_cast(void* node) { return pg_cast<Node&>(*reinterpret_cast<Node*>(node)); }
 
+    // A list the grammar left out (null), wrote empty (the NIL sentinel) or filled with nothing.
+    inline bool is_empty_list(const List* list) { return list == nullptr || list == NIL || list->lst.empty(); }
+
+    // A string literal written without a cast: PostgreSQL 18 types it unknown.
+    inline bool is_quoted_literal(Node* node) {
+        return nodeTag(node) == T_A_Const && pg_ptr_cast<A_Const>(node)->val.type == T_String;
+    }
+
+    // Calls `visit` on each operand of the expression `node` (a null one too), in the order PostgreSQL 18 transforms
+    // them; false for a node whose operands it does not know. A column, a constant, a $n and a sub-query have none
+    // here: their readers handle them.
+    template<typename Visit>
+    bool for_each_operand(Node* node, Visit&& visit) {
+        const auto list = [&visit](const List* items) {
+            if (!is_empty_list(items)) {
+                for (const auto& item : items->lst) {
+                    visit(pg_ptr_cast<Node>(item.data));
+                }
+            }
+        };
+        switch (nodeTag(node)) {
+            case T_A_Expr:
+                visit(pg_ptr_cast<A_Expr>(node)->lexpr);
+                visit(pg_ptr_cast<A_Expr>(node)->rexpr);
+                return true;
+            case T_FuncCall:
+                list(pg_ptr_cast<FuncCall>(node)->args);
+                visit(pg_ptr_cast<FuncCall>(node)->agg_filter);
+                return true;
+            case T_TypeCast:
+                visit(pg_ptr_cast<TypeCast>(node)->arg);
+                return true;
+            case T_NullTest:
+                visit(pg_ptr_cast<Node>(pg_ptr_cast<NullTest>(node)->arg));
+                return true;
+            case T_BooleanTest:
+                visit(pg_ptr_cast<Node>(pg_ptr_cast<BooleanTest>(node)->arg));
+                return true;
+            case T_CoalesceExpr:
+                list(pg_ptr_cast<CoalesceExpr>(node)->args);
+                return true;
+            case T_MinMaxExpr:
+                list(pg_ptr_cast<MinMaxExpr>(node)->args);
+                return true;
+            case T_A_ArrayExpr:
+                list(pg_ptr_cast<A_ArrayExpr>(node)->elements);
+                return true;
+            case T_A_Indirection:
+                visit(pg_ptr_cast<A_Indirection>(node)->arg);
+                return true;
+            case T_CaseExpr: {
+                auto* expr = pg_ptr_cast<CaseExpr>(node);
+                visit(pg_ptr_cast<Node>(expr->arg));
+                if (!is_empty_list(expr->args)) {
+                    for (const auto& item : expr->args->lst) {
+                        auto* when = pg_ptr_cast<CaseWhen>(item.data);
+                        visit(pg_ptr_cast<Node>(when->expr));
+                        visit(pg_ptr_cast<Node>(when->result));
+                    }
+                }
+                visit(pg_ptr_cast<Node>(expr->defresult));
+                return true;
+            }
+            case T_List:
+                list(pg_ptr_cast<List>(node));
+                return true;
+            default:
+                return false;
+        }
+    }
+
     bool string_to_double(const char* buf, size_t len, double& result /*, char decimal_separator*/);
 
     inline std::string construct(const char* ptr) { return ptr ? ptr : std::string(); }
@@ -60,22 +131,23 @@ namespace components::sql::transform {
     core::error_t refuse_dropped_call_decorations(std::pmr::memory_resource* resource, const FuncCall& call);
 
     inline qualified_name_t rangevar_to_qualified_name(RangeVar* table) {
-        return qualified_name_t{core::uid_t{construct(table->uid)},
+        return qualified_name_t{core::connection_name_t{construct(table->uid)},
                                 core::dbname_t{construct(table->catalogname)},
                                 core::schema_t{construct(table->schemaname)},
                                 core::relname_t{construct(table->relname)}};
     }
 
-    // A REFERENCES target as written; one with a uid or schema segment is refused after resolve.
-    qualified_name_t referenced_table_as_written(RangeVar* target);
-    void register_referenced_tables(logical_plan::catalog_resolves_t* resolves, PGList& table_elts);
+    // Every REFERENCES target among `table_elts`, with the table that owns the key.
+    void register_referenced_tables(logical_plan::catalog_resolves_t* resolves,
+                                    const qualified_name_t& owner,
+                                    PGList& table_elts);
 
     enum table_name
     {
         table = 1,
-        database_table = 2,
+        schema_table = 2,
         database_schema_table = 3,
-        uuid_database_schema_table = 4
+        connection_database_schema_table = 4
     };
 
     inline core::result_wrapper_t<qualified_name_t> qualified_name_of(std::pmr::memory_resource* resource,
@@ -87,79 +159,30 @@ namespace components::sql::transform {
         switch (static_cast<table_name>(segments.size())) {
             case table:
                 return qualified_name_t{core::relname_t{segments[0]}};
-            case database_table:
-                return qualified_name_t{core::dbname_t{segments[0]}, core::relname_t{segments[1]}};
+            case schema_table:
+                return qualified_name_t{core::schema_t{segments[0]}, core::relname_t{segments[1]}};
             case database_schema_table:
                 return qualified_name_t{core::dbname_t{segments[0]},
                                         core::schema_t{segments[1]},
                                         core::relname_t{segments[2]}};
-            case uuid_database_schema_table:
-                return qualified_name_t{core::uid_t{segments[0]},
+            case connection_database_schema_table:
+                return qualified_name_t{core::connection_name_t{segments[0]},
                                         core::dbname_t{segments[1]},
                                         core::schema_t{segments[2]},
                                         core::relname_t{segments[3]}};
         }
         std::pmr::string msg{"name has ", resource};
         msg += std::to_string(segments.size());
-        msg += " parts; write it as [uid.][database.][schema.]name";
+        msg += " parts; write it as [connection.][database.][schema.]name";
         return core::error_t{core::error_code_t::sql_parse_error, std::move(msg)};
     }
 
     // What a node keeps of the name it was written with.
     enum class target_slots
     {
-        database,
-        relation,
-        relation_with_schema
+        schema,
+        relation
     };
-
-    enum class namespace_policy
-    {
-        as_written,     // DML, ALTER, DROP: the database as written
-        default_public, // CREATE: an unnamed database means public
-        public_only     // a type: pg_type rows all sit in public
-    };
-
-    inline namespace_policy policy_of(const logical_plan::node_t& node) {
-        using logical_plan::node_type;
-        switch (node.type()) {
-            case node_type::create_type_t:
-                return namespace_policy::public_only;
-            // ALTER TYPE arrives as an ALTER TABLE on a composite type and follows CREATE/DROP TYPE.
-            case node_type::alter_table_t:
-                return static_cast<const logical_plan::node_alter_table_t&>(node).relkind() ==
-                               components::catalog::relkind::composite_type
-                           ? namespace_policy::public_only
-                           : namespace_policy::as_written;
-            case node_type::drop_t:
-                return static_cast<const logical_plan::node_drop_t&>(node).kind() ==
-                               logical_plan::drop_target_kind::type
-                           ? namespace_policy::public_only
-                           : namespace_policy::as_written;
-            case node_type::create_collection_t:
-            case node_type::create_view_t:
-            case node_type::create_sequence_t:
-            case node_type::create_macro_t:
-                return namespace_policy::default_public;
-            // Everything else writes where the name says. CREATE INDEX is deliberately here: it
-            // names an existing table, so a bare name must still reach the table's own database.
-            default:
-                return namespace_policy::as_written;
-        }
-    }
-
-    inline const core::dbname_t& database_for(const qualified_name_t& written, namespace_policy policy) {
-        static const core::dbname_t public_database{"public"};
-        switch (policy) {
-            case namespace_policy::default_public:
-                return written.database.t.empty() ? public_database : written.database;
-            case namespace_policy::public_only:
-                return public_database;
-            case namespace_policy::as_written:
-                break;
-        }
-        return written.database;
-    }
 
     inline const std::string& visible_name(const qualified_name_t& name, const std::string& alias) noexcept {
         return alias.empty() ? name.collection.t : alias;
@@ -230,6 +253,11 @@ namespace components::sql::transform {
                 return logical_plan::join_type::left;
             case JOIN_RIGHT:
                 return logical_plan::join_type::right;
+            // Only the pull-up of a sub-link writes these: SQL has no syntax for them.
+            case JOIN_SEMI:
+                return logical_plan::join_type::semi;
+            case JOIN_ANTI:
+                return logical_plan::join_type::anti;
             default:
                 return logical_plan::join_type::invalid;
         }
@@ -432,52 +460,53 @@ namespace components::sql::transform {
     {
         none,
         outgoing,
-        referencing,
         // No enforcement decode: DROP CONSTRAINT must not refuse on the catalog state it exists to repair.
         names_only
     };
 
     // Names a hand-built plan node's catalog target — what transform_* does for SQL-built plans.
     logical_plan::node_ptr
-    name_catalog_target(const core::dbname_t& dbname, const core::relname_t& relname, logical_plan::node_ptr node);
+    name_catalog_target(const core::schema_t& schema, const core::relname_t& relname, logical_plan::node_ptr node);
 
-    // An unqualified REFERENCES target of the table (owner_db, owner_rel): looked up in the database the owner is
-    // found in, after the owner.
-    void register_catalog_resolve_table_in_owner_database(std::pmr::memory_resource* resource,
-                                                          logical_plan::catalog_resolves_t* resolves,
-                                                          const std::string& owner_db,
-                                                          const std::string& owner_rel,
-                                                          const std::string& relname,
-                                                          constraint_resolve_kind with_constraints);
+    // An unqualified REFERENCES target of the table `owner`: looked up in the schema the owner is found in, after
+    // the owner.
+    void register_catalog_resolve_table_in_owner_schema(std::pmr::memory_resource* resource,
+                                                        logical_plan::catalog_resolves_t* resolves,
+                                                        const qualified_name_t& owner,
+                                                        const std::string& relname,
+                                                        constraint_resolve_kind with_constraints);
 
+    // A relation as written, every slot included.
     void register_catalog_resolve_table(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,
-                                        const std::string& dbname,
-                                        const std::string& relname,
+                                        const qualified_name_t& name,
                                         constraint_resolve_kind with_constraints = constraint_resolve_kind::none);
 
-    // The target of an INSERT / UPDATE / DELETE or a FROM table, schema slot included: a name the catalog does not
-    // know reaches the host whole. with_constraints gathers INSERT/UPDATE's outgoing or DELETE's referencing
-    // constraints.
-    void register_catalog_resolve_write_target(std::pmr::memory_resource* resource,
-                                               logical_plan::catalog_resolves_t* resolves,
-                                               const qualified_name_t& written,
-                                               constraint_resolve_kind with_constraints);
+    // A user type as written: its name with the database and schema it was qualified with (collection holds the
+    // type name).
+    qualified_name_t type_reference_of(const types::complex_logical_type& type);
 
     void register_catalog_resolve_types(std::pmr::memory_resource* resource,
                                         logical_plan::catalog_resolves_t* resolves,
-                                        std::span<const std::string> type_names);
+                                        std::span<const qualified_name_t> type_names);
 
     core::result_wrapper_t<function_qualified_name_t> called_function(std::pmr::memory_resource* resource,
                                                                       const List* funcname);
-    core::error_t refuse_function_segment(std::pmr::memory_resource* resource, std::string_view written);
 
+    // A database by its connection (empty: a local database) and name; the empty name is the current database and
+    // needs no lookup.
+    void register_catalog_resolve_database(std::pmr::memory_resource* resource,
+                                           logical_plan::catalog_resolves_t* resolves,
+                                           const std::string& connection,
+                                           const std::string& database);
+
+    // The schema of `name` (its database and schema slots); nothing for a name without a schema.
     void register_catalog_resolve_namespace(std::pmr::memory_resource* resource,
                                             logical_plan::catalog_resolves_t* resolves,
-                                            const std::string& dbname);
+                                            const qualified_name_t& name);
 
     void register_catalog_resolve_tables(std::pmr::memory_resource* resource,
                                          logical_plan::catalog_resolves_t* resolves,
-                                         const std::vector<std::pair<std::string, std::string>>& targets);
+                                         std::span<const qualified_name_t> names);
 
 } // namespace components::sql::transform

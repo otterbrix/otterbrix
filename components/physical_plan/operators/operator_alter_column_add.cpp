@@ -1,12 +1,15 @@
 #include "operator_alter_column_add.hpp"
 
+#include <cassert>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 
 #include "alter_validators.hpp"
-#include "single_oid_round.hpp"
 
 #include <components/catalog/alter_column_validators.hpp>
 #include <components/catalog/ddl_metadata_builder.hpp>
+#include <components/catalog/dependency_walker.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/system_table_schemas.hpp>
 #include <components/context/context.hpp>
@@ -21,10 +24,12 @@ namespace components::operators {
     operator_alter_column_add_t::operator_alter_column_add_t(std::pmr::memory_resource* resource,
                                                              log_t log,
                                                              catalog::oid_t table_oid,
-                                                             components::table::column_definition_t column)
+                                                             components::table::column_definition_t column,
+                                                             components::table::storage_address_t address)
         : read_write_operator_t(resource, std::move(log), operator_type::alter_column_add)
         , table_oid_(table_oid)
-        , column_(std::move(column)) {}
+        , column_(std::move(column))
+        , address_(std::move(address)) {}
 
     actor_zeta::unique_future<void> operator_alter_column_add_t::await_async_and_resume(pipeline::context_t* ctx) {
         components::execution_context_t exec_ctx{ctx->session, ctx->txn, {}};
@@ -90,18 +95,13 @@ namespace components::operators {
             }
         }
 
-        auto [_oa, oaf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                      &services::disk::manager_disk_t::allocate_oids_batch,
-                                                      std::size_t{1});
-        auto allocated = co_await std::move(oaf);
-        // Before the first catalog mutation: a round that delivered nothing would send the pg_attribute
-        // row out with attoid = 0, reporting success over a column with no identity to backfill or drop.
-        catalog::oid_t attoid = catalog::INVALID_OID;
-        if (auto ec_oid = single_oid_from_round(resource_, std::move(allocated), "alter_column_add", attoid);
-            ec_oid.contains_error()) {
-            set_error(std::move(ec_oid));
-            mark_failed();
-            co_return;
+        // The planner gave the column its attoid with the statement's oid batch (a backend's add_storage_column
+        // gets it before the row is written).
+        const auto attoid = static_cast<catalog::oid_t>(column_.attoid());
+        if (attoid == catalog::INVALID_OID) [[unlikely]] {
+            std::fprintf(stderr, "operator_alter_column_add: column %s has no attoid\n", column_.name().c_str());
+            assert(false && "operator_alter_column_add: the planner's oid allocation was skipped");
+            std::abort();
         }
 
         const std::string typspec = catalog::encode_type_spec(column_.type());
@@ -149,8 +149,69 @@ namespace components::operators {
             co_return;
         }
         auto rng = std::move(rng_r.value());
+        // The column depends on its type, as CREATE TABLE writes it: DROP TYPE refuses or cascades to it.
+        if (atttypid != catalog::INVALID_OID) {
+            auto dep_row = catalog::build_pg_depend_row(resource_,
+                                                        catalog::well_known_oid::pg_attribute_table,
+                                                        attoid,
+                                                        catalog::well_known_oid::pg_type_table,
+                                                        atttypid,
+                                                        catalog::deptype::normal);
+            auto [_dw, dwf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                          &services::disk::manager_disk_t::append_pg_catalog_row,
+                                                          exec_ctx,
+                                                          catalog::well_known_oid::pg_depend_table,
+                                                          std::move(dep_row));
+            auto dep_r = co_await std::move(dwf);
+            if (dep_r.has_error()) {
+                if (rng.count > 0) {
+                    ctx->pg_catalog_appends.push_back(std::move(rng));
+                }
+                set_error(dep_r.error());
+                mark_failed();
+                co_return;
+            }
+            if (dep_r.value().count > 0) {
+                ctx->pg_catalog_appends.push_back(std::move(dep_r.value()));
+            }
+        }
         if (rng.count > 0) {
             ctx->pg_catalog_appends.push_back(std::move(rng));
+        }
+        std::optional<components::vector::vector_t> stored_default;
+        if (column_.has_default_value()) {
+            stored_default = components::vector::make_constant_copy(resource_, column_.default_value());
+        }
+        components::table::column_definition_t stored{std::string(column_.name()),
+                                                      column_.type(),
+                                                      column_.is_not_null(),
+                                                      std::move(stored_default)};
+        stored.set_attoid(static_cast<std::uint32_t>(attoid));
+        stored.set_atttypid(static_cast<std::uint32_t>(atttypid));
+        components::execution_context_t add_ctx{ctx->session,
+                                                ctx->txn,
+                                                ctx->execution_context.timezone_offset,
+                                                table_oid_};
+        ctx->join_transaction(address_, table_oid_, true);
+        auto [_a, af] =
+            actor_zeta::otterbrix::send<&services::disk::storage_contract::add_storage_column>(address_,
+                                                                                               add_ctx,
+                                                                                               table_oid_,
+                                                                                               std::move(stored));
+        auto added = co_await std::move(af);
+        if (added.has_error()) {
+            set_error(added.error());
+            mark_failed();
+            co_return;
+        }
+        if (!added.value().awaits_publish) {
+            if (!added.value().rows.empty()) {
+                ctx->host_rows.push_back(std::move(added.value().rows));
+            }
+            mark_executed();
+            co_return;
+        }
+        {
             // Backfill added_at_commit_id on this row, keyed by attoid.
             ctx->pg_attribute_commit_id_backfills.push_back(components::pg_attribute_commit_id_backfill_t{
                 attoid,
@@ -165,32 +226,6 @@ namespace components::operators {
                 // already a legal query (PostgreSQL 11+ attmissingval semantics), and the agent has no
                 // catalog to read the answer from otherwise.
                 components::pg_attribute_commit_id_backfill_t::added_column_type_t{column_.type(), defspec}});
-        }
-        {
-            std::optional<components::vector::vector_t> stored_default;
-            if (column_.has_default_value()) {
-                stored_default = components::vector::make_constant_copy(resource_, column_.default_value());
-            }
-            components::table::column_definition_t stored{std::string(column_.name()),
-                                                          column_.type(),
-                                                          column_.is_not_null(),
-                                                          std::move(stored_default)};
-            stored.set_attoid(static_cast<std::uint32_t>(attoid));
-            stored.set_atttypid(static_cast<std::uint32_t>(atttypid));
-            components::execution_context_t add_ctx{ctx->session,
-                                                    ctx->txn,
-                                                    ctx->execution_context.timezone_offset,
-                                                    table_oid_};
-            auto [_a, af] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::add_storage_column,
-                                                        add_ctx,
-                                                        table_oid_,
-                                                        std::move(stored));
-            if (auto added = co_await std::move(af); added.contains_error()) {
-                set_error(added);
-                mark_failed();
-                co_return;
-            }
         }
 
         mark_executed();

@@ -5,6 +5,7 @@
 #include "compare_expression.hpp"
 #include "function_expression.hpp"
 #include "scalar_expression.hpp"
+#include "sort_expression.hpp"
 
 namespace components::expressions {
 
@@ -76,9 +77,11 @@ namespace components::expressions {
                 remap_param(e->child(), id_map);
                 break;
             }
-            case expression_group::sort:
-                // A sort expression is a bare key + order; it holds no operands.
+            case expression_group::sort: {
+                auto* e = static_cast<sort_expression_t*>(expr.get());
+                remap_param(e->operand(), id_map);
                 break;
+            }
             case expression_group::invalid:
                 // No expression_i subclass carries group invalid (see clone_expression).
                 break;

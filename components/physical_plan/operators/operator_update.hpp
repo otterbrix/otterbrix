@@ -6,17 +6,11 @@
 
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
+#include <components/table/storage_address.hpp>
 
 namespace components::operators {
 
 #ifdef DEV_MODE
-    // Test-observable counter of storage_update sends the UPDATE sink issued (one
-    // bump per flushed batch that reached the disk agent). Pins the clean-failure
-    // contract: a statement that fails BEFORE any storage mutation (e.g. a
-    // RETURNING projection error) must leave this counter untouched. Process-global
-    // + relaxed: coarse instrumentation, mirroring create_index_backfill_batches().
-    uint64_t update_storage_update_sends() noexcept;
-
     // Test-observable counter of the per-column vector_ops::copy calls the
     // matched-row gather issues. Gathering a batch must cost ONE indexed copy per
     // column; a per-cell gather shows up here as rows*columns, and each of those
@@ -29,6 +23,8 @@ namespace components::operators {
         operator_update(std::pmr::memory_resource* resource,
                         log_t log,
                         components::catalog::oid_t table_oid,
+                        table::storage_address_t address,
+                        std::pmr::string name,
                         std::pmr::vector<expressions::expression_ptr> updates,
                         std::pmr::vector<projected_column_t> returning,
                         expressions::expression_ptr expr = nullptr,
@@ -45,16 +41,11 @@ namespace components::operators {
         // False skips the index mirror entirely. Defaults to true: an unstamped plan must
         // behave as before, because guessing "no index" leaves a stale index behind.
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
+        // The table's visible columns, from the catalog: an empty RETURNING has them.
+        void set_table_types(std::pmr::vector<types::complex_logical_type> types) { table_types_ = std::move(types); }
 
         // The FROM side pairs with the target input row for row
         void set_paired_from(bool value) noexcept { paired_from_ = value; }
-
-        // A table with external storage: the changed rows, numbered by its scan in row_ids, go to the storage's update
-        // sink instead of the disk, the WAL, the index and the MVCC marker.
-        void set_storage_sink(operator_ptr sink, std::pmr::vector<types::complex_logical_type> columns) {
-            storage_sink_ = std::move(sink);
-            storage_columns_ = std::move(columns);
-        }
 
         // STREAMING DML (STEP 3b). Both UPDATE shapes are SINKs on the LEFT (target)
         // scan input:
@@ -87,13 +78,12 @@ namespace components::operators {
         uint64_t buffered_rows() const noexcept override { return output_ ? output_->size() : 0; }
 
     private:
-        // EXPLAIN labels a write into external storage the way its sink does, like postgres_fdw's "Foreign Update on".
-        std::pmr::string explain_label_impl() const override {
-            return storage_sink_ ? storage_sink_->explain_label() : std::pmr::string{resource_};
-        }
-        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
-            return storage_sink_ ? storage_sink_->explain_details() : std::pmr::vector<std::pmr::string>{resource_};
-        }
+        // Learns the storage's shape before the first row: the most rows one write may carry, and the columns an
+        // empty RETURNING is typed by.
+        actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx) override;
+        bool opens_at_start_impl() const noexcept override { return true; }
+        // EXPLAIN names a write into a connection's table like postgres_fdw's "Foreign Update on".
+        std::pmr::string explain_label_impl() const override;
 
         // Shared SIMPLE-path core. Matches expr_ (all-true when null — the scan
         // already filtered) over ONE scan chunk; builds the updated out_chunk
@@ -121,6 +111,8 @@ namespace components::operators {
         void ensure_simple_init_();
 
         components::catalog::oid_t table_oid_;
+        table::storage_address_t address_;
+        std::pmr::string name_;
         std::pmr::vector<expressions::expression_ptr> updates_;
         expressions::expression_ptr expr_;
         expressions::condition_kind condition_;
@@ -156,8 +148,7 @@ namespace components::operators {
         std::size_t paired_batches_{0};
         std::pmr::vector<types::complex_logical_type> paired_left_types_{resource_};
         std::pmr::vector<types::complex_logical_type> paired_right_types_{resource_};
-        operator_ptr storage_sink_;
-        std::pmr::vector<types::complex_logical_type> storage_columns_{resource_};
+        std::pmr::vector<types::complex_logical_type> table_types_{resource_};
     };
 
 } // namespace components::operators

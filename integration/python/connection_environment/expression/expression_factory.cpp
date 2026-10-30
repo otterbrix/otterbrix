@@ -16,26 +16,24 @@ using namespace components::expressions;
 
 namespace otterbrix {
 
-    expression_factory_t::expression_factory_t(const boost::intrusive_ptr<otterbrix_t>& space)
-        : space(space)
+    expression_factory_t::expression_factory_t(engine_arena_ptr arena)
+        : arena_(std::move(arena))
         , counter(0) {}
 
     expression_factory_t::~expression_factory_t() = default;
-
-    void expression_factory_t::set_null_space() { space = nullptr; }
 
     expression_wrapper_t expression_factory_t::make_constant(components::vector::vector_t&& value) {
         return expression_wrapper_t(add_value(std::move(value)));
     }
 
     expression_wrapper_t expression_factory_t::make_count_expression() {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         return expression_wrapper_t(boost::static_pointer_cast<expressions::expression_i>(
             make_aggregate_expression(resource, "count", expressions::key_t(resource, "count"))));
     }
 
     expression_wrapper_t expression_factory_t::sort_expression(const std::string& arg) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         return expression_wrapper_t(boost::static_pointer_cast<expressions::expression_i>(
             make_sort_expression(resource, expressions::key_t(resource, arg), sort_order::asc)));
     }
@@ -48,7 +46,7 @@ namespace otterbrix {
 
     core::result_wrapper_t<expression_wrapper_t> expression_factory_t::sort_expression(const expression_wrapper_t& arg,
                                                                                        sort_order order) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         if (arg.is_key()) {
             return expression_wrapper_t(make_sort_expression(resource, arg.key(), order));
         }
@@ -69,7 +67,7 @@ namespace otterbrix {
     core::result_wrapper_t<expression_wrapper_t>
     expression_factory_t::aggregation_unary_expression(const std::string& function_name,
                                                        const expression_wrapper_t& expr) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         if (!expr.is_key()) {
             return invalid_argument(
                 resource,
@@ -104,7 +102,7 @@ namespace otterbrix {
 
     expression_wrapper_t expression_factory_t::scalar_unary_expression(components::expressions::scalar_type type,
                                                                        const expression_wrapper_t& expr) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         auto scalar_expr = expressions::make_scalar_expression(resource, type);
         if (expr.is_key()) {
             scalar_expr->append_param(expr.key());
@@ -134,7 +132,7 @@ namespace otterbrix {
     expression_factory_t::scalar_binary_expression(components::expressions::scalar_type type,
                                                    const expression_wrapper_t& left,
                                                    const expression_wrapper_t& right) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         expressions::scalar_expression_ptr scalar_expr = expressions::make_scalar_expression(resource, type);
         append_expression(scalar_expr, left);
         append_expression(scalar_expr, right);
@@ -145,7 +143,7 @@ namespace otterbrix {
     expression_factory_t::comparison_expression(expressions::compare_type type,
                                                 const expression_wrapper_t& left,
                                                 const expression_wrapper_t& right) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         if (left.is_key() && (right.is_key() || right.is_parameter())) {
             expressions::compare_expression_ptr compare_expression =
                 right.is_key() ? expressions::make_compare_expression(resource, type, left.key(), right.key())
@@ -159,7 +157,7 @@ namespace otterbrix {
 
     core::result_wrapper_t<expression_wrapper_t>
     expression_factory_t::expression_with_alias(const expression_wrapper_t& expr, const std::string& alias) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         if (expr.is_key()) {
             expressions::scalar_expression_ptr scalar_expr =
                 expressions::make_scalar_expression(resource,
@@ -189,8 +187,7 @@ namespace otterbrix {
 
     core::result_wrapper_t<expression_wrapper_t>
     expression_factory_t::comparison_not_expression(const expression_wrapper_t& expr) {
-        auto not_expr =
-            make_compare_union_expression(space->dispatcher()->resource(), expressions::compare_type::union_not);
+        auto not_expr = make_compare_union_expression(&arena_->resource, expressions::compare_type::union_not);
         auto child = union_expression_to_expression_ptr(expr);
         if (child.has_error()) {
             return child.error();
@@ -203,7 +200,7 @@ namespace otterbrix {
     expression_factory_t::comparison_union_expression(expressions::compare_type type,
                                                       const expression_wrapper_t& left,
                                                       const expression_wrapper_t& right) {
-        auto union_expr = make_compare_union_expression(space->dispatcher()->resource(), type);
+        auto union_expr = make_compare_union_expression(&arena_->resource, type);
         auto left_child = union_expression_to_expression_ptr(left);
         if (left_child.has_error()) {
             return left_child.error();
@@ -218,12 +215,12 @@ namespace otterbrix {
     }
 
     expression_wrapper_t expression_factory_t::true_expression() {
-        return expression_wrapper_t(make_compare_expression(space->dispatcher()->resource(), compare_type::all_true));
+        return expression_wrapper_t(make_compare_expression(&arena_->resource, compare_type::all_true));
     }
 
     core::result_wrapper_t<expressions::compare_expression_ptr>
     expression_factory_t::union_expression_to_expression_ptr(const expression_wrapper_t& expr) {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         if (expr.is_expression() && expr.expression()->group() == expressions::expression_group::compare) {
             return boost::static_pointer_cast<expressions::compare_expression_t>(expr.expression());
         }
@@ -250,7 +247,7 @@ namespace otterbrix {
     }
 
     components::logical_plan::parameter_node_ptr expression_factory_t::get_params() {
-        auto* resource = space->dispatcher()->resource();
+        auto* resource = &arena_->resource;
         auto params = logical_plan::make_parameter_node(resource);
         // add_value hands out ids 0..counter-1, and the storage hands out the next id too: ascending order
         // is what keeps the two numberings the same.

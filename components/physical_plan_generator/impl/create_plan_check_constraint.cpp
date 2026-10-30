@@ -27,7 +27,6 @@ namespace services::planner::impl {
         auto plan = boost::intrusive_ptr(
             new components::operators::operator_check_constraint_t(context.resource,
                                                                    context.log.clone(),
-                                                                   n->not_null_columns(),
                                                                    n->check_predicates(),
                                                                    n->array_size_reqs(),
                                                                    enforce_param_map(n, context.resource)));

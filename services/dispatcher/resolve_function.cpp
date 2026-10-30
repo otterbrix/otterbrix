@@ -8,7 +8,6 @@
 #include <utility>
 
 namespace services::dispatcher {
-    using components::graph_execution_context;
     using components::casts::allowed_in;
     using components::casts::cast_cost;
     using components::casts::cast_registry_t;
@@ -20,46 +19,6 @@ namespace services::dispatcher {
     using components::types::logical_type;
 
     namespace {
-        enum class function_scope : uint8_t
-        {
-            any,
-            builtins,
-            client,
-        };
-
-        core::result_wrapper_t<function_scope> scope_of(std::pmr::memory_resource* resource,
-                                                        const function_qualified_name_t& name) {
-            if (!name.schema.t.empty()) {
-                return components::sql::transform::refuse_function_segment(resource, name.to_string());
-            }
-            if (name.database.t.empty()) {
-                return function_scope::any;
-            }
-            if (name.database.t == "pg_catalog") {
-                return function_scope::builtins;
-            }
-            if (name.database.t == "public") {
-                return function_scope::client;
-            }
-            return core::error_t(core::error_code_t::unimplemented_yet,
-                                 std::pmr::string{"function '" + name.to_string() +
-                                                      "': a function created in a database cannot be called yet; "
-                                                      "pg_catalog and public hold the callable ones",
-                                                  resource});
-        }
-
-        bool in_scope(function_scope scope, components::compute::function_uid uid) {
-            switch (scope) {
-                case function_scope::any:
-                    return true;
-                case function_scope::builtins:
-                    return components::compute::is_builtin(uid);
-                case function_scope::client:
-                    return !components::compute::is_builtin(uid);
-            }
-            return false;
-        }
-
         bool is_null_argument(const complex_logical_type& type) noexcept { return type.type() == logical_type::NA; }
 
         struct total_cost_t {
@@ -132,32 +91,15 @@ namespace services::dispatcher {
             }
         }
 
-        //! `resource` is only for the refusal message create_decimal may build on an
-        //! out-of-window session setting.
-        std::optional<complex_logical_type> materialize_family(std::pmr::memory_resource* resource,
-                                                               const graph_execution_context& context,
-                                                               const complex_logical_type& family,
+        std::optional<complex_logical_type> materialize_family(const complex_logical_type& family,
                                                                const complex_logical_type& argument) {
             if (family.type() == argument.type()) {
                 return argument;
             }
-            if (family.type() != logical_type::DECIMAL) {
-                return std::nullopt;
-            }
-            // The session's DECIMAL width/scale are settings, not literals: an
-            // out-of-window pair means "no materialization for this family", never a
-            // decimal type nothing can persist.
-            auto materialized =
-                complex_logical_type::create_decimal(resource, context.decimal_width, context.decimal_scale);
-            if (materialized.has_error()) {
-                return std::nullopt;
-            }
-            return std::move(materialized.value());
+            return std::nullopt;
         }
 
-        std::optional<complex_logical_type> constrain_to_domain(std::pmr::memory_resource* resource,
-                                                                const cast_registry_t& cast_registry,
-                                                                const graph_execution_context& context,
+        std::optional<complex_logical_type> constrain_to_domain(const cast_registry_t& cast_registry,
                                                                 const parameter_type& parameter,
                                                                 const complex_logical_type& unified) {
             if (parameter.admissible().empty() || is_null_argument(unified) || parameter.admits(unified)) {
@@ -166,8 +108,7 @@ namespace services::dispatcher {
             std::optional<complex_logical_type> best;
             std::optional<cast_cost> best_cost;
             for (const auto& entry : parameter.admissible()) {
-                auto materialized =
-                    is_family_entry(entry) ? materialize_family(resource, context, entry, unified) : entry;
+                auto materialized = is_family_entry(entry) ? materialize_family(entry, unified) : entry;
                 if (!materialized.has_value()) {
                     continue;
                 }
@@ -186,7 +127,6 @@ namespace services::dispatcher {
 
         std::optional<candidate_t> try_signature(std::pmr::memory_resource* resource,
                                                  const cast_registry_t& cast_registry,
-                                                 const graph_execution_context& context,
                                                  const kernel_signature_t& signature,
                                                  const std::pmr::vector<complex_logical_type>& arguments) {
             if (signature.input_types.size() != arguments.size() || signature.output_types.empty()) {
@@ -204,7 +144,7 @@ namespace services::dispatcher {
                 complex_logical_type target;
                 if (!parameter.is_variable()) {
                     if (is_family_entry(parameter.type())) {
-                        auto materialized = materialize_family(resource, context, parameter.type(), arguments[i]);
+                        auto materialized = materialize_family(parameter.type(), arguments[i]);
                         if (!materialized.has_value()) {
                             return std::nullopt;
                         }
@@ -223,7 +163,7 @@ namespace services::dispatcher {
                         if (!unified.has_value()) {
                             return std::nullopt;
                         }
-                        auto constrained = constrain_to_domain(resource, cast_registry, context, parameter, *unified);
+                        auto constrained = constrain_to_domain(cast_registry, parameter, *unified);
                         if (!constrained.has_value()) {
                             return std::nullopt;
                         }
@@ -243,7 +183,7 @@ namespace services::dispatcher {
                     if (!cast.has_value()) {
                         return std::nullopt;
                     }
-                    argument.cast = std::move(cast.value());
+                    argument.cast = std::move(*cast);
                     candidate.cost.add(info->cost);
                 }
                 targets.emplace_back(target);
@@ -257,6 +197,35 @@ namespace services::dispatcher {
             }
             candidate.result = std::move(result.value());
             return candidate;
+        }
+
+        bool is_string_category(const complex_logical_type& type) noexcept {
+            return type.type() == logical_type::STRING_LITERAL;
+        }
+
+        // PostgreSQL 18 func_select_candidate (parse_func.c): at each untyped-NULL position the string category wins
+        // a conflict, and the candidates of another category there drop out. Answers the one left, if one is.
+        std::optional<size_t> prefer_string_at_null(const std::pmr::vector<complex_logical_type>& arguments,
+                                                    const std::pmr::vector<resolved_function_t>& tied) {
+            std::pmr::vector<bool> kept(tied.size(), true, tied.get_allocator().resource());
+            for (size_t position = 0; position < arguments.size(); ++position) {
+                if (!is_null_argument(arguments[position])) {
+                    continue;
+                }
+                const bool any_string = std::any_of(tied.begin(), tied.end(), [position](const auto& candidate) {
+                    return is_string_category(candidate.arguments[position].target);
+                });
+                if (!any_string) {
+                    continue;
+                }
+                for (size_t index = 0; index < tied.size(); ++index) {
+                    kept[index] = kept[index] && is_string_category(tied[index].arguments[position].target);
+                }
+            }
+            if (std::count(kept.begin(), kept.end(), true) != 1) {
+                return std::nullopt;
+            }
+            return static_cast<size_t>(std::find(kept.begin(), kept.end(), true) - kept.begin());
         }
 
         std::string describe_arguments(const std::pmr::vector<complex_logical_type>& arguments) {
@@ -274,23 +243,27 @@ namespace services::dispatcher {
     core::result_wrapper_t<resolved_function_t>
     resolve_function(std::pmr::memory_resource* resource,
                      const cast_registry_t& cast_registry,
-                     const graph_execution_context& context,
                      const function_registry_t& function_registry,
                      const function_qualified_name_t& name,
                      const std::pmr::vector<complex_logical_type>& arguments,
                      components::compute::function_types_mask allowed_function_types,
+                     const components::compute::function_scope_t& scope,
                      std::span<const components::compute::function_pin_t> pins) {
-        VALUE_OR_RETURN(const auto scope, scope_of(resource, name));
         const std::string written = name.to_string();
 
         bool name_exists = false;
-        bool rejected_by_context = false;
-        bool ambiguous = false;
-        std::optional<resolved_function_t> best;
+        std::optional<components::compute::function_type_t> rejected_kind;
+        std::pmr::vector<resolved_function_t> tied(resource);
         std::optional<total_cost_t> best_cost;
 
         for (const auto uid : function_registry.find_functions(name.function.t)) {
-            if (!in_scope(scope, uid)) {
+            // A view read reaches the functions its CREATE bound, wherever the reader stands.
+            const bool pinned_by_call =
+                std::any_of(pins.begin(), pins.end(), [uid](const auto& pin) { return pin.uid == uid; });
+            if (!pinned_by_call && !function_registry.reaches(scope, uid)) {
+                continue;
+            }
+            if (components::compute::is_internal(uid) && !pinned_by_call) {
                 continue;
             }
             const auto pinned = [&pins, uid](size_t index) {
@@ -298,8 +271,7 @@ namespace services::dispatcher {
                            return pin.uid == uid && pin.signature == index;
                        });
             };
-            name_exists = name_exists || pins.empty() ||
-                          std::any_of(pins.begin(), pins.end(), [uid](const auto& pin) { return pin.uid == uid; });
+            name_exists = name_exists || pins.empty() || pinned_by_call;
             auto* function = function_registry.get_function(uid);
             if (!function) {
                 continue;
@@ -311,18 +283,16 @@ namespace services::dispatcher {
                     continue;
                 }
                 if (!components::compute::check_mask(allowed_function_types, signature.function_type)) {
-                    rejected_by_context = true;
+                    if (!rejected_kind.has_value()) {
+                        rejected_kind = signature.function_type;
+                    }
                     continue;
                 }
-                auto candidate = try_signature(resource, cast_registry, context, signature, arguments);
+                auto candidate = try_signature(resource, cast_registry, signature, arguments);
                 if (!candidate.has_value()) {
                     continue;
                 }
-                if (best_cost.has_value() && candidate->cost == *best_cost) {
-                    ambiguous = true;
-                    continue;
-                }
-                if (best_cost.has_value() && !(candidate->cost < *best_cost)) {
+                if (best_cost.has_value() && *best_cost < candidate->cost) {
                     continue;
                 }
                 resolved_function_t resolved{resource};
@@ -331,9 +301,12 @@ namespace services::dispatcher {
                 resolved.result = std::move(candidate->result);
                 resolved.function_type = signature.function_type;
                 resolved.mergeable = function->is_mergeable();
-                best = std::move(resolved);
-                best_cost = candidate->cost;
-                ambiguous = false;
+                resolved.volatility = function->volatility();
+                if (!best_cost.has_value() || candidate->cost < *best_cost) {
+                    tied.clear();
+                    best_cost = candidate->cost;
+                }
+                tied.push_back(std::move(resolved));
             }
         }
 
@@ -341,24 +314,33 @@ namespace services::dispatcher {
             return core::error_t(core::error_code_t::unrecognized_function,
                                  std::pmr::string{"unrecognized function '" + written + "'", resource});
         }
-        if (!best.has_value() && rejected_by_context) {
+        if (tied.empty() && rejected_kind.has_value()) {
+            core::error_code_t code = core::error_code_t::wrong_object_type;
+            if (*rejected_kind == components::compute::function_type_t::aggregate) {
+                code = core::error_code_t::grouping_error;
+            } else if (*rejected_kind == components::compute::function_type_t::expand) {
+                code = core::error_code_t::unimplemented_yet;
+            }
             return core::error_t(
-                core::error_code_t::incorrect_function_argument,
+                code,
                 std::pmr::string{"function '" + written + "' is not allowed in this part of the statement", resource});
         }
-        if (!best.has_value()) {
+        if (tied.empty()) {
             return core::error_t(
-                core::error_code_t::incorrect_function_argument,
+                core::error_code_t::unrecognized_function,
                 std::pmr::string{"function '" + written + "' does not accept (" + describe_arguments(arguments) + ")",
                                  resource});
         }
-        if (ambiguous) {
-            return core::error_t(core::error_code_t::incorrect_function_argument,
-                                 std::pmr::string{"call to function '" + written + "' with (" +
-                                                      describe_arguments(arguments) +
-                                                      ") is ambiguous between equally costly overloads",
-                                                  resource});
+        if (tied.size() == 1) {
+            return std::move(tied.front());
         }
-        return std::move(best.value());
+        if (auto chosen = prefer_string_at_null(arguments, tied); chosen.has_value()) {
+            return std::move(tied[*chosen]);
+        }
+        return core::error_t(core::error_code_t::ambiguous_function,
+                             std::pmr::string{"call to function '" + written + "' with (" +
+                                                  describe_arguments(arguments) +
+                                                  ") is ambiguous between equally costly overloads",
+                                              resource});
     }
 } // namespace services::dispatcher

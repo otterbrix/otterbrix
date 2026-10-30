@@ -129,7 +129,12 @@ namespace {
         using namespace components::compute;
         function_doc doc{resource, "twice", "twice", {"arg"}, false};
         auto fn =
-            core::pmr::make_polymorphic_unique<vector_function>(resource, "twice", arity::unary(), doc, kernels.size());
+            core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                "twice",
+                                                                arity::unary(),
+                                                                doc,
+                                                                kernels.size(),
+                                                                components::compute::volatility_t::volatile_);
         for (const auto& [input, output] : kernels) {
             kernel_signature_t sig(function_type_t::vector,
                                    {parameter_type::exact(input)},
@@ -247,7 +252,7 @@ namespace {
     }
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
-        run_ok(d, "CREATE DATABASE vb;");
+        run_ok(d, "CREATE SCHEMA vb;");
         run_ok(d, "CREATE TABLE vb.t (a BIGINT, b STRING);");
         run_ok(d, "INSERT INTO vb.t (a, b) VALUES (1, 'x'), (2, 'y');");
     }
@@ -301,11 +306,13 @@ TEST_CASE("integration::cpp::view_binding::the_output_columns_are_the_views_attr
 TEST_CASE("integration::cpp::view_binding::an_unqualified_body_name_stays_on_the_relation_it_was_bound_to") {
     test_spaces space(config_for("unqualified"));
     auto* d = space.dispatcher();
-    run_ok(d, "CREATE DATABASE db1;");
+    run_ok(d, "CREATE SCHEMA db1;");
     run_ok(d, "CREATE TABLE db1.t (a BIGINT);");
     run_ok(d, "INSERT INTO db1.t (a) VALUES (1);");
-    run_ok(d, "CREATE VIEW db1.v AS SELECT a FROM t;");
-    run_ok(d, "CREATE DATABASE db2;");
+    auto in_db1 = otterbrix::session_id_t();
+    REQUIRE(d->execute_sql(in_db1, "SET search_path = 'db1';")->is_success());
+    REQUIRE(d->execute_sql(in_db1, "CREATE VIEW db1.v AS SELECT a FROM t;")->is_success());
+    run_ok(d, "CREATE SCHEMA db2;");
     run_ok(d, "CREATE TABLE db2.t (a BIGINT);");
     run_ok(d, "INSERT INTO db2.t (a) VALUES (2);");
 
@@ -592,6 +599,21 @@ TEST_CASE("integration::cpp::view_binding::or_replace_refuses_to_rename_a_column
     CHECK(error_text(refused).find("cannot change name of view column \"a\" to \"z\"") != std::string::npos);
 }
 
+TEST_CASE("integration::cpp::view_binding::or_replace_refuses_to_rename_a_struct_field") {
+    test_spaces space(config_for("replace_rename_struct_field"));
+    auto* d = space.dispatcher();
+    run_ok(d, "CREATE TYPE ta AS (a int);");
+    run_ok(d, "CREATE TYPE tb AS (b int);");
+    run_ok(d, "CREATE SCHEMA vb;");
+    run_ok(d, "CREATE TABLE vb.t1 (s ta);");
+    run_ok(d, "CREATE TABLE vb.t2 (s tb);");
+    run_ok(d, "CREATE VIEW vb.v AS SELECT s FROM vb.t1;");
+
+    auto refused = exec(d, "CREATE OR REPLACE VIEW vb.v AS SELECT s FROM vb.t2;");
+    INFO("error: " << error_text(refused));
+    CHECK(error_text(refused).find("cannot change data type of view column \"s\"") != std::string::npos);
+}
+
 TEST_CASE("integration::cpp::view_binding::or_replace_refuses_to_change_a_column_type") {
     test_spaces space(config_for("replace_retype_column"));
     auto* d = space.dispatcher();
@@ -611,7 +633,7 @@ TEST_CASE("integration::cpp::view_binding::or_replace_of_a_table_is_refused") {
     auto refused = exec(d, "CREATE OR REPLACE VIEW vb.t AS SELECT 1 AS one;");
     INFO("error: " << error_text(refused));
     CHECK(error_text(refused).find("\"t\" is not a view") != std::string::npos);
-    CHECK(refused->get_error().type == core::error_code_t::schema_error);
+    CHECK(refused->get_error().type == core::error_code_t::wrong_object_type);
     CHECK(run_ok(d, "SELECT a FROM vb.t;")->size() == 2);
 }
 
@@ -704,7 +726,7 @@ TEST_CASE("integration::cpp::view_binding::refresh_of_a_table_is_refused") {
     auto refused = exec(d, "REFRESH MATERIALIZED VIEW vb.t;");
     INFO("error: " << error_text(refused));
     CHECK(error_text(refused).find("\"t\" is not a materialized view") != std::string::npos);
-    CHECK(refused->get_error().type == core::error_code_t::schema_error);
+    CHECK(refused->get_error().type == core::error_code_t::wrong_object_type);
     CHECK(run_ok(d, "SELECT a FROM vb.t;")->size() == 2);
 }
 
@@ -834,6 +856,7 @@ TEST_CASE("integration::cpp::view_binding::re_registering_a_function_with_anothe
 
     auto refused = d->register_udf(otterbrix::session_id_t(),
                                    make_twice(d->resource(), {{logical_type::BIGINT, logical_type::DOUBLE}}));
+    CHECK(refused.type == core::error_code_t::invalid_function_definition);
     CHECK(std::string{refused.what} == "register_udf: cannot change return type of existing function \"twice\"\n"
                                        "HINT: Use unregister_udf first.");
     const auto rows = proc_rows(d, "twice");
@@ -1059,7 +1082,8 @@ namespace {
                                                                          arity::unary(),
                                                                          doc,
                                                                          size_t{1},
-                                                                         false);
+                                                                         false,
+                                                                         components::compute::volatility_t::volatile_);
         kernel_signature_t sig(function_type_t::aggregate,
                                {parameter_type::exact(logical_type::BIGINT)},
                                {output_type::fixed(logical_type::BIGINT)});

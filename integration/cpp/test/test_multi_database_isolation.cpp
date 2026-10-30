@@ -24,11 +24,11 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_select") {
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db1;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA db1;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db2;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA db2;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -67,8 +67,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_dml_routing") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    for (const auto* sql : {"CREATE DATABASE db1;",
-                            "CREATE DATABASE db2;",
+    for (const auto* sql : {"CREATE SCHEMA db1;",
+                            "CREATE SCHEMA db2;",
                             "CREATE TABLE db1.t1 (id BIGINT);",
                             "CREATE TABLE db2.t1 (id BIGINT);",
                             "INSERT INTO db1.t1 (id) VALUES (10);",
@@ -146,8 +146,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::same_name_drop") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    for (const auto* sql : {"CREATE DATABASE db1;",
-                            "CREATE DATABASE db2;",
+    for (const auto* sql : {"CREATE SCHEMA db1;",
+                            "CREATE SCHEMA db2;",
                             "CREATE TABLE db1.t1 (id BIGINT);",
                             "CREATE TABLE db2.t1 (id BIGINT);",
                             "INSERT INTO db1.t1 (id) VALUES (1);"}) {
@@ -183,8 +183,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::missing_table_not_aliased
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    for (const auto* sql : {"CREATE DATABASE db1;",
-                            "CREATE DATABASE db2;",
+    for (const auto* sql : {"CREATE SCHEMA db1;",
+                            "CREATE SCHEMA db2;",
                             "CREATE TABLE db1.t1 (id BIGINT);",
                             "INSERT INTO db1.t1 (id) VALUES (1);"}) {
         auto session = otterbrix::session_id_t();
@@ -222,7 +222,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::nonexistent_database_erro
     auto* dispatcher = space.dispatcher();
 
     for (const auto* sql :
-         {"CREATE DATABASE db1;", "CREATE TABLE db1.t1 (id BIGINT);", "INSERT INTO db1.t1 (id) VALUES (1);"}) {
+         {"CREATE SCHEMA db1;", "CREATE TABLE db1.t1 (id BIGINT);", "INSERT INTO db1.t1 (id) VALUES (1);"}) {
         auto session = otterbrix::session_id_t();
         REQUIRE(dispatcher->execute_sql(session, sql)->is_success());
     }
@@ -234,7 +234,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::nonexistent_database_erro
         auto session = otterbrix::session_id_t();
         auto c = dispatcher->execute_sql(session, "SELECT * FROM nosuchdb.t1;");
         REQUIRE(c->is_error());
-        REQUIRE(c->get_error().type == core::error_code_t::database_not_exists);
+        REQUIRE(c->get_error().type == core::error_code_t::table_not_exists);
     }
     {
         auto session = otterbrix::session_id_t();
@@ -255,8 +255,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::view_resolves_in_own_data
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    for (const auto* sql : {"CREATE DATABASE db1;",
-                            "CREATE DATABASE db2;",
+    for (const auto* sql : {"CREATE SCHEMA db1;",
+                            "CREATE SCHEMA db2;",
                             "CREATE TABLE db1.t1 (id BIGINT);",
                             "CREATE TABLE db2.t1 (id BIGINT);",
                             "INSERT INTO db1.t1 (id) VALUES (10);",
@@ -285,8 +285,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::unique_constraint_binds_t
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    for (const auto* sql : {"CREATE DATABASE db1;",
-                            "CREATE DATABASE db2;",
+    for (const auto* sql : {"CREATE SCHEMA db1;",
+                            "CREATE SCHEMA db2;",
                             "CREATE TABLE db1.t1 (id BIGINT);",
                             "CREATE TABLE db2.t1 (id BIGINT);",
                             "ALTER TABLE db2.t1 ADD CONSTRAINT uq_t1_id UNIQUE (id);",
@@ -328,8 +328,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::index_isolation") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    for (const auto* sql : {"CREATE DATABASE db1;",
-                            "CREATE DATABASE db2;",
+    for (const auto* sql : {"CREATE SCHEMA db1;",
+                            "CREATE SCHEMA db2;",
                             "CREATE TABLE db1.t1 (id BIGINT);",
                             "CREATE TABLE db2.t1 (id BIGINT);",
                             "CREATE INDEX idx_id ON db1.t1 (id);",
@@ -389,8 +389,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::cross_database_join") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    for (const auto* sql : {"CREATE DATABASE db1;",
-                            "CREATE DATABASE db2;",
+    for (const auto* sql : {"CREATE SCHEMA db1;",
+                            "CREATE SCHEMA db2;",
                             "CREATE TABLE db1.t1 (id BIGINT, a BIGINT);",
                             "CREATE TABLE db2.t1 (id BIGINT, b BIGINT);",
                             "INSERT INTO db1.t1 (id, a) VALUES (1, 100);",
@@ -418,8 +418,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::alter_column_isolated") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    for (const auto* sql : {"CREATE DATABASE db1;",
-                            "CREATE DATABASE db2;",
+    for (const auto* sql : {"CREATE SCHEMA db1;",
+                            "CREATE SCHEMA db2;",
                             "CREATE TABLE db1.t1 (id BIGINT);",
                             "CREATE TABLE db2.t1 (id BIGINT);",
                             "INSERT INTO db1.t1 (id) VALUES (10);",
@@ -478,7 +478,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::unqualified_names_preserv
     // qualifier does not reach it.
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db1;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA db1;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -497,8 +497,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::restart_persistence_isola
     {
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        for (const auto* sql : {"CREATE DATABASE db1;",
-                                "CREATE DATABASE db2;",
+        for (const auto* sql : {"CREATE SCHEMA db1;",
+                                "CREATE SCHEMA db2;",
                                 "CREATE TABLE db1.t1 (id BIGINT);",
                                 "CREATE TABLE db2.t1 (id BIGINT);",
                                 "INSERT INTO db1.t1 (id) VALUES (10);",
@@ -533,10 +533,9 @@ TEST_CASE("integration::cpp::multi_database_isolation::restart_persistence_isola
     }
 }
 
-// uid and schema are federation slots: this catalog stores a relation under a database and nothing
-// else, a statement that WRITES through one of them is refused rather than quietly landing in the
-// database slot with the segment dropped.
-TEST_CASE("integration::cpp::multi_database_isolation::write_through_a_schema_segment_is_refused") {
+// Three parts are database.schema.relation: a write through them lands in that database. Four parts name a database
+// of a connection: one the catalog does not hold is refused, nothing written.
+TEST_CASE("integration::cpp::multi_database_isolation::write_through_three_parts_lands_in_the_database") {
     auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/schema_segment_write"));
     test_clear_directory(config);
     test_spaces space(config);
@@ -547,23 +546,26 @@ TEST_CASE("integration::cpp::multi_database_isolation::write_through_a_schema_se
     };
 
     REQUIRE(exec("CREATE DATABASE d;")->is_success());
-    REQUIRE(exec("CREATE TABLE d.t (id BIGINT);")->is_success());
-    REQUIRE(exec("INSERT INTO d.t (id) VALUES (1), (2);")->is_success());
+    REQUIRE(exec("CREATE TABLE d.public.t (id BIGINT);")->is_success());
+    REQUIRE(exec("INSERT INTO d.public.t (id) VALUES (1), (2);")->is_success());
 
-    for (const auto* sql : {"CREATE TABLE d.s.t2 (id BIGINT);",
-                            "CREATE TABLE u.d.s.t3 (id BIGINT);",
-                            "INSERT INTO d.s.t (id) VALUES (3);",
-                            "UPDATE d.s.t SET id = 9;",
-                            "DELETE FROM d.s.t;",
-                            "DROP TABLE d.s.t;"}) {
+    for (const auto* sql : {"CREATE TABLE d.public.t2 (id BIGINT);",
+                            "INSERT INTO d.public.t (id) VALUES (3);",
+                            "UPDATE d.public.t SET id = 9 WHERE id = 3;",
+                            "DELETE FROM d.public.t WHERE id = 9;",
+                            "DROP TABLE d.public.t2;"}) {
         auto cursor = exec(sql);
         INFO("[" << sql << "] " << (cursor->is_error() ? cursor->get_error().what.c_str() : "<accepted>"));
-        REQUIRE(cursor->is_error());
-        REQUIRE(cursor->get_error().type == core::error_code_t::invalid_parameter);
+        REQUIRE(cursor->is_success());
     }
 
-    INFO("nothing above landed: the table keeps its rows and no relation was created");
-    auto rows = exec("SELECT id FROM d.t;");
+    auto refused = exec("CREATE TABLE u.d.s.t3 (id BIGINT);");
+    INFO((refused->is_error() ? refused->get_error().what.c_str() : "<accepted>"));
+    REQUIRE(refused->is_error());
+    CHECK(refused->get_error().type == core::error_code_t::database_not_exists);
+    CHECK(std::string{refused->get_error().what.c_str()} == "database \"u.d\" does not exist");
+
+    auto rows = exec("SELECT id FROM d.public.t;");
     REQUIRE(rows->is_success());
     REQUIRE(rows->size() == 2);
     auto created = exec("SELECT relname FROM pg_catalog.pg_class WHERE relname = 't2' OR relname = 't3';");
@@ -571,8 +573,8 @@ TEST_CASE("integration::cpp::multi_database_isolation::write_through_a_schema_se
     REQUIRE(created->size() == 0);
 }
 
-// No part of a name is dropped: a schema segment on a local relation is refused for reads as for writes.
-TEST_CASE("integration::cpp::multi_database_isolation::read_through_a_schema_segment_resolves") {
+// A read names the same places: s.t and main.s.t are one table, d.public.t another database's.
+TEST_CASE("integration::cpp::multi_database_isolation::read_through_three_parts_resolves") {
     auto config = test_create_config(integration_fixture_path("test_multi_db_isolation/schema_segment_read"));
     test_clear_directory(config);
     test_spaces space(config);
@@ -582,19 +584,22 @@ TEST_CASE("integration::cpp::multi_database_isolation::read_through_a_schema_seg
         return dispatcher->execute_sql(session, sql);
     };
 
+    REQUIRE(exec("CREATE SCHEMA s;")->is_success());
+    REQUIRE(exec("CREATE TABLE s.t (id BIGINT);")->is_success());
+    REQUIRE(exec("INSERT INTO s.t (id) VALUES (1), (2);")->is_success());
     REQUIRE(exec("CREATE DATABASE d;")->is_success());
-    REQUIRE(exec("CREATE TABLE d.t (id BIGINT);")->is_success());
-    REQUIRE(exec("INSERT INTO d.t (id) VALUES (1), (2);")->is_success());
+    REQUIRE(exec("CREATE TABLE d.public.t (id BIGINT);")->is_success());
+    REQUIRE(exec("INSERT INTO d.public.t (id) VALUES (3);")->is_success());
 
-    for (const std::string sql : {"SELECT id FROM d.s.t;", "SELECT id FROM d.public.t;"}) {
-        auto through_schema = exec(sql);
-        INFO("[" << sql << "] "
-                 << (through_schema->is_error() ? through_schema->get_error().what.c_str() : "<no error>"));
-        REQUIRE(through_schema->is_error());
-        REQUIRE(through_schema->get_error().type == core::error_code_t::invalid_parameter);
-        REQUIRE(std::string(through_schema->get_error().what).find("schema \"") != std::string::npos);
+    for (const std::string sql : {"SELECT id FROM s.t;", "SELECT id FROM main.s.t;"}) {
+        auto read = exec(sql);
+        INFO("[" << sql << "] " << (read->is_error() ? read->get_error().what.c_str() : "<no error>"));
+        REQUIRE(read->is_success());
+        REQUIRE(read->size() == 2);
     }
-    REQUIRE(exec("SELECT id FROM d.t;")->size() == 2);
+    auto other = exec("SELECT id FROM d.public.t;");
+    REQUIRE(other->is_success());
+    REQUIRE(other->size() == 1);
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::create_index_on_a_bare_table_name") {
@@ -615,11 +620,17 @@ TEST_CASE("integration::cpp::multi_database_isolation::create_index_on_a_bare_ta
         return cell15.value();
     };
 
-    REQUIRE(exec("CREATE DATABASE dix;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA dix;")->is_success());
     REQUIRE(exec("CREATE TABLE dix.t (id BIGINT);")->is_success());
     REQUIRE(exec("INSERT INTO dix.t (id) VALUES (1), (2);")->is_success());
 
-    auto created = exec("CREATE INDEX idx_bare ON t (id);");
+    auto from_public = exec("CREATE INDEX idx_bare ON t (id);");
+    REQUIRE(from_public->is_error());
+    CHECK(from_public->get_error().type == core::error_code_t::table_not_exists);
+
+    auto in_dix = otterbrix::session_id_t();
+    REQUIRE(dispatcher->execute_sql(in_dix, "SET search_path = 'dix';")->is_success());
+    auto created = dispatcher->execute_sql(in_dix, "CREATE INDEX idx_bare ON t (id);");
     INFO("[CREATE INDEX idx_bare ON t (id);] " << (created->is_error() ? created->get_error().what.c_str() : "<ok>"));
     REQUIRE(created->is_success());
     CHECK(relnamespace_of("idx_bare") == relnamespace_of("t"));
@@ -645,7 +656,12 @@ namespace {
         using namespace components::compute;
         function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
         auto fn =
-            core::pmr::make_polymorphic_unique<vector_function>(resource, "call_probe", arity::unary(), doc, size_t{1});
+            core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                "call_probe",
+                                                                arity::unary(),
+                                                                doc,
+                                                                size_t{1},
+                                                                components::compute::volatility_t::volatile_);
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(components::types::logical_type::BIGINT)},
                                {output_type::fixed(components::types::logical_type::BIGINT)});
@@ -654,7 +670,7 @@ namespace {
     }
 
     void seed_named_rows(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE d;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA d;")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE d.t (id BIGINT, name TEXT);")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO d.t (id, name) VALUES (1, 'a'), (2, 'bb'), (3, 'bb');")
                     ->is_success());
@@ -717,7 +733,7 @@ TEST_CASE("integration::cpp::multi_database_isolation::a_call_naming_a_database_
              {"SELECT d.count(*) FROM d.t;", "d.count"},
              {"SELECT count(id) FROM d.t GROUP BY name HAVING d.count(id) > 1;", "d.count"},
              {"SELECT * FROM d.generate_series(1, 3);", "d.generate_series"}}) {
-        require_call_refused(dispatcher, sql, core::error_code_t::unimplemented_yet, written);
+        require_call_refused(dispatcher, sql, core::error_code_t::unrecognized_function, written);
     }
     require_answered(dispatcher, "SELECT * FROM pg_catalog.generate_series(1, 3);", 3);
 }
@@ -731,12 +747,13 @@ TEST_CASE("integration::cpp::multi_database_isolation::a_call_through_a_schema_s
 
     require_call_refused(dispatcher,
                          "SELECT d.s.length(name) FROM d.t;",
-                         core::error_code_t::invalid_parameter,
+                         core::error_code_t::unrecognized_function,
                          "d.s.length");
     require_call_refused(dispatcher,
                          "SELECT u.d.s.length(name) FROM d.t;",
-                         core::error_code_t::invalid_parameter,
+                         core::error_code_t::sql_parse_error,
                          "u.d.s.length");
+    require_answered(dispatcher, "SELECT main.pg_catalog.length(name) FROM d.t;", 3);
 }
 
 TEST_CASE("integration::cpp::multi_database_isolation::a_qualified_call_matches_its_bare_grouping_key") {

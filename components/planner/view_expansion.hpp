@@ -8,6 +8,7 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/sql/parser/nodes/nodes.h>
 #include <core/result_wrapper.hpp>
 
 #include <memory_resource>
@@ -33,6 +34,13 @@ namespace components::planner {
         // The body's own catalog lookups; the caller must merge these and run another resolve round.
         logical_plan::catalog_resolves_t resolves;
     };
+
+    // The one statement of a stored body (a view's, a prepared statement's), parsed on `arena` without the host's
+    // grammar. `what` names the body in the refusals.
+    core::result_wrapper_t<Node*> parse_stored_body(std::pmr::memory_resource* resource,
+                                                    std::pmr::memory_resource* arena,
+                                                    const std::string& text,
+                                                    std::string_view what);
 
     // Each reference gets its own body -- filter pushdown appends a match child into it, so two
     // references cannot share a subtree (same policy as CTE inlining in optimizer.cpp).
@@ -87,16 +95,14 @@ namespace components::planner {
         logical_plan::node_ptr reference;
     };
 
+    // The matview is the one the REFRESH found: its write target is read again by its oid.
     core::result_wrapper_t<refresh_matview_plan_t>
-    refresh_matview_plan(std::pmr::memory_resource* resource,
-                         const logical_plan::resolved_table_metadata_t& matview,
-                         const core::dbname_t& dbname);
+    refresh_matview_plan(std::pmr::memory_resource* resource, const logical_plan::resolved_table_metadata_t& matview);
 
-    // REFRESH MATERIALIZED VIEW empties the matview first (PostgreSQL 18 matview.c): DELETE FROM dbname.matview,
+    // REFRESH MATERIALIZED VIEW empties the matview first (PostgreSQL 18 matview.c): DELETE FROM the matview,
     // every row, no limit.
     logical_plan::execution_plan_t refresh_matview_delete_plan(std::pmr::memory_resource* resource,
-                                                               const logical_plan::resolved_table_metadata_t& matview,
-                                                               const core::dbname_t& dbname);
+                                                               const logical_plan::resolved_table_metadata_t& matview);
 
     // A true cycle should be impossible, but this is the loud stop instead of an endless resolve loop.
     inline constexpr std::size_t max_view_expansion_depth = 16;

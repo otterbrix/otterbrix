@@ -2,23 +2,25 @@
 
 #include <core/file/list_dir.hpp>
 
+#include <cassert>
+
 namespace services::disk {
 
     using namespace core::filesystem;
     namespace catalog = components::catalog;
     using namespace detail;
 
-    void manager_disk_t::set_manager_wal_sync(actor_zeta::address_t address) {
+    void manager_disk_t::set_manager_wal_sync(const bootstrap_t& boot, actor_zeta::address_t address) {
         // Fanned into every agent, bootstrap-only; the manager itself keeps no copy.
         for (auto& agent : agents_) {
-            if (agent != nullptr) {
-                agent->set_manager_wal_sync(address);
-            }
+            agent_disk_t::bootstrap_t{*agent, boot}.set_manager_wal(address);
         }
     }
 
     void manager_disk_t::create_agent(int count_agents) {
         // Roles align with pool_idx_for_oid: slot 0 = CATALOG, slots 1..N-1 = USER_POOL.
+        // A cursor names its agent in its top 8 bits (agent_disk_t::mint_cursor_).
+        assert(count_agents < 256 && "a disk has at most 256 agents");
         for (int i = 0; i < count_agents; i++) {
             const std::size_t slot = agents_.size();
             auto name_agent = "agent_disk_" + std::to_string(slot + 1);
@@ -171,7 +173,8 @@ namespace services::disk {
         co_return;
     }
 
-    core::error_t manager_disk_t::create_storage_disk_sync(components::catalog::oid_t table_oid,
+    core::error_t manager_disk_t::create_storage_disk_sync(const bootstrap_t& boot,
+                                                           components::catalog::oid_t table_oid,
                                                            components::catalog::oid_t /*database_oid*/,
                                                            std::vector<components::table::column_definition_t> columns,
                                                            const std::filesystem::path& otbx_path,
@@ -180,7 +183,7 @@ namespace services::disk {
               "manager_disk_t::create_storage_disk_sync , oid : {} , path : {}",
               static_cast<unsigned>(table_oid),
               otbx_path.string());
-        // The manager never opens .otbx itself (would race the WRITE_LOCK); construction happens on the agent thread.
+        // Only the owning agent opens a .otbx: closing a second handle in this process would drop its WRITE_LOCK.
         if (agents_.empty()) {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"create_storage_disk_sync: no disk agents to own oid " +
@@ -199,7 +202,7 @@ namespace services::disk {
             if (needs_identity) {
                 std::unordered_set<components::catalog::oid_t> wanted;
                 wanted.insert(table_oid);
-                auto cols_by_relid = collect_catalog_columns_sync(wanted);
+                auto cols_by_relid = collect_catalog_columns_sync(boot, wanted);
                 auto found = cols_by_relid.find(table_oid);
                 if (found != cols_by_relid.end()) {
                     for (size_t position = 0; position < columns.size() && position < found->second.size();
@@ -224,18 +227,12 @@ namespace services::disk {
         std::error_code pre_ec;
         const bool existed_before = std::filesystem::exists(otbx_path, pre_ec) && !pre_ec;
 
-        auto& agent = agents_[pool_idx_c];
-        const bool ok = agent->bootstrap_create_disk_inner_sync(table_oid, std::move(columns), otbx_path, is_computed);
-        if (ok) {
-            return core::error_t::no_error();
-        }
-        // One `false`, two unrelated causes; the real question is whether the agent holds this oid now.
-        if (agent->has_storage_sync(table_oid)) {
-            trace(log_,
-                  "manager_disk_t::create_storage_disk_sync: agent[{}] already owns oid {} (path={})",
-                  pool_idx_c,
-                  static_cast<unsigned>(table_oid),
-                  otbx_path.string());
+        // false is not a refusal: the agent already owns the oid.
+        const auto created = agent_disk_t::bootstrap_t{*agents_[pool_idx_c], boot}.create(table_oid,
+                                                                                          std::move(columns),
+                                                                                          otbx_path,
+                                                                                          is_computed);
+        if (!created.has_error()) {
             return core::error_t::no_error();
         }
         // A refusal must not leave the zero-byte stump FILE_CREATE_NEW makes on a failed write.
@@ -246,21 +243,17 @@ namespace services::disk {
                 std::filesystem::remove(otbx_path, stump_ec);
             }
         }
-        error(log_,
-              "manager_disk_t::create_storage_disk_sync: agent[{}] could not create oid {} at {} — no storage "
-              "came up for it",
-              pool_idx_c,
-              static_cast<unsigned>(table_oid),
-              otbx_path.string());
-        return core::error_t(core::error_code_t::io_error,
-                             std::pmr::string{"create_storage_disk_sync: could not create the .otbx for oid " +
-                                                  std::to_string(static_cast<unsigned>(table_oid)) + " at " +
-                                                  otbx_path.string(),
-                                              resource()});
+        std::pmr::string message{"create_storage_disk_sync: could not create the .otbx for oid " +
+                                     std::to_string(static_cast<unsigned>(table_oid)) + " at " + otbx_path.string() +
+                                     ": ",
+                                 resource()};
+        message += created.error().what;
+        return core::error_t(core::error_code_t::io_error, std::move(message));
     }
 
     core::error_t
-    manager_disk_t::load_storage_disk_sync(components::catalog::oid_t table_oid,
+    manager_disk_t::load_storage_disk_sync(const bootstrap_t& boot,
+                                           components::catalog::oid_t table_oid,
                                            components::catalog::oid_t /*database_oid*/,
                                            const std::filesystem::path& otbx_path,
                                            std::vector<components::table::column_definition_t> catalog_columns) {
@@ -269,7 +262,7 @@ namespace services::disk {
               static_cast<unsigned>(table_oid),
               otbx_path.string());
 
-        // The SFBM holds an exclusive posix WRITE_LOCK, so only the agent thread opens it.
+        // Only the owning agent opens a .otbx: closing a second handle in this process would drop its WRITE_LOCK.
         const std::size_t pool_idx = agents_.empty() ? 0 : pool_idx_for_oid(table_oid, agents_.size());
         trace(log_,
               "manager_disk_t::load_storage_disk_sync: load oid={} pool_idx={} path={}",
@@ -312,7 +305,7 @@ namespace services::disk {
         bool is_computed = false;
         if (catalog_columns.empty() && table_oid >= components::catalog::FIRST_USER_OID) {
             std::unordered_set<components::catalog::oid_t> wanted{table_oid};
-            auto resolved = collect_catalog_columns_sync(wanted);
+            auto resolved = collect_catalog_columns_sync(boot, wanted);
             if (auto it = resolved.find(table_oid); it != resolved.end()) {
                 catalog_columns = std::move(it->second);
             }
@@ -321,7 +314,7 @@ namespace services::disk {
             if (catalog_columns.empty()) {
                 // Assuming "regular" on a failed relkind read would silently drop a checkpointed table's dynamic-schema
                 // semantics.
-                auto relkind_r = relkind_for_oid_sync(table_oid);
+                auto relkind_r = relkind_for_oid_sync(boot, table_oid);
                 if (relkind_r.has_error()) {
                     error(log_,
                           "manager_disk_t::load_storage_disk_sync: could not read the relkind of oid {}: {}",
@@ -352,40 +345,16 @@ namespace services::disk {
         }
         const auto sidecar_id = sidecar_readable ? sidecar_r.value() : wal::id_t{0};
 
-        auto transfer_to_agent = [&](const std::filesystem::path& path) -> core::error_t {
-            if (agents_.empty()) {
-                return core::error_t(core::error_code_t::io_error,
-                                     std::pmr::string{"load_storage_disk_sync: no disk agents to own oid " +
-                                                          std::to_string(static_cast<unsigned>(table_oid)),
-                                                      resource()});
-            }
-            auto& agent = agents_[pool_idx];
-            if (agent->bootstrap_disk_inner_sync(table_oid,
-                                                 path,
-                                                 sidecar_id,
-                                                 sidecar_readable,
-                                                 catalog_columns,
-                                                 is_computed)) {
-                return core::error_t::no_error();
-            }
-            if (agent->has_storage_sync(table_oid)) {
-                // The pre-construction probe drops the incoming SFBM on a duplicate key, so no WRITE_LOCK race.
-                trace(log_,
-                      "manager_disk_t::load_storage_disk_sync: agent[{}] already owns oid {} (path={})",
-                      pool_idx,
-                      static_cast<unsigned>(table_oid),
-                      path.string());
-                return core::error_t::no_error();
-            }
-            return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"load_storage_disk_sync: agent could not take ownership of oid " +
-                                                      std::to_string(static_cast<unsigned>(table_oid)) + " from " +
-                                                      path.string(),
-                                                  resource()});
-        };
-
         // Crash recovery is the two-slot shadow-paged root inside the .otbx; every refusal leaves it byte-identical.
-        if (!std::filesystem::exists(otbx_path)) {
+        std::error_code otbx_ec;
+        const bool otbx_present = std::filesystem::exists(otbx_path, otbx_ec);
+        if (otbx_ec) {
+            return core::error_t(
+                core::error_code_t::io_error,
+                std::pmr::string{"load_storage_disk_sync: cannot stat " + otbx_path.string() + ": " + otbx_ec.message(),
+                                 resource()});
+        }
+        if (!otbx_present) {
             // Callers guard existence, so arriving here means the file vanished between their check and this load.
             return core::error_t(core::error_code_t::data_corruption,
                                  std::pmr::string{"load_storage_disk_sync: " + otbx_path.string() +
@@ -405,7 +374,7 @@ namespace services::disk {
         // rather than discard it. A young file with no resolved schema just means this walk ran before the catalog
         // knew the table; defer, since the post-replay walk revisits it.
         {
-            // An unreadable root is not answered here: the probe below refuses it with the full per-slot diagnostics.
+            // An unreadable root is not answered here: the agent's open below refuses it with the per-slot diagnostics.
             auto young =
                 components::table::storage::single_file_block_manager_t::file_is_never_checkpointed(otbx_path.string(),
                                                                                                     resource());
@@ -433,25 +402,26 @@ namespace services::disk {
             }
         }
 
-        // Probed on the manager thread, then destroyed to free the WRITE_LOCK before the agent reopens.
-        bool probe_failed = false;
-        std::string probe_error;
-        {
-            auto probe =
-                std::make_unique<collection_storage_entry_t>(resource(), otbx_path, catalog_columns, is_computed);
-            if (probe->table_storage.construction_failed()) {
-                probe_failed = true;
-                probe_error = probe->table_storage.construction_error().what.c_str();
-            }
-            probe.reset(); // release WRITE_LOCK before agent reopens on agent thread
+        if (agents_.empty()) {
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"load_storage_disk_sync: no disk agents to own oid " +
+                                                      std::to_string(static_cast<unsigned>(table_oid)),
+                                                  resource()});
         }
-        if (probe_failed) {
-            warn(log_, "load_storage_disk_sync: failed to load {} : {}", otbx_path.string(), probe_error);
+        // The agent logs its own refusal; the manager adds nothing to it.
+        auto loaded = agent_disk_t::bootstrap_t{*agents_[pool_idx], boot}.load(table_oid,
+                                                                               otbx_path,
+                                                                               sidecar_id,
+                                                                               sidecar_readable,
+                                                                               std::move(catalog_columns),
+                                                                               is_computed);
+        if (loaded.has_error()) {
             return core::error_t(
                 core::error_code_t::data_corruption,
-                std::pmr::string{"load_storage_disk_sync: " + otbx_path.string() + " : " + probe_error, resource()});
+                std::pmr::string{"load_storage_disk_sync: " + otbx_path.string() + " : " + loaded.error().what.c_str(),
+                                 resource()});
         }
-        return transfer_to_agent(otbx_path);
+        return core::error_t::no_error();
     }
 
     core::error_t verify_otbx_sidecars(const std::filesystem::path& otbx_path, std::pmr::memory_resource* resource) {
@@ -487,39 +457,28 @@ namespace services::disk {
     }
 
     core::result_wrapper_t<wal::id_t>
-    manager_disk_t::peek_checkpoint_wal_id_from_disk(components::catalog::oid_t table_oid,
-                                                     components::catalog::oid_t database_oid) const {
+    manager_disk_t::peek_checkpoint_wal_id_from_disk(const bootstrap_t& boot,
+                                                     components::catalog::oid_t table_oid,
+                                                     components::catalog::oid_t database_oid) {
         // A loaded entry carries the floor its own load read; an unreadable sidecar means an unknown floor, not 0.
-        if (!agents_.empty()) {
-            const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
-            if (idx < agents_.size() && agents_[idx] != nullptr) {
-                if (const auto* entry = agents_[idx]->storage_entry_sync(table_oid); entry != nullptr) {
-                    if (!entry->table_storage.checkpoint_wal_id_known()) {
-                        return core::error_t(
-                            core::error_code_t::data_corruption,
-                            std::pmr::string{"peek_checkpoint_wal_id_from_disk: oid " +
-                                                 std::to_string(static_cast<unsigned>(table_oid)) +
-                                                 " was loaded over a checkpoint sidecar that holds no wal id; its "
-                                                 "floor is unknown and replaying this table would re-apply records "
-                                                 "the checkpointed file already holds",
-                                             resource()});
-                    }
-                    return entry->table_storage.checkpoint_wal_id();
-                }
+        if (const auto* entry = boot_entry(boot, table_oid); entry != nullptr) {
+            if (!entry->table_storage.checkpoint_wal_id_known()) {
+                return core::error_t(
+                    core::error_code_t::data_corruption,
+                    std::pmr::string{"peek_checkpoint_wal_id_from_disk: oid " +
+                                         std::to_string(static_cast<unsigned>(table_oid)) +
+                                         " was loaded over a checkpoint sidecar that holds no wal id; "
+                                         "its floor is unknown and replaying this table would re-apply "
+                                         "records the checkpointed file already holds",
+                                     resource()});
             }
+            return entry->table_storage.checkpoint_wal_id();
         }
         // Not a fallback: answering 0 on every read failure would tell the replay filter "never checkpointed" wrongly.
         if (table_oid == components::catalog::INVALID_OID) {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"peek_checkpoint_wal_id_from_disk: asked for the checkpoint floor "
                                                   "of INVALID_OID; there is no table to answer about",
-                                                  resource()});
-        }
-        if (config_.path.empty()) {
-            return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"peek_checkpoint_wal_id_from_disk: config_disk::path is empty, so "
-                                                  "there is no directory to look for the sidecar of oid " +
-                                                      std::to_string(static_cast<unsigned>(table_oid)) + " in",
                                                   resource()});
         }
         if (database_oid == components::catalog::INVALID_OID) {
@@ -559,20 +518,29 @@ namespace services::disk {
                                               resource()});
     }
 
-    core::error_t manager_disk_t::load_storage_for_wal_replay_sync(components::catalog::oid_t table_oid,
+    core::error_t manager_disk_t::load_storage_for_wal_replay_sync(const bootstrap_t& boot,
+                                                                   components::catalog::oid_t table_oid,
                                                                    components::catalog::oid_t database_oid) {
-        if (has_storage(table_oid) || config_.path.empty() || table_oid == components::catalog::INVALID_OID ||
+        if (has_storage(boot, table_oid) || table_oid == components::catalog::INVALID_OID ||
             database_oid == components::catalog::INVALID_OID) {
             return core::error_t::no_error();
         }
         auto otbx_path = config_.path / std::to_string(static_cast<unsigned>(database_oid)) /
                          std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
-        if (!std::filesystem::exists(otbx_path)) {
+        std::error_code otbx_ec;
+        const bool otbx_present = std::filesystem::exists(otbx_path, otbx_ec);
+        if (otbx_ec) {
+            return core::error_t(core::error_code_t::io_error,
+                                 std::pmr::string{"load_storage_for_wal_replay_sync: cannot stat " +
+                                                      otbx_path.string() + ": " + otbx_ec.message(),
+                                                  resource()});
+        }
+        if (!otbx_present) {
             // Legal here: replay can run ahead of a checkpoint, synthesising the storage from the chunk instead.
             return core::error_t::no_error();
         }
         // Must not be swallowed into a warn, or replay would synthesise over unreachable committed rows.
-        if (auto err = load_storage_disk_sync(table_oid, database_oid, otbx_path, {}); err.contains_error()) {
+        if (auto err = load_storage_disk_sync(boot, table_oid, database_oid, otbx_path, {}); err.contains_error()) {
             error(log_,
                   "load_storage_for_wal_replay_sync: failed to load {}: {}",
                   otbx_path.string(),

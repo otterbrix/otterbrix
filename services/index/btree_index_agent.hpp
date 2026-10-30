@@ -48,7 +48,7 @@ namespace services::index {
         static constexpr components::logical_plan::index_type index_type_v =
             components::logical_plan::index_type::single;
 
-        // can_use_index refuses lt/lte/gt/gte unless a non-hashed index covers the key.
+        // select_indexes (index_selection) gives lt/lte/gt/gte an index only when a non-hashed one covers the key.
         static constexpr bool supports_ordered_probe_v = true;
 
         // This family owns no segments or txn log; on-disk directory is ${path_db}/${table_oid}/${index_oid}/.
@@ -84,7 +84,8 @@ namespace services::index {
         read_rows(session_id_t session,
                   components::expressions::compare_type compare,
                   components::vector::vector_t key,
-                  uint64_t txn_id);
+                  uint64_t txn_id,
+                  bool hides_own_deletes);
         unique_future<core::error_t> force_flush(session_id_t session);
 
         // Order must match bitcask_index_agent_t's dispatch_traits exactly -- msg_id positions are

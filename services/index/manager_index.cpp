@@ -28,7 +28,7 @@ namespace {
             if (chunk.row_ids.data() == nullptr ||
                 chunk.row_ids.get_vector_type() != components::vector::vector_type::FLAT) {
                 return core::error_t{
-                    core::error_code_t::invalid_parameter,
+                    core::error_code_t::internal_error,
                     std::pmr::string{"index rebuild received a scan chunk without physical row_ids", resource}};
             }
         }
@@ -289,71 +289,74 @@ namespace services::index {
             return std::filesystem::is_directory(path_db_, ec);
         }());
 
-        loop_thread_ = std::thread([this] {
-            // pmr::list for iterator stability: behavior_t is move-only, and a resume can re-suspend in place.
-            auto& in_flight = in_flight_;
+        construction_error_ =
+            loop_thread_.start<manager_index_t, &manager_index_t::loop_body>(resource_, "manager_index", this);
+    }
 
-            while (loop_running_.load(std::memory_order_acquire)) {
-                {
-                    actor_zeta::mailbox::message* raw = nullptr;
-                    while (inbox_.pop(raw)) {
-                        in_flight.emplace_back();
-                        in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr{raw};
-                    }
+    void manager_index_t::loop_body() {
+        // pmr::list for iterator stability: behavior_t is move-only, and a resume can re-suspend in place.
+        auto& in_flight = in_flight_;
+
+        while (loop_running_.load(std::memory_order_acquire)) {
+            {
+                actor_zeta::mailbox::message* raw = nullptr;
+                while (inbox_.pop(raw)) {
+                    in_flight.emplace_back();
+                    in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr{raw};
                 }
+            }
 
-                bool made_progress = false;
+            bool made_progress = false;
 
+            for (auto& e : in_flight) {
+                if (e.pending_msg && !e.behavior) {
+                    e.behavior = behavior(e.pending_msg.get());
+                    poll_pending();
+                    made_progress = true;
+                    break;
+                }
+            }
+
+            // take_awaited_continuation atomically claims it; null means another resume already took it.
+            if (!made_progress) {
+                actor_zeta::detail::coroutine_handle<> cont{};
                 for (auto& e : in_flight) {
-                    if (e.pending_msg && !e.behavior) {
-                        e.behavior = behavior(e.pending_msg.get());
-                        poll_pending();
-                        made_progress = true;
-                        break;
-                    }
-                }
-
-                // take_awaited_continuation atomically claims it; null means another resume already took it.
-                if (!made_progress) {
-                    actor_zeta::detail::coroutine_handle<> cont{};
-                    for (auto& e : in_flight) {
-                        if (e.behavior.is_awaited_ready()) {
-                            cont = e.behavior.take_awaited_continuation();
-                            if (cont) {
-                                break;
-                            }
-                        }
-                    }
-                    if (cont) {
-                        cont.resume();
-                        poll_pending();
-                        made_progress = true;
-                    }
-                }
-
-                if (!made_progress) {
-                    for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
-                        if (it->behavior && it->behavior.done()) {
-                            it = in_flight.erase(it);
-                            made_progress = true;
+                    if (e.behavior.is_awaited_ready()) {
+                        cont = e.behavior.take_awaited_continuation();
+                        if (cont) {
                             break;
                         }
                     }
                 }
-
-                if (made_progress) {
-                    continue;
+                if (cont) {
+                    cont.resume();
+                    poll_pending();
+                    made_progress = true;
                 }
+            }
+
+            if (!made_progress) {
+                for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
+                    if (it->behavior && it->behavior.done()) {
+                        it = in_flight.erase(it);
+                        made_progress = true;
+                        break;
+                    }
+                }
+            }
+
+            if (made_progress) {
+                continue;
+            }
 
 #ifdef DEV_MODE
-                const dev_pump_wait_t pump_probe{in_flight.empty()};
+            const dev_pump_wait_t pump_probe{in_flight.empty()};
 #endif
-                std::unique_lock<std::mutex> lk(mutex_);
-                pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
-                    return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
-                });
-            }
-        });
+            std::unique_lock<std::mutex> lk(mutex_);
+            pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
+                return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
+            });
+        }
     }
 
     manager_index_t::~manager_index_t() {
@@ -371,9 +374,7 @@ namespace services::index {
     void manager_index_t::stop_loop() noexcept {
         loop_running_.store(false, std::memory_order_release);
         wake_loop_();
-        if (loop_thread_.joinable()) {
-            loop_thread_.join();
-        }
+        loop_thread_.join();
     }
 
     auto manager_index_t::make_type() const noexcept -> const char* { return "manager_index"; }
@@ -570,7 +571,7 @@ namespace services::index {
         for (const auto& created : drain.created_indexes) {
             co_await drop_index(session, created.table_oid, created.index_oid);
         }
-        // Before manager_disk_t::abort_transaction drops their storage
+        // Before the disk's undo_appends_and_storages drops their storage
         for (auto table_oid : drain.created_storage_oids) {
             co_await unregister_collection(session, table_oid);
         }
@@ -595,27 +596,27 @@ namespace services::index {
         // Mirrors create_index's gates and agent-first order (see there for why each gate exists).
         auto it = indexes_per_oid_.find(table_oid);
         if (it == indexes_per_oid_.end()) {
-            return core::error_t{core::error_code_t::index_create_fail,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"index bootstrap: the table is not registered with the index "
                                                   "manager (bootstrap order violated)",
                                                   resource_}};
         }
 
         if (match_index_relid(it->second, index_oid) != nullptr) {
-            return core::error_t{core::error_code_t::index_create_fail,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"index bootstrap: the index is already registered", resource_}};
         }
 
         if (match_index(it->second, keys, type) != nullptr) {
             return core::error_t{
-                core::error_code_t::index_create_fail,
+                core::error_code_t::internal_error,
                 std::pmr::string{"index bootstrap: an index over the same keys and type is already registered",
                                  resource_}};
         }
 
         if (keys.size() != 1) {
             return core::error_t{
-                core::error_code_t::index_create_fail,
+                core::error_code_t::internal_error,
                 std::pmr::string{"index bootstrap: multi-column indexes are not supported by any backend; the "
                                  "index would silently store only its first key's column",
                                  resource_}};
@@ -623,13 +624,13 @@ namespace services::index {
 
         if (type != components::logical_plan::index_type::single &&
             type != components::logical_plan::index_type::hashed) {
-            return core::error_t{core::error_code_t::index_create_fail,
+            return core::error_t{core::error_code_t::internal_error,
                                  std::pmr::string{"index bootstrap: unsupported index type", resource_}};
         }
 
         if (path_db_.empty()) {
             return core::error_t{
-                core::error_code_t::index_create_fail,
+                core::error_code_t::internal_error,
                 std::pmr::string{"index bootstrap: this index manager has no on-disk catalog path, and an "
                                  "index keeps its rows on disk",
                                  resource_}};
@@ -662,17 +663,6 @@ namespace services::index {
     }
 
 #ifdef DEV_MODE
-    std::pmr::vector<bitcask_index_agent_t*> manager_index_t::owned_bitcask_agents_sync() {
-        std::pmr::vector<bitcask_index_agent_t*> agents(resource_);
-        agents.reserve(bitcask_agents_owned_.size());
-        for (auto& agent : bitcask_agents_owned_) {
-            if (agent) {
-                agents.emplace_back(agent.get());
-            }
-        }
-        return agents;
-    }
-
     std::pmr::vector<btree_index_agent_t*> manager_index_t::owned_btree_agents_sync() {
         std::pmr::vector<btree_index_agent_t*> agents(resource_);
         agents.reserve(btree_agents_owned_.size());
@@ -857,25 +847,25 @@ namespace services::index {
 
         auto it = indexes_per_oid_.find(table_oid);
         if (it == indexes_per_oid_.end()) {
-            co_return core::error_t{core::error_code_t::index_create_fail,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"the table is not registered with the index manager", resource_}};
         }
 
-        // (keys, hash) beside (keys, single) is legal; index_create_fail not already_exists: test_index pins this code.
+        // (keys, hash) beside (keys, single) is legal; table_already_exists: test_index pins this code.
         if (match_index_relid(it->second, index_oid) != nullptr || match_index(it->second, keys, type) != nullptr) {
-            co_return core::error_t{core::error_code_t::index_create_fail,
+            co_return core::error_t{core::error_code_t::table_already_exists,
                                     std::pmr::string{"index already exists", resource_}};
         }
 
         if (type != components::logical_plan::index_type::single &&
             type != components::logical_plan::index_type::hashed) {
-            co_return core::error_t{core::error_code_t::index_create_fail,
+            co_return core::error_t{core::error_code_t::unimplemented_yet,
                                     std::pmr::string{"unsupported index type", resource_}};
         }
 
         if (keys.size() != 1) {
             co_return core::error_t{
-                core::error_code_t::index_create_fail,
+                core::error_code_t::unimplemented_yet,
                 std::pmr::string{"index create: multi-column indexes are not supported by any backend; the "
                                  "index would silently store only its first key's column",
                                  resource_}};
@@ -883,7 +873,7 @@ namespace services::index {
 
         if (path_db_.empty()) {
             co_return core::error_t{
-                core::error_code_t::index_create_fail,
+                core::error_code_t::internal_error,
                 std::pmr::string{"index create: this index manager has no on-disk catalog path, and an index "
                                  "keeps its rows on disk",
                                  resource_}};
@@ -1404,15 +1394,14 @@ namespace services::index {
                                                 components::vector::vector_t key,
                                                 components::expressions::compare_type compare,
                                                 components::logical_plan::index_type preferred_type,
-                                                // Unused; kept because it's part of index_contract::search.
-                                                uint64_t /*start_time*/,
                                                 uint64_t txn_id,
+                                                bool hides_own_deletes,
                                                 core::date::timezone_offset_t /*session_tz*/) {
         auto it = indexes_per_oid_.find(table_oid);
         if (it == indexes_per_oid_.end()) {
             // A planner invariant, not a data answer: an empty match would be the silent wrong
             // answer the no-fallback rule forbids.
-            co_return core::error_t{core::error_code_t::index_not_exists,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"index search: no index engine for the table oid", resource_}};
         }
 
@@ -1422,7 +1411,7 @@ namespace services::index {
         }
         if (record == nullptr) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"index search: the table has no index on the predicate key", resource_}};
         }
 
@@ -1431,7 +1420,7 @@ namespace services::index {
                                   compare == components::expressions::compare_type::is_not_null;
         if (compare != components::expressions::compare_type::eq && !is_null_test && !record->ordered) {
             co_return core::error_t{
-                core::error_code_t::index_not_exists,
+                core::error_code_t::internal_error,
                 std::pmr::string{"index search: this index has no ordering and cannot answer a range predicate",
                                  resource_}};
         }
@@ -1447,7 +1436,8 @@ namespace services::index {
             session,
             compare,
             components::vector::make_constant_copy(resource_, key),
-            txn_id);
+            txn_id,
+            hides_own_deletes);
         schedule_agent(agent_addr, needs_sched);
         auto agent_result = co_await std::move(agent_future);
         if (agent_result.has_error()) {
@@ -1463,8 +1453,8 @@ namespace services::index {
                             components::index::keys_base_storage_t keys,
                             components::vector::vector_t key,
                             components::expressions::compare_type compare,
-                            uint64_t start_time,
                             uint64_t txn_id,
+                            bool hides_own_deletes,
                             core::date::timezone_offset_t session_tz) {
         co_return co_await search_with_preferred_type(session,
                                                       table_oid,
@@ -1472,8 +1462,8 @@ namespace services::index {
                                                       std::move(key),
                                                       compare,
                                                       components::logical_plan::index_type::no_valid,
-                                                      start_time,
                                                       txn_id,
+                                                      hides_own_deletes,
                                                       session_tz);
     }
 
@@ -1868,7 +1858,7 @@ namespace services::index {
                   static_cast<unsigned>(record_type));
             catchup_failures_.try_emplace(
                 txn_id,
-                core::error_t{core::error_code_t::index_create_fail,
+                core::error_t{core::error_code_t::internal_error,
                               std::pmr::string{"CREATE INDEX catchup could not place a WAL record: the table has "
                                                "no registry entry; the build is missing rows and may not publish",
                                                resource_}});
@@ -1931,7 +1921,7 @@ namespace services::index {
                   static_cast<unsigned>(record_type));
             catchup_failures_.try_emplace(
                 txn_id,
-                core::error_t{core::error_code_t::index_create_fail,
+                core::error_t{core::error_code_t::internal_error,
                               std::pmr::string{"CREATE INDEX could not place a record: the index it names is not "
                                                "registered on this table; the build is missing rows and may not "
                                                "publish",

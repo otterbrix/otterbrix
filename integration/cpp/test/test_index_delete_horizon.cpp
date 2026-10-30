@@ -73,7 +73,7 @@ TEST_CASE("integration::cpp::index_delete_horizon::committed_delete_keeps_the_ol
 
     {
         auto s = otterbrix::session_id_t();
-        REQUIRE(exec(dispatcher, s, "CREATE DATABASE HorizonDb;")->is_success());
+        REQUIRE(exec(dispatcher, s, "CREATE SCHEMA HorizonDb;")->is_success());
     }
     {
         auto s = otterbrix::session_id_t();
@@ -169,7 +169,7 @@ TEST_CASE("integration::cpp::index_delete_horizon::the_index_still_forgets_once_
 
     {
         auto s = otterbrix::session_id_t();
-        REQUIRE(exec(dispatcher, s, "CREATE DATABASE HorizonDb;")->is_success());
+        REQUIRE(exec(dispatcher, s, "CREATE SCHEMA HorizonDb;")->is_success());
     }
     {
         auto s = otterbrix::session_id_t();

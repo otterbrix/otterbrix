@@ -90,8 +90,12 @@ namespace components::table {
 
         void merge_storage(collection_t& data);
 
-        [[nodiscard]] core::result_wrapper_t<uint64_t>
-        delete_rows(data_table_t& table, int64_t* ids, uint64_t count, uint64_t transaction_id, uint64_t sub_id);
+        [[nodiscard]] core::result_wrapper_t<uint64_t> delete_rows(data_table_t& table,
+                                                                   int64_t* ids,
+                                                                   uint64_t count,
+                                                                   uint64_t transaction_id,
+                                                                   uint64_t sub_id,
+                                                                   uint64_t command_id);
         std::vector<column_segment_info> get_column_segment_info();
 
         // Exclusively owned blocks only; data_table_t::compact frees them after swapping this collection out.

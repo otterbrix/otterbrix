@@ -383,36 +383,6 @@ namespace components::types {
         }
     }
 
-    const complex_logical_type& complex_logical_type::child_type(const std::pmr::vector<size_t>& path) const {
-        assert(!path.empty() && "complex_logical_type::child_type should not be called with empty path");
-        return child_type(path.data(), path.size());
-    }
-
-    const complex_logical_type&
-    complex_logical_type::type_from_path(const std::pmr::vector<complex_logical_type>& types,
-                                         const std::pmr::vector<size_t>& path) {
-        assert(!types.empty() && "complex_logical_type::type_from_path should not be called with empty types");
-        assert(!path.empty() && "complex_logical_type::type_from_path should not be called with empty path");
-        return types.at(path.front()).child_type(path.data() + 1, path.size() - 1);
-    }
-
-    const complex_logical_type& complex_logical_type::child_type(const size_t* path_data, size_t remaining) const {
-        if (remaining == 0) {
-            return *this;
-        }
-        if (type_ == logical_type::ARRAY) {
-            return static_cast<array_logical_type_extension*>(extension_.get())
-                ->internal_type()
-                .child_type(path_data + 1, remaining - 1);
-        }
-        if (type_ == logical_type::LIST) {
-            return static_cast<list_logical_type_extension*>(extension_.get())
-                ->node()
-                .child_type(path_data + 1, remaining - 1);
-        }
-        return child_types().at(*path_data).child_type(path_data + 1, remaining - 1);
-    }
-
     const complex_logical_type& complex_logical_type::child_type() const {
         assert(type_ == logical_type::ARRAY || type_ == logical_type::LIST || type_ == logical_type::MAP);
         if (type_ == logical_type::ARRAY) {
@@ -751,7 +721,15 @@ namespace components::types {
     }
 
     bool struct_logical_type_extension::operator==(const struct_logical_type_extension& rhs) const {
-        return fields_ == rhs.fields_;
+        if (fields_.size() != rhs.fields_.size()) {
+            return false;
+        }
+        for (size_t i = 0; i < fields_.size(); ++i) {
+            if (fields_[i].alias() != rhs.fields_[i].alias() || !(fields_[i] == rhs.fields_[i])) {
+                return false;
+            }
+        }
+        return true;
     }
 
     decimal_logical_type_extension::decimal_logical_type_extension(uint8_t width, uint8_t scale)
@@ -829,14 +807,22 @@ namespace components::types {
         return return_type_ == rhs.return_type_ && argument_types_ == rhs.argument_types_;
     }
 
-    unknown_logical_type_extension::unknown_logical_type_extension(std::string type_name)
+    unknown_logical_type_extension::unknown_logical_type_extension(std::string type_name,
+                                                                   std::string database,
+                                                                   std::string schema)
         : logical_type_extension(extension_type::UNKNOWN)
-        , type_name_(std::move(type_name)) {}
+        , type_name_(std::move(type_name))
+        , database_(std::move(database))
+        , schema_(std::move(schema)) {}
 
     const std::string& unknown_logical_type_extension::type_name() const { return type_name_; }
 
+    const std::string& unknown_logical_type_extension::type_database() const { return database_; }
+
+    const std::string& unknown_logical_type_extension::type_schema() const { return schema_; }
+
     bool unknown_logical_type_extension::operator==(const unknown_logical_type_extension& rhs) const {
-        return type_name_ == rhs.type_name_;
+        return type_name_ == rhs.type_name_ && database_ == rhs.database_ && schema_ == rhs.schema_;
     }
 
     bool operator==(const logical_type_extension& lhs, const logical_type_extension& rhs) {

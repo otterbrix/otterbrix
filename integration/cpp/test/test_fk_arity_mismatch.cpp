@@ -39,7 +39,7 @@ namespace {
     void seed_and_require_ddl_refusal(otterbrix::wrapper_dispatcher_t* dispatcher, const std::string& del_action) {
         {
             auto s = otterbrix::session_id_t();
-            REQUIRE(run(dispatcher, s, "CREATE DATABASE FkArity;")->is_success());
+            REQUIRE(run(dispatcher, s, "CREATE SCHEMA FkArity;")->is_success());
         }
         {
             auto s = otterbrix::session_id_t();

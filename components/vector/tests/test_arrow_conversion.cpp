@@ -48,13 +48,16 @@ TEST_CASE("components::vector::arrow_batch_longer_than_a_vector") {
         source.push_back(std::move(chunk));
     }
 
-    arrow_appender_t appender(types, total_rows);
+    auto appender = arrow_appender_t::create(&resource, types, total_rows);
+    REQUIRE_FALSE(appender.has_error());
     for (auto& chunk : source) {
-        appender.append(chunk, 0, chunk.size(), chunk.size());
+        REQUIRE_FALSE(appender.value().append(chunk, 0, chunk.size(), chunk.size()).contains_error());
     }
-    ArrowArray arrow_array = appender.finalize();
+    auto finalized = appender.value().finalize();
+    REQUIRE_FALSE(finalized.has_error());
+    ArrowArray arrow_array = finalized.value();
     ArrowSchema schema;
-    to_arrow_schema(&schema, types);
+    REQUIRE_FALSE(to_arrow_schema(&resource, &schema, types).contains_error());
     auto schema_res = schema_from_arrow(&resource, &schema);
     REQUIRE(!schema_res.has_error());
 
@@ -180,8 +183,8 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
 
         ArrowSchema schema;
         ArrowArray arrow_array;
-        to_arrow_schema(&schema, types);
-        to_arrow_array(chunk, &arrow_array);
+        REQUIRE_FALSE(to_arrow_schema(&resource, &schema, types).contains_error());
+        REQUIRE_FALSE(to_arrow_array(chunk, &arrow_array).contains_error());
         auto schema_res = schema_from_arrow(&resource, &schema);
         REQUIRE(!schema_res.has_error());
         auto res_w = data_chunks_from_arrow(&resource, &arrow_array, std::move(schema_res.value()));
@@ -301,8 +304,8 @@ TEST_CASE("components::vector::data_chunk_to_arrow") {
 
         ArrowSchema schema;
         ArrowArray arrow_array;
-        to_arrow_schema(&schema, types);
-        to_arrow_array(chunk, &arrow_array);
+        REQUIRE_FALSE(to_arrow_schema(&resource, &schema, types).contains_error());
+        REQUIRE_FALSE(to_arrow_array(chunk, &arrow_array).contains_error());
         auto schema_res = schema_from_arrow(&resource, &schema);
         REQUIRE(!schema_res.has_error());
         auto res_w = data_chunks_from_arrow(&resource, &arrow_array, std::move(schema_res.value()));
@@ -348,8 +351,8 @@ TEST_CASE("components::vector::data_chunk_to_arrow::datetime") {
 
     ArrowSchema schema;
     ArrowArray arrow_array;
-    to_arrow_schema(&schema, types);
-    to_arrow_array(chunk, &arrow_array);
+    REQUIRE_FALSE(to_arrow_schema(&resource, &schema, types).contains_error());
+    REQUIRE_FALSE(to_arrow_array(chunk, &arrow_array).contains_error());
     auto schema_res = schema_from_arrow(&resource, &schema);
     REQUIRE(!schema_res.has_error());
     auto res_w = data_chunks_from_arrow(&resource, &arrow_array, std::move(schema_res.value()));
@@ -434,4 +437,150 @@ TEST_CASE("components::vector::arrow_scan::sparse_union_fills_tag_and_active_mem
     CHECK_FALSE(vec.is_null(0));
     CHECK_FALSE(vec.is_null(1));
     CHECK(vec.is_null(2));
+}
+
+TEST_CASE("components::vector::to_arrow_schema::unsupported_type_is_an_error") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    SECTION("top level column") {
+        std::pmr::vector<complex_logical_type> types(&resource);
+        types.emplace_back(logical_type::INTEGER, "a");
+        types.emplace_back(logical_type::UUID, "u");
+
+        ArrowSchema schema;
+        auto err = to_arrow_schema(&resource, &schema, types);
+        REQUIRE(err.contains_error());
+        CHECK(err.type == core::error_code_t::unimplemented_yet);
+        CHECK(err.what == "Unsupported Arrow type 54");
+        CHECK(schema.release == nullptr);
+    }
+    SECTION("struct field") {
+        std::pmr::vector<complex_logical_type> fields(&resource);
+        fields.emplace_back(logical_type::INTEGER, "a");
+        fields.emplace_back(logical_type::UUID, "u");
+        std::pmr::vector<complex_logical_type> types(&resource);
+        types.emplace_back(complex_logical_type::create_struct("s", fields));
+
+        ArrowSchema schema;
+        auto err = to_arrow_schema(&resource, &schema, types);
+        REQUIRE(err.contains_error());
+        CHECK(err.what == "Unsupported Arrow type 54");
+        CHECK(schema.release == nullptr);
+    }
+}
+
+TEST_CASE("components::vector::to_arrow_array::unsupported_type_is_an_error") {
+    auto resource = core::pmr::otterbrix_resource();
+
+    SECTION("top level column") {
+        std::pmr::vector<complex_logical_type> types(&resource);
+        types.emplace_back(logical_type::INTEGER, "a");
+        types.emplace_back(logical_type::UUID, "u");
+        data_chunk_t chunk(&resource, types, 4);
+        chunk.set_cardinality(0);
+
+        ArrowArray array;
+        auto err = to_arrow_array(chunk, &array);
+        REQUIRE(err.contains_error());
+        CHECK(err.type == core::error_code_t::unimplemented_yet);
+        CHECK(err.what == "Unsupported type in OtterBrix -> initialize_function_pointers()");
+        CHECK(array.release == nullptr);
+    }
+    SECTION("list element") {
+        std::pmr::vector<complex_logical_type> types(&resource);
+        types.emplace_back(complex_logical_type::create_list(logical_type::UUID, "l"));
+        data_chunk_t chunk(&resource, types, 4);
+        chunk.set_cardinality(0);
+
+        ArrowArray array;
+        auto err = to_arrow_array(chunk, &array);
+        REQUIRE(err.contains_error());
+        CHECK(err.what == "Unsupported type in OtterBrix -> initialize_function_pointers()");
+        CHECK(array.release == nullptr);
+    }
+}
+
+namespace {
+    std::pmr::vector<complex_logical_type> map_column(std::pmr::memory_resource* resource) {
+        std::pmr::vector<complex_logical_type> types(resource);
+        types.emplace_back(complex_logical_type::create_map(resource,
+                                                            complex_logical_type{logical_type::INTEGER},
+                                                            complex_logical_type{logical_type::INTEGER},
+                                                            "m"));
+        return types;
+    }
+
+    void fill_map_row(data_chunk_t& chunk, bool second_key_is_null) {
+        auto& map = chunk.data[0];
+        map.reserve(2);
+        auto& key = *map.entry().entries()[0];
+        auto& value = *map.entry().entries()[1];
+        key.set_value(0, int32_t{1});
+        value.set_value(0, int32_t{10});
+        key.set_value(1, int32_t{2});
+        if (second_key_is_null) {
+            key.set_null(1, true);
+        }
+        value.set_value(1, int32_t{20});
+        map.set_list_size(2);
+        map.data<list_entry_t>()[0] = list_entry_t{0, 2};
+        chunk.set_cardinality(1);
+    }
+} // namespace
+
+TEST_CASE("components::vector::to_arrow_array::map") {
+    auto resource = core::pmr::otterbrix_resource();
+    auto types = map_column(&resource);
+
+    SECTION("exports keys and values") {
+        data_chunk_t chunk(&resource, types, 4);
+        fill_map_row(chunk, false);
+
+        ArrowArray array;
+        auto err = to_arrow_array(chunk, &array);
+        REQUIRE_FALSE(err.contains_error());
+        REQUIRE(array.n_children == 1);
+        auto& map = *array.children[0];
+        CHECK(map.length == 1);
+        REQUIRE(map.n_children == 1);
+        auto& entries = *map.children[0];
+        CHECK(entries.length == 2);
+        REQUIRE(entries.n_children == 2);
+        auto keys = static_cast<const int32_t*>(entries.children[0]->buffers[1]);
+        auto values = static_cast<const int32_t*>(entries.children[1]->buffers[1]);
+        CHECK(keys[0] == 1);
+        CHECK(keys[1] == 2);
+        CHECK(values[0] == 10);
+        CHECK(values[1] == 20);
+        array.release(&array);
+        CHECK(array.release == nullptr);
+    }
+    SECTION("a NULL key is an error") {
+        data_chunk_t chunk(&resource, types, 4);
+        fill_map_row(chunk, true);
+
+        ArrowArray array;
+        auto err = to_arrow_array(chunk, &array);
+        REQUIRE(err.contains_error());
+        CHECK(err.type == core::error_code_t::null_value_not_allowed);
+        CHECK(err.what == "Arrow doesn't accept NULL keys on Maps");
+        CHECK(array.release == nullptr);
+    }
+}
+
+TEST_CASE("components::vector::to_arrow_array::list_offset_past_int32_is_an_error") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::vector<complex_logical_type> types(&resource);
+    types.emplace_back(complex_logical_type::create_list(logical_type::BOOLEAN, "l"));
+    data_chunk_t chunk(&resource, types, 4);
+    chunk.data[0].data<list_entry_t>()[0] = list_entry_t{0, uint64_t{1} << 31};
+    chunk.set_cardinality(1);
+
+    ArrowArray array;
+    auto err = to_arrow_array(chunk, &array);
+    REQUIRE(err.contains_error());
+    CHECK(err.type == core::error_code_t::program_limit_exceeded);
+    CHECK(err.what == "Arrow Appender: the combined list offset 2147483648 exceeds 2147483647, the maximum of "
+                      "regular list buffers");
+    CHECK(array.release == nullptr);
 }

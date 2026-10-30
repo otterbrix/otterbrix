@@ -22,7 +22,7 @@ TEST_CASE("integration::cpp::test_append_pin_lifetime::no_transition_happens_und
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE p;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA p;")->is_success());
     REQUIRE(exec("CREATE TABLE p.t (id bigint, a bigint, b bigint) ;")->is_success());
 
     components::table::reset_transitions_with_live_pin();

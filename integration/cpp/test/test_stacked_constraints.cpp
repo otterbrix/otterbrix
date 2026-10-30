@@ -18,7 +18,7 @@ TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_check") {
 
     INFO("setup: parent + child(orders) with FK on customer_id and CHECK on amount");
     {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.customers (id bigint, name text);")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.orders (id bigint, customer_id bigint, amount bigint);")
                     ->is_success());
@@ -52,7 +52,7 @@ TEST_CASE("integration::cpp::test_stacked_constraints::fk_plus_notnull") {
 
     INFO("setup");
     {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.customers (id bigint, name text);")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.orders (id bigint, customer_id bigint, label text);")
                     ->is_success());
@@ -87,7 +87,7 @@ TEST_CASE("integration::cpp::test_stacked_constraints::two_outgoing_fks") {
 
     INFO("setup: orders references BOTH customers and products");
     {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.customers (id bigint, name text);")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.products (id bigint, name text);")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.orders (id bigint, customer_id bigint, product_id bigint);")
@@ -135,7 +135,7 @@ TEST_CASE("integration::cpp::test_stacked_constraints::two_cascade_children") {
 
     INFO("setup: parent referenced by child_a and child_b, both ON DELETE CASCADE");
     {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.parent (id bigint, val text);")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.child_a (id bigint, parent_id bigint);")->is_success());
         REQUIRE(exec(dispatcher, "CREATE TABLE TestDatabase.child_b (id bigint, parent_id bigint);")->is_success());
@@ -205,7 +205,7 @@ TEST_CASE("integration::cpp::test_stacked_constraints::check_is_not_null_with_de
 
     INFO("setup: walls(height DEFAULT 5) + CHECK (height IS NOT NULL)");
     {
-        REQUIRE(exec(dispatcher, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(exec(dispatcher, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(
             exec(dispatcher, "CREATE TABLE TestDatabase.walls (id bigint, height bigint DEFAULT 5);")->is_success());
         REQUIRE(exec(dispatcher, "ALTER TABLE TestDatabase.walls ADD CONSTRAINT chk_height CHECK (height IS NOT NULL);")

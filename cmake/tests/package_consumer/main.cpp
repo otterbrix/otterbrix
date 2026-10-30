@@ -12,9 +12,9 @@ int main() {
         return 1;
     }
     std::pmr::monotonic_buffer_resource arena;
-    auto* statements = raw_parser(&arena, "DEMO 2 + 3 * 4", registry);
-    if (statements == nullptr) {
+    auto statements = raw_parser(&arena, "DEMO 2 + 3 * 4", registry);
+    if (statements.has_error() || statements.value() == nullptr) {
         return 2;
     }
-    return nodeTag(reinterpret_cast<Node*>(linitial(statements))) == T_ExtensionNode ? 0 : 3;
+    return nodeTag(reinterpret_cast<Node*>(linitial(statements.value()))) == T_ExtensionNode ? 0 : 3;
 }

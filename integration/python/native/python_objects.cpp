@@ -16,8 +16,8 @@ using components::vector::vector_t;
 
 namespace otterbrix {
 
-    static core::error_t make_error(std::pmr::memory_resource* r, const std::string& what) {
-        return core::error_t{core::error_code_t::other_error, std::pmr::string{what, r}};
+    static core::error_t make_error(core::error_code_t code, std::pmr::memory_resource* r, const std::string& what) {
+        return core::error_t{code, std::pmr::string{what, r}};
     }
 
     py_dictionary_t::py_dictionary_t(py::object dict) {
@@ -145,7 +145,9 @@ namespace otterbrix {
 
     core::result_wrapper_t<vector_t> py_decimal_t::to_vector(std::pmr::memory_resource* r) {
         if (!exponent_recognized) {
-            return make_error(r, "Failed to convert decimal.Decimal value, exponent type is unknown");
+            return make_error(core::error_code_t::unimplemented_yet,
+                              r,
+                              "Failed to convert decimal.Decimal value, exponent type is unknown");
         }
         int32_t width = static_cast<int32_t>(digits.size());
         if (!width_fits_in_decimal(width)) {
@@ -184,7 +186,9 @@ namespace otterbrix {
             }
             // LCOV_EXCL_START
             default: {
-                return make_error(r, "case not implemented for type PyDecimalExponentType");
+                return make_error(core::error_code_t::unimplemented_yet,
+                                  r,
+                                  "case not implemented for type PyDecimalExponentType");
             } // LCOV_EXCL_STOP
         }
     }

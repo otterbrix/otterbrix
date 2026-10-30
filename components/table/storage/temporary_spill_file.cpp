@@ -1,29 +1,51 @@
 #include "temporary_spill_file.hpp"
 
+#include <array>
+#include <cstdlib>
 #include <string>
+#include <system_error>
 #include <unistd.h>
 
 namespace components::table::storage {
 
     namespace {
-        // One file per pool instance. The pid keeps two processes apart; the address keeps two pools
-        // inside one process apart (tests build several). Nothing reads these files but the pool that
-        // wrote them, and only while it is alive.
-        core::filesystem::path_t make_path(const void* owner) {
-            std::string name = "otterbrix_spill_" + std::to_string(static_cast<long>(::getpid())) + "_" +
-                               std::to_string(reinterpret_cast<uintptr_t>(owner)) + ".tmp";
-            return std::filesystem::temp_directory_path() / name;
+        // The variables std::filesystem::temp_directory_path() consults, in its order (libc++ and libstdc++).
+        std::string temporary_directory_source() {
+            for (const char* name : std::array{"TMPDIR", "TMP", "TEMP", "TEMPDIR"}) {
+                if (const char* value = std::getenv(name); value != nullptr) {
+                    return std::string{name} + "=" + value;
+                }
+            }
+            return "/tmp";
         }
     } // namespace
 
     temporary_spill_file_t::temporary_spill_file_t(std::pmr::memory_resource* resource)
         : resource_(resource)
         , fs_()
-        , path_(make_path(this))
-        , free_slots_(resource) {}
+        , free_slots_(resource) {
+        std::error_code ec;
+        const auto directory = std::filesystem::temp_directory_path(ec);
+        if (ec) {
+            construction_error_ = core::error_t(core::error_code_t::io_error,
+                                                std::pmr::string{"temporary_spill_file_t: the temporary directory (" +
+                                                                     temporary_directory_source() +
+                                                                     ") cannot hold spill files: " + ec.message(),
+                                                                 resource_});
+            return;
+        }
+        // One file per pool instance. The pid keeps two processes apart; the address keeps two pools
+        // inside one process apart (tests build several). Nothing reads these files but the pool that
+        // wrote them, and only while it is alive.
+        path_ = directory / ("otterbrix_spill_" + std::to_string(static_cast<long>(::getpid())) + "_" +
+                             std::to_string(reinterpret_cast<uintptr_t>(this)) + ".tmp");
+    }
 
     temporary_spill_file_t::~temporary_spill_file_t() {
         file_.reset();
+        if (path_.empty()) {
+            return;
+        }
         std::error_code ec;
         std::filesystem::remove(path_, ec);
     }
@@ -42,8 +64,11 @@ namespace components::table::storage {
 
     core::result_wrapper_t<uint64_t> temporary_spill_file_t::write(const std::byte* data, uint64_t size) {
         if (size == 0) {
-            return core::error_t(core::error_code_t::invalid_parameter,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string{"temporary_spill_file_t::write: zero-length buffer", resource_});
+        }
+        if (construction_error_.contains_error()) {
+            return core::error_on(resource_, construction_error_);
         }
         if (!ensure_open()) {
             return core::error_t(core::error_code_t::io_error,

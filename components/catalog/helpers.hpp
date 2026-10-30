@@ -74,6 +74,7 @@ namespace components::catalog {
     namespace pg_namespace_col {
         constexpr std::uint64_t oid = 0;
         constexpr std::uint64_t nspname = 1;
+        constexpr std::uint64_t nspdatabase = 2;
     } // namespace pg_namespace_col
     namespace pg_index_col {
         constexpr std::uint64_t indexrelid = 0;
@@ -100,6 +101,7 @@ namespace components::catalog {
     namespace pg_database_col {
         constexpr std::uint64_t oid = 0;
         constexpr std::uint64_t datname = 1;
+        constexpr std::uint64_t datconnection = 2;
     } // namespace pg_database_col
     namespace pg_rewrite_col {
         constexpr std::uint64_t oid = 0;
@@ -111,12 +113,13 @@ namespace components::catalog {
     namespace pg_rewrite_ref_col {
         constexpr std::uint64_t ev_class = 0;
         constexpr std::uint64_t refkind = 1;
-        constexpr std::uint64_t dbname = 2;
-        constexpr std::uint64_t schema = 3;
-        constexpr std::uint64_t relname = 4;
-        constexpr std::uint64_t refobjid = 5;
-        constexpr std::uint64_t proargmatchers = 6;
-        constexpr std::uint64_t prorettype = 7;
+        constexpr std::uint64_t connection = 2;
+        constexpr std::uint64_t dbname = 3;
+        constexpr std::uint64_t schema = 4;
+        constexpr std::uint64_t relname = 5;
+        constexpr std::uint64_t refobjid = 6;
+        constexpr std::uint64_t proargmatchers = 7;
+        constexpr std::uint64_t prorettype = 8;
     } // namespace pg_rewrite_ref_col
     namespace pg_depend_col {
         constexpr std::uint64_t classid = 0;
@@ -138,6 +141,11 @@ namespace components::catalog {
         constexpr std::uint64_t proargmatchers = 5;
         constexpr std::uint64_t prorettype = 6;
     } // namespace pg_proc_col
+    namespace pg_cast_col {
+        constexpr std::uint64_t oid = 0;
+        constexpr std::uint64_t castsource = 1;
+        constexpr std::uint64_t casttarget = 2;
+    } // namespace pg_cast_col
 
     // One pg_proc row of a chunk read with every column.
     services::disk::resolve_function_result_t decode_pg_proc_row(const vector::data_chunk_t& chunk, std::uint64_t row);

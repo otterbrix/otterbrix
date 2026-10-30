@@ -221,7 +221,7 @@ namespace {
         test_spaces space(config);
         auto* d = space.dispatcher();
 
-        must_sql(d, "CREATE DATABASE bdb;");
+        must_sql(d, "CREATE SCHEMA bdb;");
         const double rss_start = rss_mb();
         const int fds_start = open_fds();
 
@@ -275,7 +275,7 @@ namespace {
             auto config = make_test_config(dir);
             test_spaces space(config);
             auto* d = space.dispatcher();
-            must_sql(d, "CREATE DATABASE bdb;");
+            must_sql(d, "CREATE SCHEMA bdb;");
             must_sql(d, "CREATE TABLE bdb.items (_id text, v bigint);");
             fill(d, "bdb.items", "_id", "k", kSmallRows);
             const double per_row_1k = probe_insert(d, "bdb.items", "_id", "probe_a_");
@@ -288,7 +288,7 @@ namespace {
             auto config = make_test_config(dir);
             test_spaces space(config);
             auto* d = space.dispatcher();
-            must_sql(d, "CREATE DATABASE bdb;");
+            must_sql(d, "CREATE SCHEMA bdb;");
             must_sql(d, "CREATE TABLE bdb.items (_id text, v bigint);");
             must_sql(d, "CREATE TABLE bdb.plain (k text, v bigint);");
 
@@ -319,7 +319,7 @@ namespace {
         test_spaces space(config);
         auto* d = space.dispatcher();
 
-        must_sql(d, "CREATE DATABASE bdb;");
+        must_sql(d, "CREATE SCHEMA bdb;");
         must_sql(d, "CREATE TABLE bdb.items (id bigint, val bigint);");
 
         const auto t_preload = clock_t_::now();

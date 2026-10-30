@@ -17,6 +17,7 @@
 #include <latch>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -88,16 +89,20 @@ namespace concurrency {
         succeeds,
         fails
     };
+    constexpr auto succeeds = outcome_t::succeeds;
     constexpr auto fails = outcome_t::fails;
+    constexpr auto ends_idle = components::session::transaction_status_t::idle;
 
     struct step_t {
         session_t& session;
         std::string sql;
         outcome_t outcome{outcome_t::succeeds};
+        std::optional<components::session::transaction_status_t> status{};
     };
 
     // Runs the steps one at a time, in order, each on its session: a step is sent once the previous one
-    // answered, must answer within ANSWER_WINDOW, and must succeed or fail as stated.
+    // answered, must answer within ANSWER_WINDOW, must succeed or fail as stated, and must leave its session
+    // in the stated transaction status when one is given.
     void interleaved(std::initializer_list<step_t> steps);
 
     // Column `index` of every row, in the order the statement returned them.

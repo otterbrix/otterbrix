@@ -3,7 +3,7 @@ mod common;
 #[test]
 fn rows_iterator_count() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (x) VALUES (1), (2), (3), (4), (5);")
@@ -17,7 +17,7 @@ fn rows_iterator_count() {
 #[test]
 fn rows_iterator_values() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (name, val) VALUES ('a', 1), ('b', 2), ('c', 3);")
@@ -37,7 +37,7 @@ fn rows_iterator_values() {
 #[test]
 fn row_index() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
 
     db.execute("INSERT INTO db.t (x) VALUES (10), (20);")

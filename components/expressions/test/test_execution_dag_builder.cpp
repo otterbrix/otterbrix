@@ -381,3 +381,54 @@ TEST_CASE("expressions::graph_builder::what it cannot express is refused, not ha
         REQUIRE(build_expression(&graph, parameters, expr.get(), types).has_error());
     }
 }
+
+// The transformer hands a match its mode as a UTINYINT parameter (match_mode_of); a hand-built plan that carries
+// anything else is refused while the graph is built, before a row reads the mode.
+TEST_CASE("expressions::graph_builder::a match mode that is not UTINYINT is refused") {
+    std::pmr::vector<complex_logical_type> types(resource());
+    types.emplace_back(logical_type::STRING_LITERAL);
+    types.emplace_back(complex_logical_type::create_list(complex_logical_type{logical_type::STRING_LITERAL}));
+    storage_parameters parameters(resource());
+    REQUIRE(parameters.add(components::vector::make_scalar(resource(), std::string_view{"l"}),
+                           parameter_kind::literal) == core::parameter_id_t{0});
+    REQUIRE(parameters.add(components::vector::make_scalar(resource(), uint8_t{1}), parameter_kind::literal) ==
+            core::parameter_id_t{1});
+    REQUIRE(parameters.add(components::vector::make_scalar(resource(), std::string_view{"a_c"}),
+                           parameter_kind::literal) == core::parameter_id_t{2});
+
+    auto quantified = [&](core::parameter_id_t mode) {
+        auto expr = make_compare_expression(resource(), compare_type::any, column(0), column(1));
+        expr->set_inner_op(compare_type::regex);
+        expr->set_regex_flags(mode);
+        return expr;
+    };
+    {
+        execution_dag_t graph(resource());
+        auto expr = quantified(core::parameter_id_t{0});
+        auto built = build_expression(&graph, parameters, expr.get(), types);
+        REQUIRE(built.has_error());
+        REQUIRE(built.error().type == core::error_code_t::internal_error);
+    }
+    {
+        execution_dag_t graph(resource());
+        auto expr = quantified(core::parameter_id_t{1});
+        REQUIRE_FALSE(build_expression(&graph, parameters, expr.get(), types).has_error());
+    }
+
+    components::compute::function_registry_t functions(resource());
+    components::compute::register_default_functions(functions);
+    const auto uid = functions.find_functions("regexp_like").front();
+    auto match = [&](core::parameter_id_t mode) {
+        auto expr = make_compare_expression(resource(), compare_type::regex, column(0), core::parameter_id_t{2});
+        expr->set_regex_flags(mode);
+        expr->set_function(functions.get_function(uid)->get_copy(resource()));
+        return expr;
+    };
+    {
+        execution_dag_t graph(resource());
+        auto expr = match(core::parameter_id_t{0});
+        auto built = build_expression(&graph, parameters, expr.get(), types);
+        REQUIRE(built.has_error());
+        REQUIRE(built.error().type == core::error_code_t::internal_error);
+    }
+}

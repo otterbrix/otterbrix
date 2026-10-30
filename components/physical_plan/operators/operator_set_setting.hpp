@@ -4,7 +4,7 @@
 #include <components/physical_plan/operators/operator.hpp>
 
 #include <memory_resource>
-#include <string>
+#include <vector>
 
 namespace components::operators {
 
@@ -12,18 +12,16 @@ namespace components::operators {
     public:
         operator_set_setting_t(std::pmr::memory_resource* resource,
                                log_t log,
-                               catalog::setting_id setting,
-                               std::pmr::string value);
+                               catalog::setting_scope_t scope,
+                               const std::pmr::vector<catalog::setting_assignment_t>& assignments);
 
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         actor_zeta::unique_future<void> await_async_and_resume(pipeline::context_t* ctx) override;
 
-        catalog::setting_id setting() const noexcept { return setting_; }
-
     private:
-        catalog::setting_id setting_;
-        std::pmr::string value_;
+        catalog::setting_scope_t scope_;
+        std::pmr::vector<catalog::setting_assignment_t> assignments_;
     };
 
 } // namespace components::operators

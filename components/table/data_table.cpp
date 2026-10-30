@@ -156,10 +156,74 @@ namespace components::table {
         return positions;
     }
 
+    core::error_t data_table_t::check_payload_columns(const transaction_data& txn,
+                                                      std::span<const std::uint32_t> attoids) const {
+        const auto visible = visible_columns(txn);
+        bool same = visible.size() == attoids.size();
+        for (uint64_t index = 0; same && index < visible.size(); index++) {
+            same = column_definitions_[visible[index]].attoid() == attoids[index];
+        }
+        if (same) {
+            return core::error_t::no_error();
+        }
+        std::pmr::string what{"write to table '", resource_};
+        what += std::pmr::string{name_, resource_};
+        what += std::pmr::string{"': the columns written are not the table's columns", resource_};
+        return core::error_t{core::error_code_t::internal_error, std::move(what)};
+    }
+
+    core::error_t data_table_t::refuse_null_values(const transaction_data& txn,
+                                                   const vector::data_chunk_t& physical) const {
+        assert(physical.column_count() == column_definitions_.size() && "refuse_null_values: a widened chunk");
+        for (uint64_t position = 0; position < column_definitions_.size(); position++) {
+            const auto& column = column_definitions_[position];
+            if (!column.not_null_for(txn) || !column.visible_to(txn)) {
+                continue;
+            }
+            const auto& cells = physical.data[position];
+            for (uint64_t row = 0; row < physical.size(); row++) {
+                if (!cells.is_null(row)) {
+                    continue;
+                }
+                std::pmr::string what{"null value in column \"", resource_};
+                what += std::pmr::string{column.name(), resource_};
+                what += std::pmr::string{"\" of relation \"", resource_};
+                what += std::pmr::string{name_, resource_};
+                what += std::pmr::string{"\" violates not-null constraint", resource_};
+                return core::error_t{core::error_code_t::not_null_violation, std::move(what)};
+            }
+        }
+        return core::error_t::no_error();
+    }
+
+    vector::data_chunk_t data_table_t::visible_copy(const transaction_data& txn,
+                                                    const vector::data_chunk_t& physical) const {
+        const auto visible = visible_columns(txn);
+        std::pmr::vector<types::complex_logical_type> types(resource_);
+        types.reserve(visible.size());
+        for (const auto position : visible) {
+            types.push_back(physical.data[position].type());
+        }
+        vector::data_chunk_t copy(resource_, types, std::max<uint64_t>(physical.size(), 1));
+        for (uint64_t index = 0; index < visible.size(); index++) {
+            vector::vector_ops::copy(physical.data[visible[index]], copy.data[index], physical.size(), 0, 0);
+        }
+        copy.set_cardinality(physical.size());
+        return copy;
+    }
+
     void data_table_t::stamp_column_identity(uint64_t position, std::uint32_t attoid) {
         assert(position < column_definitions_.size() && "stamp_column_identity: no such column");
         column_definitions_[position].set_attoid(attoid);
         mark_modified();
+    }
+
+    void data_table_t::adopt_column_not_null(uint64_t position) {
+        assert(position < column_definitions_.size() && "adopt_column_not_null: no such column");
+        if (!column_definitions_[position].is_not_null()) {
+            column_definitions_[position].set_not_null(true);
+            mark_modified();
+        }
     }
 
     void data_table_t::stamp_column_added(uint64_t position, uint64_t stamp, uint64_t sub_id) {
@@ -174,6 +238,24 @@ namespace components::table {
         column_definitions_[position].set_dropped_at(stamp);
         column_definitions_[position].set_dropped_sub_id(sub_id);
         mark_modified();
+    }
+
+    core::error_t data_table_t::stamp_column_not_null(const transaction_data& txn, uint64_t position) {
+        assert(position < column_definitions_.size() && "stamp_column_not_null: no such column");
+        std::pmr::vector<storage_index_t> column(resource_);
+        column.emplace_back(position);
+        row_range_t every_row{0, row_groups_->total_rows()};
+        if (auto refused = refuse_nulls_at_commit(txn, column, {&every_row, 1}); refused.contains_error()) {
+            std::pmr::string what{"column \"", resource_};
+            what += std::pmr::string{column_definitions_[position].name(), resource_};
+            what += std::pmr::string{"\" of relation \"", resource_};
+            what += std::pmr::string{name_, resource_};
+            what += std::pmr::string{"\" contains null values", resource_};
+            return core::error_t{core::error_code_t::not_null_violation, std::move(what)};
+        }
+        column_definitions_[position].stamp_not_null(txn.transaction_id, txn.sub_id);
+        mark_modified();
+        return core::error_t::no_error();
     }
 
     uint64_t data_table_t::publish_column_stamps(uint64_t txn_id, uint64_t commit_id) {
@@ -191,6 +273,11 @@ namespace components::table {
                 // name is free to be used by other columns
                 // and empty name is not addressable in query
                 column.set_name(std::string{});
+                ++published;
+            }
+            if (column.not_null_at() == txn_id) {
+                column.set_not_null(true);
+                column.stamp_not_null(NOT_DELETED_ID, 0);
                 ++published;
             }
         }
@@ -212,6 +299,10 @@ namespace components::table {
             }
             if (column.dropped_at() == txn_id && column.dropped_sub_id() >= from_sub_id) {
                 column.set_dropped_at(NOT_DELETED_ID);
+                ++reverted;
+            }
+            if (column.not_null_at() == txn_id && column.not_null_sub_id() >= from_sub_id) {
+                column.stamp_not_null(NOT_DELETED_ID, 0);
                 ++reverted;
             }
         }
@@ -291,7 +382,7 @@ namespace components::table {
                         what += std::pmr::string{"' is NOT NULL without a default, and a row that would be live "
                                                  "after this commit holds NULL in it",
                                                  resource_};
-                        return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+                        return core::error_t{core::error_code_t::not_null_violation, std::move(what)};
                     }
                 }
             }
@@ -299,7 +390,31 @@ namespace components::table {
         return core::error_t::no_error();
     }
 
-    core::error_t data_table_t::prepare(const transaction_data& txn, const std::pmr::vector<row_range_t>& own_appends) {
+    std::pmr::vector<row_range_t> data_table_t::own_appends(const transaction_data& txn) const {
+        constexpr uint64_t max_batch_rows = vector::DEFAULT_VECTOR_CAPACITY;
+        std::pmr::vector<row_range_t> ranges(resource_);
+        std::pmr::vector<uint64_t> inserted(max_batch_rows, resource_);
+        std::pmr::vector<uint64_t> deleted(max_batch_rows, resource_);
+        const uint64_t total = row_groups_->total_rows();
+        for (uint64_t first = 0; first < total; first += max_batch_rows) {
+            const uint64_t batch = std::min(max_batch_rows, total - first);
+            row_groups_->fill_stamps(static_cast<int64_t>(first), batch, inserted.data(), deleted.data());
+            for (uint64_t offset = 0; offset < batch; offset++) {
+                if (inserted[offset] != txn.transaction_id) {
+                    continue;
+                }
+                const auto row = static_cast<int64_t>(first + offset);
+                if (!ranges.empty() && ranges.back().row_start + static_cast<int64_t>(ranges.back().count) == row) {
+                    ++ranges.back().count;
+                } else {
+                    ranges.push_back(row_range_t{row, 1});
+                }
+            }
+        }
+        return ranges;
+    }
+
+    core::error_t data_table_t::prepare(const transaction_data& txn) {
         assert(txn.transaction_id >= TRANSACTION_ID_START && "data_table_t::prepare: not a transaction");
         // Empty unless a rule applies, which most commits never meet
         std::pmr::vector<storage_index_t> added_columns(resource_);
@@ -307,11 +422,13 @@ namespace components::table {
         for (uint64_t position = 0; position < column_definitions_.size(); position++) {
             const auto& column = column_definitions_[position];
             bool fills_with_a_value = column.has_default_value() && !column.default_value().is_null(0);
-            if (!column.is_not_null() || fills_with_a_value || !stands_at_commit(txn, column.added_at()) ||
+            const bool not_null_now = column.is_not_null() || column.not_null_at() == txn.transaction_id;
+            if (!not_null_now || fills_with_a_value || !stands_at_commit(txn, column.added_at()) ||
                 stands_at_commit(txn, column.dropped_at())) {
                 continue;
             }
-            if (column.added_at() == txn.transaction_id) {
+            // A row another transaction committed while this one made the column NOT NULL is checked too.
+            if (column.added_at() == txn.transaction_id || column.not_null_at() == txn.transaction_id) {
                 added_columns.emplace_back(position);
             } else if (!column.visible_to(txn)) {
                 unseen_columns.emplace_back(position);
@@ -323,8 +440,9 @@ namespace components::table {
                 return refused;
             }
         }
-        if (!unseen_columns.empty() && !own_appends.empty()) {
-            if (auto refused = refuse_nulls_at_commit(txn, unseen_columns, own_appends); refused.contains_error()) {
+        if (!unseen_columns.empty()) {
+            if (auto refused = refuse_nulls_at_commit(txn, unseen_columns, own_appends(txn));
+                refused.contains_error()) {
                 return refused;
             }
         }
@@ -367,7 +485,7 @@ namespace components::table {
             what += std::pmr::string{"': column '", resource_};
             what += std::pmr::string{column.name(), resource_};
             what += std::pmr::string{"' stores a type other than the payload carries; nothing was written", resource_};
-            return core::error_t{core::error_code_t::schema_error, std::move(what)};
+            return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         payload.set_type_alias(column.name());
         physical.push_back(std::move(payload));
@@ -425,7 +543,7 @@ namespace components::table {
                 std::pmr::string what{"update of table '", resource_};
                 what += std::pmr::string{name_, resource_};
                 what += std::pmr::string{"': a row id names no row of it; nothing was written", resource_};
-                return core::error_t{core::error_code_t::invalid_parameter, std::move(what)};
+                return core::error_t{core::error_code_t::internal_error, std::move(what)};
             }
         }
 
@@ -481,7 +599,7 @@ namespace components::table {
                 std::pmr::string what{"write to table '", resource_};
                 what += std::pmr::string{name_, resource_};
                 what += std::pmr::string{"': the payload names a column the writer does not see", resource_};
-                return core::error_t{core::error_code_t::schema_error, std::move(what)};
+                return core::error_t{core::error_code_t::internal_error, std::move(what)};
             }
         }
         chunk.data = std::move(physical);
@@ -773,7 +891,7 @@ namespace components::table {
                 msg += std::pmr::string{"' already has a column named '", resource_};
                 msg += std::pmr::string{new_name, resource_};
                 msg += std::pmr::string{"'", resource_};
-                return core::error_t{core::error_code_t::schema_error, std::move(msg)};
+                return core::error_t{core::error_code_t::internal_error, std::move(msg)};
             }
             if (col_name == old_name) {
                 idx = i;
@@ -817,7 +935,7 @@ namespace components::table {
                "data_table_t::append_lock should be called before data_table_t::initialize_append");
         if (!state.append_locked) {
             return core::error_t(
-                core::error_code_t::invalid_parameter,
+                core::error_code_t::internal_error,
                 std::pmr::string("data_table_t::append_lock must precede initialize_append", resource_));
         }
         mark_modified();
@@ -941,9 +1059,13 @@ namespace components::table {
                     break;
                 }
             }
-            VALUE_OR_RETURN(
-                auto deleted,
-                row_groups_->delete_rows(*this, claimed_ids + start, pos - start, txn.transaction_id, txn.sub_id));
+            VALUE_OR_RETURN(auto deleted,
+                            row_groups_->delete_rows(*this,
+                                                     claimed_ids + start,
+                                                     pos - start,
+                                                     txn.transaction_id,
+                                                     txn.sub_id,
+                                                     txn.command_id));
             delete_count += deleted;
         }
         return core::result_wrapper_t<uint64_t>{delete_count};
@@ -974,7 +1096,7 @@ namespace components::table {
             type_spec.clear();
             auto encoded = types::encode_type_spec(col.type(), type_spec);
             if (encoded.has_error()) {
-                return encoded; // schema_error: this column type cannot be persisted
+                return encoded; // this column type cannot be persisted
             }
             writer.write<uint32_t>(static_cast<uint32_t>(type_spec.size()));
             writer.write_data(type_spec.data(), type_spec.size());

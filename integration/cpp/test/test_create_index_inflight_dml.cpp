@@ -42,7 +42,7 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::uncommitted_insert_lands
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA db;")->is_success());
 
     REQUIRE(exec(d, "CREATE TABLE db.ctrl (id bigint, v bigint);")->is_success());
     REQUIRE(seed_rows(d, "db.ctrl", "id, v", 2000, [](unsigned i) {
@@ -106,7 +106,7 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::rolled_back_delete_keeps
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA db;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE db.t (id bigint, v bigint);")->is_success());
     REQUIRE(seed_rows(d, "db.t", "id, v", 2000, [](unsigned i) {
                 return "(" + std::to_string(i) + ", " + std::to_string(i) + ")";
@@ -141,7 +141,7 @@ TEST_CASE("integration::cpp::create_index_inflight_dml::stale_planned_insert_rea
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(exec(d, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA db;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE db.late (id bigint, v bigint);")->is_success());
     REQUIRE(seed_rows(d, "db.late", "id, v", 100, [](unsigned i) {
                 return "(" + std::to_string(i) + ", " + std::to_string(i) + ")";

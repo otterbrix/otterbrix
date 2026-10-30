@@ -8,7 +8,7 @@ public class Tests
     public void StringsComeBackFromTheEngine() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("StringsComeBackFromTheEngine");
         {
-            using CursorWrapper cursor = otterbrix.Execute("CREATE DATABASE db;");
+            using CursorWrapper cursor = otterbrix.Execute("CREATE SCHEMA db;");
             Assert.IsTrue(cursor.IsSuccess());
         }
         {
@@ -34,6 +34,131 @@ public class Tests
     }
 
     [Test]
+    public void TransactionStatusReportsWhereTheSessionStands() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("TransactionStatusReportsWhereTheSessionStands");
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT 1;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.GetTransactionStatus(), Is.EqualTo(TransactionStatus.Idle));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM nodb.t;");
+            Assert.IsTrue(cursor.IsError());
+            Assert.That(cursor.GetTransactionStatus(), Is.EqualTo(TransactionStatus.Idle));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("BEGIN;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.GetTransactionStatus(), Is.EqualTo(TransactionStatus.InTransaction));
+        }
+    }
+
+    [Test]
+    public void RollbackUndoesTheInsertItsBeginOpened() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("RollbackUndoesTheInsertItsBeginOpened");
+        foreach (string statement in new[] { "CREATE SCHEMA s;",
+                                             "CREATE TABLE s.t (a BIGINT);",
+                                             "BEGIN;",
+                                             "INSERT INTO s.t (a) VALUES (1);",
+                                             "ROLLBACK;" }) {
+            using CursorWrapper cursor = otterbrix.Execute(statement);
+            Assert.IsTrue(cursor.IsSuccess(), statement);
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT a FROM s.t;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.Size(), Is.EqualTo(0));
+        }
+    }
+
+    [Test]
+    public void DropOfABuiltInTypeAnswersDependentObjectsStillExist() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("DropOfABuiltInTypeAnswersDependentObjectsStillExist");
+        using CursorWrapper cursor = otterbrix.Execute("DROP TYPE integer;");
+        Assert.IsTrue(cursor.IsError());
+        Assert.That(cursor.GetError().type, Is.EqualTo(ErrorCode.DependentObjectsStillExist));
+        Assert.That(cursor.GetError().what,
+                    Is.EqualTo("cannot drop type integer because it is required by the database system"));
+    }
+
+    [Test]
+    public void AddColumnOfANameTheTableHasAnswersDuplicateColumn() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("AddColumnOfANameTheTableHasAnswersDuplicateColumn");
+        foreach (string statement in new[] { "CREATE SCHEMA s;", "CREATE TABLE s.t (a BIGINT);" }) {
+            using CursorWrapper cursor = otterbrix.Execute(statement);
+            Assert.IsTrue(cursor.IsSuccess(), statement);
+        }
+        using CursorWrapper refused = otterbrix.Execute("ALTER TABLE s.t ADD COLUMN a BIGINT;");
+        Assert.IsTrue(refused.IsError());
+        Assert.That(refused.GetError().type, Is.EqualTo(ErrorCode.DuplicateColumn));
+        Assert.That(refused.GetError().what, Is.EqualTo("column \"a\" already exists"));
+    }
+
+    [Test]
+    public void DivisionByZeroAnswersDivisionByZero() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("DivisionByZeroAnswersDivisionByZero");
+        using CursorWrapper refused = otterbrix.Execute("SELECT 1 / 0;");
+        Assert.IsTrue(refused.IsError());
+        Assert.That(refused.GetError().type, Is.EqualTo(ErrorCode.DivisionByZero));
+    }
+
+    [Test]
+    public void ASecondEngineOnOneDirectoryAnswersLockFileExists() {
+        string path = TestDirectory.Fresh("ASecondEngineOnOneDirectoryAnswersLockFileExists");
+        using OtterbrixWrapper first = new OtterbrixWrapper(Config.CreateConfig(path));
+        OtterbrixStartupException refused =
+            Assert.Throws<OtterbrixStartupException>(() => new OtterbrixWrapper(Config.CreateConfig(path)));
+        Assert.That(refused.Error.type, Is.EqualTo(ErrorCode.LockFileExists));
+    }
+
+    [Test]
+    public void AlterSystemInsideABlockAnswersActiveSqlTransaction() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("AlterSystemInsideABlockAnswersActiveSqlTransaction");
+        {
+            using CursorWrapper cursor = otterbrix.Execute("BEGIN;");
+            Assert.IsTrue(cursor.IsSuccess());
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("ALTER SYSTEM SET timezone = '+03:00';");
+            Assert.IsTrue(cursor.IsError());
+            Assert.That(cursor.GetError().type, Is.EqualTo(ErrorCode.ActiveSqlTransaction));
+            Assert.That(cursor.GetError().what, Is.EqualTo("ALTER SYSTEM cannot run inside a transaction block"));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("ROLLBACK;");
+            Assert.IsTrue(cursor.IsSuccess());
+        }
+    }
+
+    [Test]
+    public void ParseErrorCarriesItsPosition() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("ParseErrorCarriesItsPosition");
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM t WHERE a = = 1;");
+            Assert.IsTrue(cursor.IsError());
+            ErrorMessage error = cursor.GetError();
+            Assert.That(error.type, Is.EqualTo(ErrorCode.SqlParseError));
+            Assert.That(error.what, Is.EqualTo("syntax error at or near \"=\""));
+            Assert.That(error.position, Is.EqualTo(27));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT 'жж");
+            Assert.IsTrue(cursor.IsError());
+            Assert.That(cursor.GetError().position, Is.EqualTo(8));
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM nodb.t;");
+            Assert.IsTrue(cursor.IsError());
+            Assert.That(cursor.GetError().position, Is.Null);
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT 1;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.GetError().position, Is.Null);
+        }
+    }
+
+    [Test]
     public void NonAsciiTextRoundTrips() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("NonAsciiTextRoundTrips");
         {
@@ -53,7 +178,7 @@ public class Tests
     public void WritesReportAffectedRows() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("WritesReportAffectedRows");
         {
-            using CursorWrapper cursor = otterbrix.Execute("CREATE DATABASE db;");
+            using CursorWrapper cursor = otterbrix.Execute("CREATE SCHEMA db;");
             Assert.IsTrue(cursor.IsSuccess());
             Assert.That(cursor.AffectedRows(), Is.Null);
         }
@@ -87,10 +212,35 @@ public class Tests
     }
 
     [Test]
+    public void CreateTableReportsItsOid() {
+        using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("CreateTableReportsItsOid");
+        {
+            using CursorWrapper cursor = otterbrix.Execute("CREATE SCHEMA db;");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.CreatedOid(), Is.Null);
+        }
+        uint? created;
+        {
+            using CursorWrapper cursor = otterbrix.Execute("CREATE TABLE db.users (name string, age bigint);");
+            Assert.IsTrue(cursor.IsSuccess());
+            created = cursor.CreatedOid();
+            Assert.That(created, Is.Not.Null);
+        }
+        {
+            using CursorWrapper cursor = otterbrix.Execute("SELECT oid FROM pg_catalog.pg_class WHERE relname = 'users';");
+            Assert.IsTrue(cursor.IsSuccess());
+            Assert.That(cursor.CreatedOid(), Is.Null);
+            Assert.That(cursor.Size(), Is.EqualTo(1));
+            using ValueWrapper oid = cursor.GetValue(0, 0);
+            Assert.That(oid.GetUint(), Is.EqualTo((ulong)created!.Value));
+        }
+    }
+
+    [Test]
     public void Base() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("Base");
         {
-            using (CursorWrapper created = otterbrix.Execute("CREATE DATABASE testdatabase;")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.Execute("CREATE SCHEMA testdatabase;")) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.Execute("CREATE TABLE testdatabase.testcollection();")) Assert.IsTrue(created.IsSuccess());
         }
         {
@@ -218,7 +368,7 @@ public class Tests
     public void GroupBy() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("GroupBy");
         {
-            using (CursorWrapper created = otterbrix.Execute("CREATE DATABASE testdatabase;")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.Execute("CREATE SCHEMA testdatabase;")) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.Execute("CREATE TABLE testdatabase.testcollection();")) Assert.IsTrue(created.IsSuccess());
         }
         {
@@ -284,7 +434,7 @@ public class Tests
     public void InvalidQueries() {
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("InvalidQueries");
         {
-            using CursorWrapper database = otterbrix.Execute("CREATE DATABASE testdatabase;");
+            using CursorWrapper database = otterbrix.Execute("CREATE SCHEMA testdatabase;");
             Assert.IsTrue(database.IsSuccess());
             using CursorWrapper collection = otterbrix.Execute("CREATE TABLE testdatabase.testcollection();");
             Assert.IsTrue(collection.IsSuccess());
@@ -293,7 +443,7 @@ public class Tests
             using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM OtherDatabase.OtherCollection;");
             Assert.IsFalse(cursor.IsSuccess());
             Assert.IsTrue(cursor.IsError());
-            Assert.That(cursor.GetError().type, Is.EqualTo(ErrorCode.DatabaseNotExists));
+            Assert.That(cursor.GetError().type, Is.EqualTo(ErrorCode.TableNotExists));
         }
         {
             using CursorWrapper cursor = otterbrix.Execute("SELECT * FROM testdatabase.OtherCollection;");
@@ -320,7 +470,7 @@ public class Tests
 
         using OtterbrixWrapper otterbrix = TestDirectory.OpenFresh("TestJoin");
         {
-            using (CursorWrapper created = otterbrix.Execute("CREATE DATABASE " + databaseName + ";")) Assert.IsTrue(created.IsSuccess());
+            using (CursorWrapper created = otterbrix.Execute("CREATE SCHEMA " + databaseName + ";")) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.Execute("CREATE TABLE " + databaseName + "." + collectionName1 + "();")) Assert.IsTrue(created.IsSuccess());
             using (CursorWrapper created = otterbrix.Execute("CREATE TABLE " + databaseName + "." + collectionName2 + "();")) Assert.IsTrue(created.IsSuccess());
         }

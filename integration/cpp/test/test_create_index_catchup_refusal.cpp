@@ -63,7 +63,7 @@ TEST_CASE("integration::cpp::create_index_catchup_refusal::the_build_does_not_re
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE CatchupDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA CatchupDb;")->is_success());
     // grp is bigint, not int: the Index Scan assertion below needs the literal's type to
     // match the key's, or the planner keeps the heap and the probe proves nothing.
     REQUIRE(exec(dispatcher, "CREATE TABLE CatchupDb.t (id bigint, grp bigint, val bigint);")->is_success());

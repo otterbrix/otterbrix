@@ -31,7 +31,7 @@ namespace {
                             logical_plan::make_node_catalog_resolve(resource, logical_plan::resolve_kind::constraint)};
 
         logical_plan::resolve_entry_t table_entry;
-        table_entry.dbname = "db";
+        table_entry.schema = "db";
         table_entry.relname = "t";
         if (stamp_table_md) {
             logical_plan::resolved_table_metadata_t md;

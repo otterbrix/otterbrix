@@ -35,7 +35,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restar
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE b;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA b;")->is_success());
         REQUIRE(exec("CREATE TABLE b.dec (id BIGINT, d DECIMAL(10,2)) ;")->is_success());
         REQUIRE(exec("INSERT INTO b.dec (id, d) VALUES (1, 12.34), (2, 56.78);")->is_success());
 
@@ -112,7 +112,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::type_spec_lost_across_restar
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE b;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA b;")->is_success());
         REQUIRE(exec("CREATE TABLE b.lst (id BIGINT, l BIGINT[]) ;")->is_success());
         REQUIRE(exec("INSERT INTO b.lst (id, l) VALUES (1, ARRAY[1, 2, 3]);")->is_success());
 
@@ -180,7 +180,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::default_lost_across_restart"
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE b;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA b;")->is_success());
         REQUIRE(exec("CREATE TABLE b.t (id BIGINT, c BIGINT DEFAULT 5);")->is_success());
         REQUIRE(exec("CREATE TABLE b.t2 (id BIGINT, c BIGINT NOT NULL DEFAULT 7);")->is_success());
         REQUIRE(exec("INSERT INTO b.t (id) VALUES (1);")->is_success());
@@ -282,7 +282,7 @@ TEST_CASE("integration::cpp::test_persistence_gaps::create_then_kill_before_chec
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE b;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA b;")->is_success());
         // Default-storage, explicit disk-storage (never checkpointed), and computed
         // (dynamic-schema) tables must all survive the crash.
         REQUIRE(exec("CREATE TABLE b.t (id BIGINT);")->is_success());

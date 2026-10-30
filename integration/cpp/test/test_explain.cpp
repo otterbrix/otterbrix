@@ -8,6 +8,7 @@
 #include <components/vector/data_chunk.hpp>
 #include <services/collection/explain/explain_plan.hpp>
 #include <services/collection/explain/explain_renderer.hpp>
+#include <services/disk/agent_disk.hpp>
 
 #include <string>
 #include <string_view>
@@ -67,7 +68,7 @@ TEST_CASE("integration::cpp::test_explain::sql") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -230,7 +231,7 @@ TEST_CASE("integration::cpp::test_explain::inline_subquery_initplan") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -364,7 +365,7 @@ TEST_CASE("integration::cpp::test_explain::per_query_renderer") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -459,7 +460,7 @@ TEST_CASE("integration::cpp::test_explain::renderer_registration_edges") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -511,7 +512,7 @@ TEST_CASE("integration::cpp::test_explain::analyze_recursive_cte_rows") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -586,7 +587,7 @@ TEST_CASE("integration::cpp::test_explain::limit_node_when_effective") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -656,7 +657,7 @@ TEST_CASE("integration::cpp::test_explain::having_node_labeled") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -693,7 +694,7 @@ TEST_CASE("integration::cpp::test_explain::operator_labels") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();
@@ -750,7 +751,7 @@ TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
     auto* dispatcher = space.dispatcher();
 
     using test_helpers::exec;
-    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.t1 (id bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.t2 (id bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO db.t1 (id, k) VALUES (5,1),(5,2),(6,1);")->is_success());
@@ -779,7 +780,7 @@ TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
         REQUIRE(cell8.value() == 1);
     }
 
-    INFO("EXPLAIN: both per-side filters ride the Seq Scans; no residual Filter remains");
+    INFO("EXPLAIN: both per-side filters are taken by the Seq Scans; no Filter remains");
     {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN " + q + ";");
@@ -788,10 +789,8 @@ TEST_CASE("integration::cpp::test_explain::join_shared_column_name_pushdown") {
         REQUIRE(contains(t, "Seq Scan on t1"));
         REQUIRE(contains(t, "Seq Scan on t2"));
         const auto join_pos = t.find("Hash Join");
-        const auto first_filter = t.find("Filter");
         REQUIRE(join_pos != std::string::npos);
-        REQUIRE(first_filter != std::string::npos);
-        REQUIRE(join_pos < first_filter);
+        REQUIRE_FALSE(contains(t, "Filter"));
     }
 }
 
@@ -812,7 +811,7 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
     auto* dispatcher = space.dispatcher();
 
     using test_helpers::exec;
-    REQUIRE(exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.t1 (id bigint, k bigint);")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE db.t2 (id2 bigint, k bigint, v bigint);")->is_success());
     REQUIRE(exec(dispatcher, "INSERT INTO db.t1 (id, k) VALUES (1,5),(2,5),(3,9);")->is_success());
@@ -870,7 +869,7 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
         REQUIRE(cell18.value() == 11);
     }
 
-    INFO("EXPLAIN (inner): a Filter rides BOTH scans — the derived predicate reached t2");
+    INFO("EXPLAIN (inner): both scans take their WHERE — no Filter remains");
     {
         auto s = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(s, "EXPLAIN " + inner + ";");
@@ -879,8 +878,15 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
         REQUIRE(contains(t, "Seq Scan on t1"));
         REQUIRE(contains(t, "Seq Scan on t2"));
         REQUIRE(count_occurrences(t, "Seq Scan") == 2);
-        REQUIRE(count_occurrences(t, "Filter") == 2);
-        REQUIRE(t.find("Hash Join") < t.find("Filter"));
+        REQUIRE(count_occurrences(t, "Filter") == 0);
+    }
+    INFO("rows answered by the disk (inner): t1 takes k = 5 (2 rows), t2 takes the derived k = 5 (2 rows)");
+    {
+        services::disk::reset_disk_block_rows();
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, inner + ";");
+        REQUIRE(cur->is_success());
+        REQUIRE(services::disk::disk_block_rows() == 4);
     }
 
     const std::string outer =
@@ -893,7 +899,16 @@ TEST_CASE("integration::cpp::test_explain::transitive_equi_predicate_propagation
         const auto t = plan_text(cur);
         REQUIRE(contains(t, "Seq Scan on t1"));
         REQUIRE(contains(t, "Seq Scan on t2"));
-        REQUIRE(count_occurrences(t, "Filter") == 1);
+        REQUIRE(count_occurrences(t, "Filter") == 0);
+    }
+    INFO("rows answered by the disk (LEFT): only t1 takes a WHERE (2 rows); the null-padded t2 takes none");
+    {
+        services::disk::reset_disk_block_rows();
+        auto s = otterbrix::session_id_t();
+        auto cur = dispatcher->execute_sql(s, outer + ";");
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 4);
+        REQUIRE(services::disk::disk_block_rows() == 2);
     }
 }
 
@@ -906,7 +921,7 @@ TEST_CASE("integration::cpp::test_explain::distinct_under_group_by") {
 
     {
         auto s = otterbrix::session_id_t();
-        dispatcher->execute_sql(s, "CREATE DATABASE TestDatabase;");
+        dispatcher->execute_sql(s, "CREATE SCHEMA TestDatabase;");
     }
     {
         auto s = otterbrix::session_id_t();

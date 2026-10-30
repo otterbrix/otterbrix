@@ -54,7 +54,7 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::growth_is_not_quadratic
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE p;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA p;")->is_success());
     REQUIRE(exec("CREATE TABLE p.t (id bigint, v double);")->is_success());
 
     auto rewrites_for = [&](int rows) {
@@ -142,7 +142,7 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::integer_literals_keep_t
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE p;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA p;")->is_success());
     }
 
     SECTION("values a BIGINT can hold") {
@@ -209,7 +209,7 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::literal_outside_the_col
         auto session = otterbrix::session_id_t();
         return dispatcher->execute_sql(session, sql);
     };
-    REQUIRE(exec("CREATE DATABASE p;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA p;")->is_success());
 
     auto insert_into = [&](const std::string& table, const std::string& declared, const std::string& literal) {
         REQUIRE(exec("CREATE TABLE " + table + " (v " + declared + ");")->is_success());
@@ -274,7 +274,7 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::string_literals_assign_
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE sl;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA sl;")->is_success());
     REQUIRE(exec("CREATE TABLE sl.t (d date, n bigint, amount decimal(10,2), flag boolean);")->is_success());
     REQUIRE(exec("INSERT INTO sl.t (d, n, amount, flag) VALUES ('2020-01-15', '42', '1.50', 'true');")->is_success());
 
@@ -308,7 +308,7 @@ TEST_CASE("integration::cpp::test_insert_type_promotion::boolean_column_takes_li
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE bl;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA bl;")->is_success());
     REQUIRE(exec("CREATE TABLE bl.t (id bigint, flag boolean);")->is_success());
     REQUIRE(exec("INSERT INTO bl.t (id, flag) VALUES (1, 'true'), (2, 'false');")->is_success());
     REQUIRE(exec("INSERT INTO bl.t (id, flag) VALUES (3, true);")->is_success());

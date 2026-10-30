@@ -22,7 +22,7 @@ TEST_CASE("integration::cpp::test_catalog_scan_cost::scans_per_statement") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE c;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA c;")->is_success());
     REQUIRE(exec("CREATE TABLE c.plain (id bigint, v bigint);")->is_success());
     REQUIRE(exec("CREATE TABLE c.p1 (id bigint PRIMARY KEY);")->is_success());
     REQUIRE(exec("CREATE TABLE c.p2 (id bigint PRIMARY KEY);")->is_success());

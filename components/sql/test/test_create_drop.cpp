@@ -7,6 +7,7 @@
 #include <components/logical_plan/node_drop.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -24,7 +25,7 @@ inline std::size_t entry_count(const node_catalog_resolve_ptr& node) { return no
 // the old "$sequence[N]" child-count assertions were really pinning down.
 #define TEST_TRANSFORMER_OK(QUERY, ROOT_TYPE, NS_COUNT, TBL_COUNT)                                                     \
     SECTION(QUERY) {                                                                                                   \
-        auto stmt = raw_parser(&arena_resource, QUERY)->lst.front().data;                                              \
+        auto stmt = parse_ok(&arena_resource, QUERY)->lst.front().data;                                                \
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
         REQUIRE(!result.has_error());                                                                                  \
         const auto& plan = result.value();                                                                             \
@@ -33,15 +34,27 @@ inline std::size_t entry_count(const node_catalog_resolve_ptr& node) { return no
         REQUIRE(entry_count(plan.catalog_resolves.tables) == TBL_COUNT);                                               \
     }
 
+#define TEST_TRANSFORMER_DATABASE_OK(QUERY, ROOT_TYPE)                                                                 \
+    SECTION(QUERY) {                                                                                                   \
+        auto stmt = parse_ok(&arena_resource, QUERY)->lst.front().data;                                                \
+        auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
+        REQUIRE(!result.has_error());                                                                                  \
+        const auto& plan = result.value();                                                                             \
+        REQUIRE(plan.sub_queries.back()->type() == ROOT_TYPE);                                                         \
+        REQUIRE(entry_count(plan.catalog_resolves.database) == 1);                                                     \
+        REQUIRE(entry_count(plan.catalog_resolves.namespaces) == 0);                                                   \
+        REQUIRE(entry_count(plan.catalog_resolves.tables) == 0);                                                       \
+    }
+
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
     SECTION(QUERY) {                                                                                                   \
-        auto create = linitial(raw_parser(&arena_resource, QUERY));                                                    \
+        auto create = linitial(parse_ok(&arena_resource, QUERY));                                                      \
         REQUIRE(transformer.transform(pg_cell_to_node_cast(create)).has_error());                                      \
     }
 
 #define TEST_TRANSFORMER_EXPECT_SCHEMA(QUERY, CHECK_FN)                                                                \
     SECTION(QUERY) {                                                                                                   \
-        auto stmt = linitial(raw_parser(&arena_resource, QUERY));                                                      \
+        auto stmt = linitial(parse_ok(&arena_resource, QUERY));                                                        \
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();                                    \
         REQUIRE(!result.has_error());                                                                                  \
         auto node = result.value().sub_queries.back();                                                                 \
@@ -62,15 +75,29 @@ TEST_CASE("components::sql::database") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name", node_type::create_database_t, 1, 0);
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;", node_type::create_database_t, 1, 0);
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name;          ", node_type::create_database_t, 1, 0);
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; -- comment", node_type::create_database_t, 1, 0);
-    TEST_TRANSFORMER_OK("CREATE DATABASE db_name; /* multiline\ncomments */", node_type::create_database_t, 1, 0);
-    TEST_TRANSFORMER_OK("CREATE /* comment */ DATABASE db_name;", node_type::create_database_t, 1, 0);
-    // DROP DATABASE registers only its namespace lookup; the drop node carries the
-    // dbname and gets namespace_oid pasted on by enrich.
-    TEST_TRANSFORMER_OK("DROP DATABASE db_name;", node_type::drop_t, 1, 0);
+    // A database is a pg_database row: CREATE / DROP DATABASE register one database lookup, no schema.
+    TEST_TRANSFORMER_DATABASE_OK("CREATE DATABASE db_name", node_type::create_database_t);
+    TEST_TRANSFORMER_DATABASE_OK("CREATE DATABASE db_name;", node_type::create_database_t);
+    TEST_TRANSFORMER_DATABASE_OK("CREATE DATABASE db_name;          ", node_type::create_database_t);
+    TEST_TRANSFORMER_DATABASE_OK("CREATE DATABASE db_name; -- comment", node_type::create_database_t);
+    TEST_TRANSFORMER_DATABASE_OK("CREATE DATABASE db_name; /* multiline\ncomments */", node_type::create_database_t);
+    TEST_TRANSFORMER_DATABASE_OK("CREATE /* comment */ DATABASE db_name;", node_type::create_database_t);
+    // The drop node carries the name and gets database_oid pasted on by enrich.
+    TEST_TRANSFORMER_DATABASE_OK("DROP DATABASE db_name;", node_type::drop_t);
+}
+
+TEST_CASE("components::sql::schema") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+    transform::transformer transformer(&resource);
+
+    // A schema is a pg_namespace row of the current database: one schema lookup.
+    TEST_TRANSFORMER_OK("CREATE SCHEMA s;", node_type::create_schema_t, 1, 0);
+    TEST_TRANSFORMER_OK("CREATE SCHEMA IF NOT EXISTS s;", node_type::create_schema_t, 1, 0);
+    TEST_TRANSFORMER_OK("DROP SCHEMA s;", node_type::drop_t, 1, 0);
+    TEST_TRANSFORMER_OK("DROP SCHEMA s CASCADE;", node_type::drop_t, 1, 0);
+    TEST_TRANSFORMER_ERROR("DROP SCHEMA d.s;", "DROP SCHEMA takes a simple name");
+    TEST_TRANSFORMER_ERROR("CREATE SCHEMA s CREATE TABLE t (a BIGINT);", "schema elements are not implemented");
 }
 
 TEST_CASE("components::sql::table") {
@@ -81,7 +108,8 @@ TEST_CASE("components::sql::table") {
     TEST_TRANSFORMER_OK("CREATE TABLE uuid.db_name.schema.table_name()", node_type::create_collection_t, 1, 0);
     TEST_TRANSFORMER_OK("CREATE TABLE db_name.schema.table_name()", node_type::create_collection_t, 1, 0);
     TEST_TRANSFORMER_OK("CREATE TABLE db_name.table_name()", node_type::create_collection_t, 1, 0);
-    TEST_TRANSFORMER_OK("CREATE TABLE table_name()", node_type::create_collection_t, 1, 0);
+    // No schema written: the executor fills it from the place, so the transformer looks up no schema.
+    TEST_TRANSFORMER_OK("CREATE TABLE table_name()", node_type::create_collection_t, 0, 0);
 
     // DROP TABLE registers a namespace + table lookup; the drop node carries the
     // names and gets namespace_oid + table_oid pasted on by enrich.
@@ -222,7 +250,7 @@ TEST_CASE("components::sql::index") {
     // index's own name (probing pg_class for a relation already using it).
     SECTION("create with uuid") {
         auto create =
-            raw_parser(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
+            parse_ok(&arena_resource, "CREATE INDEX some_idx ON uuid.db.schema.table (field);")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -233,8 +261,7 @@ TEST_CASE("components::sql::index") {
     }
 
     SECTION("create with schema") {
-        auto create =
-            raw_parser(&arena_resource, "CREATE INDEX some_idx ON db.schema.table (field);")->lst.front().data;
+        auto create = parse_ok(&arena_resource, "CREATE INDEX some_idx ON db.schema.table (field);")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -249,7 +276,7 @@ TEST_CASE("components::sql::index") {
     // DROP INDEX names TWO pg_class rows — the parent table and the index — so it
     // registers two table lookups, and the drop node carries both names.
     SECTION("drop with uuid") {
-        auto drop = raw_parser(&arena_resource, "DROP INDEX uuid.db.schema.table.some_idx")->lst.front().data;
+        auto drop = parse_ok(&arena_resource, "DROP INDEX uuid.db.schema.table.some_idx")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -260,7 +287,7 @@ TEST_CASE("components::sql::index") {
     }
 
     SECTION("drop with schema") {
-        auto drop = raw_parser(&arena_resource, "DROP INDEX db.schema.table.some_idx")->lst.front().data;
+        auto drop = parse_ok(&arena_resource, "DROP INDEX db.schema.table.some_idx")->lst.front().data;
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -278,16 +305,14 @@ TEST_CASE("components::sql::types") {
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    // CREATE TYPE is wrapped in sequence_t(resolve_ns?, resolve_field_types..., create_type).
-    TEST_TRANSFORMER_OK("CREATE TYPE custom_type_name AS (f1 int, f2 string);", node_type::create_type_t, 1, 0);
+    // An unqualified name looks up no schema: the executor completes it with the session's place.
+    TEST_TRANSFORMER_OK("CREATE TYPE custom_type_name AS (f1 int, f2 string);", node_type::create_type_t, 0, 0);
 
-    TEST_TRANSFORMER_OK("CREATE TYPE custom_enum AS ENUM ('f1', 'f2', 'f3');", node_type::create_type_t, 1, 0);
+    TEST_TRANSFORMER_OK("CREATE TYPE custom_enum AS ENUM ('f1', 'f2', 'f3');", node_type::create_type_t, 0, 0);
 
-    // DROP TYPE is wrapped in sequence_t(resolve_ns, resolve_type, drop_type).
-    TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", node_type::drop_t, 1, 0);
+    TEST_TRANSFORMER_OK("DROP TYPE custom_type_name", node_type::drop_t, 0, 0);
 
-    // CREATE TABLE with a custom type is wrapped in sequence_t(resolve_ns, resolve_type, create_collection).
-    TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", node_type::create_collection_t, 1, 0);
+    TEST_TRANSFORMER_OK("CREATE TABLE table_ (custom_type_name custom_type);", node_type::create_collection_t, 0, 0);
 
     // INSERT is wrapped in sequence_t(resolve_table, resolve_constraint,
     // insert) — no dbname so no resolve_namespace.
@@ -301,7 +326,7 @@ TEST_CASE("components::sql::drop_names_every_object_or_refuses") {
     transform::transformer transformer(&resource);
 
     auto refusal_of = [&](const char* query) {
-        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, query)->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(result.has_error());
         return std::string{result.error().what};
@@ -334,7 +359,7 @@ TEST_CASE("components::sql::drop_names_every_object_or_refuses") {
     }
 
     SECTION("a single object is still planned") {
-        auto stmt = raw_parser(&arena_resource, "DROP TABLE db_name.only_one")->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, "DROP TABLE db_name.only_one")->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE_FALSE(result.has_error());
         REQUIRE(result.value().sub_queries.back()->type() == node_type::drop_t);
@@ -348,7 +373,7 @@ TEST_CASE("components::sql::create_index_access_method") {
     transform::transformer transformer(&resource);
 
     auto plan_of = [&](const char* query) {
-        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, query)->lst.front().data;
         return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
     };
 
@@ -399,7 +424,7 @@ TEST_CASE("components::sql::create_index_declared_clauses_are_not_dropped") {
     transform::transformer transformer(&resource);
 
     auto plan_of = [&](const char* query) {
-        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, query)->lst.front().data;
         return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
     };
 
@@ -428,22 +453,32 @@ TEST_CASE("components::sql::create_index_declared_clauses_are_not_dropped") {
     }
 }
 
-// transform_create_function reads only a one-part and a two-part funcname; a three-part
-// name must be refused, not silently registered under an empty dbname/relname.
+// A function is named like a table: up to database.schema.function; a four-part name is refused, never registered
+// under an empty part.
 TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
     auto plan_of = [&](const char* query) {
-        auto stmt = raw_parser(&arena_resource, query)->lst.front().data;
+        auto stmt = parse_ok(&arena_resource, query)->lst.front().data;
         return transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
     };
 
-    SECTION("a three-part name is refused, and the refusal spells the name out") {
+    SECTION("a three-part name is database.schema.function") {
         auto result = plan_of("CREATE FUNCTION cat.sch.fn(x INT) RETURNS INT AS 'x -> x';");
+        REQUIRE_FALSE(result.has_error());
+        const auto& root = result.value().sub_queries.back();
+        REQUIRE(root->type() == node_type::create_macro_t);
+        CHECK(root->target().database.t == "cat");
+        CHECK(root->target().schema.t == "sch");
+        CHECK(static_cast<const node_create_macro_t*>(root.get())->macroname().t == "fn");
+    }
+
+    SECTION("a four-part name is refused, and the refusal spells the name out") {
+        auto result = plan_of("CREATE FUNCTION u.cat.sch.fn(x INT) RETURNS INT AS 'x -> x';");
         REQUIRE(result.has_error());
-        CHECK(std::string{result.error().what}.find("cat.sch.fn") != std::string::npos);
+        CHECK(std::string{result.error().what}.find("u.cat.sch.fn") != std::string::npos);
     }
 
     SECTION("an unnamed parameter is refused: a macro parameter is addressed by name") {
@@ -502,21 +537,21 @@ TEST_CASE("components::sql::create_function_shape_is_carried_or_refused") {
         REQUIRE(node->type() == node_type::create_macro_t);
         auto* macro = static_cast<node_create_macro_t*>(node.get());
         CHECK(macro->macroname().t == "add2");
-        CHECK(macro->target().database.t == "db");
+        CHECK(macro->target().schema.t == "db");
         REQUIRE(macro->parameters().size() == 2);
         CHECK(macro->parameters()[0] == "x");
         CHECK(macro->parameters()[1] == "y");
         CHECK(macro->body_sql() == "x, y -> x + y");
     }
 
-    SECTION("a one-part name still lands on relname, not on dbname") {
+    SECTION("a one-part name still lands on relname, not on the schema") {
         auto result = plan_of("CREATE FUNCTION solo(x INT) RETURNS INT AS 'x -> x';");
         REQUIRE_FALSE(result.has_error());
         auto node = result.value().sub_queries.back();
         REQUIRE(node->type() == node_type::create_macro_t);
         auto* macro = static_cast<node_create_macro_t*>(node.get());
         CHECK(macro->macroname().t == "solo");
-        CHECK(macro->target().database.t == "public");
+        CHECK(macro->target().schema.t.empty());
     }
 }
 
@@ -528,7 +563,7 @@ TEST_CASE("components::sql::drop_carries_missing_ok") {
     transform::transformer transformer(&resource);
 
     auto if_exists_of = [&](const char* query) {
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
         auto node = result.value().sub_queries.back();
@@ -563,7 +598,7 @@ TEST_CASE("components::sql::drop_carries_written_behavior") {
     using components::catalog::drop_behavior_t;
 
     auto behavior_of = [&](const char* query) {
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
         auto node = result.value().sub_queries.back();
@@ -600,7 +635,7 @@ TEST_CASE("components::sql::alter_drop_column_carries_written_behavior") {
     using components::catalog::drop_behavior_t;
 
     auto subcommands_of = [&](const char* query) {
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
         auto node = result.value().sub_queries.back();
@@ -654,7 +689,7 @@ TEST_CASE("components::sql::alter_table_carries_missing_ok") {
     auto node_of = [&](const char* query) {
         // With the statement text: a CHECK's expression is sliced from it.
         transform::transformer transformer(&resource, query);
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!result.has_error());
         return result.value().sub_queries.back();
@@ -693,33 +728,34 @@ TEST_CASE("components::sql::alter_table_carries_missing_ok") {
     }
 }
 
-TEST_CASE("components::sql::unreachable_write_targets") {
+// A write target keeps every slot it was written with; a missing database or schema is the session's place,
+// completed by the executor (types too), so the transformer records nothing as unreachable.
+TEST_CASE("components::sql::write_targets_keep_their_slots") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     transform::transformer transformer(&resource);
 
-    auto recorded = [&](const char* sql) {
-        auto stmt = raw_parser(&arena_resource, sql)->lst.front().data;
+    auto target_of = [&](const char* sql) {
+        auto stmt = parse_ok(&arena_resource, sql)->lst.front().data;
         auto result = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE_FALSE(result.has_error());
-        std::vector<std::string> written;
-        for (const auto& target : result.value().catalog_resolves.external_targets) {
-            written.emplace_back(target.written.to_string());
-        }
-        return written;
+        const auto& target = result.value().sub_queries.back()->target();
+        return std::vector<std::string>{target.connection.t, target.database.t, target.schema.t, target.collection.t};
     };
-    using names = std::vector<std::string>;
+    using slots = std::vector<std::string>;
 
-    CHECK(recorded("CREATE TABLE uuid.db_name.schema.table_name()") == names{"uuid.db_name.schema.table_name"});
-    CHECK(recorded("DROP TABLE db_name.schema.table_name") == names{"db_name.schema.table_name"});
+    CHECK(target_of("CREATE TABLE uuid.db_name.schema.table_name()") ==
+          slots{"uuid", "db_name", "schema", "table_name"});
+    CHECK(target_of("DROP TABLE uuid.db_name.schema.table_name") == slots{"uuid", "db_name", "schema", "table_name"});
+    CHECK(target_of("DROP TABLE db_name.schema.table_name") == slots{"", "db_name", "schema", "table_name"});
 
-    CHECK(recorded("CREATE TABLE db_name.table_name()").empty());
-    CHECK(recorded("DROP TABLE db_name.table_name").empty());
+    CHECK(target_of("CREATE TABLE db_name.table_name()") == slots{"", "", "db_name", "table_name"});
+    CHECK(target_of("DROP TABLE db_name.table_name") == slots{"", "", "db_name", "table_name"});
 
-    CHECK(recorded("CREATE TYPE db_name.type_name AS (id int)") == names{"db_name.type_name"});
-    CHECK(recorded("DROP TYPE db_name.type_name") == names{"db_name.type_name"});
+    CHECK(target_of("CREATE TYPE db_name.type_name AS (id int)") == slots{"", "", "db_name", ""});
+    CHECK(target_of("DROP TYPE db_name.type_name") == slots{"", "", "db_name", "type_name"});
 
-    CHECK(recorded("CREATE TABLE table_name()").empty());
-    CHECK(recorded("CREATE TYPE type_name AS (id int)").empty());
-    CHECK(recorded("DROP TYPE type_name").empty());
+    CHECK(target_of("CREATE TABLE table_name()") == slots{"", "", "", "table_name"});
+    CHECK(target_of("CREATE TYPE type_name AS (id int)") == slots{"", "", "", ""});
+    CHECK(target_of("DROP TYPE type_name") == slots{"", "", "", "type_name"});
 }

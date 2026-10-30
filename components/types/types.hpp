@@ -446,9 +446,6 @@ namespace components::types {
         bool is_unnamed() const;
         bool is_nested() const;
 
-        const complex_logical_type& child_type(const std::pmr::vector<size_t>& path) const;
-        static const complex_logical_type& type_from_path(const std::pmr::vector<complex_logical_type>& types,
-                                                          const std::pmr::vector<size_t>& path);
         const complex_logical_type& child_type() const;
         std::pmr::vector<complex_logical_type>& child_types();
         const std::pmr::vector<complex_logical_type>& child_types() const;
@@ -494,9 +491,6 @@ namespace components::types {
     private:
         logical_type type_ = logical_type::NA;
         std::unique_ptr<logical_type_extension> extension_ = nullptr; // for complex types
-
-        // Avoids copying the child-type vector at each nesting level.
-        const complex_logical_type& child_type(const size_t* path_data, size_t remaining) const;
     };
 
     struct list_entry_t {
@@ -695,14 +689,21 @@ namespace components::types {
 
     class unknown_logical_type_extension : public logical_type_extension {
     public:
-        explicit unknown_logical_type_extension(std::string type_name);
+        explicit unknown_logical_type_extension(std::string type_name,
+                                                std::string database = {},
+                                                std::string schema = {});
 
         const std::string& type_name() const;
+        // The database and schema the type was written with; empty when it was not.
+        const std::string& type_database() const;
+        const std::string& type_schema() const;
 
         bool operator==(const unknown_logical_type_extension& rhs) const;
 
     private:
         std::string type_name_;
+        std::string database_;
+        std::string schema_;
     };
 
     template<typename T>

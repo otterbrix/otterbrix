@@ -49,7 +49,7 @@ namespace {
     }
 
     bool seed_outer_and_inner(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        return test_helpers::exec(dispatcher, "CREATE DATABASE s;")->is_success() &&
+        return test_helpers::exec(dispatcher, "CREATE SCHEMA s;")->is_success() &&
                test_helpers::exec(dispatcher, "CREATE TABLE s.o (id BIGINT);")->is_success() &&
                test_helpers::exec(dispatcher, "INSERT INTO s.o (id) VALUES (NULL), (1), (2);")->is_success() &&
                test_helpers::exec(dispatcher, "CREATE TABLE s.n (k BIGINT, v BIGINT);")->is_success() &&
@@ -123,7 +123,7 @@ TEST_CASE("integration::cpp::correctness_bugs::array_int_slot_width") {
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -176,7 +176,7 @@ TEST_CASE("integration::cpp::correctness_bugs::unsupported_boolean_text_arithmet
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -193,14 +193,14 @@ TEST_CASE("integration::cpp::correctness_bugs::unsupported_boolean_text_arithmet
         auto cur = dispatcher->execute_sql(session, "SELECT b + 1 FROM t.bad_arith;");
         INFO("BOOLEAN arithmetic error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == core::error_code_t::arithmetics_failure);
+        REQUIRE(cur->get_error().type == core::error_code_t::unrecognized_function);
     }
     {
         auto session = otterbrix::session_id_t();
         auto cur = dispatcher->execute_sql(session, "SELECT -s FROM t.bad_arith;");
         INFO("TEXT unary-minus error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_error());
-        REQUIRE(cur->get_error().type == core::error_code_t::arithmetics_failure);
+        REQUIRE(cur->get_error().type == core::error_code_t::unrecognized_function);
     }
 
     {
@@ -225,7 +225,7 @@ TEST_CASE("integration::cpp::correctness_bugs::alias_collision") {
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -277,7 +277,7 @@ TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
 
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -330,7 +330,7 @@ TEST_CASE("integration::cpp::correctness_bugs::star_prefix") {
 
         {
             auto session = otterbrix::session_id_t();
-            REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+            REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
         }
         {
             auto session = otterbrix::session_id_t();
@@ -363,7 +363,7 @@ TEST_CASE("integration::cpp::correctness_bugs::count_case_no_else") {
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -411,7 +411,7 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_avg_case_no_else") {
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -494,7 +494,7 @@ TEST_CASE("integration::cpp::correctness_bugs::case_condition_null_operand") {
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -534,7 +534,7 @@ TEST_CASE("integration::cpp::correctness_bugs::enum_scan_predicate") {
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -605,7 +605,7 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_no_lin
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -668,7 +668,7 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_no_linger
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -743,7 +743,7 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_autocommit_revert
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -777,7 +777,7 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_does_not_l
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -822,7 +822,7 @@ TEST_CASE("integration::cpp::correctness_bugs::check_violation_revert_mid_segmen
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -913,7 +913,7 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_violation_autocommit_reverts_p
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -958,7 +958,7 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_rejected_delete_leaves_row_upd
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA db;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -1024,7 +1024,7 @@ TEST_CASE("integration::cpp::correctness_bugs::fk_rejected_delete_leaves_row_upd
     }
 }
 
-// UPDATE variant of #552; NOT NULL is used here since CHECK on the UPDATE path is a known gap that never rejects.
+// UPDATE variant of #552: a PRIMARY KEY refuses the new version after it was written, so the write is reverted.
 TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves_row_updatable") {
     auto config = test_create_config(integration_fixture_path("test_correctness_bugs/rejected_update_row_identity"));
     test_clear_directory(config);
@@ -1033,21 +1033,22 @@ TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE db;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA db;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE db.p (id bigint, val text NOT NULL);")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE db.p (id bigint PRIMARY KEY, val text);")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "INSERT INTO db.p (id, val) VALUES (1, 'p1');")->is_success());
+        REQUIRE(
+            dispatcher->execute_sql(session, "INSERT INTO db.p (id, val) VALUES (1, 'p1'), (2, 'p2');")->is_success());
     }
     const auto reverts_before = services::collection::executor::dml_appends_reverted();
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "UPDATE db.p SET val = NULL, id = 77 WHERE id = 1;");
-        INFO("NOT-NULL-violating UPDATE error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        auto cur = dispatcher->execute_sql(session, "UPDATE db.p SET val = 'x', id = 2 WHERE id = 1;");
+        INFO("key-violating UPDATE error: " << (cur->is_error() ? cur->get_error().what : "none"));
         REQUIRE(cur->is_error());
     }
     const auto reverts_after = services::collection::executor::dml_appends_reverted();
@@ -1055,7 +1056,7 @@ TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves
     REQUIRE(reverts_after == reverts_before + 1);
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p;");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         const int id_col = find_column(*cur, "id");
@@ -1078,7 +1079,7 @@ TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves
     }
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p;");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 1);
         const int val_col = find_column(*cur, "val");
@@ -1099,7 +1100,7 @@ TEST_CASE("integration::cpp::correctness_bugs::constraint_rejected_update_leaves
     }
     {
         auto session = otterbrix::session_id_t();
-        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p;");
+        auto cur = dispatcher->execute_sql(session, "SELECT * FROM db.p WHERE id = 1;");
         REQUIRE(cur->is_success());
         REQUIRE(cur->size() == 0);
     }
@@ -1115,7 +1116,7 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_column_arg_empty_table"
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -1180,7 +1181,7 @@ TEST_CASE("integration::cpp::correctness_bugs::projection_over_empty_table") {
 
     {
         auto session = otterbrix::session_id_t();
-        REQUIRE(dispatcher->execute_sql(session, "CREATE DATABASE t;")->is_success());
+        REQUIRE(dispatcher->execute_sql(session, "CREATE SCHEMA t;")->is_success());
     }
     {
         auto session = otterbrix::session_id_t();
@@ -1219,7 +1220,7 @@ TEST_CASE("integration::cpp::correctness_bugs::like_null_pattern") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE t;")->is_success());
+    REQUIRE(run("CREATE SCHEMA t;")->is_success());
     REQUIRE(run("CREATE TABLE t.s (id bigint, name string);")->is_success());
     REQUIRE(run("INSERT INTO t.s (id, name) VALUES (1, 'alice'), (2, 'bob');")->is_success());
 
@@ -1260,7 +1261,7 @@ TEST_CASE("integration::cpp::correctness_bugs::scalar_not_like_null_subject") {
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE t;")->is_success());
+    REQUIRE(run("CREATE SCHEMA t;")->is_success());
     REQUIRE(run("CREATE TABLE t.s (id bigint, name string);")->is_success());
     REQUIRE(run("INSERT INTO t.s (id, name) VALUES (1, 'alice'), (2, 'bob'), (3, NULL);")->is_success());
 
@@ -1305,7 +1306,7 @@ TEST_CASE("integration::cpp::correctness_bugs::decimal_operand_comparison_descal
         return dispatcher->execute_sql(session, sql);
     };
 
-    REQUIRE(run("CREATE DATABASE t;")->is_success());
+    REQUIRE(run("CREATE SCHEMA t;")->is_success());
     REQUIRE(run("CREATE TABLE t.deccmp (a smallint, b numeric(10, 2));")->is_success());
     REQUIRE(run("INSERT INTO t.deccmp (a, b) VALUES (5, 3.00), (5, 100000.00), (40, 41.25);")->is_success());
 
@@ -1356,7 +1357,7 @@ TEST_CASE("integration::cpp::correctness_bugs::having_binds_aggregate_by_argumen
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (g bigint, v bigint);")->is_success());
     // Chosen so sum(g) and sum(v) disagree on which group passes the HAVING.
     REQUIRE(
@@ -1376,7 +1377,7 @@ TEST_CASE("integration::cpp::correctness_bugs::having_aggregate_over_expression"
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (g bigint);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (g) VALUES (1),(1),(10);")->is_success());
 
@@ -1394,7 +1395,7 @@ TEST_CASE("integration::cpp::correctness_bugs::update_division_by_zero_errors") 
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (10);")->is_success());
 
@@ -1418,7 +1419,7 @@ TEST_CASE("integration::cpp::correctness_bugs::field_selection_on_subquery_error
     auto* dispatcher = space.dispatcher();
 
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TYPE rec_t AS (f INT);")->is_success());
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.u (r rec_t);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.u (r) VALUES (ROW(1));")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id BIGINT);")->is_success());
@@ -1434,7 +1435,7 @@ TEST_CASE("integration::cpp::correctness_bugs::varchar_and_text_column_types") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
 
     CHECK(test_helpers::exec(dispatcher, "CREATE TABLE db.a (v varchar);")->is_success());
     CHECK(test_helpers::exec(dispatcher, "CREATE TABLE db.c (v text);")->is_success());
@@ -1452,7 +1453,7 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_over_text") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.s (t TEXT);")->is_success());
     REQUIRE(
         test_helpers::exec(dispatcher, "INSERT INTO db.s (t) VALUES ('banana'), ('apple'), ('cherry');")->is_success());
@@ -1478,7 +1479,7 @@ TEST_CASE("integration::cpp::correctness_bugs::array_subscript_in_expression") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (v INT[3]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (v) VALUES (ARRAY[10,20,30]);")->is_success());
 
@@ -1495,7 +1496,7 @@ TEST_CASE("integration::cpp::correctness_bugs::order_by_array_subscript") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id BIGINT, v INT[3]);")->is_success());
     // Data is chosen so real v[2] and row-number indexing disagree; v[1] would make them agree and prove nothing.
     REQUIRE(test_helpers::exec(dispatcher,
@@ -1558,7 +1559,7 @@ TEST_CASE("integration::cpp::correctness_bugs::three_table_join_qualified_column
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (k bigint, v bigint);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.m (k bigint, v bigint);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.n (k bigint, v bigint);")->is_success());
@@ -1579,8 +1580,8 @@ TEST_CASE("integration::cpp::correctness_bugs::cross_database_same_table_name_jo
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db1;")->is_success());
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db2;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db1;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db2;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db1.t (id BIGINT, a BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db2.t (id BIGINT, b BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db1.t (id, a) VALUES (1, 100), (2, 200);")->is_success());
@@ -1597,7 +1598,7 @@ TEST_CASE("integration::cpp::correctness_bugs::is_null_on_array_subscript") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id BIGINT, v INT[3]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (id, v) VALUES (1, ARRAY[10,20,30]);")->is_success());
 
@@ -1615,7 +1616,7 @@ TEST_CASE("integration::cpp::correctness_bugs::update_modulo_by_zero_errors") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (10);")->is_success());
 
@@ -1638,7 +1639,7 @@ TEST_CASE("integration::cpp::correctness_bugs::min_max_over_text_computing_table
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     // A computing (schemaless) table reaches the same aggregate path, but its column type is known only per row.
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.s ();")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.s (t) VALUES ('banana'), ('apple');")->is_success());
@@ -1656,7 +1657,7 @@ TEST_CASE("integration::cpp::correctness_bugs::aggregate_over_array_subscript") 
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (g BIGINT, v INT[3]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher,
                                "INSERT INTO db.t (g, v) VALUES (1, ARRAY[1,100,0]), (1, ARRAY[2,200,0]), "
@@ -1679,7 +1680,7 @@ TEST_CASE("integration::cpp::correctness_bugs::cross_signed_128bit_comparison") 
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.small (v UHUGEINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.large (v UHUGEINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.small (v) VALUES (5);")->is_success());
@@ -1706,7 +1707,7 @@ TEST_CASE("integration::cpp::correctness_bugs::nested_element_null_assignment") 
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id BIGINT, arr INT[3], lst INT[]);")->is_success());
     REQUIRE(
         test_helpers::exec(dispatcher, "INSERT INTO db.t (id, arr, lst) VALUES (1, ARRAY[10,20,30], ARRAY[10,20,30]);")
@@ -1758,7 +1759,7 @@ TEST_CASE("integration::cpp::correctness_bugs::operator_spelling_fixity") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (4);")->is_success());
 
@@ -1803,7 +1804,7 @@ TEST_CASE("integration::cpp::correctness_bugs::operator_spelling_is_its_function
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (4);")->is_success());
 
@@ -1859,7 +1860,7 @@ TEST_CASE("integration::cpp::correctness_bugs::expression_syntax_is_clause_indep
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(
         test_helpers::exec(dispatcher, "CREATE TABLE db.t (g BIGINT, x BIGINT, y BIGINT, v INT[3]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (g, x, y, v) VALUES (1, 4, 2, ARRAY[10,20,30]);")
@@ -1907,7 +1908,7 @@ TEST_CASE("integration::cpp::correctness_bugs::out_of_bounds_subscript_update_ex
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (1, ARRAY[10,20]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (2, ARRAY[30,40,50]);")->is_success());
@@ -1978,7 +1979,7 @@ TEST_CASE("integration::cpp::correctness_bugs::subscript_update_of_null_list_cel
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (1, NULL);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (2, NULL);")->is_success());
@@ -2037,7 +2038,7 @@ TEST_CASE("integration::cpp::correctness_bugs::list_equality_respects_length") {
         return cur->size();
     };
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (1, ARRAY[1,2]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (2, ARRAY[1,2,3]);")->is_success());
@@ -2073,7 +2074,7 @@ TEST_CASE("integration::cpp::correctness_bugs::whole_array_update_over_null_row"
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (id BIGINT, v INT[]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.a (id BIGINT, v INT[3]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (id, v) VALUES (1, NULL);")->is_success());
@@ -2134,7 +2135,7 @@ TEST_CASE("integration::cpp::correctness_bugs::hugeint_duplicates_collapse") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.h (x HUGEINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.g (x HUGEINT);")->is_success());
     // 2^64 and 2^64 + 1 differ only in the low half, 2^70 only in the high half.
@@ -2172,7 +2173,7 @@ TEST_CASE("integration::cpp::correctness_bugs::hugeint_inside_nested_duplicates_
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (v HUGEINT[]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher,
                                "INSERT INTO db.l (v) VALUES (ARRAY[18446744073709551616]), "
@@ -2204,7 +2205,7 @@ TEST_CASE("integration::cpp::correctness_bugs::union_keeps_null_and_zero_apart")
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.a (v BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.b (v BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.a (v) VALUES (NULL);")->is_success());
@@ -2230,7 +2231,7 @@ TEST_CASE("integration::cpp::correctness_bugs::union_nulls_with_different_payloa
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.v (a BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.v (a) VALUES (1), (5);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.n (a BIGINT);")->is_success());
@@ -2255,7 +2256,7 @@ TEST_CASE("integration::cpp::correctness_bugs::hugeint_inside_struct_duplicates_
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TYPE hp AS (h hugeint);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.s (v hp);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher,
@@ -2355,7 +2356,7 @@ TEST_CASE("integration::cpp::correctness_bugs::recursive_cte_refuses_decimal_pre
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t_dec41 (x DECIMAL(4,1));")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t_dec41 (x) VALUES (1.5);")->is_success());
 
@@ -2376,7 +2377,7 @@ TEST_CASE("integration::cpp::correctness_bugs::recursive_cte_refuses_a_narrower_
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t_dec181 (x DECIMAL(18,1));")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t_dec181 (x) VALUES (1.5);")->is_success());
 
@@ -2395,7 +2396,7 @@ TEST_CASE("integration::cpp::correctness_bugs::recursive_cte_refuses_an_integer_
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t_dec41 (x DECIMAL(4,1));")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t_dec41 (x) VALUES (1.5);")->is_success());
 
@@ -2424,7 +2425,7 @@ TEST_CASE("integration::cpp::correctness_bugs::recursive_cte_refuses_a_narrower_
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (x DECIMAL(18,1)[]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (x) VALUES (ARRAY[1.5]);")->is_success());
 
@@ -2445,7 +2446,7 @@ TEST_CASE("integration::cpp::correctness_bugs::recursive_cte_array_step") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.l (x DECIMAL(18,1)[], y BIGINT[]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.l (x, y) VALUES (ARRAY[1.5], ARRAY[1]);")->is_success());
 
@@ -2470,7 +2471,7 @@ TEST_CASE("integration::cpp::correctness_bugs::recursive_cte_names_the_length_of
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.f (x INTEGER[2]);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.f (x) VALUES (ARRAY[1, 2]);")->is_success());
 
@@ -2500,7 +2501,7 @@ TEST_CASE("integration::cpp::correctness_bugs::union_refuses_decimal_precision_m
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t_dec41 (x DECIMAL(4,1));")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t_dec181 (y DECIMAL(18,1));")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t_dec41 (x) VALUES (1.5);")->is_success());
@@ -2519,7 +2520,7 @@ TEST_CASE("integration::cpp::correctness_bugs::union_refuses_decimal_scale_misma
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t_dec101 (x DECIMAL(10,1));")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t_dec102 (y DECIMAL(10,2));")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t_dec101 (x) VALUES (1.5);")->is_success());
@@ -2538,7 +2539,7 @@ TEST_CASE("integration::cpp::correctness_bugs::union_refuses_different_enum_type
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TYPE mood AS ENUM ('sad', 'ok');")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TYPE size_t_ AS ENUM ('s', 'm');")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t_mood (x mood);")->is_success());
@@ -2559,7 +2560,7 @@ TEST_CASE("integration::cpp::correctness_bugs::union_null_takes_the_decimal_type
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.d (x DECIMAL(10,2));")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.e (y DECIMAL(10,2));")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.d (x) VALUES (1.25);")->is_success());
@@ -2593,7 +2594,7 @@ TEST_CASE("integration::cpp::correctness_bugs::union_with_null_scalar_subquery_k
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x INTEGER);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (7);")->is_success());
 
@@ -2669,7 +2670,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_out_of_range_for_bi
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.b (x BIGINT);")->is_success());
 
     auto ins = test_helpers::exec(dispatcher, "INSERT INTO db.b (x) VALUES (1), (18446744073709551615::UBIGINT);");
@@ -2687,7 +2688,7 @@ TEST_CASE("integration::cpp::correctness_bugs::lateral_first_outer_row_null") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE s;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA s;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE s.outer_t (id BIGINT);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO s.outer_t (id) VALUES (NULL), (1), (2);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE s.inner_t (k BIGINT, v BIGINT);")->is_success());
@@ -2725,7 +2726,7 @@ TEST_CASE("integration::cpp::correctness_bugs::nested_null_scalar_subquery_keeps
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x INTEGER);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (7);")->is_success());
 
@@ -2741,7 +2742,7 @@ TEST_CASE("integration::cpp::correctness_bugs::union_nested_null_subquery_agains
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x INTEGER);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (7);")->is_success());
 
@@ -2758,7 +2759,7 @@ TEST_CASE("integration::cpp::correctness_bugs::union_nested_null_subquery_matche
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (x INTEGER);")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO db.t (x) VALUES (7);")->is_success());
 
@@ -2879,7 +2880,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_array_then_null") {
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ins_arr_null"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE s;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA s;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE s.tv (id BIGINT, v VARCHAR[]);")->is_success());
     {
         auto cur = test_helpers::exec(dispatcher, "INSERT INTO s.tv (id, v) VALUES (1, ARRAY['a','b']), (2, NULL);");
@@ -2913,7 +2914,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_null_then_array") {
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ins_null_arr"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE s;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA s;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE s.tv (id BIGINT, v VARCHAR[]);")->is_success());
     {
         auto cur = test_helpers::exec(dispatcher, "INSERT INTO s.tv (id, v) VALUES (1, NULL), (2, ARRAY['a']);");
@@ -2944,7 +2945,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_array_with_null_ele
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ins_arr_null_elem"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE s;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA s;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE s.tv (id BIGINT, v VARCHAR[]);")->is_success());
     {
         auto cur = test_helpers::exec(dispatcher, "INSERT INTO s.tv (id, v) VALUES (1, ARRAY['a','b','c',NULL]);");
@@ -2975,7 +2976,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_two_arrays_with_nul
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ins_arr_null_elems2"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE s;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA s;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE s.tv (id BIGINT, v VARCHAR[]);")->is_success());
     {
         auto cur = test_helpers::exec(
@@ -3018,7 +3019,7 @@ TEST_CASE("integration::cpp::correctness_bugs::count_distinct_hugeint_across_chu
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(run_ok(dispatcher, "CREATE DATABASE db;"));
+    REQUIRE(run_ok(dispatcher, "CREATE SCHEMA db;"));
     REQUIRE(run_ok(dispatcher, "CREATE TABLE db.h (g BIGINT, x HUGEINT);"));
     // 5000 rows, 50 distinct values that all recur in every chunk of the scan; 50 and 3 are coprime, so
     // every group sees all 50.
@@ -3048,7 +3049,7 @@ TEST_CASE("integration::cpp::correctness_bugs::count_distinct_varchar_across_chu
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(run_ok(dispatcher, "CREATE DATABASE db;"));
+    REQUIRE(run_ok(dispatcher, "CREATE SCHEMA db;"));
     REQUIRE(run_ok(dispatcher, "CREATE TABLE db.s (g BIGINT, x VARCHAR);"));
     // Longer than any inline string, so the kept values live in the arena of the chunk that first saw them.
     REQUIRE(insert_generated(dispatcher, "db.s (g, x)", 5000, [](int i) {
@@ -3077,7 +3078,7 @@ TEST_CASE("integration::cpp::correctness_bugs::count_distinct_double_zero_and_ne
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(run_ok(dispatcher, "CREATE DATABASE db;"));
+    REQUIRE(run_ok(dispatcher, "CREATE SCHEMA db;"));
     REQUIRE(run_ok(dispatcher, "CREATE TABLE db.f (x DOUBLE);"));
     REQUIRE(run_ok(dispatcher, "INSERT INTO db.f (x) VALUES (0.0), (-0.0), (1.5);"));
 
@@ -3101,7 +3102,7 @@ TEST_CASE("integration::cpp::correctness_bugs::order_by_hugeint_array") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(run_ok(dispatcher, "CREATE DATABASE db;"));
+    REQUIRE(run_ok(dispatcher, "CREATE SCHEMA db;"));
     REQUIRE(run_ok(dispatcher, "CREATE TABLE db.t (id BIGINT, v HUGEINT[]);"));
     REQUIRE(run_ok(dispatcher, "INSERT INTO db.t (id, v) VALUES (3, ARRAY[3]), (1, ARRAY[1]), (2, ARRAY[2]);"));
 
@@ -3118,7 +3119,7 @@ TEST_CASE("integration::cpp::correctness_bugs::order_by_decimal_array_with_negat
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(run_ok(dispatcher, "CREATE DATABASE db;"));
+    REQUIRE(run_ok(dispatcher, "CREATE SCHEMA db;"));
     REQUIRE(run_ok(dispatcher, "CREATE TABLE db.t (id BIGINT, v DECIMAL(5,1)[]);"));
     REQUIRE(run_ok(dispatcher, "INSERT INTO db.t (id, v) VALUES (1, ARRAY[2.0]), (2, ARRAY[-1.5]);"));
 
@@ -3221,7 +3222,7 @@ TEST_CASE("integration::cpp::correctness_bugs::group_distinct_union_interval_mon
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(run_ok(dispatcher, "CREATE DATABASE db;"));
+    REQUIRE(run_ok(dispatcher, "CREATE SCHEMA db;"));
     REQUIRE(run_ok(dispatcher, "CREATE TABLE db.i (v INTERVAL);"));
     REQUIRE(run_ok(dispatcher, "INSERT INTO db.i (v) VALUES (INTERVAL '1 month'), (INTERVAL '30 days');"));
 
@@ -3265,7 +3266,7 @@ TEST_CASE("integration::cpp::correctness_bugs::group_distinct_interval_day_and_t
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(run_ok(dispatcher, "CREATE DATABASE db;"));
+    REQUIRE(run_ok(dispatcher, "CREATE SCHEMA db;"));
     REQUIRE(run_ok(dispatcher, "CREATE TABLE db.i (v INTERVAL);"));
     REQUIRE(run_ok(dispatcher, "INSERT INTO db.i (v) VALUES (INTERVAL '1 day'), (INTERVAL '24 hours');"));
 
@@ -3313,7 +3314,7 @@ TEST_CASE("integration::cpp::correctness_bugs::group_distinct_timetz_by_instant_
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(run_ok(dispatcher, "CREATE DATABASE db;"));
+    REQUIRE(run_ok(dispatcher, "CREATE SCHEMA db;"));
     REQUIRE(run_ok(dispatcher, "CREATE TABLE db.z (v TIMETZ);"));
     REQUIRE(run_ok(dispatcher, "CREATE TABLE db.s (v TIMETZ);"));
     REQUIRE(run_ok(dispatcher, "INSERT INTO db.z (v) VALUES (TIMETZ '10:00:00+00'), (TIMETZ '13:00:00+03');"));
@@ -3338,7 +3339,7 @@ TEST_CASE("integration::cpp::correctness_bugs::hash_join_on_interval_month_and_t
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(run_ok(dispatcher, "CREATE DATABASE db;"));
+    REQUIRE(run_ok(dispatcher, "CREATE SCHEMA db;"));
     REQUIRE(run_ok(dispatcher, "CREATE TABLE db.a (id BIGINT, v INTERVAL);"));
     REQUIRE(run_ok(dispatcher, "CREATE TABLE db.b (id BIGINT, v INTERVAL);"));
     REQUIRE(run_ok(dispatcher, "INSERT INTO db.a (id, v) VALUES (1, INTERVAL '1 month'), (2, INTERVAL '5 days');"));
@@ -3361,7 +3362,7 @@ TEST_CASE("integration::cpp::correctness_bugs::count_distinct_timetz") {
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(run_ok(dispatcher, "CREATE DATABASE db;"));
+    REQUIRE(run_ok(dispatcher, "CREATE SCHEMA db;"));
     REQUIRE(run_ok(dispatcher, "CREATE TABLE db.z (v TIMETZ);"));
     REQUIRE(run_ok(dispatcher,
                    "INSERT INTO db.z (v) VALUES (TIMETZ '10:00:00+00'), (TIMETZ '13:00:00+03'), "
@@ -3489,7 +3490,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ev_int"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.ev (id bigint, n integer);")->is_success());
     {
         auto ins = test_helpers::exec(dispatcher, "INSERT INTO db.ev (id, n) VALUES (1, 5), (2, '6');");
@@ -3518,7 +3519,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ev_int_rev"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.ev (id bigint, n integer);")->is_success());
     {
         auto ins = test_helpers::exec(dispatcher, "INSERT INTO db.ev (id, n) VALUES (1, '6'), (2, 5);");
@@ -3547,7 +3548,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ev_date"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.ev (id bigint, d date);")->is_success());
     {
         auto ins = test_helpers::exec(dispatcher,
@@ -3577,7 +3578,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ev_date_rev"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.ev (id bigint, d date);")->is_success());
     {
         auto ins = test_helpers::exec(dispatcher,
@@ -3607,7 +3608,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ev_tz"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.ev (id bigint, t timestamptz);")->is_success());
     {
         auto ins = test_helpers::exec(dispatcher,
@@ -3638,7 +3639,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ev_tz_rev"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.ev (id bigint, t timestamptz);")->is_success());
     {
         auto ins = test_helpers::exec(dispatcher,
@@ -3669,7 +3670,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ev_text"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.ev (id bigint, s text);")->is_success());
     {
         auto ins = test_helpers::exec(dispatcher, "INSERT INTO db.ev (id, s) VALUES (1, 'a'), (2, 5);");
@@ -3698,7 +3699,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_mixed_typed_and_quo
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ev_double"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.ev (id bigint, d double precision);")->is_success());
     {
         auto ins = test_helpers::exec(dispatcher, "INSERT INTO db.ev (id, d) VALUES (1, 1), (2, '2.5');");
@@ -3739,7 +3740,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_range_error_names_t
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.b (x BIGINT);")->is_success());
     auto ins = test_helpers::exec(dispatcher, "INSERT INTO db.b (x) VALUES (1), (18446744073709551615::UBIGINT);");
     REQUIRE(ins->is_error());
@@ -3754,7 +3755,7 @@ namespace {
         auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/" + fixture));
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+        REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
         REQUIRE(test_helpers::exec(dispatcher, table_ddl)->is_success());
         auto ins = test_helpers::exec(dispatcher, insert_sql);
         if (inserted) {
@@ -3841,7 +3842,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_typed_then_text_int
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ev_typed_text"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id bigint, s text);")->is_success());
     auto ins = test_helpers::exec(dispatcher, "INSERT INTO db.t (id, s) VALUES (1, 5), (2, 'a'::text);");
     INFO("error: " << (ins->is_error() ? ins->get_error().what : "none"));
@@ -3861,7 +3862,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_quoted_typed_text_i
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ev_q_typed_text"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id bigint, s text);")->is_success());
     auto ins = test_helpers::exec(dispatcher, "INSERT INTO db.t (id, s) VALUES (1, 'a'), (2, 5), (3, 'b'::text);");
     INFO("error: " << (ins->is_error() ? ins->get_error().what : "none"));
@@ -3891,7 +3892,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_integer_widths_into
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ev_widths"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (n bigint);")->is_success());
     auto ins = test_helpers::exec(dispatcher, "INSERT INTO db.t (n) VALUES (1::int), (2::bigint), (3::smallint);");
     INFO("error: " << (ins->is_error() ? ins->get_error().what : "none"));
@@ -3914,7 +3915,7 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_deferred_quoted_tex
     auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/ev_padded"));
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE db;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA db;")->is_success());
     REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE db.t (id bigint, n integer);")->is_success());
     auto lone = test_helpers::exec(dispatcher, "INSERT INTO db.t (id, n) VALUES (1, ' 8 ');");
     INFO("lone error: " << (lone->is_error() ? lone->get_error().what : "none"));

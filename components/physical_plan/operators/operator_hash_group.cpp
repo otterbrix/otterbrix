@@ -147,7 +147,7 @@ namespace components::operators {
                 std::pmr::string msg{"cannot group by '", resource_};
                 msg += keys_[index].name;
                 msg += "': its type has no hash";
-                return core::error_t(core::error_code_t::schema_error, std::move(msg));
+                return core::error_t(core::error_code_t::unimplemented_yet, std::move(msg));
             }
         }
 

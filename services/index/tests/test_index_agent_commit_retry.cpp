@@ -163,7 +163,7 @@ TEST_CASE("services::index::bitcask_index_agent_t keeps the staged bucket across
     const auto val42 = make_scalar(&resource, int64_t{42});
 
     auto read = [&](uint64_t txn_id) {
-        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare_type::eq, val42, txn_id);
+        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare_type::eq, val42, txn_id, true);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };
@@ -234,7 +234,7 @@ TEST_CASE("services::index::bitcask_index_agent_t txn==0 publish keeps the bucke
     const auto val42 = make_scalar(&resource, int64_t{42});
 
     auto read = [&](uint64_t txn_id) {
-        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare_type::eq, val42, txn_id);
+        auto answer = ask<&index_agent_contract::read_rows>(agent, session, compare_type::eq, val42, txn_id, true);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };
@@ -316,7 +316,8 @@ TEST_CASE("services::index::bitcask_index_agent_t a foreign commit does not jour
                                                             session,
                                                             compare_type::eq,
                                                             make_scalar(&resource, key),
-                                                            txn_id);
+                                                            txn_id,
+                                                            true);
         REQUIRE_FALSE(answer.has_error());
         return sorted(std::move(answer.value()));
     };

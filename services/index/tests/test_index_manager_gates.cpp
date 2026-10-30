@@ -37,6 +37,7 @@
 #include "index_fixture_path.hpp"
 #include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 
 using components::expressions::compare_type;
 using components::session::session_id_t;
@@ -147,21 +148,21 @@ TEST_CASE("services::index::manager::bootstrap refuses a duplicate keys+type pai
                                                       100,
                                                       1000,
                                                       configuration::pump_intervals_t{});
+    manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
-    manager->bootstrap_engine_sync(kTableOid);
-    REQUIRE_FALSE(manager
-                      ->bootstrap_index_sync(kTableOid,
-                                             kIndexOid,
-                                             components::logical_plan::index_type::single,
-                                             keys_of(&resource, {"id"}),
-                                             std::pmr::set<std::uint64_t>(&resource))
+    boot.bootstrap_engine_sync(kTableOid);
+    REQUIRE_FALSE(boot.bootstrap_index_sync(kTableOid,
+                                            kIndexOid,
+                                            components::logical_plan::index_type::single,
+                                            keys_of(&resource, {"id"}),
+                                            std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
 
-    auto duplicate = manager->bootstrap_index_sync(kTableOid,
-                                                   kIndexOid + 1,
-                                                   components::logical_plan::index_type::single,
-                                                   keys_of(&resource, {"id"}),
-                                                   std::pmr::set<std::uint64_t>(&resource));
+    auto duplicate = boot.bootstrap_index_sync(kTableOid,
+                                               kIndexOid + 1,
+                                               components::logical_plan::index_type::single,
+                                               keys_of(&resource, {"id"}),
+                                               std::pmr::set<std::uint64_t>(&resource));
     INFO("a second index over the same (keys, type) is a duplicate however it arrives");
     REQUIRE(duplicate.contains_error());
 
@@ -184,15 +185,16 @@ TEST_CASE("services::index::manager::a multi-column key set is refused, not narr
                                                       100,
                                                       1000,
                                                       configuration::pump_intervals_t{});
+    manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
-    manager->bootstrap_engine_sync(kTableOid);
+    boot.bootstrap_engine_sync(kTableOid);
 
     INFO("the bootstrap door");
-    auto wired = manager->bootstrap_index_sync(kTableOid,
-                                               kIndexOid,
-                                               components::logical_plan::index_type::single,
-                                               keys_of(&resource, {"id", "name"}),
-                                               std::pmr::set<std::uint64_t>(&resource));
+    auto wired = boot.bootstrap_index_sync(kTableOid,
+                                           kIndexOid,
+                                           components::logical_plan::index_type::single,
+                                           keys_of(&resource, {"id", "name"}),
+                                           std::pmr::set<std::uint64_t>(&resource));
     REQUIRE(wired.contains_error());
 
     INFO("the statement door");
@@ -288,14 +290,14 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
                                                       100,
                                                       1000,
                                                       configuration::pump_intervals_t{});
+    manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
-    manager->bootstrap_engine_sync(kTableOid);
-    REQUIRE_FALSE(manager
-                      ->bootstrap_index_sync(kTableOid,
-                                             kIndexOid,
-                                             components::logical_plan::index_type::single,
-                                             keys_of(&resource, {"id"}),
-                                             std::pmr::set<std::uint64_t>(&resource))
+    boot.bootstrap_engine_sync(kTableOid);
+    REQUIRE_FALSE(boot.bootstrap_index_sync(kTableOid,
+                                            kIndexOid,
+                                            components::logical_plan::index_type::single,
+                                            keys_of(&resource, {"id"}),
+                                            std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
 
     const auto session = session_id_t::generate_uid();
@@ -328,7 +330,7 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
     }
 
     {
-        auto agents = manager->owned_btree_agents_sync();
+        auto agents = boot.owned_btree_agents_sync();
         REQUIRE(agents.size() == 1);
         auto revert = manager->revert_insert(ctx_for(session, build_txn), kTableOid);
         settle(revert, agents.front());
@@ -358,16 +360,16 @@ TEST_CASE("services::index::manager::a catchup staging the agent refused fails t
                                                       100,
                                                       1000,
                                                       configuration::pump_intervals_t{});
+    manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
-    manager->bootstrap_engine_sync(kTableOid);
-    REQUIRE_FALSE(manager
-                      ->bootstrap_index_sync(kTableOid,
-                                             kIndexOid,
-                                             components::logical_plan::index_type::single,
-                                             keys_of(&resource, {"id"}),
-                                             std::pmr::set<std::uint64_t>(&resource))
+    boot.bootstrap_engine_sync(kTableOid);
+    REQUIRE_FALSE(boot.bootstrap_index_sync(kTableOid,
+                                            kIndexOid,
+                                            components::logical_plan::index_type::single,
+                                            keys_of(&resource, {"id"}),
+                                            std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent = agents.front();
 
@@ -432,16 +434,16 @@ TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not 
                                                       100,
                                                       1000,
                                                       configuration::pump_intervals_t{});
+    manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
-    manager->bootstrap_engine_sync(kTableOid);
-    REQUIRE_FALSE(manager
-                      ->bootstrap_index_sync(kTableOid,
-                                             kIndexOid,
-                                             components::logical_plan::index_type::single,
-                                             keys_of(&resource, {"id"}),
-                                             std::pmr::set<std::uint64_t>(&resource))
+    boot.bootstrap_engine_sync(kTableOid);
+    REQUIRE_FALSE(boot.bootstrap_index_sync(kTableOid,
+                                            kIndexOid,
+                                            components::logical_plan::index_type::single,
+                                            keys_of(&resource, {"id"}),
+                                            std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent = agents.front();
 
@@ -513,7 +515,8 @@ TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not 
                                                             session,
                                                             compare_type::gte,
                                                             make_scalar(&resource, int64_t{10}),
-                                                            reader_txn);
+                                                            reader_txn,
+                                                            true);
         REQUIRE_FALSE(answer.has_error());
         auto rows = std::move(answer.value());
         std::vector<int64_t> out(rows.begin(), rows.end());

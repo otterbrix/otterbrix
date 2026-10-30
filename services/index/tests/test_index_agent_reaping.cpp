@@ -27,6 +27,7 @@
 #include "index_fixture_path.hpp"
 #include <components/log/test/test_log.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 
 using components::session::session_id_t;
 using services::index::live_index_agents;
@@ -95,22 +96,22 @@ TEST_CASE("services::index::on_horizon_advanced frees the agents of a reclaimed 
                                                       /*bitcask_segment_record_limit=*/100,
                                                       /*btree_flush_threshold=*/1000,
                                                       configuration::pump_intervals_t{});
+    manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
-    manager->bootstrap_engine_sync(kTableOid);
-    REQUIRE_FALSE(manager
-                      ->bootstrap_index_sync(kTableOid,
-                                             kIndexOid,
-                                             components::logical_plan::index_type::single,
-                                             one_key(&resource),
-                                             std::pmr::set<std::uint64_t>(&resource))
+    boot.bootstrap_engine_sync(kTableOid);
+    REQUIRE_FALSE(boot.bootstrap_index_sync(kTableOid,
+                                            kIndexOid,
+                                            components::logical_plan::index_type::single,
+                                            one_key(&resource),
+                                            std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
     REQUIRE(live_index_agents() == agents_before + 1);
 
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent_raw = agents.front();
 
-    manager->mark_table_dropped_sync(kTableOid, /*dropped_at_commit_id=*/10);
+    boot.mark_table_dropped_sync(kTableOid, /*dropped_at_commit_id=*/10);
     auto horizon_future = manager->on_horizon_advanced(/*new_horizon=*/11);
 
     INFO("the horizon sweep must wait for the terminal drop it sent");
@@ -146,18 +147,18 @@ TEST_CASE("services::index::unregister_collection frees the agents of the table 
                                                       /*bitcask_segment_record_limit=*/100,
                                                       /*btree_flush_threshold=*/1000,
                                                       configuration::pump_intervals_t{});
+    manager_index_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
-    manager->bootstrap_engine_sync(kTableOid);
-    REQUIRE_FALSE(manager
-                      ->bootstrap_index_sync(kTableOid,
-                                             kIndexOid,
-                                             components::logical_plan::index_type::single,
-                                             one_key(&resource),
-                                             std::pmr::set<std::uint64_t>(&resource))
+    boot.bootstrap_engine_sync(kTableOid);
+    REQUIRE_FALSE(boot.bootstrap_index_sync(kTableOid,
+                                            kIndexOid,
+                                            components::logical_plan::index_type::single,
+                                            one_key(&resource),
+                                            std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
     REQUIRE(live_index_agents() == agents_before + 1);
 
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent_raw = agents.front();
 

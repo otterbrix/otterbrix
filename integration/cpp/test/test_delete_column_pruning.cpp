@@ -63,7 +63,7 @@ TEST_CASE("integration::cpp::test_delete_column_pruning::reads_only_needed_colum
     constexpr int kPayload = 40;
     constexpr int kRows = 3000;
 
-    REQUIRE(exec("CREATE DATABASE d;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA d;")->is_success());
     REQUIRE(exec(wide_table_ddl("d.wide", kPayload))->is_success());
     for (int base = 0; base < kRows; base += 1000) {
         REQUIRE(exec(wide_insert("d.wide", base, 1000, kPayload))->is_success());
@@ -104,7 +104,7 @@ TEST_CASE("integration::cpp::test_delete_column_pruning::index_stays_consistent_
     constexpr int kPayload = 8;
     constexpr int kRows = 2000;
 
-    REQUIRE(exec("CREATE DATABASE d;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA d;")->is_success());
     REQUIRE(exec(wide_table_ddl("d.indexed", kPayload))->is_success());
     REQUIRE(exec("CREATE INDEX indexed_k_idx ON d.indexed (k);")->is_success());
     for (int base = 0; base < kRows; base += 1000) {

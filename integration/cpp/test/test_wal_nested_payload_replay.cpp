@@ -67,7 +67,7 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::array_payload_survi
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        run_sql(dispatcher, "CREATE DATABASE TestDatabase;");
+        run_sql(dispatcher, "CREATE SCHEMA TestDatabase;");
         run_sql(dispatcher, "CREATE TABLE TestDatabase.wide (a bigint, payload bigint[40]);");
         insert_array_rows(dispatcher, 0, CHECKPOINTED_ROWS);
         run_sql(dispatcher, "CHECKPOINT;");
@@ -173,7 +173,7 @@ TEST_CASE("integration::cpp::test_wal_nested_payload_replay::list_and_struct_pay
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
 
-        run_sql(dispatcher, "CREATE DATABASE TestDatabase;");
+        run_sql(dispatcher, "CREATE SCHEMA TestDatabase;");
         run_sql(dispatcher, "CREATE TYPE np_pair AS (a BIGINT, b BIGINT);");
         run_sql(dispatcher, "CREATE TABLE TestDatabase.n (id bigint, l bigint[], p np_pair);");
         run_sql(dispatcher,

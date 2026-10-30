@@ -67,7 +67,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::not_null", "[writepath
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, val text NOT NULL);")->is_success());
     REQUIRE(run(d, "INSERT INTO c.t (id, val) VALUES (1, 'seed');")->is_success());
 
@@ -80,7 +80,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::check_against_a_litera
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, age bigint);")->is_success());
     REQUIRE(run(d, "ALTER TABLE c.t ADD CONSTRAINT age_pos CHECK (age > 0);")->is_success());
     REQUIRE(run(d, "INSERT INTO c.t (id, age) VALUES (1, 5);")->is_success());
@@ -101,7 +101,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::check_with_the_literal
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, n bigint);")->is_success());
     REQUIRE(run(d, "ALTER TABLE c.t ADD CONSTRAINT npos CHECK (0 < n);")->is_success());
     REQUIRE(run(d, "INSERT INTO c.t (id, n) VALUES (1, 5);")->is_success());
@@ -116,7 +116,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::check_over_computed_op
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, n bigint);")->is_success());
     REQUIRE(run(d, "ALTER TABLE c.t ADD CONSTRAINT neg CHECK (n * -1 > 0);")->is_success());
     REQUIRE(run(d, "INSERT INTO c.t (id, n) VALUES (1, -5);")->is_success());
@@ -130,7 +130,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::check_over_a_function"
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, n bigint);")->is_success());
     REQUIRE(run(d, "ALTER TABLE c.t ADD CONSTRAINT big CHECK (abs(n) > 10);")->is_success());
     REQUIRE(run(d, "INSERT INTO c.t (id, n) VALUES (1, 50);")->is_success());
@@ -145,7 +145,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::check_over_a_case", "[
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, n bigint);")->is_success());
     REQUIRE(
         run(d, "ALTER TABLE c.t ADD CONSTRAINT pos CHECK ((CASE WHEN n > 0 THEN 1 ELSE 0 END) = 1);")->is_success());
@@ -160,7 +160,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::check_over_a_set_and_a
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, n bigint, s text);")->is_success());
     REQUIRE(run(d, "ALTER TABLE c.t ADD CONSTRAINT known CHECK (n IN (1, 2, 3));")->is_success());
     REQUIRE(run(d, "ALTER TABLE c.t ADD CONSTRAINT named CHECK (s LIKE 'a%');")->is_success());
@@ -183,7 +183,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::check_over_two_columns
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, lo bigint, hi bigint);")->is_success());
     REQUIRE(run(d, "ALTER TABLE c.t ADD CONSTRAINT ord CHECK (lo < hi);")->is_success());
     REQUIRE(run(d, "INSERT INTO c.t (id, lo, hi) VALUES (1, 1, 10);")->is_success());
@@ -219,7 +219,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::not_null_fixed_array",
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, a bigint[3] NOT NULL);")->is_success());
     REQUIRE(run(d, "INSERT INTO c.t (id, a) VALUES (1, ARRAY[1,2,3]);")->is_success());
 
@@ -235,7 +235,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::unique", "[writepaths]
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, code bigint);")->is_success());
     REQUIRE(run(d, "ALTER TABLE c.t ADD CONSTRAINT uq_code UNIQUE (code);")->is_success());
     REQUIRE(run(d, "INSERT INTO c.t (id, code) VALUES (1, 100), (2, 200);")->is_success());
@@ -249,7 +249,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::primary_key", "[writep
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, label text);")->is_success());
     REQUIRE(run(d, "ALTER TABLE c.t ADD CONSTRAINT pk_id PRIMARY KEY (id);")->is_success());
     REQUIRE(run(d, "INSERT INTO c.t (id, label) VALUES (100, 'gear'), (200, 'bolt');")->is_success());
@@ -266,7 +266,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::foreign_key", "[writep
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.parent (id bigint, name text);")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.child (id bigint, parent_id bigint);")->is_success());
     // Inline REFERENCES is silently dropped by the planner, so the constraint is added via ALTER TABLE instead.
@@ -297,7 +297,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::insert_spanning_chunks
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, n bigint);")->is_success());
     REQUIRE(run(d, "ALTER TABLE c.t ADD CONSTRAINT npos CHECK (n > 0);")->is_success());
     REQUIRE(run(d, "INSERT INTO c.t (id, n) VALUES (-1, 7);")->is_success());
@@ -326,7 +326,7 @@ TEST_CASE("integration::cpp::test_constraint_write_paths::update_spanning_chunks
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, n bigint);")->is_success());
     REQUIRE(run(d, "ALTER TABLE c.t ADD CONSTRAINT npos CHECK (n > 0);")->is_success());
 

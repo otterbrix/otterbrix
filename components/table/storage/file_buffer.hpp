@@ -17,6 +17,7 @@ namespace components::table::storage {
     };
     static constexpr size_t FILE_BUFFER_TYPE_COUNT = 3;
     static constexpr uint64_t DEFAULT_BLOCK_HEADER_SIZE = sizeof(uint64_t);
+    static constexpr uint64_t PAYLOAD_ALIGNMENT = 16;
     static constexpr uint64_t SECTOR_SIZE = 4096U;
     static constexpr uint64_t INVALID_INDEX = uint64_t(-1);
     static constexpr uint32_t INVALID_BLOCK = uint32_t(-1);
@@ -41,7 +42,12 @@ namespace components::table::storage {
 
         void resize(uint64_t user_size);
 
+        static constexpr uint64_t lead_for(uint64_t header_size) {
+            return (PAYLOAD_ALIGNMENT - header_size % PAYLOAD_ALIGNMENT) % PAYLOAD_ALIGNMENT;
+        }
+
         uint64_t allocation_size() const { return internal_size_; }
+        uint64_t memory_footprint() const { return lead_ + internal_size_; }
         std::byte* internal_buffer() { return internal_buffer_; }
         std::byte* buffer() { return buffer_; }
 
@@ -57,7 +63,8 @@ namespace components::table::storage {
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
     protected:
-        void reallocate_buffer(size_t malloc_size);
+        void reallocate_buffer(size_t malloc_size, uint64_t header_size);
+        void release();
 
         std::pmr::memory_resource* resource_;
         file_buffer_type type_;
@@ -65,6 +72,7 @@ namespace components::table::storage {
         size_t size_ = 0;
         std::byte* internal_buffer_ = nullptr;
         uint64_t internal_size_ = 0;
+        uint64_t lead_ = 0;
     };
 
     class block_t : public file_buffer_t {

@@ -102,7 +102,6 @@ namespace services::index {
                                                     session,
                                                     table_oid,
                                                     cursor_id,
-                                                    std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                                                     /*limit=*/int64_t{-1},
                                                     std::vector<size_t>{},
                                                     snapshot.txn());

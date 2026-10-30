@@ -1,8 +1,10 @@
-// Bounded-execution SELECT (HIDDEN): peak-RSS assertion is deferred pending per-batch fetch-next.
+// Bounded-execution SELECT: a multi-batch input folds into bounded sink state, and a cursor over it keeps at most the
+// rest of one batch beside the next one between its fetches.
 
 #include "integration_fixture_path.hpp"
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
+#include <services/collection/executor.hpp>
 
 using namespace components;
 using namespace components::cursor;
@@ -17,7 +19,7 @@ namespace {
 
 // A multi-batch input (20000 rows, 8 groups) proves the incremental GROUP BY/scalar-aggregate sink folds across
 // batches into correct bounded state, which is what's realizable before the scan side is bounded too.
-TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", "[.][bounded-exec]") {
+TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", "[bounded-exec]") {
     auto config = test_create_config(integration_fixture_path("test_bounded_execution"));
     test_clear_directory(config);
     test_spaces space(config);
@@ -25,11 +27,11 @@ TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", 
 
     {
         auto session = otterbrix::session_id_t();
-        dispatcher->execute_sql(session, std::string("CREATE DATABASE ") + bounded_db + ";");
+        dispatcher->execute_sql(session, std::string("CREATE SCHEMA ") + bounded_db + ";");
     }
     {
         auto session = otterbrix::session_id_t();
-        test_create_collection(dispatcher, session, core::dbname_t{bounded_db}, core::relname_t{bounded_coll});
+        test_create_collection(dispatcher, session, core::schema_t{bounded_db}, core::relname_t{bounded_coll});
     }
 
     {
@@ -41,7 +43,7 @@ TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", 
         }
         auto cur = dispatcher->execute_sql(session, query.str());
         REQUIRE(cur->is_success());
-        REQUIRE(cur->size() == kRowCount);
+        REQUIRE(cur->affected_rows() == kRowCount);
     }
 
     std::array<int64_t, kNumGroups> expected_sum{};
@@ -92,5 +94,29 @@ TEST_CASE("integration::cpp::bounded_execution::group_by_and_scalar_aggregate", 
         auto cell4 = cur->get<uint64_t>(1, 0);
         REQUIRE_FALSE(cell4.has_error());
         REQUIRE(cell4.value() == static_cast<uint64_t>(kRowCount));
+    }
+
+    INFO("a cursor over the multi-batch input keeps at most two chunks between its fetches");
+    {
+        auto session = otterbrix::session_id_t();
+        REQUIRE(dispatcher->execute_sql(session, "BEGIN;")->is_success());
+        REQUIRE(dispatcher
+                    ->execute_sql(session,
+                                  "DECLARE c CURSOR FOR SELECT name, grp, val FROM "
+                                  "bounded_db.bounded_coll;")
+                    ->is_success());
+        services::collection::executor::dev_reset_portal_carry_peak();
+        uint64_t fetched = 0;
+        for (;;) {
+            auto page = dispatcher->execute_sql(session, "FETCH 1024 FROM c;");
+            REQUIRE(page->is_success());
+            if (page->size() == 0) {
+                break;
+            }
+            fetched += page->size();
+        }
+        REQUIRE(fetched == kRowCount);
+        REQUIRE(services::collection::executor::dev_portal_carry_peak() <= 2);
+        REQUIRE(dispatcher->execute_sql(session, "COMMIT;")->is_success());
     }
 }

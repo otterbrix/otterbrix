@@ -2,6 +2,7 @@
 #include "test_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <components/vector/vector_builders.hpp>
 
 #include <cstdint>
 #include <map>
@@ -69,7 +70,7 @@ namespace {
     }
 
     void seed_items(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        require_ok(dispatcher, "CREATE DATABASE ocdb;");
+        require_ok(dispatcher, "CREATE SCHEMA ocdb;");
         require_ok(dispatcher, "CREATE TABLE ocdb.items (id bigint, v bigint);");
         require_ok(dispatcher, "INSERT INTO ocdb.items (id, v) VALUES (1, 10), (2, 20), (3, 30);");
         require_ok(dispatcher, "ALTER TABLE ocdb.items ADD CONSTRAINT pk_items_id PRIMARY KEY (id);");
@@ -352,6 +353,25 @@ TEST_CASE("integration::cpp::insert_on_conflict") {
                       ->is_error());
             CHECK(read_items(dispatcher) == SEEDED_ITEMS);
         }
+        SECTION("ON CONSTRAINT: a name the table lacks, and one of a constraint with no index") {
+            require_ok(dispatcher, "ALTER TABLE ocdb.items ADD CONSTRAINT v_positive CHECK (v > 0);");
+            auto session = otterbrix::session_id_t();
+            auto missing =
+                run(dispatcher,
+                    session,
+                    "INSERT INTO ocdb.items (id, v) VALUES (20, 1) ON CONFLICT ON CONSTRAINT missing DO NOTHING;");
+            REQUIRE(missing->is_error());
+            CHECK(missing->get_error().type == core::error_code_t::undefined_object);
+            CHECK(why(*missing) == "constraint \"missing\" for table \"items\" does not exist");
+            auto check = run(dispatcher,
+                             session,
+                             "INSERT INTO ocdb.items (id, v) VALUES (20, 1) ON CONFLICT ON CONSTRAINT v_positive DO "
+                             "NOTHING;");
+            REQUIRE(check->is_error());
+            CHECK(check->get_error().type == core::error_code_t::wrong_object_type);
+            CHECK(why(*check) == "constraint in ON CONFLICT clause has no associated index");
+            CHECK(read_items(dispatcher) == SEEDED_ITEMS);
+        }
         SECTION("a multi-column target matches its constraint in any column order") {
             require_ok(dispatcher, "CREATE TABLE ocdb.pairs (id bigint, v bigint, w bigint);");
             require_ok(dispatcher, "ALTER TABLE ocdb.pairs ADD CONSTRAINT uq_pairs UNIQUE (v, w);");
@@ -372,7 +392,7 @@ TEST_CASE("integration::cpp::insert_on_conflict") {
         test_clear_directory(config);
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        require_ok(dispatcher, "CREATE DATABASE ocdb;");
+        require_ok(dispatcher, "CREATE SCHEMA ocdb;");
         require_ok(dispatcher, "CREATE TABLE ocdb.items (id bigint, v bigint, w bigint);");
         require_ok(dispatcher, "INSERT INTO ocdb.items (id, v, w) VALUES (1, 10, 100), (2, 20, NULL);");
         require_ok(dispatcher, "ALTER TABLE ocdb.items ADD CONSTRAINT pk_items_id PRIMARY KEY (id);");
@@ -453,7 +473,7 @@ TEST_CASE("integration::cpp::insert_on_conflict") {
         config.execution.dml_flush_row_threshold = 1000;
         test_spaces space(config);
         auto* dispatcher = space.dispatcher();
-        require_ok(dispatcher, "CREATE DATABASE ocdb;");
+        require_ok(dispatcher, "CREATE SCHEMA ocdb;");
         require_ok(dispatcher, "CREATE TABLE ocdb.items (id bigint, v bigint);");
         require_ok(dispatcher, "ALTER TABLE ocdb.items ADD CONSTRAINT pk_items_id PRIMARY KEY (id);");
 
@@ -524,5 +544,57 @@ TEST_CASE("integration::cpp::insert_on_conflict") {
                        "INSERT INTO ocdb.items (id, v) VALUES (5, 5) ON CONFLICT (id) DO UPDATE SET v = excluded.v "
                        "RETURNING id, v;") == items_t{{5, 5}});
         CHECK(read_items(dispatcher) == items_t{{1, 10}, {2, 20}, {3, 33}, {4, 40}, {5, 5}, {6, 60}});
+    }
+}
+
+TEST_CASE("integration::cpp::insert_on_conflict::a parameter of DO UPDATE SET") {
+    auto config = test_create_config(integration_fixture_path("insert_on_conflict/set_parameter"));
+    test_clear_directory(config);
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    seed_items(dispatcher);
+    auto* resource = dispatcher->resource();
+    using components::vector::make_scalar;
+
+    SECTION("is bound, and takes the column's type") {
+        auto cursor = dispatcher->execute_sql_with_params(
+            otterbrix::session_id_t(),
+            "INSERT INTO ocdb.items (id, v) VALUES ($1, 0) ON CONFLICT (id) DO "
+            "UPDATE SET v = $2;",
+            {{1, make_scalar(resource, std::int64_t{2})}, {2, make_scalar(resource, std::int32_t{77})}});
+        INFO(why(*cursor));
+        REQUIRE(cursor->is_success());
+        CHECK(read_items(dispatcher) == items_t{{1, 10}, {2, 77}, {3, 30}});
+    }
+    SECTION("used in VALUES and in SET") {
+        auto cursor = dispatcher->execute_sql_with_params(
+            otterbrix::session_id_t(),
+            "INSERT INTO ocdb.items (id, v) VALUES ($1, $2) ON CONFLICT (id) DO "
+            "UPDATE SET v = $2 + 1;",
+            {{1, make_scalar(resource, std::int64_t{3})}, {2, make_scalar(resource, std::int64_t{40})}});
+        INFO(why(*cursor));
+        REQUIRE(cursor->is_success());
+        CHECK(read_items(dispatcher) == items_t{{1, 10}, {2, 20}, {3, 41}});
+    }
+    SECTION("beside VALUES of literals only") {
+        auto cursor = dispatcher->execute_sql_with_params(
+            otterbrix::session_id_t(),
+            "INSERT INTO ocdb.items (id, v) VALUES (1, 0), (4, 40) ON CONFLICT (id) "
+            "DO UPDATE SET v = $1;",
+            {{1, make_scalar(resource, std::int64_t{11})}});
+        INFO(why(*cursor));
+        REQUIRE(cursor->is_success());
+        CHECK(read_items(dispatcher) == items_t{{1, 11}, {2, 20}, {3, 30}, {4, 40}});
+    }
+    SECTION("left unbound, refuses the statement") {
+        auto cursor =
+            dispatcher->execute_sql_with_params(otterbrix::session_id_t(),
+                                                "INSERT INTO ocdb.items (id, v) VALUES ($1, 0) ON CONFLICT (id) DO "
+                                                "UPDATE SET v = $2;",
+                                                {{1, make_scalar(resource, std::int64_t{2})}});
+        REQUIRE(cursor->is_error());
+        CHECK(std::string{cursor->get_error().what.begin(), cursor->get_error().what.end()} ==
+              "Not all parameters were bound: $2");
+        CHECK(read_items(dispatcher) == SEEDED_ITEMS);
     }
 }

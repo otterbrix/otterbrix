@@ -9,8 +9,8 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    // Catalog reads route to agent-0 (pool_idx_for_oid); reading via the mailbox instead of a
-    // borrowed storage_entry_sync pointer avoids racing agent-0's compact path (checkpoint/vacuum/
+    // Catalog reads route to agent-0 (pool_idx_for_oid); reading via the mailbox instead of an entry
+    // borrowed through agent_disk_t::bootstrap_t avoids racing agent-0's compact path (checkpoint/vacuum/
     // maybe_cleanup_inner). committed() is the see-everything-committed snapshot.
 
     // A read that could not be performed must be an error, never an empty batch: empty is also
@@ -32,7 +32,6 @@ namespace services::disk {
         auto [needs_sched, fut] = actor_zeta::otterbrix::send(agent->address(),
                                                               &agent_disk_t::storage_scan_inner,
                                                               table_oid,
-                                                              std::unique_ptr<components::table::pushed_filter_t>{},
                                                               int64_t{-1},
                                                               std::move(projected_cols),
                                                               txn);
@@ -42,36 +41,6 @@ namespace services::disk {
         // Pass the agent's scan_error through untouched (buffer-pool OOM, data_corruption, ...)
         // so the reader gets the real reason, not a synthesized one.
         co_return co_await std::move(fut);
-    }
-
-    // ctx.txn, not the default snapshot (same rule below): under committed() a namespace
-    // this transaction created or dropped reads as its opposite, corrupting its own
-    // name-collision / follow-up-DDL checks.
-    manager_disk_t::unique_future<core::result_wrapper_t<resolve_namespace_result_t>>
-    manager_disk_t::resolve_namespace(execution_context_t ctx, std::string name) {
-        resolve_namespace_result_t out(resource());
-
-        auto batches_r = co_await scan_table(pg_namespace_oid_tbl, std::vector<std::size_t>{0, 1}, ctx.txn);
-        if (batches_r.has_error()) {
-            co_return batches_r.convert_error<resolve_namespace_result_t>();
-        }
-        for (auto& chunk : batches_r.value()) {
-            bool stop = false;
-            for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (chunk.is_null(0, i) || chunk.is_null(1, i))
-                    continue;
-                if (chunk.get_value<std::string_view>(1, i) != name)
-                    continue;
-                out.found = true;
-                out.oid = static_cast<components::catalog::oid_t>(chunk.get_value<std::uint32_t>(0, i));
-                out.name = name;
-                stop = true;
-                break;
-            }
-            if (stop)
-                break;
-        }
-        co_return out;
     }
 
     // ctx.txn, not the default snapshot: operator_unregister_udf_t treats a delete-spec count
@@ -96,12 +65,12 @@ namespace services::disk {
     }
 
     // INVALID_OID stays the in-band "there is no such cast" inside the wrapper: DROP CAST must
-    // tell "no pg_cast row exists" (do_not_exists) from "the read failed", and collapsing the
+    // tell "no pg_cast row exists" (undefined_object) from "the read failed", and collapsing the
     // former into an error would destroy that distinction.
     // ctx.txn, for the reason on resolve_function_by_name above: operator_unregister_cast_t turns
     // this oid into a delete spec reading a zero count as "still in the catalog," and the delete
     // itself uses the caller's transaction — so a cast created in this transaction is found, and
-    // one dropped in it reads as absent (do_not_exists), not as a refused scrub.
+    // one dropped in it reads as absent (undefined_object), not as a refused scrub.
     manager_disk_t::unique_future<core::result_wrapper_t<components::catalog::oid_t>>
     manager_disk_t::find_cast_oid(execution_context_t ctx,
                                   components::catalog::oid_t source_oid,
@@ -125,25 +94,6 @@ namespace services::disk {
         co_return components::catalog::INVALID_OID;
     }
 
-    // ctx.txn, for the reason on resolve_namespace above: the list must show this transaction's
-    // own uncommitted namespaces and hide the ones it dropped, or a verdict built on it lies too.
-    manager_disk_t::unique_future<core::result_wrapper_t<std::pmr::vector<std::string>>>
-    manager_disk_t::list_namespaces(execution_context_t ctx) {
-        std::pmr::vector<std::string> out(resource());
-        auto batches_r = co_await scan_table(pg_namespace_oid_tbl, std::vector<std::size_t>{0, 1}, ctx.txn);
-        if (batches_r.has_error()) {
-            co_return batches_r.convert_error<std::pmr::vector<std::string>>();
-        }
-        for (auto& chunk : batches_r.value()) {
-            for (uint64_t i = 0; i < chunk.size(); ++i) {
-                if (!chunk.is_null(1, i)) {
-                    out.emplace_back(std::string(chunk.get_value<std::string_view>(1, i)));
-                }
-            }
-        }
-        co_return out;
-    }
-
     // Direct replay methods: synchronous, no MVCC, for physical WAL replay.
 
     manager_disk_t::unique_future<std::vector<components::catalog::oid_t>>
@@ -152,7 +102,7 @@ namespace services::disk {
         batch.reserve(count);
         for (std::size_t i = 0; i < count; ++i) {
             const auto oid = oid_gen_.allocate();
-            if (!config_.path.empty() && oid >= oid_reserved_until_) {
+            if (oid >= oid_reserved_until_) {
                 components::catalog::oid_t bound = oid + OID_RESERVATION_BLOCK;
                 if (auto persisted = persist_oid_reservation(resource(), config_.path, bound);
                     persisted.contains_error()) {
@@ -183,7 +133,7 @@ namespace services::disk {
             co_return out;
         }
         if (key_col_names.empty()) {
-            co_return core::error_t{core::error_code_t::invalid_parameter,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"scan_by_keys: no key columns given", resource()}};
         }
         if (agents_.empty()) {
@@ -220,7 +170,7 @@ namespace services::disk {
         // It must not return an empty vector on failure: resolve operators read that as "no such row",
         // so a misrouted or agent-less read would surface as "Database does not exist" instead.
         if (key_col_indices.empty()) {
-            co_return core::error_t{core::error_code_t::invalid_parameter,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"read_chunks_by_key: no key columns given", resource()}};
         }
         if (agents_.empty()) {
@@ -268,7 +218,7 @@ namespace services::disk {
             co_return out;
         }
         if (key_col_indices.empty()) {
-            co_return core::error_t{core::error_code_t::invalid_parameter,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"read_chunks_by_keys: no key columns given", resource()}};
         }
         if (agents_.empty()) {

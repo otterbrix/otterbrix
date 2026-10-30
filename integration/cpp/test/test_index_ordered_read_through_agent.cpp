@@ -61,7 +61,7 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::every_predicate_i
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE orddb;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA orddb;")->is_success());
     REQUIRE(exec("CREATE TABLE orddb.t (id bigint, k bigint);")->is_success());
     // NO `USING` — this is the statement the whole file is about.
     REQUIRE(exec("CREATE INDEX t_k ON orddb.t (k);")->is_success());
@@ -116,7 +116,7 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::dml_and_restart_a
             return d->execute_sql(session, sql);
         };
 
-        REQUIRE(exec("CREATE DATABASE dmldb;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA dmldb;")->is_success());
         REQUIRE(exec("CREATE TABLE dmldb.t (id bigint, k bigint);")->is_success());
         REQUIRE(exec("CREATE INDEX t_k ON dmldb.t (k);")->is_success());
         REQUIRE(exec("INSERT INTO dmldb.t (id, k) VALUES (1, 10), (2, 20), (3, 20), (4, 30);")->is_success());
@@ -208,7 +208,7 @@ TEST_CASE("integration::cpp::index_ordered_read_through_agent::own_uncommitted_r
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE visord;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA visord;")->is_success());
     REQUIRE(exec("CREATE TABLE visord.t (id bigint, k bigint);")->is_success());
     REQUIRE(exec("CREATE INDEX t_k ON visord.t (k);")->is_success());
     // Two committed rows straddle the probes below so an uncommitted row in between

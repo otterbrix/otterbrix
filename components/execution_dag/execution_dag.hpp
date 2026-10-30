@@ -275,9 +275,9 @@ namespace components::execution_dag {
         bool placed_{false};
     };
 
-    // [2] inputs (probe, set), or [3] (probe, set, flags) for a match, [1] BOOLEAN output
-    // `probe <op> ANY|ALL (set)`, answered by vector::operations::apply_quantified; a match takes regexp_like's
-    // flags in place of the op. A constant set is one value for the whole run, so the node prepares it once and
+    // [2] inputs (probe, set), or [3] (probe, set, mode) for a match, [1] BOOLEAN output
+    // `probe <op> ANY|ALL (set)`, answered by vector::operations::apply_quantified; a match takes its mode
+    // (match_mode_of) in place of the op. A constant set is one value for the whole run, so the node prepares it once and
     // keeps it until the parameters are bound again.
     class membership_node_t final : public execution_node_t {
     public:
@@ -339,7 +339,7 @@ namespace components::execution_dag {
                                  vector::operations::quantifier kind,
                                  slot_id_t probe,
                                  slot_id_t set);
-        // `probe [NOT] LIKE|ILIKE|~ ANY|ALL (set)`: a set of patterns, matched as regexp_like's `flags` say.
+        // `probe [NOT] LIKE|ILIKE|~ ANY|ALL (set)`: a set of patterns, matched as the mode slot says (match_mode_of).
         node_id_t
         add_membership_match(vector::operations::quantifier kind, slot_id_t probe, slot_id_t set, slot_id_t flags);
         node_id_t add_blend(blend_node_t::blend_kind kind, const slot_list_t& inputs);
@@ -403,6 +403,9 @@ namespace components::execution_dag {
         [[nodiscard]] core::error_t process_keys(const vector::data_chunk_t& input,
                                                  const graph_execution_context& context);
         [[nodiscard]] const vector::vector_t& key_values(size_t index) const;
+        // Hands the key the last process_keys() computed to `out` without copying it: a slot bound to an input
+        // column is shared, a computed slot gives up its buffer and gets a fresh one for the next chunk.
+        void take_key_values(size_t index, vector::vector_t* out);
         [[nodiscard]] core::error_t process_groups(core::span<const uint32_t> group_ids,
                                                    const graph_execution_context& context);
         [[nodiscard]] core::error_t finalize_groups(const graph_execution_context& context,

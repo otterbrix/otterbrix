@@ -38,6 +38,12 @@ namespace components::logical_plan {
         void set_read_cap(const row_cap_t& read_cap) noexcept { read_cap_ = read_cap; }
         const row_cap_t& read_cap() const noexcept { return read_cap_; }
 
+        void set_distinct_on_read_cap(const row_cap_t& read_cap) noexcept { distinct_on_read_cap_ = read_cap; }
+        const row_cap_t& distinct_on_read_cap() const noexcept { return distinct_on_read_cap_; }
+
+        void set_output_width(size_t width) noexcept { output_width_ = width; }
+        size_t output_width() const noexcept { return output_width_; }
+
         // Must run once the view body is spliced in as child[0], or bind_catalog_data re-stamps
         // table_oid and collect_view_references re-expands it.
         void clear_source_identity() {
@@ -51,6 +57,8 @@ namespace components::logical_plan {
         std::pmr::vector<expressions::key_t> distinct_on_keys_;
         std::vector<size_t> projected_cols_;
         row_cap_t read_cap_{};
+        row_cap_t distinct_on_read_cap_{};
+        size_t output_width_{0};
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
     };

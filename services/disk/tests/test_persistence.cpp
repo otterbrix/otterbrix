@@ -30,6 +30,7 @@
 #include <fstream>
 #include <limits>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -51,12 +52,13 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         explicit fresh_disk(const std::filesystem::path& path)
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{path};
                 c.path = path;
                 return c;
             }())
@@ -107,15 +109,15 @@ TEST_CASE("services::disk::persistence::test_type_persistence_across_restart") {
     oid_t type_oid = 0;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "type_ns");
         type_oid = test_create_type(fd, ns_oid, "money", "scale=2,precision=18");
         fd.checkpoint();
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         auto rr = test_probe::probe_type(fd2, fd2.ctx(), ns_oid, std::string("money"));
         REQUIRE(rr.found);
         REQUIRE(rr.oid == type_oid);
@@ -131,15 +133,15 @@ TEST_CASE("services::disk::persistence::test_function_persistence") {
     oid_t fn_oid = 0;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "fn_ns");
         fn_oid = test_create_function(fd, ns_oid, "incr", 1, 0, "BIGINT", "BIGINT");
         fd.checkpoint();
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         auto rr = test_probe::probe_function(fd2, fd2.ctx(), ns_oid, std::string("incr"));
         REQUIRE(rr.found);
         REQUIRE(rr.oid == fn_oid);
@@ -156,7 +158,7 @@ TEST_CASE("services::disk::persistence::test_constraint_persistence") {
     oid_t fk_oid = 0;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "ck_ns");
 
         std::vector<components::table::column_definition_t> parent_cols;
@@ -194,8 +196,8 @@ TEST_CASE("services::disk::persistence::test_constraint_persistence") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         // fk_constraints_for_table was removed; only the constraint OID is verified here.
         REQUIRE(fk_oid != INVALID_OID);
         REQUIRE(child_oid != INVALID_OID);
@@ -213,7 +215,7 @@ TEST_CASE("services::disk::persistence::test_oid_persistence") {
     std::vector<oid_t> column_oids_before;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "oidp_ns");
 
         std::vector<components::table::column_definition_t> cols;
@@ -233,8 +235,8 @@ TEST_CASE("services::disk::persistence::test_oid_persistence") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         auto rr = test_probe::probe_table(fd2, fd2.ctx(), ns_oid, std::string("widgets"));
         REQUIRE(rr.found);
         REQUIRE(rr.oid == table_oid);
@@ -256,7 +258,7 @@ TEST_CASE("services::disk::persistence::test_oid_no_reuse_after_drop") {
     oid_t dropped_oid = 0;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "noreuse_ns");
 
         std::vector<components::table::column_definition_t> cols1;
@@ -274,8 +276,8 @@ TEST_CASE("services::disk::persistence::test_oid_no_reuse_after_drop") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
 
         std::vector<components::table::column_definition_t> cols3;
         cols3.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -299,7 +301,7 @@ TEST_CASE("services::disk::persistence::test_pg_class_lists_all_objects") {
     oid_t idx_oid = 0;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "all_ns");
 
         std::vector<components::table::column_definition_t> cols;
@@ -320,8 +322,8 @@ TEST_CASE("services::disk::persistence::test_pg_class_lists_all_objects") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         struct expected_t {
             std::string name;
             oid_t oid;
@@ -354,7 +356,7 @@ TEST_CASE("services::disk::persistence::test_computing_table_persists_restart") 
     oid_t comp_oid = 0;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "comp_ns");
         comp_oid = test_create_computing_table(fd, ns_oid, "agg");
         test_computed_append_simple(fd, comp_oid, "count", components::catalog::well_known_oid::int64_type);
@@ -363,8 +365,8 @@ TEST_CASE("services::disk::persistence::test_computing_table_persists_restart") 
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         auto rr = test_probe::probe_table(fd2, fd2.ctx(), ns_oid, std::string("agg"));
         REQUIRE(rr.found);
         REQUIRE(rr.oid == comp_oid);
@@ -382,7 +384,7 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
     oid_t seq_oid = 0;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "seq_ns");
         seq_oid = test_create_sequence(fd, ns_oid, "counter", 10, 2, 1, 1000, true);
         REQUIRE(seq_oid >= FIRST_USER_OID);
@@ -415,8 +417,8 @@ TEST_CASE("services::disk::persistence::test_sequence_persistence") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         auto r = test_probe::probe_table(fd2, fd2.ctx(), ns_oid, std::string("counter2"));
         REQUIRE(r.found);
         REQUIRE(r.oid == seq_oid);
@@ -446,7 +448,7 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
     const std::string view_sql = "SELECT id FROM users";
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "view_ns");
         view_oid = test_create_view(fd, ns_oid, "my_view", view_sql);
         REQUIRE(view_oid >= FIRST_USER_OID);
@@ -480,8 +482,8 @@ TEST_CASE("services::disk::persistence::test_view_persistence") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         auto r = test_probe::probe_table(fd2, fd2.ctx(), ns_oid, std::string("my_view2"));
         REQUIRE(r.found);
         REQUIRE(r.oid == view_oid);
@@ -512,7 +514,7 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
     const std::string macro_body = "x -> x * 2";
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         ns_oid = test_create_namespace(fd, "macro_ns");
         macro_oid = test_create_macro(fd, ns_oid, "double", macro_body);
         REQUIRE(macro_oid >= FIRST_USER_OID);
@@ -533,8 +535,8 @@ TEST_CASE("services::disk::persistence::test_macro_persistence") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         auto r = test_probe::probe_table(fd2, fd2.ctx(), ns_oid, std::string("double"));
         REQUIRE(r.found);
         REQUIRE(r.oid == macro_oid);
@@ -562,7 +564,7 @@ TEST_CASE("services::disk::persistence::test_pg_constraint_orphan_after_drop_tab
     std::filesystem::create_directories(dir);
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "orph_ns");
 
         std::vector<components::table::column_definition_t> pcols;
@@ -604,7 +606,7 @@ TEST_CASE("services::disk::persistence::test_oid_no_collision_after_restore") {
     oid_t pre_restart_peak = 0;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "oid_ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -617,8 +619,8 @@ TEST_CASE("services::disk::persistence::test_oid_no_collision_after_restore") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         auto next = fd2.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         REQUIRE(next.size() == 1);
         REQUIRE(next[0] > pre_restart_peak);
@@ -634,7 +636,7 @@ TEST_CASE("services::disk::persistence::test_check_constraint_persistence") {
     oid_t constraint_oid = INVALID_OID;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "chk_ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("val", components::types::complex_logical_type{components::types::logical_type::INTEGER});
@@ -655,8 +657,8 @@ TEST_CASE("services::disk::persistence::test_check_constraint_persistence") {
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
         constexpr oid_t pg_constr = well_known_oid::pg_constraint_table;
         std::pmr::vector<std::uint64_t> ck{&fd2.resource};
         ck.emplace_back(components::catalog::pg_constraint_col::conrelid);
@@ -685,7 +687,7 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
     oid_t col_attoid = INVALID_OID;
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         auto ns_oid = test_create_namespace(fd, "cc_ns");
         std::vector<components::table::column_definition_t> cols;
         cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
@@ -721,10 +723,10 @@ TEST_CASE("services::disk::persistence::test_commit_clock_restored_across_restar
     }
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
 
-        const auto max_cid_read = fd2.manager->max_persisted_commit_id_sync();
+        const auto max_cid_read = fd2.boot.max_persisted_commit_id_sync();
         REQUIRE_FALSE(max_cid_read.has_error());
         const auto max_cid = max_cid_read.value();
         REQUIRE(max_cid == static_cast<std::uint64_t>(kPersistedCommitId));
@@ -803,7 +805,7 @@ TEST_CASE("services::disk::persistence::failed_checkpoint_does_not_advance_wal_i
     one_table_fault_scope_t scope(plan, "/" + std::to_string(ns_table_oid) + "/");
 
     fresh_disk fd(dir);
-    REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+    REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
     test_create_namespace(fd, "ns_one");
     fd.checkpoint(services::wal::id_t{100});
 
@@ -825,10 +827,9 @@ TEST_CASE("services::disk::persistence::failed_checkpoint_does_not_advance_wal_i
 
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        auto rr = fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("ns_one"));
-        REQUIRE_FALSE(rr.has_error());
-        CHECK(rr.value().found);
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        auto rr = test_probe::probe_namespace(fd2, fd2.ctx(), std::string("ns_one"));
+        CHECK(rr.found);
     }
 
     std::filesystem::remove_all(dir);
@@ -860,7 +861,7 @@ TEST_CASE("services::disk::persistence::failed_checkpoint_leaves_no_backup_or_qu
 
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         test_create_namespace(fd, "ns_one");
         fd.checkpoint(services::wal::id_t{100});
         REQUIRE(std::filesystem::exists(otbx));
@@ -878,10 +879,9 @@ TEST_CASE("services::disk::persistence::failed_checkpoint_leaves_no_backup_or_qu
 
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        auto rr = fd2.invoke(&manager_disk_t::resolve_namespace, fd2.ctx(), std::string("ns_one"));
-        REQUIRE_FALSE(rr.has_error());
-        CHECK(rr.value().found);
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        auto rr = test_probe::probe_namespace(fd2, fd2.ctx(), std::string("ns_one"));
+        CHECK(rr.found);
         CHECK(dir_listing() == std::vector<std::string>{"table.otbx", "table.otbx.wal_id"});
     }
 

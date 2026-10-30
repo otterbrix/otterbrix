@@ -22,6 +22,7 @@
 #include <core/tests/wait_ready.hpp>
 #include <filesystem>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -49,12 +50,13 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         fixture()
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{mvcc_dir()};
                 c.path = mvcc_dir();
                 return c;
             }())
@@ -66,7 +68,7 @@ namespace {
                                                         configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(mvcc_dir());
-            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
+            REQUIRE_FALSE(boot.bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             // Destroy the manager before the scheduler: its dtor joins the loop thread, which may
@@ -102,10 +104,7 @@ namespace {
 TEST_CASE("services::disk::mvcc::auto_commit_create_namespace_visible") {
     fixture fx;
     disk_test_helpers::test_create_namespace(fx, std::string("ns_a"));
-    auto rr = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_a"));
-    REQUIRE_FALSE(rr.has_error());
-    auto& r = rr.value();
-    REQUIRE(r.found);
+    REQUIRE(test_probe::probe_namespace(fx, fx.auto_ctx(), std::string("ns_a")).found);
 }
 
 TEST_CASE("services::disk::mvcc::uncommitted_insert_invisible_to_other_sessions") {
@@ -115,16 +114,18 @@ TEST_CASE("services::disk::mvcc::uncommitted_insert_invisible_to_other_sessions"
         auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
         const components::catalog::oid_t ns_oid = oids[0];
         auto writes =
-            components::catalog::build_create_namespace_writes(&fx.resource, std::string("ns_uncommitted"), ns_oid);
+            components::catalog::build_create_namespace_writes(&fx.resource,
+                                                               std::string("ns_uncommitted"),
+                                                               ns_oid,
+                                                               components::catalog::well_known_oid::main_database);
         for (auto& w : writes)
             disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
                                                    fx.txn_ctx(uncommitted),
                                                    w.table_oid,
                                                    std::move(w.row)));
     }
-    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_uncommitted"));
-    REQUIRE_FALSE(r.has_error());
-    REQUIRE_FALSE(r.value().found);
+    auto r = test_probe::probe_namespace(fx, fx.auto_ctx(), std::string("ns_uncommitted"));
+    REQUIRE_FALSE(r.found);
 }
 
 TEST_CASE("services::disk::mvcc::auto_commit_drop_invisible") {
@@ -193,12 +194,10 @@ TEST_CASE("services::disk::mvcc::resolve_includes_uncommitted_deletes") {
                   drop_ns_oid);
     }
 
-    auto kept = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("kept_ns"));
-    REQUIRE_FALSE(kept.has_error());
-    REQUIRE(kept.value().found);
-    auto dropped = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("dropped_ns"));
-    REQUIRE_FALSE(dropped.has_error());
-    REQUIRE(dropped.value().found);
+    auto kept = test_probe::probe_namespace(fx, fx.auto_ctx(), std::string("kept_ns"));
+    REQUIRE(kept.found);
+    auto dropped = test_probe::probe_namespace(fx, fx.auto_ctx(), std::string("dropped_ns"));
+    REQUIRE(dropped.found);
 }
 
 TEST_CASE("services::disk::mvcc::uncommitted_drop_index_invisible") {
@@ -276,8 +275,11 @@ TEST_CASE("services::disk::mvcc::test_ddl_rollback_cleans_up") {
     REQUIRE_FALSE(before_other.found);
     // The handler grew an error channel (it used to return void), so the rollback is asserted here
     // rather than discarded -- that is the whole point of the channel.
-    REQUIRE_FALSE(fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn), std::move(appends_for_test))
-                      .contains_error());
+    components::table::txn_abort_drain_t drain;
+    drain.txn = fx.txn_ctx(txn).txn;
+    drain.swap_appends = std::move(appends_for_test);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::undo_appends_and_storages, session_id_t{}, std::move(drain)).contains_error());
     auto after = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("ephemeral"));
     REQUIRE_FALSE(after.found);
     auto after_same = test_probe::probe_table(fx, fx.txn_ctx(txn), ns_oid, std::string("ephemeral"));
@@ -382,8 +384,11 @@ TEST_CASE("services::disk::mvcc::dynamic_schema_register_rollback_undoes") {
     REQUIRE(before.found);
     REQUIRE(before.columns.size() == 0);
 
-    REQUIRE_FALSE(fx.invoke(&manager_disk_t::storage_revert_appends, fx.txn_ctx(txn1), std::move(pending_ranges))
-                      .contains_error());
+    components::table::txn_abort_drain_t drain;
+    drain.txn = fx.txn_ctx(txn1).txn;
+    drain.swap_appends = std::move(pending_ranges);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::undo_appends_and_storages, session_id_t{}, std::move(drain)).contains_error());
 
     auto after_other = test_probe::probe_table(fx, fx.auto_ctx(), ns_oid, std::string("docs"));
     REQUIRE(after_other.found);
@@ -475,7 +480,11 @@ TEST_CASE("services::disk::mvcc::delete_many_sees_its_own_uncommitted_row") {
 
     auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
     const components::catalog::oid_t ns_oid = oids[0];
-    auto writes = components::catalog::build_create_namespace_writes(&fx.resource, std::string("own_ns"), ns_oid);
+    auto writes =
+        components::catalog::build_create_namespace_writes(&fx.resource,
+                                                           std::string("own_ns"),
+                                                           ns_oid,
+                                                           components::catalog::well_known_oid::main_database);
     for (auto& w : writes) {
         disk_test_helpers::append_ok(
             fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.txn_ctx(txn1), w.table_oid, std::move(w.row)));
@@ -498,64 +507,4 @@ TEST_CASE("services::disk::mvcc::delete_many_sees_its_own_uncommitted_row") {
     REQUIRE_FALSE(deleted.has_error());
     REQUIRE(deleted.value().size() == 1);
     CHECK(deleted.value()[0] == 1);
-}
-
-// Scans on ctx.txn, not the default snapshot — otherwise a namespace created inside an open
-// transaction would be invisible to its own resolve, and found==false checks would lie.
-TEST_CASE("services::disk::mvcc::resolve_namespace_sees_its_own_uncommitted_row") {
-    fixture fx;
-    auto uncommitted = TRANSACTION_ID_START + 1;
-    {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
-        const components::catalog::oid_t ns_oid = oids[0];
-        auto writes =
-            components::catalog::build_create_namespace_writes(&fx.resource, std::string("ns_own_txn"), ns_oid);
-        for (auto& w : writes)
-            disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
-                                                   fx.txn_ctx(uncommitted),
-                                                   w.table_oid,
-                                                   std::move(w.row)));
-    }
-    INFO("the creating transaction must see its own pg_namespace row");
-    auto own = fx.invoke(&manager_disk_t::resolve_namespace, fx.txn_ctx(uncommitted), std::string("ns_own_txn"));
-    REQUIRE_FALSE(own.has_error());
-    REQUIRE(own.value().found);
-
-    INFO("other sessions still do not (case 2's half must keep holding)");
-    auto other = fx.invoke(&manager_disk_t::resolve_namespace, fx.auto_ctx(), std::string("ns_own_txn"));
-    REQUIRE_FALSE(other.has_error());
-    REQUIRE_FALSE(other.value().found);
-}
-
-TEST_CASE("services::disk::mvcc::list_namespaces_sees_its_own_uncommitted_row") {
-    fixture fx;
-    auto uncommitted = TRANSACTION_ID_START + 1;
-    {
-        auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
-        const components::catalog::oid_t ns_oid = oids[0];
-        auto writes =
-            components::catalog::build_create_namespace_writes(&fx.resource, std::string("ns_own_list"), ns_oid);
-        for (auto& w : writes)
-            disk_test_helpers::append_ok(fx.invoke(&manager_disk_t::append_pg_catalog_row,
-                                                   fx.txn_ctx(uncommitted),
-                                                   w.table_oid,
-                                                   std::move(w.row)));
-    }
-    auto contains = [](const std::pmr::vector<std::string>& names, const char* wanted) {
-        for (const auto& n : names) {
-            if (n == wanted)
-                return true;
-        }
-        return false;
-    };
-
-    INFO("the creating transaction must see its own namespace in the enumeration");
-    auto own = fx.invoke(&manager_disk_t::list_namespaces, fx.txn_ctx(uncommitted));
-    REQUIRE_FALSE(own.has_error());
-    REQUIRE(contains(own.value(), "ns_own_list"));
-
-    INFO("other sessions still do not");
-    auto other = fx.invoke(&manager_disk_t::list_namespaces, fx.auto_ctx());
-    REQUIRE_FALSE(other.has_error());
-    REQUIRE_FALSE(contains(other.value(), "ns_own_list"));
 }

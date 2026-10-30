@@ -3,7 +3,7 @@ mod common;
 #[test]
 fn has_next_is_true_when_select_returns_rows() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE db;").unwrap();
+    db.execute("CREATE SCHEMA db;").unwrap();
     db.execute("CREATE TABLE db.t();").unwrap();
     db.execute("INSERT INTO db.t (x) VALUES (1), (2), (3);")
         .unwrap();
@@ -19,7 +19,7 @@ fn has_next_is_true_when_select_returns_rows() {
 #[test]
 fn a_write_reports_affected_rows_and_no_result_rows() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE wdb;").unwrap();
+    db.execute("CREATE SCHEMA wdb;").unwrap();
     db.execute("CREATE TABLE wdb.t (x bigint);").unwrap();
 
     let inserted = db
@@ -37,9 +37,29 @@ fn a_write_reports_affected_rows_and_no_result_rows() {
 }
 
 #[test]
+fn create_table_reports_its_oid() {
+    let db = common::open_test_db();
+    let database = db.execute("CREATE SCHEMA odb;").unwrap();
+    assert_eq!(database.created_oid(), None);
+
+    let created = db
+        .execute("CREATE TABLE odb.t (x bigint);")
+        .unwrap()
+        .created_oid()
+        .expect("CREATE TABLE answers the oid it created");
+
+    let catalog = db
+        .execute("SELECT oid FROM pg_catalog.pg_class WHERE relname = 't';")
+        .unwrap();
+    assert_eq!(catalog.created_oid(), None);
+    assert_eq!(catalog.size(), 1);
+    assert_eq!(catalog.get_value(0, 0).as_uint(), Some(u64::from(created)));
+}
+
+#[test]
 fn column_logical_type_returns_none_for_negative_index() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE typedb;").unwrap();
+    db.execute("CREATE SCHEMA typedb;").unwrap();
     db.execute("CREATE TABLE typedb.t (n integer);").unwrap();
     db.execute("INSERT INTO typedb.t (n) VALUES (1);").unwrap();
     let cur = db.execute("SELECT n FROM typedb.t;").unwrap();
@@ -49,7 +69,7 @@ fn column_logical_type_returns_none_for_negative_index() {
 #[test]
 fn column_logical_type_returns_none_for_out_of_bounds_index() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE typedb;").unwrap();
+    db.execute("CREATE SCHEMA typedb;").unwrap();
     db.execute("CREATE TABLE typedb.t (n integer);").unwrap();
     db.execute("INSERT INTO typedb.t (n) VALUES (1);").unwrap();
     let cur = db.execute("SELECT n FROM typedb.t;").unwrap();
@@ -60,10 +80,37 @@ fn column_logical_type_returns_none_for_out_of_bounds_index() {
 #[test]
 fn column_name_returns_none_for_out_of_bounds_index() {
     let db = common::open_test_db();
-    db.execute("CREATE DATABASE namedb;").unwrap();
+    db.execute("CREATE SCHEMA namedb;").unwrap();
     db.execute("CREATE TABLE namedb.t (n integer);").unwrap();
     db.execute("INSERT INTO namedb.t (n) VALUES (1);").unwrap();
     let cur = db.execute("SELECT n FROM namedb.t;").unwrap();
     assert_eq!(cur.column_count(), 1);
     assert_eq!(cur.column_name(100), None);
+}
+
+#[test]
+fn transaction_status_reports_where_the_session_stands() {
+    let db = common::open_test_db();
+    let select = db.execute("SELECT 1;").unwrap();
+    assert_eq!(
+        select.transaction_status(),
+        Some(otterbrix::TransactionStatus::Idle)
+    );
+    let begin = db.execute("BEGIN;").unwrap();
+    assert_eq!(
+        begin.transaction_status(),
+        Some(otterbrix::TransactionStatus::InTransaction)
+    );
+}
+
+#[test]
+fn a_rollback_undoes_the_insert_its_begin_opened() {
+    let db = common::open_test_db();
+    db.execute("CREATE SCHEMA s;").unwrap();
+    db.execute("CREATE TABLE s.t (a BIGINT);").unwrap();
+    db.execute("BEGIN;").unwrap();
+    db.execute("INSERT INTO s.t (a) VALUES (1);").unwrap();
+    db.execute("ROLLBACK;").unwrap();
+    let read = db.execute("SELECT a FROM s.t;").unwrap();
+    assert_eq!(read.size(), 0);
 }

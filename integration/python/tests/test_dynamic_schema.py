@@ -19,7 +19,7 @@ _path = os.getcwd() + "/test_dynamic_schema"
 if os.path.exists(_path):
     shutil.rmtree(_path)
 client = Client(_path)
-client.execute("CREATE DATABASE dyn;")
+client.execute("CREATE SCHEMA dyn;")
 
 
 def gen_id(num):

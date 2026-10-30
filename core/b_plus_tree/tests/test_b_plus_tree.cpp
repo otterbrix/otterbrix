@@ -6,9 +6,11 @@
 #include <core/b_plus_tree/b_plus_tree.hpp>
 #include <core/file/file_system.hpp>
 #include <core/pmr.hpp>
+#include <core/pmr/budget_resource.hpp>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <random>
 #include <string>
 #include <thread>
@@ -152,30 +154,7 @@ struct dummy_alloc {
     uint32_t size;
 };
 
-class limited_resource_t : public std::pmr::memory_resource {
-public:
-    explicit limited_resource_t(size_t memory_limit)
-        : memory_limit_(memory_limit) {}
-
-    void* do_allocate(size_t bytes, size_t alignment) override {
-        if (memory_used_ + bytes > memory_limit_) {
-            throw std::bad_alloc();
-        } else {
-            memory_used_ += bytes;
-            return resource_.allocate(bytes, alignment);
-        }
-    }
-    void do_deallocate(void* ptr, size_t bytes, size_t alignment) override {
-        memory_used_ -= bytes;
-        resource_.deallocate(ptr, bytes, alignment);
-    }
-    bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
-
-private:
-    size_t memory_limit_;
-    size_t memory_used_ = 0;
-    core::pmr::otterbrix_resource resource_ = core::pmr::otterbrix_resource();
-};
+constexpr uint64_t no_limit = std::numeric_limits<uint64_t>::max();
 
 std::string gen_random(size_t len, std::size_t seed) {
     std::string result;
@@ -192,7 +171,8 @@ std::string gen_random(size_t len, std::size_t seed) {
 
 TEST_CASE("core::b_plus_tree::block_t") {
     path_t testing_directory = scratch_dir("block_test");
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
 
     INFO("initialization");
     {
@@ -486,8 +466,77 @@ TEST_CASE("core::b_plus_tree::block_t") {
     }
 }
 
+TEST_CASE("core::b_plus_tree::a_block_over_budget_is_a_value_and_the_block_stays_whole") {
+    auto upstream = core::pmr::otterbrix_resource();
+    core::pmr::budget_resource_t budget(&upstream, DEFAULT_BLOCK_SIZE);
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        return block_t::index_t(read_unaligned<uint64_t>(data.data));
+    };
+
+    INFO("a block the budget cannot hold");
+    CHECK(create_initialize(&budget, key_getter, 2 * DEFAULT_BLOCK_SIZE) == nullptr);
+    CHECK(budget.used() == 0);
+
+    std::unique_ptr<block_t> block = create_initialize(&budget, key_getter);
+    REQUIRE(block != nullptr);
+    REQUIRE(budget.used() == DEFAULT_BLOCK_SIZE);
+
+    constexpr uint32_t item_size = DEFAULT_BLOCK_SIZE / 32;
+    std::vector<char> buffer(item_size, 0);
+    uint64_t stored = 0;
+    while (block->is_memory_available(item_size)) {
+        write_unaligned<uint64_t>(buffer.data(), stored);
+        REQUIRE(block->append({buffer.data(), item_size}));
+        stored++;
+    }
+    REQUIRE(stored > 1);
+
+    INFO("a split the budget cannot hold");
+    write_unaligned<uint64_t>(buffer.data(), stored);
+    auto split = block->split_append(block_t::index_t(stored), {buffer.data(), item_size});
+    CHECK(split.first == nullptr);
+    CHECK(split.second == nullptr);
+    CHECK(block->count() == stored);
+    for (uint64_t i = 0; i < stored; i++) {
+        CHECK(block->contains_index(block_t::index_t(i)));
+    }
+    CHECK_FALSE(block->contains_index(block_t::index_t(stored)));
+    CHECK(budget.used() == DEFAULT_BLOCK_SIZE);
+}
+
+TEST_CASE("core::b_plus_tree::a_refused_middle_block_puts_the_split_tail_back") {
+    auto upstream = core::pmr::otterbrix_resource();
+    core::pmr::budget_resource_t budget(&upstream, 2 * DEFAULT_BLOCK_SIZE);
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        return block_t::index_t(read_unaligned<uint64_t>(data.data));
+    };
+
+    std::unique_ptr<block_t> block = create_initialize(&budget, key_getter);
+    REQUIRE(block != nullptr);
+    constexpr uint32_t item_size = 64;
+    std::vector<char> small(item_size, 0);
+    for (uint64_t i = 0; i < 10; i++) {
+        write_unaligned<uint64_t>(small.data(), i);
+        REQUIRE(block->append({small.data(), item_size}));
+    }
+
+    INFO("the tail is split off, neither half takes the item, and the middle block is refused");
+    constexpr uint32_t big_size = DEFAULT_BLOCK_SIZE + 4096;
+    std::vector<char> big(big_size, 0);
+    write_unaligned<uint64_t>(big.data(), uint64_t{5});
+    auto split = block->split_append(block_t::index_t(uint64_t{5}), {big.data(), big_size});
+    CHECK(split.first == nullptr);
+    CHECK(split.second == nullptr);
+    CHECK(block->count() == 10);
+    for (uint64_t i = 6; i < 10; i++) {
+        CHECK(block->contains_index(block_t::index_t(i)));
+    }
+    CHECK(budget.used() == DEFAULT_BLOCK_SIZE);
+}
+
 TEST_CASE("core::b_plus_tree::segment_tree") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_test");
 
     INFO("initialization");
@@ -841,7 +890,7 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
 
     INFO("segment_tree: memory overflow");
     {
-        limited_resource_t limited_resource(DEFAULT_BLOCK_SIZE * 64);
+        core::pmr::budget_resource_t limited_resource(&upstream, DEFAULT_BLOCK_SIZE * 64);
 
         local_file_system_t fs = local_file_system_t();
         auto fname = testing_directory;
@@ -960,7 +1009,8 @@ TEST_CASE("core::b_plus_tree::segment_tree") {
 
 // Regression: two of three sites shrinking a block in place never marked it modified, so flush() never rewrote it.
 TEST_CASE("core::b_plus_tree::segment_tree_split_persists_the_shrunk_source") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_split_persistence");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1047,7 +1097,8 @@ TEST_CASE("core::b_plus_tree::segment_tree_split_persists_the_shrunk_source") {
 }
 
 TEST_CASE("core::b_plus_tree::segment_tree_balance_persists_the_shrunk_source") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_balance_persistence");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1143,7 +1194,8 @@ TEST_CASE("core::b_plus_tree::segment_tree_balance_persists_the_shrunk_source") 
 
 // Regression: close_gaps_() moved a metadata-only block without writing its bytes; the next load read unwritten space.
 TEST_CASE("core::b_plus_tree::segment_tree_close_gaps_moves_unloaded_blocks") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_close_gaps");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1225,7 +1277,8 @@ TEST_CASE("core::b_plus_tree::segment_tree_close_gaps_moves_unloaded_blocks") {
 
 // Regression: remove_index() loaded the FIRST block of a multi-block range but not the LAST.
 TEST_CASE("core::b_plus_tree::segment_tree_remove_index_loads_the_last_block_of_the_range") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_remove_index_lazy");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1289,7 +1342,8 @@ TEST_CASE("core::b_plus_tree::segment_tree_remove_index_loads_the_last_block_of_
 
 // Regression: remove() charged unique_id_count_ once per-BLOCK, so a key spanning K blocks was charged K times.
 TEST_CASE("core::b_plus_tree::segment_tree_remove_charges_a_multi_block_key_once") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_remove_unique_count");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1365,7 +1419,8 @@ TEST_CASE("core::b_plus_tree::segment_tree_remove_charges_a_multi_block_key_once
 }
 
 TEST_CASE("core::b_plus_tree::flush_does_not_write_uninitialised_memory") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_uninitialised");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1458,7 +1513,8 @@ TEST_CASE("core::b_plus_tree::flush_does_not_write_uninitialised_memory") {
 
 // Regression: clean_load()/lazy_load() replaced the whole leaf without clearing dirty_, so every restart reflushed all leaves.
 TEST_CASE("core::b_plus_tree::loading_a_leaf_leaves_nothing_to_flush") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_load_clears_dirty");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1531,7 +1587,8 @@ TEST_CASE("core::b_plus_tree::loading_a_leaf_leaves_nothing_to_flush") {
 
 // Regression: flush() threw away write()/sync() results and cleared dirty regardless, reporting a failed write as success.
 TEST_CASE("core::b_plus_tree::flush_reports_io_failure_and_stays_dirty") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_io_failure");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1574,7 +1631,8 @@ TEST_CASE("core::b_plus_tree::flush_reports_io_failure_and_stays_dirty") {
 
 // Regression: flush() returned early with no leaves left, and nothing unlinks a leaf file, so load() rebuilt the whole pre-delete tree.
 TEST_CASE("core::b_plus_tree::flush_persists_an_emptied_tree") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("btree_emptied");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1627,7 +1685,8 @@ TEST_CASE("core::b_plus_tree::flush_persists_an_emptied_tree") {
 
 // Regression: the checksum only ever ran inside an assert, so release builds (-DNDEBUG) never ran it.
 TEST_CASE("core::b_plus_tree::a_flipped_bit_in_a_block_is_refused_not_served") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_bitflip");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1712,7 +1771,8 @@ TEST_CASE("core::b_plus_tree::a_flipped_bit_in_a_block_is_refused_not_served") {
 
 // Regression: all four load sites dropped file_->read()'s result, so an unread block was "restored" as empty and later reflushed as such.
 TEST_CASE("core::b_plus_tree::a_block_that_could_not_be_read_is_never_written_back") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_refused_read");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1778,7 +1838,8 @@ TEST_CASE("core::b_plus_tree::a_block_that_could_not_be_read_is_never_written_ba
 
 // A string-keyed metadata entry's min/max index is a POINTER, so re-deriving it means re-reading the block.
 TEST_CASE("core::b_plus_tree::a_string_keyed_leaf_that_will_not_load_gives_up_whole") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_string_bitflip");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1855,7 +1916,8 @@ TEST_CASE("core::b_plus_tree::a_string_keyed_leaf_that_will_not_load_gives_up_wh
 }
 
 TEST_CASE("core::b_plus_tree::a_failed_eviction_write_does_not_drop_the_block") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_eviction");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1875,7 +1937,7 @@ TEST_CASE("core::b_plus_tree::a_failed_eviction_write_does_not_drop_the_block") 
     faults.refuse_block_writes = true;
     uint64_t accepted = 0;
     {
-        limited_resource_t budget(segment_tree_t::header_size + 6 * DEFAULT_BLOCK_SIZE);
+        core::pmr::budget_resource_t budget(&upstream, segment_tree_t::header_size + 6 * DEFAULT_BLOCK_SIZE);
         auto inner = open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
         segment_tree_t tree(&budget, key_getter, std::make_unique<faulty_leaf_file_t>(std::move(inner), faults));
 
@@ -1914,9 +1976,10 @@ TEST_CASE("core::b_plus_tree::a_failed_eviction_write_does_not_drop_the_block") 
     }
 }
 
-// The load path must not retry allocation INSIDE a catch that already caught everything — a second refusal has nothing above it to catch.
+// A budget refusal on the load path is a value: the append answers false, the channel says out_of_memory.
 TEST_CASE("core::b_plus_tree::an_allocation_refusal_comes_back_as_a_value") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_no_room");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -1930,7 +1993,7 @@ TEST_CASE("core::b_plus_tree::an_allocation_refusal_comes_back_as_a_value") {
     auto fname = testing_directory;
     fname /= "cramped_leaf";
 
-    limited_resource_t budget(segment_tree_t::header_size + 4096);
+    core::pmr::budget_resource_t budget(&upstream, segment_tree_t::header_size + 4096);
     segment_tree_t tree(&budget,
                         key_getter,
                         open_file(fs, fname, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE));
@@ -1952,7 +2015,8 @@ TEST_CASE("core::b_plus_tree::an_allocation_refusal_comes_back_as_a_value") {
 
 // Loud, not fatal: the corruption is reported, never a hard failure.
 TEST_CASE("core::b_plus_tree::a_corrupt_leaf_still_opens_answers_and_drops") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("btree_corrupt_leaf");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -2031,7 +2095,8 @@ TEST_CASE("core::b_plus_tree::a_corrupt_leaf_still_opens_answers_and_drops") {
 
 // A leaf's block metadata holds max_segments (8191) entries; insert_segment_ and clean_load()/lazy_load() can walk past that unguarded.
 TEST_CASE("core::b_plus_tree::the_block_metadata_array_is_guarded_on_both_sides") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_metadata_capacity");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -2118,7 +2183,8 @@ TEST_CASE("core::b_plus_tree::the_block_metadata_array_is_guarded_on_both_sides"
 
 // METADATA_SIZE holds two counters and one uint64 id per leaf (32766 of them); unguarded, flush()/load() can walk past that buffer.
 TEST_CASE("core::b_plus_tree::the_leaf_ceiling_is_guarded_on_both_sides") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("btree_leaf_ceiling");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -2201,7 +2267,8 @@ TEST_CASE("core::b_plus_tree::the_leaf_ceiling_is_guarded_on_both_sides") {
 // poison_segment_()'s stand-in is an empty block, but split() treats every block it walks as real: an empty block's
 // prev_index/max_index compare equal, underflowing `count` to SIZE_MAX (a heap-buffer-overflow READ under -DNDEBUG).
 TEST_CASE("core::b_plus_tree::split_does_not_carve_up_a_block_it_could_not_read") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_split_poisoned");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -2276,7 +2343,8 @@ TEST_CASE("core::b_plus_tree::split_does_not_carve_up_a_block_it_could_not_read"
 }
 
 TEST_CASE("core::b_plus_tree::an_unreadable_block_is_never_carried_into_another_leaf") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_stand_in_travels");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -2357,7 +2425,8 @@ TEST_CASE("core::b_plus_tree::an_unreadable_block_is_never_carried_into_another_
 
 // split_uniques() is called INSIDE insert_segment_()'s argument list — a refusal there destroys the temporary node.
 TEST_CASE("core::b_plus_tree::a_refused_move_does_not_destroy_the_items_it_took_out") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_refused_move");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -2463,8 +2532,218 @@ TEST_CASE("core::b_plus_tree::a_refused_move_does_not_destroy_the_items_it_took_
     }
 }
 
+namespace {
+    struct refused_split_fixture_t {
+        explicit refused_split_fixture_t(const char* name)
+            : budget(&upstream, no_limit)
+            , testing_directory(scratch_dir(name)) {
+            if (directory_exists(fs, testing_directory)) {
+                remove_directory(fs, testing_directory);
+            }
+            create_directory(fs, testing_directory);
+        }
+        ~refused_split_fixture_t() {
+            if (directory_exists(fs, testing_directory)) {
+                remove_directory(fs, testing_directory);
+            }
+        }
+        refused_split_fixture_t(const refused_split_fixture_t&) = delete;
+        refused_split_fixture_t& operator=(const refused_split_fixture_t&) = delete;
+
+        static block_t::index_t key_getter(const block_t::item_data& data) {
+            return block_t::index_t(read_unaligned<uint64_t>(data.data));
+        }
+
+        std::unique_ptr<file_handle_t> open(const char* file) {
+            auto name = testing_directory;
+            name /= file;
+            return open_file(fs, name, file_flags::READ | file_flags::WRITE | file_flags::FILE_CREATE);
+        }
+
+        std::unique_ptr<segment_tree_t> make_tree(const char* file) {
+            return std::make_unique<segment_tree_t>(&budget, key_getter, open(file));
+        }
+
+        static void fill(segment_tree_t& tree, uint64_t from, uint64_t to) {
+            std::vector<char> buffer(DEFAULT_BLOCK_SIZE / 128, 0);
+            for (uint64_t i = from; i < to; i++) {
+                write_unaligned<uint64_t>(buffer.data(), i);
+                REQUIRE(tree.append(reinterpret_cast<data_ptr_t>(buffer.data()), static_cast<uint32_t>(buffer.size())));
+            }
+        }
+
+        static std::vector<uint64_t> collect(const segment_tree_t& first, const segment_tree_t& second) {
+            std::vector<uint64_t> out;
+            for (const segment_tree_t* tree : {&first, &second}) {
+                for (auto block = tree->begin(); block != tree->end(); block++) {
+                    for (auto item = block->begin(); item != block->end(); item++) {
+                        out.push_back((*item).index.value<components::types::physical_type::UINT64>());
+                    }
+                }
+            }
+            std::sort(out.begin(), out.end());
+            return out;
+        }
+
+        core::pmr::otterbrix_resource upstream;
+        core::pmr::budget_resource_t budget;
+        local_file_system_t fs;
+        path_t testing_directory;
+    };
+} // namespace
+
+TEST_CASE("core::b_plus_tree::a_split_whose_block_the_budget_refuses_keeps_every_item") {
+    refused_split_fixture_t fx("segment_tree_split_refused_block");
+    auto tree = fx.make_tree("split_donor");
+    refused_split_fixture_t::fill(*tree, 0, 100);
+    REQUIRE(tree->blocks_count() == 1);
+    const auto count_before = tree->count();
+
+    INFO("room for the new leaf's header, none for the half of the block it would take");
+    fx.budget.set_limit(fx.budget.used() + segment_tree_t::header_size);
+    auto other = tree->split(fx.open("split_receiver"));
+    REQUIRE(other != nullptr);
+    fx.budget.set_limit(no_limit);
+
+    CHECK(tree->count() + other->count() == count_before);
+    std::vector<uint64_t> expected;
+    for (uint64_t i = 0; i < 100; i++) {
+        expected.push_back(i);
+    }
+    CHECK(refused_split_fixture_t::collect(*tree, *other) == expected);
+    CHECK(tree->load_failure() == load_failure_t::out_of_memory);
+}
+
+TEST_CASE("core::b_plus_tree::a_balance_whose_block_the_budget_refuses_keeps_every_item") {
+    refused_split_fixture_t fx("segment_tree_balance_refused_block");
+
+    SECTION("the receiver holds the larger keys") {
+        auto small = fx.make_tree("balance_receiver_right");
+        auto big = fx.make_tree("balance_donor_left");
+        refused_split_fixture_t::fill(*small, 200, 220);
+        refused_split_fixture_t::fill(*big, 100, 160);
+        const auto before = refused_split_fixture_t::collect(*small, *big);
+
+        fx.budget.set_limit(fx.budget.used());
+        small->balance_with(big);
+        fx.budget.set_limit(no_limit);
+
+        CHECK(small->count() + big->count() == before.size());
+        CHECK(refused_split_fixture_t::collect(*small, *big) == before);
+        CHECK(small->load_failure() == load_failure_t::out_of_memory);
+    }
+
+    SECTION("the receiver holds the smaller keys") {
+        auto small = fx.make_tree("balance_receiver_left");
+        auto big = fx.make_tree("balance_donor_right");
+        refused_split_fixture_t::fill(*small, 0, 20);
+        refused_split_fixture_t::fill(*big, 100, 160);
+        const auto before = refused_split_fixture_t::collect(*small, *big);
+
+        fx.budget.set_limit(fx.budget.used());
+        small->balance_with(big);
+        fx.budget.set_limit(no_limit);
+
+        CHECK(small->count() + big->count() == before.size());
+        CHECK(refused_split_fixture_t::collect(*small, *big) == before);
+        CHECK(small->load_failure() == load_failure_t::out_of_memory);
+    }
+}
+
+TEST_CASE("core::b_plus_tree::a_metadata_buffer_the_budget_refuses_is_a_value") {
+    auto upstream = core::pmr::otterbrix_resource();
+    core::pmr::budget_resource_t budget(&upstream, no_limit);
+    path_t testing_directory = scratch_dir("btree_metadata_refused");
+    local_file_system_t fs = local_file_system_t();
+    if (directory_exists(fs, testing_directory)) {
+        remove_directory(fs, testing_directory);
+    }
+    create_directory(fs, testing_directory);
+
+    auto key_getter = [](const block_t::item_data& data) -> block_t::index_t {
+        return block_t::index_t(read_unaligned<uint64_t>(data.data));
+    };
+    constexpr uint32_t item_size = 64;
+    constexpr uint64_t keys = 30;
+
+    {
+        btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+        std::vector<char> buffer(item_size, 0);
+        for (uint64_t i = 0; i < keys; i++) {
+            write_unaligned<uint64_t>(buffer.data(), i);
+            REQUIRE(tree.append({reinterpret_cast<data_ptr_t>(buffer.data()), item_size}));
+        }
+        REQUIRE(tree.flush());
+    }
+
+    SECTION("flush of a tree without leaves") {
+        btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+        budget.set_limit(budget.used());
+        CHECK_FALSE(tree.flush());
+        budget.set_limit(no_limit);
+        CHECK(tree.flush());
+    }
+
+    SECTION("flush of a tree with leaves; the second flush proves the tree lock was given back") {
+        btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+        tree.load();
+        REQUIRE(tree.size() == keys);
+        budget.set_limit(budget.used());
+        CHECK_FALSE(tree.flush());
+        budget.set_limit(no_limit);
+        CHECK(tree.flush());
+    }
+
+    SECTION("load refused at the metadata buffer") {
+        btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+        budget.set_limit(budget.used());
+        tree.load();
+        budget.set_limit(no_limit);
+        CHECK(tree.load_failure() == load_failure_t::out_of_memory);
+        CHECK(tree.size() == 0);
+
+        tree.reset_load_failure();
+        tree.load();
+        CHECK(tree.load_failure() == load_failure_t::none);
+        CHECK(tree.size() == keys);
+        CHECK(tree.contains_index(btree_t::index_t(keys - 1)));
+    }
+
+    SECTION("a reload refused at the metadata buffer forgets the tree it dropped") {
+        btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+        tree.load();
+        REQUIRE(tree.size() == keys);
+
+        INFO("limit 0, not used(): dropping the old tree frees enough for the metadata buffer to fit again");
+        budget.set_limit(0);
+        tree.load();
+        CHECK(tree.load_failure() == load_failure_t::out_of_memory);
+        CHECK(tree.size() == 0);
+        CHECK_FALSE(tree.flush());
+        budget.set_limit(no_limit);
+    }
+
+    SECTION("load refused at the leaf array") {
+        btree_t tree(&budget, fs, testing_directory, key_getter, 12);
+        budget.set_limit(budget.used() + METADATA_SIZE);
+        tree.load();
+        budget.set_limit(no_limit);
+        CHECK(tree.load_failure() == load_failure_t::out_of_memory);
+        CHECK(tree.size() == 0);
+
+        tree.reset_load_failure();
+        tree.load();
+        CHECK(tree.load_failure() == load_failure_t::none);
+        CHECK(tree.size() == keys);
+        CHECK(tree.contains_index(btree_t::index_t(keys - 1)));
+    }
+
+    remove_directory(fs, testing_directory);
+}
+
 TEST_CASE("core::b_plus_tree::a_transient_read_failure_does_not_wedge_the_leaf") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_transient_failure");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -2534,7 +2813,8 @@ TEST_CASE("core::b_plus_tree::a_transient_read_failure_does_not_wedge_the_leaf")
 }
 
 TEST_CASE("core::b_plus_tree::the_first_item_of_a_fresh_tree_is_not_counted_unless_it_was_stored") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("btree_first_append_refused");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -2546,7 +2826,7 @@ TEST_CASE("core::b_plus_tree::the_first_item_of_a_fresh_tree_is_not_counted_unle
         return block_t::index_t(read_unaligned<uint64_t>(data.data));
     };
 
-    limited_resource_t budget(segment_tree_t::header_size + 4096);
+    core::pmr::budget_resource_t budget(&upstream, segment_tree_t::header_size + 4096);
     btree_t tree(&budget, fs, testing_directory, key_getter, 8);
 
     constexpr uint32_t item_size = 64;
@@ -2565,7 +2845,8 @@ TEST_CASE("core::b_plus_tree::the_first_item_of_a_fresh_tree_is_not_counted_unle
 }
 
 TEST_CASE("core::b_plus_tree::a_refused_append_does_not_count_the_key_it_did_not_store") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_refused_append_count");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -2610,7 +2891,8 @@ TEST_CASE("core::b_plus_tree::a_refused_append_does_not_count_the_key_it_did_not
 }
 
 TEST_CASE("core::b_plus_tree::b+tree") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("b+tree_test");
 
     INFO("initialization");
@@ -3027,7 +3309,8 @@ TEST_CASE("core::b_plus_tree::b+tree") {
 // Regression: a scan held its first leaf while it waited for tree_mutex_, and an append held tree_mutex_ while it
 // waited for that leaf, so neither moved.
 TEST_CASE("core::b_plus_tree::a_scan_does_not_deadlock_an_append_into_its_first_leaf") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("btree_scan_and_append");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -3086,7 +3369,8 @@ TEST_CASE("core::b_plus_tree::a_scan_does_not_deadlock_an_append_into_its_first_
 
 // Regression: the leaf header had only a structural check (segment count vs capacity), so a flipped bit passed silently.
 TEST_CASE("core::b_plus_tree::a_tampered_leaf_header_is_refused_not_believed") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     local_file_system_t fs = local_file_system_t();
     path_t testing_directory = scratch_dir("segment_tree_header_seal");
     if (directory_exists(fs, testing_directory)) {
@@ -3135,28 +3419,8 @@ TEST_CASE("core::b_plus_tree::a_tampered_leaf_header_is_refused_not_believed") {
 }
 
 TEST_CASE("core::b_plus_tree::a_scan_survives_an_allocation_refusal_on_a_lazy_block") {
-    class armable_oom_resource_t : public std::pmr::memory_resource {
-    public:
-        void arm() noexcept { armed_ = true; }
-        void disarm() noexcept { armed_ = false; }
-
-    private:
-        void* do_allocate(size_t bytes, size_t alignment) override {
-            if (armed_) {
-                throw std::bad_alloc();
-            }
-            return resource_.allocate(bytes, alignment);
-        }
-        void do_deallocate(void* ptr, size_t bytes, size_t alignment) override {
-            resource_.deallocate(ptr, bytes, alignment);
-        }
-        bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override { return this == &other; }
-
-        bool armed_ = false;
-        core::pmr::otterbrix_resource resource_ = core::pmr::otterbrix_resource();
-    };
-
-    armable_oom_resource_t resource;
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("btree_oom_lazy_block");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -3188,10 +3452,10 @@ TEST_CASE("core::b_plus_tree::a_scan_survives_an_allocation_refusal_on_a_lazy_bl
     auto deserialize = [](void* buf, uint64_t) { return read_unaligned<uint64_t>(static_cast<data_ptr_t>(buf)); };
 
     {
-        resource.arm();
+        resource.set_limit(0);
         std::pmr::vector<uint64_t> starved;
         REQUIRE(tree.full_scan(&starved, deserialize));
-        resource.disarm();
+        resource.set_limit(no_limit);
         CHECK(starved.empty());
         INFO("the refusal must be on the channel, not swallowed");
         CHECK(tree.take_load_failure() == load_failure_t::out_of_memory);
@@ -3209,7 +3473,7 @@ TEST_CASE("core::b_plus_tree::a_scan_survives_an_allocation_refusal_on_a_lazy_bl
         reloaded.load();
         REQUIRE(reloaded.size() == items);
 
-        resource.arm();
+        resource.set_limit(0);
         std::pmr::vector<uint64_t> starved;
         REQUIRE(reloaded.scan_decending<uint64_t>(btree_t::index_t(uint64_t(0)),
                                                   btree_t::index_t(uint64_t(items)),
@@ -3217,7 +3481,7 @@ TEST_CASE("core::b_plus_tree::a_scan_survives_an_allocation_refusal_on_a_lazy_bl
                                                   &starved,
                                                   deserialize,
                                                   [](const auto&, const auto&) { return true; }));
-        resource.disarm();
+        resource.set_limit(no_limit);
         CHECK(starved.empty());
         CHECK(reloaded.take_load_failure() == load_failure_t::out_of_memory);
     }
@@ -3227,7 +3491,8 @@ TEST_CASE("core::b_plus_tree::a_scan_survives_an_allocation_refusal_on_a_lazy_bl
 
 // Regression: flush() wrote the metadata list unconditionally, naming a leaf whose flush refused; load() then emptied the whole tree.
 TEST_CASE("core::b_plus_tree::a_refused_leaf_flush_does_not_poison_the_metadata") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("btree_flush_refused_leaf");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -3285,7 +3550,8 @@ TEST_CASE("core::b_plus_tree::a_refused_leaf_flush_does_not_poison_the_metadata"
 }
 
 TEST_CASE("core::b_plus_tree::segment_tree_iterator_prefix_matches_postfix") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_iter_prefix");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {
@@ -3359,7 +3625,8 @@ TEST_CASE("core::b_plus_tree::segment_tree_iterator_prefix_matches_postfix") {
 }
 
 TEST_CASE("core::b_plus_tree::segment_tree_iterator_assignment_rebinds_the_tree") {
-    auto resource = core::pmr::otterbrix_resource();
+    auto upstream = core::pmr::otterbrix_resource();
+    auto resource = core::pmr::budget_resource_t(&upstream, no_limit);
     path_t testing_directory = scratch_dir("segment_tree_iter_assign");
     local_file_system_t fs = local_file_system_t();
     if (directory_exists(fs, testing_directory)) {

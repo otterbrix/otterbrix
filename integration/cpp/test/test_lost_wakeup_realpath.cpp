@@ -6,7 +6,7 @@
 // test_lost_wakeup_streaming.cpp models the consumer (executor) awaiting a producer
 // that replies IMMEDIATELY from its own behavior() handler — a SINGLE cross-actor hop:
 //
-//      executor.execute_pipeline()  --send-->  source.fetch_batch()  (co_return idx)
+//      executor.pump_pipeline_()    --send-->  source.fetch_batch()  (co_return idx)
 //                       ^------------- reply (promise.set_value) -------------/
 //
 // The option-2 fix in cooperative_actor.hpp resume_impl ("Inter-await null-window
@@ -16,13 +16,13 @@
 // resume_impl re-poll.
 //
 // But the REAL per-batch fetch-next reply is NOT one hop. From the production code
-// (services/collection/executor.cpp execute_pipeline -> source_next ->
+// (services/collection/executor.cpp pump_pipeline_ -> source_next ->
 // services/disk/manager_disk_storage.cpp storage_fetch_next_batch ->
 // services/disk/agent_disk.cpp storage_fetch_next_batch_inner) the reply chains TWO
 // cross-actor hops across TWO schedulers:
 //
 //      executor (scheduler_)           manager_disk (scheduler_)         agent_disk (scheduler_disk_)
-//   execute_pipeline()                                                                   ^
+//   pump_pipeline_()                                                                     ^
 //     co_await source_next() --send--> storage_fetch_next_batch()                        |
 //                                        co_await(send( ----------------> storage_fetch_next_batch_inner()
 //                                          agent.inner ))                    co_return batch
@@ -74,12 +74,12 @@
 // THE DEEPER-NESTING MODEL (validated here) AND WHY IT STILL DOES NOT REPRODUCE STANDALONE
 // ---------------------------------------------------------------------------------------
 // To faithfully model the production nesting this harness adds a SEPARATE operator object
-// (scan_operator_t, == full_scan / transfer_scan) whose source_next() is its OWN
-// unique_future coroutine, co_awaited by the executor's execute_pipeline, and which itself
+// (scan_operator_t, == transfer_scan / operator_remote_scan) whose source_next() is its OWN
+// unique_future coroutine, co_awaited by the executor's pump_pipeline_, and which itself
 // performs TWO SEQUENTIAL cross-actor sub-awaits (co_await sf, then co_await
 // emit_or_advance(...) which awaits AGAIN one frame deeper). The full nesting modeled is:
 //
-//   behavior() -> dispatch(run_query) -> execute_plan -> execute_pipeline
+//   behavior() -> dispatch(run_query) -> execute_plan -> pump_pipeline_
 //                    -> co_await source->source_next(ctx)        [separate operator frame]
 //                          -> co_await sf                        [sub-await #1]
 //                          -> co_await emit_or_advance(...)       [sub-await #2, awaits again]
@@ -103,13 +103,13 @@
 // the guard in a standalone harness.
 //
 // CONCLUSION — this is a BEST-EFFORT SPEC, not a RED reproducer. The definitive reproducer
-// is the PRODUCTION per-batch fetch-next path (the fetch-next cursor infra in full_scan /
-// transfer_scan, currently DORMANT — whole-scan buffering replaced it precisely to dodge
-// this lost-wakeup; see full_scan::source_next), which lost-woke ~11000 watchdog pokes in
+// is the PRODUCTION per-batch fetch-next path (the fetch-next cursor infra in transfer_scan /
+// operator_remote_scan, currently DORMANT — whole-scan buffering replaced it precisely to dodge
+// this lost-wakeup; see transfer_scan::source_next), which lost-woke ~11000 watchdog pokes in
 // the full SELECT suite only because the dispatcher watchdog masks it. The standalone
 // harness lacks the real production load: concurrent unrelated actors contending the
 // mailbox, real batch materialization timing (column reads + chunk build) widening the park
-// window, and the true depth/branching of execute_plan -> execute_sub_plan_ ->
+// window, and the true depth/branching of execute_plan -> pump_portal_ ->
 // run_resolve_subplan re-entrancy. RE-VALIDATE this test (and expect it to turn RED) when
 // the fetch-next per-batch source is revived in the buffer-pool effort.
 //
@@ -231,11 +231,11 @@ namespace {
     };
 
     // ------------------------------------------------------------------
-    // SCAN OPERATOR == full_scan / transfer_scan: a SEPARATE object (NOT an actor) whose
+    // SCAN OPERATOR == transfer_scan / operator_remote_scan: a SEPARATE object (NOT an actor) whose
     // source_next() is its OWN unique_future coroutine, co_awaited by the executor's
-    // execute_pipeline. This is the DEEPER-NESTING element the simplified models lack:
+    // pump_pipeline_. This is the DEEPER-NESTING element the simplified models lack:
     //
-    //   behavior() -> run_query -> execute_plan -> execute_pipeline
+    //   behavior() -> run_query -> execute_plan -> pump_pipeline_
     //                                                  co_await source->source_next(ctx)   <-- separate frame
     //                                                       co_await sf                    <-- sub-await #1
     //                                                       co_await emit_or_advance(...)  <-- sub-await #2 (awaits again)
@@ -243,13 +243,13 @@ namespace {
     // source_next does TWO SEQUENTIAL cross-actor sub-awaits before returning, looped once
     // per batch. The inter-SUB-await null-window lives in this DEEPEST frame: when the first
     // sub-await completes (clear_awaited_chain walks awaited_flags_=nullptr up through
-    // execute_pipeline -> execute_plan -> run_query -> behavior via propagated_to_flags_)
+    // pump_pipeline_ -> execute_plan -> run_query -> behavior via propagated_to_flags_)
     // and the second sub-await has not yet republished (propagate_awaited_state), the
     // TOP-LEVEL behavior's awaited_flags_ is transiently nullptr => is_busy()==false even
     // though the coroutine is mid-flight several frames down. The intermediate frames'
     // propagated pointers are momentarily stale precisely during this walk. This is the
     // suspect the consumer-awaits-relay-directly models do not reproduce: there the await is
-    // ONE frame under execute_pipeline, not a separate source_next coroutine doing two
+    // ONE frame under pump_pipeline_, not a separate source_next coroutine doing two
     // chained sub-awaits.
     // ------------------------------------------------------------------
     class scan_operator_t {
@@ -265,7 +265,7 @@ namespace {
 
         // actor-zeta requires a unique_future coroutine's `this` to expose resource()
         // (the promise extracts its memory_resource from it, exactly as the real operators
-        // — full_scan / transfer_scan — do for their source_next coroutine).
+        // — transfer_scan / operator_remote_scan — do for their source_next coroutine).
         std::pmr::memory_resource* resource() const noexcept { return resource_; }
 
         // == the SECOND sub-await: emit_or_advance — its own unique_future coroutine that
@@ -286,7 +286,7 @@ namespace {
         }
 
         // == source_next: a SEPARATE unique_future coroutine of the OPERATOR object,
-        // co_awaited by execute_pipeline. Performs TWO sequential cross-actor sub-awaits:
+        // co_awaited by pump_pipeline_. Performs TWO sequential cross-actor sub-awaits:
         //   co_await sf                     (primary scan reply)
         //   co_await emit_or_advance(...)    (which awaits AGAIN, one frame deeper)
         // The inter-sub-await null-window between these two — walked up through every
@@ -326,7 +326,7 @@ namespace {
 
     // ------------------------------------------------------------------
     // CONSUMER == executor_t: behavior() -> dispatch(run_query) -> execute_plan ->
-    // execute_pipeline, whose per-batch loop does N sequential cross-actor awaits — each
+    // pump_pipeline_, whose per-batch loop does N sequential cross-actor awaits — each
     // now via co_await source->source_next(), a SEPARATE operator coroutine that itself
     // does TWO sequential 2-hop (relay -> leaf) cross-scheduler sub-awaits. The consumer
     // also does inter-batch WORK (mirrors pump_one pushing the batch through operators) so
@@ -343,11 +343,11 @@ namespace {
             , batches_(batches)
             , source_(resource, relay_addr, exec_sched, relay_raw) {}
 
-        // == execute_pipeline: the per-batch streaming loop. ONE co_await source_next per
+        // == pump_pipeline_: the per-batch streaming loop. ONE co_await source_next per
         // batch (== co_await source->source_next), each of which is a SEPARATE operator
         // coroutine doing TWO sequential 2-hop cross-scheduler sub-awaits. This is the real
-        // nesting: execute_pipeline -> source_next -> {co_await sf, co_await emit_or_advance}.
-        unique_future<std::int64_t> execute_pipeline() {
+        // nesting: pump_pipeline_ -> source_next -> {co_await sf, co_await emit_or_advance}.
+        unique_future<std::int64_t> pump_pipeline_() {
             std::int64_t sum = 0;
             for (std::int64_t i = 0; i < batches_; ++i) {
                 // co_await source->source_next(ctx): the separate operator frame whose two
@@ -366,9 +366,9 @@ namespace {
             co_return sum;
         }
 
-        // == execute_sub_plan_ / execute_plan
+        // == pump_portal_ / execute_plan
         unique_future<std::int64_t> execute_plan() {
-            auto v = co_await execute_pipeline();
+            auto v = co_await pump_pipeline_();
             co_return v;
         }
 

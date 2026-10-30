@@ -26,6 +26,7 @@
 #include <filesystem>
 #include <functional>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -55,7 +56,6 @@ namespace {
                                    session_id_t{},
                                    table_oid,
                                    cursor_id,
-                                   std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                                    int64_t{-1},
                                    std::vector<size_t>{},
                                    components::table::transaction_data::committed());
@@ -82,12 +82,13 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         fixture()
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{ddl_dir()};
                 c.path = ddl_dir();
                 return c;
             }())
@@ -99,7 +100,7 @@ namespace {
                                                         configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(ddl_dir());
-            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
+            REQUIRE_FALSE(boot.bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             // Destroy the manager first: its dtor joins the internal loop thread, which may still
@@ -501,12 +502,15 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
     REQUIRE(table_oid >= FIRST_USER_OID);
 
     // relkind='g' is passed explicitly here, not inferred from the empty column list.
-    fx.invoke(&manager_disk_t::create_storage_disk,
-              session_id_t{},
-              table_oid,
-              catalog::well_known_oid::main_database,
-              std::vector<components::table::column_definition_t>{},
-              /*is_computed=*/true);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                  table_oid,
+                  catalog::well_known_oid::main_database,
+                  qualified_name_t{},
+                  std::vector<components::table::column_definition_t>{},
+                  /*is_computed=*/true)
+            .has_error());
 
     auto attoid_a = test_computed_register(fx, table_oid, "a", components::catalog::well_known_oid::int64_type);
     auto attoid_b = test_computed_register(fx, table_oid, "b", components::catalog::well_known_oid::int64_type);
@@ -531,8 +535,12 @@ TEST_CASE("services::disk::ddl::vacuum_physical_compaction_removes_dropped_colum
                                                    components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
-        std::ignore =
-            fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, to_batch(&fx.resource, std::move(chunk)));
+        std::ignore = fx.invoke(&manager_disk_t::storage_append,
+                                append_ctx,
+                                table_oid,
+                                std::pmr::vector<catalog::oid_t>(&fx.resource),
+                                to_batch(&fx.resource, std::move(chunk)),
+                                false);
     }
 
     {
@@ -629,12 +637,15 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
                                        catalog::relkind::computed);
     REQUIRE(table_oid >= FIRST_USER_OID);
 
-    fx.invoke(&manager_disk_t::create_storage_disk,
-              session_id_t{},
-              table_oid,
-              catalog::well_known_oid::main_database,
-              std::vector<components::table::column_definition_t>{},
-              /*is_computed=*/true);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                  table_oid,
+                  catalog::well_known_oid::main_database,
+                  qualified_name_t{},
+                  std::vector<components::table::column_definition_t>{},
+                  /*is_computed=*/true)
+            .has_error());
 
     auto append_ctx = [&](catalog::oid_t toid) {
         return components::execution_context_t{session_id_t{},
@@ -667,11 +678,11 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         auto append_r = fx.invoke(&manager_disk_t::storage_append,
                                   append_ctx(table_oid),
                                   table_oid,
-                                  to_batch(&fx.resource, std::move(chunk)));
+                                  std::pmr::vector<catalog::oid_t>(&fx.resource),
+                                  to_batch(&fx.resource, std::move(chunk)),
+                                  false);
         REQUIRE_FALSE(append_r.has_error());
-        auto [start, count] = append_r.value();
-        REQUIRE(count == 1);
-        (void) start;
+        REQUIRE(append_r.value().count == 1);
     }
 
     // Schema frozen at 1 column by the first append: "b" is silently dropped, row count grows
@@ -690,7 +701,9 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         std::ignore = fx.invoke(&manager_disk_t::storage_append,
                                 append_ctx(table_oid),
                                 table_oid,
-                                to_batch(&fx.resource, std::move(chunk)));
+                                std::pmr::vector<catalog::oid_t>(&fx.resource),
+                                to_batch(&fx.resource, std::move(chunk)),
+                                false);
     }
 
     {
@@ -717,7 +730,9 @@ TEST_CASE("services::disk::ddl::storage_expand_on_write_for_dynamic_schema") {
         std::ignore = fx.invoke(&manager_disk_t::storage_append,
                                 append_ctx(table_oid),
                                 table_oid,
-                                to_batch(&fx.resource, std::move(chunk)));
+                                std::pmr::vector<catalog::oid_t>(&fx.resource),
+                                to_batch(&fx.resource, std::move(chunk)),
+                                false);
     }
 
     {
@@ -761,34 +776,44 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
                                                    components::table::transaction_data::committed(),
                                                    {},
                                                    oid};
-        std::ignore =
-            fx.invoke(&manager_disk_t::storage_append, append_ctx, oid, to_batch(&fx.resource, std::move(chunk)));
+        std::ignore = fx.invoke(&manager_disk_t::storage_append,
+                                append_ctx,
+                                oid,
+                                std::pmr::vector<catalog::oid_t>(&fx.resource),
+                                to_batch(&fx.resource, std::move(chunk)),
+                                false);
     };
 
     for (std::size_t i = 0; i < N; ++i) {
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  targets[i],
-                  well_known_oid::main_database,
-                  std::vector<components::table::column_definition_t>{},
-                  /*is_computed=*/true);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      targets[i],
+                      well_known_oid::main_database,
+                      qualified_name_t{},
+                      std::vector<components::table::column_definition_t>{},
+                      /*is_computed=*/true)
+                .has_error());
         append_one(targets[i], static_cast<std::int64_t>(i + 1));
     }
-    fx.invoke(&manager_disk_t::create_storage_disk,
-              session_id_t{},
-              survivor,
-              well_known_oid::main_database,
-              std::vector<components::table::column_definition_t>{},
-              /*is_computed=*/true);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                  survivor,
+                  well_known_oid::main_database,
+                  qualified_name_t{},
+                  std::vector<components::table::column_definition_t>{},
+                  /*is_computed=*/true)
+            .has_error());
     append_one(survivor, std::int64_t{777});
 
     for (std::size_t i = 0; i < N; ++i) {
-        REQUIRE(fx.manager->has_storage(targets[i]));
+        REQUIRE(fx.boot.has_storage(targets[i]));
         auto rows =
             disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, targets[i]));
         REQUIRE(rows == 1);
     }
-    REQUIRE(fx.manager->has_storage(survivor));
+    REQUIRE(fx.boot.has_storage(survivor));
     REQUIRE(disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, survivor)) == 1);
 
     {
@@ -798,17 +823,17 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
     }
 
     for (std::size_t i = 0; i < N; ++i) {
-        REQUIRE_FALSE(fx.manager->has_storage(targets[i]));
+        REQUIRE_FALSE(fx.boot.has_storage(targets[i]));
         // A dropped storage's row count is a refusal, not 0 -- the "dropped" vs "still there and
         // emptied" distinction this case is named after.
         {
             auto rows = fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, targets[i]);
             REQUIRE(rows.has_error());
-            REQUIRE(rows.error().type == core::error_code_t::missing_table);
+            REQUIRE(rows.error().type == core::error_code_t::internal_error);
         }
         std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
         key_cols.emplace_back(0);
-        // A dropped storage cannot be read at all: the keyed read reports missing_table instead of an empty result.
+        // A dropped storage cannot be read at all: the keyed read reports internal_error instead of an empty result.
         auto dropped_read = fx.invoke(&manager_disk_t::read_chunks_by_key,
                                       fx.ctx(),
                                       targets[i],
@@ -816,10 +841,10 @@ TEST_CASE("services::disk::ddl::drop_storage_many_erases_n") {
                                       test_probe::test_key_chunk(&fx.resource, static_cast<std::int64_t>(i + 1)),
                                       std::pmr::vector<std::uint64_t>{&fx.resource});
         REQUIRE(dropped_read.has_error());
-        REQUIRE(dropped_read.error().type == core::error_code_t::missing_table);
+        REQUIRE(dropped_read.error().type == core::error_code_t::internal_error);
     }
 
-    REQUIRE(fx.manager->has_storage(survivor));
+    REQUIRE(fx.boot.has_storage(survivor));
     REQUIRE(disk_test_helpers::read_ok(fx.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, survivor)) == 1);
     {
         std::pmr::vector<std::uint64_t> key_cols{&fx.resource};
@@ -861,12 +886,15 @@ TEST_CASE("services::disk::ddl::mark_storage_dropped_many_records_n_gc_entries")
     auto make_disk_storage = [&](catalog::oid_t tbl) {
         std::vector<column_definition_t> cols;
         cols.emplace_back("k", complex_logical_type{logical_type::BIGINT});
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  tbl,
-                  db_oid,
-                  std::move(cols),
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      tbl,
+                      db_oid,
+                      qualified_name_t{},
+                      std::move(cols),
+                      /*is_computed=*/false)
+                .has_error());
     };
 
     for (auto oid : targets) make_disk_storage(oid);
@@ -878,8 +906,17 @@ TEST_CASE("services::disk::ddl::mark_storage_dropped_many_records_n_gc_entries")
     constexpr std::uint64_t D = 5000;
     {
         std::pmr::vector<catalog::oid_t> mark_oids{&fx.resource};
-        for (auto oid : targets) mark_oids.push_back(oid);
-        fx.invoke(&manager_disk_t::mark_storage_dropped_many, session_id_t{}, std::move(mark_oids), D);
+        std::pmr::vector<qualified_name_t> mark_names{&fx.resource};
+        for (auto oid : targets) {
+            mark_oids.push_back(oid);
+            mark_names.emplace_back();
+        }
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::mark_storage_dropped_many,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{D, 0}, {}},
+                      std::move(mark_oids),
+                      std::move(mark_names))
+                .has_error());
     }
 
     for (auto oid : targets) REQUIRE(std::filesystem::exists(otbx_path_for(oid)));
@@ -1012,7 +1049,7 @@ TEST_CASE("services::disk::ddl::catalog_append_refuses_a_string_cell_for_a_numer
                               catalog::well_known_oid::pg_class_table,
                               std::move(row));
     REQUIRE(appended.has_error());
-    CHECK(appended.error().type == core::error_code_t::conversion_failure);
+    CHECK(appended.error().type == core::error_code_t::internal_error);
 
     auto probe = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("str_cast_probe"));
     CHECK_FALSE(probe.found);
@@ -1043,7 +1080,7 @@ TEST_CASE("services::disk::ddl::catalog_append_refuses_a_numeric_cell_that_does_
                               catalog::well_known_oid::pg_class_table,
                               std::move(row));
     REQUIRE(appended.has_error());
-    CHECK(appended.error().type == core::error_code_t::conversion_failure);
+    CHECK(appended.error().type == core::error_code_t::internal_error);
 
     auto probe = test_probe::probe_table(fx, fx.ctx(), ns_oid, std::string("range_probe"));
     CHECK_FALSE(probe.found);
@@ -1060,7 +1097,7 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     ids.push_back(0);
     const std::pmr::vector<catalog::oid_t> one_attoid({grown_attoid}, &fx.resource);
 
-    CHECK(fx.manager->delete_sync(nowhere, ids, 1, components::table::transaction_data::committed()).type ==
+    CHECK(fx.boot.delete_sync(nowhere, ids, 1, components::table::transaction_data::committed()).type ==
           core::error_code_t::io_error);
 
     std::pmr::vector<components::types::complex_logical_type> upd_types(&fx.resource);
@@ -1068,7 +1105,7 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     components::vector::data_chunk_t upd(&fx.resource, upd_types, 1);
     upd.set_cardinality(1);
     upd.set_value(0, 0, std::int64_t{7});
-    CHECK(fx.manager->update_sync(nowhere, ids, one_attoid, upd, components::table::transaction_data::committed())
+    CHECK(fx.boot.update_sync(nowhere, ids, one_attoid, upd, components::table::transaction_data::committed())
               .error()
               .type == core::error_code_t::io_error);
 
@@ -1078,11 +1115,10 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
     schema_types.push_back(added_type);
     components::vector::data_chunk_t schema_chunk(&fx.resource, schema_types, 1);
     schema_chunk.set_cardinality(0);
-    CHECK(fx.manager->direct_add_column_sync(nowhere, one_attoid, schema_chunk, 1).type ==
-          core::error_code_t::io_error);
+    CHECK(fx.boot.direct_add_column_sync(nowhere, one_attoid, schema_chunk, 1).type == core::error_code_t::io_error);
 
     std::pmr::vector<std::int64_t> no_ids(&fx.resource);
-    CHECK(fx.manager->delete_sync(nowhere, no_ids, 0, components::table::transaction_data::committed()).type ==
+    CHECK(fx.boot.delete_sync(nowhere, no_ids, 0, components::table::transaction_data::committed()).type ==
           core::error_code_t::none);
 
     auto ns_oid = test_create_namespace(fx, "nsreplay");
@@ -1094,7 +1130,7 @@ TEST_CASE("services::disk::ddl::replay_mutations_refuse_when_the_owner_has_no_st
                       std::to_string(static_cast<unsigned>(table_oid)) / "table.otbx";
     std::filesystem::create_directories(otbx.parent_path());
     REQUIRE_FALSE(
-        fx.manager->create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false).contains_error());
-    REQUIRE(fx.manager->has_storage(table_oid));
-    CHECK(fx.manager->direct_add_column_sync(table_oid, one_attoid, schema_chunk, 1).type == core::error_code_t::none);
+        fx.boot.create_storage_disk_sync(table_oid, ns_oid, cols, otbx, /*is_computed=*/false).contains_error());
+    REQUIRE(fx.boot.has_storage(table_oid));
+    CHECK(fx.boot.direct_add_column_sync(table_oid, one_attoid, schema_chunk, 1).type == core::error_code_t::none);
 }

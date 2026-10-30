@@ -6,6 +6,7 @@
 #include <components/cursor/cursor.hpp>
 #include <components/sql/parser/parser.h>
 #include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/vector/vector_builders.hpp>
@@ -59,7 +60,7 @@ namespace {
 
     template<typename D>
     void seed_rows(D* d, int rows) {
-        REQUIRE(ok(d, "CREATE DATABASE m;"));
+        REQUIRE(ok(d, "CREATE SCHEMA m;"));
         REQUIRE(ok(d, "CREATE TABLE m.t (x BIGINT);"));
         std::string sql = "INSERT INTO m.t (x) VALUES ";
         for (int i = 1; i <= rows; ++i) {
@@ -230,7 +231,7 @@ TEST_CASE("integration::cpp::param_fold::shared_parameter_is_not_overwritten_by_
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (a BIGINT, b BIGINT);"));
     // (a, b): (6, 5) is the correct answer for $1 = 5 (a = 6, b = 5); (6, 6) is what a clobbered $1 would select.
     REQUIRE(ok(d, "INSERT INTO m.t (a, b) VALUES (6, 5), (6, 6), (5, 5), (7, 7);"));
@@ -253,7 +254,7 @@ TEST_CASE("integration::cpp::param_fold::shared_parameter_is_not_overwritten_whe
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (a BIGINT, b BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO m.t (a, b) VALUES (6, 5), (6, 6), (5, 5), (7, 7);"));
 
@@ -283,7 +284,7 @@ TEST_CASE("integration::cpp::param_fold::rebind_after_execute_recomputes_the_fol
     auto* resource = d->resource();
     std::pmr::monotonic_buffer_resource arena(resource);
     const std::string query = "SELECT x FROM m.t WHERE x = $1 + 1;";
-    auto* raw = raw_parser(&arena, query.c_str());
+    auto* raw = parse_ok(&arena, query.c_str());
     REQUIRE(raw != nullptr);
 
     const auto run_with = [&](int64_t value) {
@@ -358,7 +359,7 @@ TEST_CASE("integration::cpp::param_storage::a_statement_with_seventy_thousand_li
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (x BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO m.t (x) VALUES (5), (69999), (100000), (-3);"));
 
@@ -380,7 +381,7 @@ TEST_CASE("integration::cpp::param_fold::index_scan_on_double_column_equal_integ
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT, d DOUBLE);"));
     REQUIRE(ok(d, "INSERT INTO m.t (id, d) VALUES (1, 3.0), (2, 4.5), (3, 3.0), (4, -3.0), (5, 7.5);"));
     REQUIRE(ok(d, "CREATE INDEX d_idx ON m.t (d);"));
@@ -394,7 +395,7 @@ TEST_CASE("integration::cpp::param_fold::index_scan_on_timestamp_column_equal_da
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT, ts TIMESTAMP);"));
     REQUIRE(ok(d,
                "INSERT INTO m.t (id, ts) VALUES (1, '2024-01-01 00:00:00'), (2, '2024-01-01 10:00:00'), "
@@ -408,7 +409,7 @@ TEST_CASE("integration::cpp::param_fold::index_scan_on_decimal_column_equal_inte
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT, dec DECIMAL(10,2));"));
     REQUIRE(ok(d, "INSERT INTO m.t (id, dec) VALUES (1, 5.00), (2, 5.50), (3, 5.00), (4, 6.00);"));
     {
@@ -425,12 +426,16 @@ TEST_CASE("integration::cpp::param_fold::timezone_pin_cast_folded_with_the_sessi
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "SET TIMEZONE TO '+03:00';"));
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    auto session = otterbrix::session_id_t();
+    REQUIRE(d->execute_sql(session, "SET TIMEZONE TO '+03:00';")->is_success());
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT, tstz TIMESTAMPTZ);"));
     REQUIRE(ok(d, "INSERT INTO m.t (id, tstz) VALUES (1, '2024-01-01 07:00:00+00'), (2, '2024-01-01 10:00:00+00');"));
     // 10:00 local at +03:00 is 07:00 UTC: row 1.
-    expect_ids(d, "SELECT id FROM m.t WHERE tstz = '2024-01-01 10:00:00'::timestamp;", {1});
+    auto cur = d->execute_sql(session, "SELECT id FROM m.t WHERE tstz = '2024-01-01 10:00:00'::timestamp;");
+    INFO(describe(*cur));
+    REQUIRE(cur->is_success());
+    CHECK(column_values(*cur) == std::set<int64_t>{1});
 }
 
 // The control: under UTC the same literal is row 2, so the pin above can only pass if the session zone was used.
@@ -439,7 +444,7 @@ TEST_CASE("integration::cpp::param_fold::timezone_control_utc_picks_the_other_ro
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT, tstz TIMESTAMPTZ);"));
     REQUIRE(ok(d, "INSERT INTO m.t (id, tstz) VALUES (1, '2024-01-01 07:00:00+00'), (2, '2024-01-01 10:00:00+00');"));
     expect_ids(d, "SELECT id FROM m.t WHERE tstz = '2024-01-01 10:00:00'::timestamp;", {2});
@@ -451,7 +456,7 @@ TEST_CASE("integration::cpp::param_fold::refused_cast_is_lazy_on_an_empty_table"
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT, dec DECIMAL(4,2));"));
     expect_rows(d, "SELECT id FROM m.t WHERE dec = 1000;", 0);
 }
@@ -462,7 +467,7 @@ TEST_CASE("integration::cpp::param_fold::folded_constants_give_the_right_rows_on
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (id BIGINT, d DOUBLE);"));
     REQUIRE(ok(d, "INSERT INTO m.t (id, d) VALUES (1, 3.0), (2, 4.5), (3, 3.0), (4, -3.0);"));
     expect_rows(d, "SELECT id FROM m.t WHERE d = 3;", 2);
@@ -475,7 +480,7 @@ TEST_CASE("integration::cpp::param_fold::prefix_operator_over_a_parameter_or_lit
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (x BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO m.t (x) VALUES (3), (-3), (5), (-6);"));
     auto cur = d->execute_sql_with_params(otterbrix::session_id_t(),
@@ -493,7 +498,7 @@ TEST_CASE("integration::cpp::param_fold::refused_unary_minus_is_not_dropped") {
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (x BIGINT, u UBIGINT);"));
     REQUIRE(ok(d, "INSERT INTO m.t (x, u) VALUES (3, 5), (-3, 6), (5, 7), (-6, 8);"));
     expect_ids(d, "SELECT x FROM m.t WHERE x = -(SELECT 3);", {-3});
@@ -508,7 +513,7 @@ TEST_CASE("integration::cpp::param_fold::try_cast_to_null_is_not_folded") {
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (x BIGINT, s SMALLINT);"));
     REQUIRE(ok(d, "INSERT INTO m.t (x, s) VALUES (6, 1), (7, 2);"));
     auto cur = d->execute_sql_with_params(otterbrix::session_id_t(),
@@ -698,7 +703,7 @@ TEST_CASE("integration::cpp::limit_bounds::an_empty_table_still_starts_the_limit
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (x BIGINT);"));
     expect_error_text(d, "SELECT x FROM m.t LIMIT -1;", limit_text);
     expect_error_text(d, "SELECT x FROM m.t OFFSET -1;", offset_text);
@@ -710,7 +715,7 @@ TEST_CASE("integration::cpp::limit_bounds::the_limit_is_checked_before_the_rows_
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (x BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO m.t (x) VALUES (0), (1);"));
     // the division by zero is never reached: the Limit node refuses first
@@ -737,7 +742,7 @@ TEST_CASE("integration::cpp::limit_bounds::the_limit_is_refused_before_a_deeper_
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (x BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO m.t (x) VALUES (0), (1);"));
     // control: a single piece
@@ -755,7 +760,7 @@ TEST_CASE("integration::cpp::limit_bounds::a_limit_in_a_sibling_piece_is_not_sta
     config.log.level = log_t::level::off;
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE m;"));
+    REQUIRE(ok(d, "CREATE SCHEMA m;"));
     REQUIRE(ok(d, "CREATE TABLE m.t (x BIGINT);"));
     REQUIRE(ok(d, "INSERT INTO m.t (x) VALUES (0), (1);"));
     // the right arm runs first and divides by zero before the left arm's Limit is reached

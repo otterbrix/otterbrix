@@ -18,7 +18,7 @@ namespace {
             : config(test_create_config(integration_fixture_path(dir))) {
             test_clear_directory(config);
             space.emplace(config);
-            ok("CREATE DATABASE zdb;");
+            ok("CREATE SCHEMA zdb;");
         }
 
         components::cursor::cursor_t_ptr run(const std::string& sql) {

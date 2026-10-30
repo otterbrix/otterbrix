@@ -2,12 +2,14 @@
 
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/physical_plan/operators/operator_alter_column_drop.hpp>
+#include <components/physical_plan_generator/create_plan.hpp>
 
 namespace services::planner::impl {
 
-    components::operators::operator_ptr create_plan_alter_column_drop(const context_storage_t& context,
-                                                                      const components::logical_plan::node_ptr& node) {
+    plan_result_t create_plan_alter_column_drop(const context_storage_t& context,
+                                                const components::logical_plan::node_ptr& node) {
         auto* n = static_cast<components::logical_plan::node_alter_column_t*>(node.get());
+        VALUE_OR_RETURN(auto address, storage_address_of(context, n->table_oid()));
         return boost::intrusive_ptr(new components::operators::operator_alter_column_drop_t(context.resource,
                                                                                             context.log.clone(),
                                                                                             n->table_oid(),
@@ -15,7 +17,8 @@ namespace services::planner::impl {
                                                                                             n->target(),
                                                                                             n->relkind(),
                                                                                             n->attoid(),
-                                                                                            n->behavior()));
+                                                                                            n->behavior(),
+                                                                                            std::move(address)));
     }
 
 } // namespace services::planner::impl

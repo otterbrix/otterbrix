@@ -106,7 +106,7 @@ pub async fn run(data_dir: &Path) -> Result<(), DbErr> {
 async fn open_audit(data_dir: &Path) -> Result<DatabaseConnection, DbErr> {
     let db = Database::open(Config::new(data_dir))
         .map_err(|e| DbErr::Conn(sea_orm::RuntimeErr::Internal(e.to_string())))?;
-    db.execute("CREATE DATABASE audit;")
+    db.execute("CREATE SCHEMA audit;")
         .map_err(|e| DbErr::Conn(sea_orm::RuntimeErr::Internal(e.to_string())))?;
     db.execute("CREATE TABLE audit.events();")
         .map_err(|e| DbErr::Conn(sea_orm::RuntimeErr::Internal(e.to_string())))?;

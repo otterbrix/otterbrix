@@ -25,7 +25,7 @@ namespace services::dispatcher::validation {
                                                   const components::expressions::key_t& key,
                                                   std::source_location location = std::source_location::current()) {
             return core::error_t(
-                core::error_code_t::ambiguous_name,
+                core::error_code_t::ambiguous_column,
                 std::pmr::string{"path: \'" + key.as_string() + "\' is ambiguous. Use aliases or full path", resource},
                 location);
         }
@@ -57,6 +57,10 @@ namespace services::dispatcher::validation {
                                                   components::expressions::key_t& key,
                                                   const named_schema& schema,
                                                   column_uses_t* uses) {
+        if (key.storage().empty()) {
+            return core::error_t(core::error_code_t::internal_error,
+                                 std::pmr::string{"key has empty storage: " + key.as_string(), resource});
+        }
         auto found = find_types_in(resource, key, schema);
         if (uses != nullptr && !found.has_error()) {
             for (const auto& type_path : found.value()) {
@@ -77,14 +81,14 @@ namespace services::dispatcher::validation {
                                                             const named_schema& schema) {
         assert(!key.storage().empty());
         type_paths result{resource};
-        if (key.storage().at(0) == "*") {
+        if (key.storage()[0] == "*") {
             for (size_t i = 0; i < schema.size(); i++) {
                 result.emplace_back(type_path_t{column_path{{i}, resource}, schema[i].type});
             }
             return result;
         }
         if (key.storage().size() >= 2 && key.storage().back() == "*") {
-            const auto& table_part = key.storage().at(key.storage().size() - 2);
+            const auto& table_part = key.storage()[key.storage().size() - 2];
             for (size_t i = 0; i < schema.size(); i++) {
                 if (core::pmr::operator==(schema[i].result_alias, table_part)) {
                     result.emplace_back(type_path_t{column_path{{i}, resource}, schema[i].type});
@@ -106,7 +110,7 @@ namespace services::dispatcher::validation {
         if (truncated_key.has_qualifier()) {
             for (size_t i = 0; i < schema.size(); i++) {
                 if (core::pmr::operator==(schema[i].result_alias, truncated_key.qualifier()) &&
-                    core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(0))) {
+                    core::pmr::operator==(schema[i].type.alias(), truncated_key.storage()[0])) {
                     matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 1});
                 }
             }
@@ -126,14 +130,14 @@ namespace services::dispatcher::validation {
         const bool match_by_name = matches.empty() && !schema_knows_qualifier;
         for (size_t i = 0; match_by_name && i < schema.size(); i++) {
             if (truncated_key.storage().size() > 2 &&
-                core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(1)) &&
-                core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(2))) {
+                core::pmr::operator==(schema[i].result_alias, truncated_key.storage()[1]) &&
+                core::pmr::operator==(schema[i].type.alias(), truncated_key.storage()[2])) {
                 matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 3});
             } else if (truncated_key.storage().size() > 1 &&
-                       core::pmr::operator==(schema[i].result_alias, truncated_key.storage().at(0)) &&
-                       core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(1))) {
+                       core::pmr::operator==(schema[i].result_alias, truncated_key.storage()[0]) &&
+                       core::pmr::operator==(schema[i].type.alias(), truncated_key.storage()[1])) {
                 matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 2});
-            } else if (core::pmr::operator==(schema[i].type.alias(), truncated_key.storage().at(0))) {
+            } else if (core::pmr::operator==(schema[i].type.alias(), truncated_key.storage()[0])) {
                 matches.emplace_back(type_match_t{column_path{{i}, resource}, &schema[i].type, 1});
             }
         }
@@ -224,18 +228,14 @@ namespace services::dispatcher::validation {
         }
         if (!result.empty()) {
             if (key.storage().back() == "*") {
-                if (result.empty()) {
-                    return core::error_t(core::error_code_t::schema_error,
-                                         std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource});
-                }
                 if (!result.front().type.is_nested()) {
-                    return core::error_t(core::error_code_t::schema_error,
+                    return core::error_t(core::error_code_t::wrong_object_type,
                                          std::pmr::string{"path: \'" + truncated_key.as_string() +
                                                               "\' is not nested, and \'*\' can not be applied",
                                                           resource});
                 }
                 if (result.front().type.type() == logical_type::LIST) {
-                    return core::error_t(core::error_code_t::schema_error,
+                    return core::error_t(core::error_code_t::wrong_object_type,
                                          std::pmr::string{"path: \'" + truncated_key.as_string() +
                                                               "\' is a list type, and \'*\' can not be applied",
                                                           resource});
@@ -264,7 +264,7 @@ namespace services::dispatcher::validation {
         }
 
         if (result.empty()) {
-            return core::error_t(core::error_code_t::schema_error,
+            return core::error_t(core::error_code_t::undefined_column,
                                  std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource});
         }
         key.set_path(result.front().path);
@@ -294,11 +294,11 @@ namespace services::dispatcher::validation {
         auto column_path_right = find_types(resource, key, *schema_right, uses);
         // TODO Stop erasing errors from right and left
         if (column_path_left.has_error() && column_path_right.has_error()) {
-            if (column_path_left.error().type == core::error_code_t::ambiguous_name ||
-                column_path_right.error().type == core::error_code_t::ambiguous_name) {
+            if (column_path_left.error().type == core::error_code_t::ambiguous_column ||
+                column_path_right.error().type == core::error_code_t::ambiguous_column) {
                 return ambiguous_key(resource, key);
             }
-            return core::error_t(core::error_code_t::field_not_exists,
+            return core::error_t(core::error_code_t::undefined_column,
                                  std::pmr::string{"path: \'" + key.as_string() + "\' was not found", resource});
         }
         if (!column_path_left.has_error() && !column_path_right.has_error()) {

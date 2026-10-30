@@ -23,7 +23,7 @@ namespace {
 
     void create_marks(otterbrix::wrapper_dispatcher_t* dispatcher) {
         auto session = otterbrix::session_id_t();
-        REQUIRE(run(dispatcher, session, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(run(dispatcher, session, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(run(dispatcher, session, "CREATE TABLE TestDatabase.marks (id bigint);")->is_success());
         constexpr int64_t batch = 500;
         for (int64_t first = 0; first < COMMITTED_ROWS; first += batch) {
@@ -293,7 +293,9 @@ TEST_CASE("integration::cpp::savepoint::after_a_failure") {
     }
 
     SECTION("commit ends it as a rollback") {
-        REQUIRE(run(dispatcher, session, "COMMIT;")->is_error());
+        auto commit = run(dispatcher, session, "COMMIT;");
+        REQUIRE(commit->is_success());
+        CHECK(commit->transaction_status() == components::session::transaction_status_t::idle);
         REQUIRE(marks_are_range(dispatcher, otterbrix::session_id_t(), 0, COMMITTED_ROWS - 1));
     }
 }
@@ -307,7 +309,7 @@ TEST_CASE("integration::cpp::savepoint::failed_statement") {
     auto* dispatcher = space.dispatcher();
     {
         auto setup = otterbrix::session_id_t();
-        REQUIRE(run(dispatcher, setup, "CREATE DATABASE TestDatabase;")->is_success());
+        REQUIRE(run(dispatcher, setup, "CREATE SCHEMA TestDatabase;")->is_success());
         REQUIRE(run(dispatcher, setup, "CREATE TABLE TestDatabase.checked (id bigint);")->is_success());
         REQUIRE(run(dispatcher, setup, "ALTER TABLE TestDatabase.checked ADD CONSTRAINT id_positive CHECK (id > 0);")
                     ->is_success());

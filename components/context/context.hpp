@@ -4,14 +4,18 @@
 #include <actor-zeta/detail/future.hpp>
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
+#include <components/catalog/place.hpp>
 #include <components/catalog/settings.hpp>
+#include <components/context/host_rows.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/execution_context/graph_execution_context.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/logical_plan/prepared_statement.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <components/table/transaction.hpp>
 #include <set>
+#include <string>
 #include <vector>
 
 namespace components::compute {
@@ -25,6 +29,15 @@ namespace components::pipeline {
 
     // Spelled as a word so a call site that drives send-free operators, or runs with the WAL off, reads as a choice.
     inline actor_zeta::address_t no_mailbox() { return actor_zeta::address_t::empty_address(); }
+
+    // A pg_proc row a DROP took: a registry holds the function of `prouid` only under its name, schema and signature,
+    // since a row of a previous process names that process's uid.
+    struct dropped_function_t {
+        std::int64_t prouid{0};
+        std::string name;
+        catalog::oid_t namespace_oid{catalog::INVALID_OID};
+        std::string proargmatchers;
+    };
 
     class context_t {
     public:
@@ -43,6 +56,8 @@ namespace components::pipeline {
 
         table::transaction_data txn{0, 0};
         components::graph_execution_context execution_context{};
+        // The statement's place: what a short name is completed with.
+        catalog::place_t place{};
         // VACUUM/MVCC threshold; no transaction_manager_t* here -- the dispatcher owns all txn state.
         uint64_t lowest_active_start_time{0};
 
@@ -61,7 +76,7 @@ namespace components::pipeline {
         // dml_flush_is_final gates RETURNING/mark_executed; dml_has_parent_constraint gates constraint accumulation.
         bool dml_flush_is_final{true};
         bool dml_has_parent_constraint{false};
-        // When true, execute_pipeline records per-operator time/rows/loops (zero-cost when false).
+        // When true, pump_pipeline_ records per-operator time/rows/loops (zero-cost when false).
         bool analyze{false};
         // Recorded by operator_dynamic_cascade_delete_t so COMMIT's drain runs GC off the ACTUAL drops.
         std::vector<catalog::oid_t> dropped_storage_oids;
@@ -70,11 +85,34 @@ namespace components::pipeline {
         std::vector<components::table::created_index_t> created_indexes;
         // Recorded by operator_fk_cascade_t
         std::vector<components::table::referenced_delete_t> referenced_deletes;
+        // Every pg_proc row a DROP took with its dependents.
+        std::vector<dropped_function_t> dropped_functions;
         // commit_id drained by operator_commit_transaction_t, for follow-ups like an inline CREATE INDEX commit.
         uint64_t committed_id{0};
+        // Storages that keep state of the transaction, as the statement's reads and writes found them.
+        std::vector<table::participant_t> participants;
+        // A host's rows its DDL replies brought; the statement writes them before it ends.
+        std::vector<host_rows_t> host_rows;
 
-        catalog::setting_id applied_setting{};
-        std::string applied_setting_value;
+        // otterbrix's disk as a table's storage: where the storage messages of its own tables go.
+        table::storage_address_t disk_storage() const { return table::storage_address_t{disk_address, {}}; }
+
+        // otterbrix's disk: its versions are published and reverted by the transaction's own steps.
+        bool is_disk(const table::storage_address_t& address) const noexcept { return address.actor() == disk_address; }
+
+        // Called before the message is sent: a storage that refused it may still have done part of it.
+        void join_transaction(const table::storage_address_t& address, catalog::oid_t table_oid, bool wrote) {
+            if (is_disk(address)) {
+                return;
+            }
+            table::merge_participant(participants, table::participant_t{address, {table_oid}, wrote});
+        }
+
+        // What a SET / SET LOCAL / ALTER SYSTEM ran: the dispatcher applies it once the statement succeeded.
+        catalog::setting_scope_t applied_setting_scope{};
+        std::pmr::vector<catalog::setting_assignment_t> applied_settings;
+        // What a PREPARE / DEALLOCATE ran: the dispatcher applies it to the session's store the same way.
+        logical_plan::prepared_change_t prepared_change{};
 
         // By reference: a by-value parameter froze the default allocator into `parameters` (context.cpp).
         context_t(const logical_plan::storage_parameters& init_parameters,

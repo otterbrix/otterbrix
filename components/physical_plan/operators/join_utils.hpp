@@ -14,6 +14,13 @@
 // lives here so the two operators stay in sync.
 namespace components::operators::join_detail {
 
+    // A semi / anti join keeps probe rows whole: the probe rows `kept` holds, gathered into one chunk of `out`.
+    void emit_probe_rows(std::pmr::memory_resource* resource,
+                         const vector::data_chunk_t& probe,
+                         const vector::indexing_vector_t& kept,
+                         uint64_t count,
+                         chunks_vector_t& out);
+
     // turn 1 row into a const_vector (every row redirects to the same value)
     vector::vector_t broadcast_row(std::pmr::memory_resource* resource, const vector::vector_t& source, uint64_t row);
 

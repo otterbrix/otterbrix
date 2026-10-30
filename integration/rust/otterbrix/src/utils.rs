@@ -7,11 +7,19 @@ pub(crate) fn make_sv(s: &str) -> otterbrix_sys::string_view_t {
     }
 }
 
-pub(crate) unsafe fn string_from_c(ptr: *mut c_char) -> String {
+/// Copies a string a cursor or a value lends; the handle keeps it.
+pub(crate) unsafe fn string_from_c(ptr: *const c_char) -> String {
     if ptr.is_null() {
         return String::new();
     }
-    let s = CStr::from_ptr(ptr).to_string_lossy().into_owned();
-    otterbrix_sys::otterbrix_free_string(ptr);
+    CStr::from_ptr(ptr).to_string_lossy().into_owned()
+}
+
+/// Copies and frees the one string the caller owns: otterbrix_create's refusal.
+pub(crate) unsafe fn take_string_from_c(ptr: *mut c_char) -> String {
+    let s = string_from_c(ptr);
+    if !ptr.is_null() {
+        otterbrix_sys::otterbrix_free_string(ptr);
+    }
     s
 }

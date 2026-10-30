@@ -26,7 +26,7 @@ fn data_persists_across_reopen() {
     let dir = fresh_persistent_dir();
     {
         let db = Database::open(persistent_config(&dir)).expect("first open");
-        db.execute("CREATE DATABASE p;").expect("create database");
+        db.execute("CREATE SCHEMA p;").expect("create database");
         db.execute("CREATE TABLE p.t();")
             .expect("create collection");
         db.execute_with_params(

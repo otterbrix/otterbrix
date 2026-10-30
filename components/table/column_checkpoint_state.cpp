@@ -1,5 +1,7 @@
 #include "column_checkpoint_state.hpp"
 
+#include <cassert>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <memory_resource>
@@ -143,7 +145,12 @@ namespace components::table {
             bool use_uint8 = (analysis.num_unique <= 256);
             for (uint64_t i = 0; i < count; i++) {
                 std::vector<std::byte> key(data + i * type_size, data + (i + 1) * type_size);
-                uint16_t idx = analysis.value_map.at(key);
+                const auto entry = analysis.value_map.find(key);
+                if (entry == analysis.value_map.end()) {
+                    assert(false && "build_dict_buffer: a value the dictionary analysis did not see");
+                    std::abort();
+                }
+                uint16_t idx = entry->second;
                 if (use_uint8) {
                     auto u8 = static_cast<uint8_t>(idx);
                     std::memcpy(ptr, &u8, 1);
@@ -292,7 +299,6 @@ namespace components::table {
             }
         }
 
-        auto segment_size = segment.segment_size();
         storage::data_pointer_t dp;
 
         if (disk_backed) {
@@ -301,7 +307,7 @@ namespace components::table {
             dp.block_pointer =
                 storage::block_pointer_t(segment.block->block_id(), static_cast<uint32_t>(segment.block_offset()));
             dp.compression = compression::compression_type::UNCOMPRESSED;
-            dp.segment_size = segment_size;
+            dp.segment_size = segment.segment_size();
             data_pointers_.push_back(std::move(dp));
             return true;
         }
@@ -309,7 +315,8 @@ namespace components::table {
         // A STRING segment persists a TIGHT image: compact_string_dictionary trims slack left by partial fills
         // (measured before this: 8000 rows of 4090-byte text cost 9635 bytes/row, 1365 of that pure slack),
         // and persist_string_overflow moves TRANSIENT overflow blocks into real file blocks before rewriting.
-        if (phys == types::physical_type::STRING && data && segment_size > 0 && tuple_count > 0) {
+        if (phys == types::physical_type::STRING && data && segment.segment_size() > 0 && tuple_count > 0) {
+            auto segment_size = segment.segment_size();
             auto* segment_data = data + segment.block_offset();
             std::pmr::vector<std::byte> rewritten(segment_size, std::byte{0}, column_data_.resource());
             std::memcpy(rewritten.data(), segment_data, segment_size);
@@ -344,6 +351,7 @@ namespace components::table {
 
         // A segment packed via partial-block packing lives at a NON-ZERO block_offset in a shared block;
         // reading from data (offset 0) instead would copy a neighbour's bytes into the checkpoint.
+        const auto segment_size = segment.persisted_size(tuple_count);
         auto placed = partial_block_manager_.place(data + segment.block_offset(), segment_size);
         if (placed.has_error()) {
             return placed.convert_error<bool>();

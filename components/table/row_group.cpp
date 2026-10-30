@@ -697,6 +697,7 @@ namespace components::table {
         version_delete_state(row_group_t& info,
                              uint64_t current_version,
                              uint64_t sub_id,
+                             uint64_t command_id,
                              data_table_t& table,
                              int64_t base_row)
             : info(info)
@@ -704,6 +705,7 @@ namespace components::table {
             , current_chunk(storage::INVALID_INDEX)
             , current_version(current_version)
             , sub_id(sub_id)
+            , command_id(command_id)
             , base_row(base_row)
             , delete_count(0)
             , count(0) {}
@@ -713,6 +715,7 @@ namespace components::table {
         uint64_t current_chunk;
         uint64_t current_version;
         uint64_t sub_id;
+        uint64_t command_id;
         int64_t rows[vector::DEFAULT_VECTOR_CAPACITY];
         int64_t base_row;
         uint64_t chunk_row;
@@ -727,8 +730,9 @@ namespace components::table {
                                       int64_t* ids,
                                       uint64_t count,
                                       uint64_t transaction_id,
-                                      uint64_t sub_id) {
-        version_delete_state del_state(*this, transaction_id, sub_id, table, start);
+                                      uint64_t sub_id,
+                                      uint64_t command_id) {
+        version_delete_state del_state(*this, transaction_id, sub_id, command_id, table, start);
 
         for (uint64_t i = 0; i < count; i++) {
             assert(ids[i] >= 0);
@@ -846,8 +850,8 @@ namespace components::table {
         if (count == 0) {
             return;
         }
-        delete_count +=
-            info.get_or_create_version_info().delete_rows(current_chunk, current_version, sub_id, rows, count);
+        delete_count += info.get_or_create_version_info()
+                            .delete_rows(current_chunk, current_version, sub_id, command_id, rows, count);
         count = 0;
     }
     namespace {

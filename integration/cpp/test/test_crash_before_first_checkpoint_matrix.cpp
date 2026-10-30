@@ -103,7 +103,7 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P1_after_create_only") {
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE w.t (id bigint, payload text);")->is_success());
         test_helpers::copy_crash_image(config.main_path, crash_dir);
     }
@@ -135,7 +135,7 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P2_after_small_dml") {
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE w.t (id bigint, payload text);")->is_success());
         insert_rows(d, "w.t", 0, 20, kPayload);
         test_helpers::copy_crash_image(config.main_path, crash_dir);
@@ -160,8 +160,8 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P3_after_write_through_multi_tabl
     const auto crash_dir = integration_fixture_path("crash_first_ckpt/p3_crash");
     constexpr int kRows = 3000;
     auto before_crash = [&](otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(exec(d, "CREATE DATABASE a;")->is_success());
-        REQUIRE(exec(d, "CREATE DATABASE b;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA a;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA b;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE a.t (id bigint, payload text);")->is_success());
         REQUIRE(exec(d, "CREATE TABLE b.u (id bigint, payload text);")->is_success());
         REQUIRE(exec(d, "CREATE INDEX a_t_id ON a.t (id);")->is_success());
@@ -254,7 +254,7 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P4_P5_after_first_checkpoint_then
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE w.t (id bigint, payload text);")->is_success());
         insert_rows(d, "w.t", 0, kRows, kPayload);
         REQUIRE(exec(d, "CHECKPOINT;")->is_success());
@@ -291,7 +291,7 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P6_torn_first_header") {
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE w.t (id bigint, payload text);")->is_success());
         insert_rows(d, "w.t", 0, kRows, kPayload);
         test_helpers::copy_crash_image(config.main_path, crash_dir);
@@ -327,7 +327,7 @@ TEST_CASE("integration::cpp::crash_first_ckpt::P7_slot_rot_after_first_checkpoin
     {
         test_spaces space(config);
         auto* d = space.dispatcher();
-        REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE w.t (id bigint, payload text);")->is_success());
         insert_rows(d, "w.t", 0, kRows, kPayload);
         REQUIRE(exec(d, "CHECKPOINT;")->is_success());

@@ -34,7 +34,7 @@
 //! let cfg = Config::new("./data");
 //! let db = Database::open(cfg).expect("open database");
 //!
-//! db.execute("CREATE DATABASE app;").unwrap();
+//! db.execute("CREATE SCHEMA app;").unwrap();
 //! db.execute("CREATE TABLE app.t();").unwrap();
 //!
 //! db.execute("INSERT INTO app.t (id, name) VALUES (1, 'alice');").unwrap();
@@ -98,10 +98,10 @@ mod value;
 
 pub use config::{Config, ConfigBuilder};
 pub use cursor::{
-    Cursor, LogicalType, Row, Rows, LOGICAL_TYPE_BIGINT, LOGICAL_TYPE_BOOLEAN, LOGICAL_TYPE_DOUBLE,
-    LOGICAL_TYPE_FLOAT, LOGICAL_TYPE_INTEGER, LOGICAL_TYPE_NA, LOGICAL_TYPE_SMALLINT,
-    LOGICAL_TYPE_STRING_LITERAL, LOGICAL_TYPE_TINYINT, LOGICAL_TYPE_UBIGINT, LOGICAL_TYPE_UINTEGER,
-    LOGICAL_TYPE_USMALLINT, LOGICAL_TYPE_UTINYINT,
+    Cursor, LogicalType, Row, Rows, TransactionStatus, LOGICAL_TYPE_BIGINT, LOGICAL_TYPE_BOOLEAN,
+    LOGICAL_TYPE_DOUBLE, LOGICAL_TYPE_FLOAT, LOGICAL_TYPE_INTEGER, LOGICAL_TYPE_NA,
+    LOGICAL_TYPE_SMALLINT, LOGICAL_TYPE_STRING_LITERAL, LOGICAL_TYPE_TINYINT, LOGICAL_TYPE_UBIGINT,
+    LOGICAL_TYPE_UINTEGER, LOGICAL_TYPE_USMALLINT, LOGICAL_TYPE_UTINYINT,
 };
 pub use database::{Database, SqlParam, SqlParamValue};
 pub use error::{Error, Result};

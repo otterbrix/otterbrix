@@ -37,6 +37,32 @@ TEST_CASE("integration::cpp::engine_startup_refusal::an_unwritable_disk_path_ans
     CHECK(mentions(opened.error(), "could not be created"));
 }
 
+// An empty disk.path would start an engine with no disk agent, so every table statement would fail later.
+TEST_CASE("integration::cpp::engine_startup_refusal::an_empty_disk_path_answers_an_error") {
+    auto config = make_test_config(integration_fixture_path("test_engine_startup_refusal/empty_disk_path"));
+    config.log.level = log_t::level::off;
+    config.disk.path.clear();
+
+    auto opened = otterbrix::base_otterbrix_t::open(config);
+    REQUIRE(opened.has_error());
+    INFO("refusal: " << opened.error().what.c_str());
+    CHECK(opened.error().type == core::error_code_t::invalid_parameter);
+    CHECK(mentions(opened.error(), "config.disk.path is empty"));
+}
+
+// Zero disk agents is a configuration error, refused before the directory is touched, not as a failed bootstrap.
+TEST_CASE("integration::cpp::engine_startup_refusal::zero_disk_agents_answer_an_error") {
+    auto config = make_test_config(integration_fixture_path("test_engine_startup_refusal/zero_disk_agents"));
+    config.log.level = log_t::level::off;
+    config.disk.agent = 0;
+
+    auto opened = otterbrix::base_otterbrix_t::open(config);
+    REQUIRE(opened.has_error());
+    INFO("refusal: " << opened.error().what.c_str());
+    CHECK(opened.error().type == core::error_code_t::invalid_parameter);
+    CHECK(mentions(opened.error(), "config.disk.agent"));
+}
+
 TEST_CASE("integration::cpp::engine_startup_refusal::a_zero_executor_pool_answers_an_error") {
     auto config = make_test_config(integration_fixture_path("test_engine_startup_refusal/pool_zero"));
     config.log.level = log_t::level::off;
@@ -56,7 +82,7 @@ TEST_CASE("integration::cpp::engine_startup_refusal::an_executor_pool_of_any_siz
         {
             test_spaces space(config);
             auto* d = space.dispatcher();
-            REQUIRE(exec(d, "CREATE DATABASE p;")->is_success());
+            REQUIRE(exec(d, "CREATE SCHEMA p;")->is_success());
             REQUIRE(exec(d, "CREATE TABLE p.t (id BIGINT);")->is_success());
             REQUIRE(exec(d, "INSERT INTO p.t (id) VALUES (1), (2), (3);")->is_success());
         }
@@ -75,16 +101,19 @@ TEST_CASE("integration::cpp::engine_startup_refusal::a_directory_owned_from_anot
     test_spaces owner(config);
     bool refused = false;
     std::string refusal;
+    core::error_code_t code = core::error_code_t::none;
     std::thread second([&] {
         auto opened = otterbrix::base_otterbrix_t::open(config);
         refused = opened.has_error();
         if (refused) {
             refusal = opened.error().what.c_str();
+            code = opened.error().type;
         }
     });
     second.join();
     INFO("refusal: " << refusal);
     REQUIRE(refused);
+    CHECK(code == core::error_code_t::lock_file_exists);
     CHECK(refusal.find("unique directory") != std::string::npos);
 }
 
@@ -95,7 +124,7 @@ TEST_CASE("integration::cpp::engine_startup_refusal::an_unreadable_namespace_dir
     config.log.level = log_t::level::off;
     {
         test_spaces space(config);
-        REQUIRE(exec(space.dispatcher(), "CREATE DATABASE u;")->is_success());
+        REQUIRE(exec(space.dispatcher(), "CREATE SCHEMA u;")->is_success());
         REQUIRE(exec(space.dispatcher(), "CREATE TABLE u.t (id BIGINT);")->is_success());
         REQUIRE(exec(space.dispatcher(), "INSERT INTO u.t (id) VALUES (1);")->is_success());
     }

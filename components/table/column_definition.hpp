@@ -77,6 +77,18 @@ namespace components::table {
             return version_visible(txn, added_at_) && !version_visible(txn, dropped_at_);
         }
 
+        // NOT NULL a PRIMARY KEY added by ALTER brings: stamped with its transaction until COMMIT makes it
+        // is_not_null().
+        [[nodiscard]] uint64_t not_null_at() const noexcept { return not_null_at_; }
+        [[nodiscard]] uint64_t not_null_sub_id() const noexcept { return not_null_sub_id_; }
+        void stamp_not_null(uint64_t stamp, uint64_t sub_id) noexcept {
+            not_null_at_ = stamp;
+            not_null_sub_id_ = sub_id;
+        }
+        [[nodiscard]] bool not_null_for(const transaction_data& txn) const noexcept {
+            return not_null_ || version_visible(txn, not_null_at_);
+        }
+
     private:
         std::string name_;
         types::complex_logical_type type_;
@@ -88,6 +100,8 @@ namespace components::table {
         uint64_t dropped_at_{NOT_DELETED_ID};
         uint64_t added_sub_id_{0};
         uint64_t dropped_sub_id_{0};
+        uint64_t not_null_at_{NOT_DELETED_ID};
+        uint64_t not_null_sub_id_{0};
         bool not_null_{false};
         std::optional<vector::vector_t> default_value_;
         std::unordered_map<std::string, std::string> tags_;

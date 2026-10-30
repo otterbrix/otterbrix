@@ -26,16 +26,14 @@ namespace components::sql::transform {
                 del_limit);
             // The target identity stays ON the node: enrich binds it to a resolved
             // entry by name and stamps table_oid() + table_metadata() from there.
-            set_target(*del, qn, target_slots::relation_with_schema);
+            set_target(*del, qn, target_slots::relation);
             if (node.returningList) {
                 name_collection_t rnames;
                 rnames.left_name = qn;
                 rnames.left_alias = construct_alias(node.relation->alias);
                 VALUE_OR_RETURN(del->returning(), transform_returning(node.returningList, rnames, plan));
             }
-            // Tag the target table for catalog resolution with the referencing
-            // constraint gather, so enrich reads the descendant FKs.
-            register_write_target(qn, constraint_resolve_kind::referencing);
+            register_write_target(qn);
             return del;
         }
         name_collection_t names;
@@ -68,7 +66,7 @@ namespace components::sql::transform {
                                                   del_limit);
         // The target identity stays ON the node: enrich binds it to a resolved
         // entry by name and stamps table_oid() + table_metadata() from there.
-        set_target(*del, names.left_name, target_slots::relation_with_schema);
+        set_target(*del, names.left_name, target_slots::relation);
         // The USING source is a child sub-plan (the RIGHT side of the delete join);
         // its scans self-resolve by name, so no table_oid_from splice is needed.
         if (source_child) {
@@ -77,9 +75,7 @@ namespace components::sql::transform {
         if (node.returningList) {
             VALUE_OR_RETURN(del->returning(), transform_returning(node.returningList, names, plan));
         }
-        // Resolve the primary (LEFT) table and gather its referencing
-        // constraints for FK cascade enrich.
-        register_write_target(names.left_name, constraint_resolve_kind::referencing);
+        register_write_target(names.left_name);
         return del;
     }
 } // namespace components::sql::transform

@@ -45,7 +45,7 @@ TEST_CASE("integration::cpp::test_check_constraint_ddl::an_expression_is_accepte
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, n bigint, m bigint, s text, a bigint[3]);")->is_success());
 
     // A CHECK is a row predicate, so it admits what a WHERE admits.
@@ -78,7 +78,7 @@ TEST_CASE("integration::cpp::test_check_constraint_ddl::an_unsound_expression_is
     test_spaces space(config);
     auto* d = space.dispatcher();
 
-    REQUIRE(run(d, "CREATE DATABASE c;")->is_success());
+    REQUIRE(run(d, "CREATE SCHEMA c;")->is_success());
     REQUIRE(run(d, "CREATE TABLE c.t (id bigint, n bigint, s text);")->is_success());
 
     // Names a column the table does not have.

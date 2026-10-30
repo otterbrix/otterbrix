@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <limits>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -45,12 +46,13 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         fixture()
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{err_dir()};
                 c.path = err_dir();
                 return c;
             }())
@@ -62,7 +64,7 @@ namespace {
                                                         configuration::pump_intervals_t{})) {
             cleanup();
             std::filesystem::create_directories(err_dir());
-            REQUIRE_FALSE(manager->bootstrap_system_tables_sync().contains_error());
+            REQUIRE_FALSE(boot.bootstrap_system_tables_sync().contains_error());
         }
         ~fixture() {
             // The manager's dtor joins its loop thread, which may still enqueue onto the scheduler; destroy it first.
@@ -87,13 +89,6 @@ namespace {
     };
 } // namespace
 
-TEST_CASE("services::disk::error::resolve_unknown_namespace") {
-    fixture fx;
-    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("does_not_exist"));
-    REQUIRE_FALSE(r.has_error());
-    REQUIRE_FALSE(r.value().found);
-}
-
 TEST_CASE("services::disk::error::resolve_unknown_table") {
     fixture fx;
     auto ns_oid = test_create_namespace(fx, "ns");
@@ -114,17 +109,48 @@ TEST_CASE("services::disk::error::duplicate_namespace_name_refused_at_write") {
     REQUIRE(a >= FIRST_USER_OID);
 
     auto oids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
-    auto writes = catalog::build_create_namespace_writes(&fx.resource, std::string("dup"), oids[0]);
-    REQUIRE(writes.size() == 1);
+    auto writes = catalog::build_create_namespace_writes(&fx.resource,
+                                                         std::string("dup"),
+                                                         oids[0],
+                                                         catalog::well_known_oid::main_database);
+    REQUIRE(writes.size() == 2);
+    REQUIRE(writes[0].table_oid == catalog::well_known_oid::pg_namespace_table);
     auto second =
         fx.invoke(&manager_disk_t::append_pg_catalog_row, fx.ctx(), writes[0].table_oid, std::move(writes[0].row));
     REQUIRE(second.has_error());
-    REQUIRE(second.error().type == core::error_code_t::database_already_exists);
+    REQUIRE(second.error().type == core::error_code_t::schema_already_exists);
 
-    auto r = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), std::string("dup"));
-    REQUIRE_FALSE(r.has_error());
-    REQUIRE(r.value().found);
-    REQUIRE(r.value().oid == a);
+    auto r = test_probe::probe_namespace(fx, fx.ctx(), std::string("dup"));
+    REQUIRE(r.found);
+    REQUIRE(r.oid == a);
+}
+
+// A second live pg_attribute row of one name in one relation is a duplicate column.
+TEST_CASE("services::disk::error::duplicate_column_name_refused_at_write") {
+    fixture fx;
+    auto ns_oid = test_create_namespace(fx, "dup_col");
+    std::vector<components::table::column_definition_t> cols;
+    cols.emplace_back("id", components::types::complex_logical_type{components::types::logical_type::BIGINT});
+    const auto table_oid = test_create_table(fx, ns_oid, "t", std::move(cols));
+
+    auto attoids = fx.invoke(&manager_disk_t::allocate_oids_batch, std::size_t{1});
+    auto row = catalog::build_pg_attribute_row(&fx.resource,
+                                               attoids[0],
+                                               table_oid,
+                                               std::string("id"),
+                                               well_known_oid::int64_type,
+                                               /*attnum*/ 2,
+                                               /*not_null*/ false,
+                                               /*has_default*/ false,
+                                               /*is_dropped*/ false,
+                                               /*typspec*/ std::string{},
+                                               /*defspec*/ std::string{});
+    auto second = fx.invoke(&manager_disk_t::append_pg_catalog_row,
+                            fx.ctx(),
+                            catalog::well_known_oid::pg_attribute_table,
+                            std::move(row));
+    REQUIRE(second.has_error());
+    CHECK(second.error().type == core::error_code_t::duplicate_column);
 }
 
 TEST_CASE("services::disk::error::topological_drop_empty") {
@@ -144,9 +170,8 @@ TEST_CASE("services::disk::error::long_namespace_name_accepted") {
     std::string long_name(200, 'x');
     auto ns_oid = test_create_namespace(fx, long_name);
     REQUIRE(ns_oid >= FIRST_USER_OID);
-    auto rs = fx.invoke(&manager_disk_t::resolve_namespace, fx.ctx(), long_name);
-    REQUIRE_FALSE(rs.has_error());
-    REQUIRE(rs.value().found);
+    auto rs = test_probe::probe_namespace(fx, fx.ctx(), long_name);
+    REQUIRE(rs.found);
 }
 
 TEST_CASE("services::disk::error::empty_name_accepted") {
@@ -175,12 +200,15 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
     cols.emplace_back("a", complex_logical_type{logical_type::BIGINT});
     auto table_oid = test_create_table(fx, ns_oid, "rows", cols);
     REQUIRE(table_oid >= FIRST_USER_OID);
-    fx.invoke(&manager_disk_t::create_storage_disk,
-              session_id_t{},
-              table_oid,
-              catalog::well_known_oid::main_database,
-              cols,
-              /*is_computed=*/false);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                  table_oid,
+                  catalog::well_known_oid::main_database,
+                  qualified_name_t{},
+                  cols,
+                  /*is_computed=*/false)
+            .has_error());
 
     int64_t first_row = 0;
     {
@@ -199,7 +227,12 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
                                                    components::table::transaction_data::committed(),
                                                    {},
                                                    table_oid};
-        auto appended = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+        auto appended = fx.invoke(&manager_disk_t::storage_append,
+                                  append_ctx,
+                                  table_oid,
+                                  std::pmr::vector<catalog::oid_t>(1, catalog::INVALID_OID, &fx.resource),
+                                  std::move(batch),
+                                  false);
         REQUIRE_FALSE(appended.has_error());
         REQUIRE(appended.value().count == 3);
         first_row = appended.value().start_row;
@@ -210,9 +243,10 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
         auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
                            txn_ctx(),
                            table_oid,
-                           components::table::make_row_id_range(&fx.resource, first_row, 3));
+                           components::table::make_row_id_range(&fx.resource, first_row, 3),
+                           false);
         REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value() == 3);
+        REQUIRE(r.value().count == 3);
     }
 
     INFO("the same rows again: zero marks set, and that is a SUCCESS, not a refusal");
@@ -220,9 +254,10 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
         auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
                            txn_ctx(),
                            table_oid,
-                           components::table::make_row_id_range(&fx.resource, first_row, 3));
+                           components::table::make_row_id_range(&fx.resource, first_row, 3),
+                           false);
         REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value() == 0);
+        REQUIRE(r.value().count == 0);
     }
 
     INFO("an oid with no storage anywhere: the delete DID NOT HAPPEN, and says so");
@@ -231,7 +266,8 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
         auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
                            txn_ctx(),
                            nowhere,
-                           components::table::make_row_id_range(&fx.resource, 0, 1));
+                           components::table::make_row_id_range(&fx.resource, 0, 1),
+                           false);
         REQUIRE(r.has_error());
     }
 
@@ -241,9 +277,10 @@ TEST_CASE("services::disk::error::delete_rows_refusal_is_not_a_zero_count") {
         auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
                            txn_ctx(),
                            nowhere,
-                           components::table::make_row_id_range(&fx.resource, 0, 0));
+                           components::table::make_row_id_range(&fx.resource, 0, 0),
+                           false);
         REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value() == 0);
+        REQUIRE(r.value().count == 0);
     }
 }
 
@@ -263,12 +300,15 @@ namespace {
         cols.emplace_back("a", complex_logical_type{logical_type::BIGINT});
         auto table_oid = test_create_table(fx, ns_oid, "rows", cols);
         REQUIRE(table_oid >= FIRST_USER_OID);
-        fx.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  catalog::well_known_oid::main_database,
-                  cols,
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fx.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      catalog::well_known_oid::main_database,
+                      qualified_name_t{},
+                      cols,
+                      /*is_computed=*/false)
+                .has_error());
         first_row_out = 0;
         if (nrows == 0) {
             return table_oid;
@@ -293,7 +333,12 @@ namespace {
             }
             std::pmr::vector<data_chunk_t> batch(&fx.resource);
             batch.emplace_back(std::move(chunk));
-            auto appended = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+            auto appended = fx.invoke(&manager_disk_t::storage_append,
+                                      append_ctx,
+                                      table_oid,
+                                      std::pmr::vector<catalog::oid_t>(1, catalog::INVALID_OID, &fx.resource),
+                                      std::move(batch),
+                                      false);
             REQUIRE_FALSE(appended.has_error());
             REQUIRE(appended.value().count == n);
             if (done == 0) {
@@ -399,7 +444,12 @@ TEST_CASE("services::disk::error::append_refusal_is_not_a_zero_range") {
 
     INFO("the append happened: two rows materialized");
     {
-        auto r = fx.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, one_column_batch(&fx.resource, 2));
+        auto r = fx.invoke(&manager_disk_t::storage_append,
+                           append_ctx,
+                           table_oid,
+                           std::pmr::vector<catalog::oid_t>(1, catalog::INVALID_OID, &fx.resource),
+                           one_column_batch(&fx.resource, 2),
+                           false);
         REQUIRE_FALSE(r.has_error());
         REQUIRE(r.value().count == 2);
     }
@@ -410,7 +460,12 @@ TEST_CASE("services::disk::error::append_refusal_is_not_a_zero_range") {
                                                     components::table::transaction_data::committed(),
                                                     {},
                                                     nowhere};
-        auto r = fx.invoke(&manager_disk_t::storage_append, nowhere_ctx, nowhere, one_column_batch(&fx.resource, 0));
+        auto r = fx.invoke(&manager_disk_t::storage_append,
+                           nowhere_ctx,
+                           nowhere,
+                           std::pmr::vector<catalog::oid_t>(1, catalog::INVALID_OID, &fx.resource),
+                           one_column_batch(&fx.resource, 0),
+                           false);
         REQUIRE_FALSE(r.has_error());
         REQUIRE(r.value().count == 0);
     }
@@ -421,7 +476,12 @@ TEST_CASE("services::disk::error::append_refusal_is_not_a_zero_range") {
                                                     components::table::transaction_data::committed(),
                                                     {},
                                                     nowhere};
-        auto r = fx.invoke(&manager_disk_t::storage_append, nowhere_ctx, nowhere, one_column_batch(&fx.resource, 2));
+        auto r = fx.invoke(&manager_disk_t::storage_append,
+                           nowhere_ctx,
+                           nowhere,
+                           std::pmr::vector<catalog::oid_t>(1, catalog::INVALID_OID, &fx.resource),
+                           one_column_batch(&fx.resource, 2),
+                           false);
         REQUIRE(r.has_error());
     }
 }
@@ -440,9 +500,10 @@ TEST_CASE("services::disk::error::update_refusal_is_not_a_zero_range") {
                            txn_ctx(),
                            nowhere,
                            std::move(ids),
-                           one_column_batch(&fx.resource, 0));
+                           one_column_batch(&fx.resource, 0),
+                           false);
         REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value().range.count == 0);
+        REQUIRE(r.value().receipt.count == 0);
     }
 
     INFO("an oid with no storage anywhere: the update DID NOT HAPPEN, and says so");
@@ -453,7 +514,8 @@ TEST_CASE("services::disk::error::update_refusal_is_not_a_zero_range") {
                            txn_ctx(),
                            nowhere,
                            std::move(ids),
-                           one_column_batch(&fx.resource, 2));
+                           one_column_batch(&fx.resource, 2),
+                           false);
         REQUIRE(r.has_error());
     }
 }
@@ -471,7 +533,6 @@ TEST_CASE("services::disk::error::scan_open_refusal_is_not_a_drained_cursor") {
                            session_id_t{},
                            table_oid,
                            std::uint64_t{0},
-                           std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                            std::int64_t{-1},
                            std::vector<size_t>{},
                            with_open_snapshot(0, 0));
@@ -486,7 +547,6 @@ TEST_CASE("services::disk::error::scan_open_refusal_is_not_a_drained_cursor") {
                            session_id_t{},
                            nowhere,
                            std::uint64_t{0},
-                           std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                            std::int64_t{-1},
                            std::vector<size_t>{},
                            with_open_snapshot(0, 0));
@@ -550,9 +610,10 @@ TEST_CASE("services::disk::error::fetch_limit_counts_visible_rows_not_requested_
         auto r = fx.invoke(&manager_disk_t::storage_delete_rows,
                            txn_ctx(),
                            table_oid,
-                           components::table::make_row_id_range(&fx.resource, first_row, kHidden));
+                           components::table::make_row_id_range(&fx.resource, first_row, kHidden),
+                           false);
         REQUIRE_FALSE(r.has_error());
-        REQUIRE(r.value() == kHidden);
+        REQUIRE(r.value().count == kHidden);
     }
 
     auto fetch = [&](std::int64_t limit) {
@@ -595,13 +656,40 @@ TEST_CASE("services::disk::error::fetch_limit_counts_visible_rows_not_requested_
     REQUIRE(fetch(0).empty());
 }
 
+// A DELETE names its rows in windows of at most DEFAULT_VECTOR_CAPACITY numbers; RETURNING reads the rows of every
+// window before the delete stamps them, in the order they were named.
+TEST_CASE("services::disk::error::delete_returning_reads_every_window") {
+    fixture fx;
+    constexpr std::uint64_t kRows = 1500;
+    int64_t first_row = 0;
+    const auto table_oid = make_one_column_table(fx, "nswindows", kRows, first_row);
+
+    auto ids = components::table::make_row_id_range(&fx.resource, first_row, kRows);
+    REQUIRE(ids.size() == 2);
+    auto r = fx.invoke(&manager_disk_t::storage_delete_rows, txn_ctx(), table_oid, std::move(ids), true);
+    REQUIRE_FALSE(r.has_error());
+    CHECK(r.value().count == kRows);
+    std::vector<std::int64_t> values;
+    for (const auto& chunk : r.value().returned) {
+        CHECK(chunk.size() <= components::vector::DEFAULT_VECTOR_CAPACITY);
+        for (std::uint64_t i = 0; i < chunk.size(); ++i) {
+            values.push_back(chunk.get_value<std::int64_t>(0, i));
+        }
+    }
+    std::vector<std::int64_t> named;
+    for (std::uint64_t i = 0; i < kRows; ++i) {
+        named.push_back(static_cast<std::int64_t>(i + 1));
+    }
+    CHECK(values == named);
+}
+
 // One floor above the per-agent refusal: with zero disk agents, every leg must still error, not answer empty.
 TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_answering_empty") {
     // No bootstrap: zero agents means no system tables to seed, and seeding isn't under test.
     core::pmr::otterbrix_resource resource;
     auto log = make_test_log();
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
-    configuration::config_disk cfg;
+    configuration::config_disk cfg{err_dir() + "/no_agents"};
     cfg.path = err_dir() + "/no_agents";
     cfg.agent = 0;
     std::filesystem::create_directories(cfg.path);
@@ -638,7 +726,6 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
                      session_id_t{},
                      oid,
                      std::uint64_t{0},
-                     std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                      std::int64_t{-1},
                      std::vector<size_t>{},
                      with_open_snapshot(0, 0))
@@ -648,19 +735,30 @@ TEST_CASE("services::disk::error::a_manager_with_no_agents_refuses_instead_of_an
                                                 components::table::transaction_data::committed(),
                                                 {},
                                                 oid};
-            REQUIRE(call(&manager_disk_t::storage_append, ctx, oid, one_column_batch(&resource, 2)).has_error());
+            REQUIRE(call(&manager_disk_t::storage_append,
+                         ctx,
+                         oid,
+                         std::pmr::vector<catalog::oid_t>(1, catalog::INVALID_OID, &resource),
+                         one_column_batch(&resource, 2),
+                         false)
+                        .has_error());
         }
         {
             std::pmr::vector<components::vector::vector_t> ids(&resource);
             ids.emplace_back(ids_from(&resource, 0, 2));
-            REQUIRE(
-                call(&manager_disk_t::storage_update, txn_ctx(), oid, std::move(ids), one_column_batch(&resource, 2))
-                    .has_error());
+            REQUIRE(call(&manager_disk_t::storage_update,
+                         txn_ctx(),
+                         oid,
+                         std::move(ids),
+                         one_column_batch(&resource, 2),
+                         false)
+                        .has_error());
         }
         REQUIRE(call(&manager_disk_t::storage_delete_rows,
                      txn_ctx(),
                      oid,
-                     components::table::make_row_id_range(&resource, 0, 1))
+                     components::table::make_row_id_range(&resource, 0, 1),
+                     false)
                     .has_error());
     }
     scheduler->stop();
@@ -676,12 +774,15 @@ TEST_CASE("services::disk::error::a_publish_or_revert_that_finds_no_storage_says
     std::vector<components::table::column_definition_t> cols;
     cols.emplace_back("a", components::types::complex_logical_type{components::types::logical_type::BIGINT});
     auto table_oid = test_create_table(fx, ns_oid, "t_miss", cols);
-    fx.invoke(&manager_disk_t::create_storage_disk,
-              session_id_t{},
-              table_oid,
-              catalog::well_known_oid::main_database,
-              cols,
-              /*is_computed=*/false);
+    REQUIRE_FALSE(
+        fx.invoke(&manager_disk_t::create_storage_disk,
+                  components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                  table_oid,
+                  catalog::well_known_oid::main_database,
+                  qualified_name_t{},
+                  cols,
+                  /*is_computed=*/false)
+            .has_error());
     const auto nowhere = static_cast<catalog::oid_t>(table_oid + 4242);
 
     services::disk::reset_publish_revert_misses();
@@ -703,20 +804,23 @@ TEST_CASE("services::disk::error::a_publish_or_revert_that_finds_no_storage_says
 
     INFO("revert_deletes for it is a miss");
     {
-        std::vector<catalog::oid_t> tables{nowhere};
-        fx.invoke(&manager_disk_t::storage_revert_deletes, txn_ctx(), std::uint64_t{0}, std::move(tables));
-        REQUIRE(services::disk::publish_revert_misses() == 3);
+        std::pmr::set<catalog::oid_t> tables{&fx.resource};
+        tables.insert(nowhere);
+        auto aborted = fx.invoke(&manager_disk_t::abort_transaction, txn_ctx(), std::uint64_t{0}, std::move(tables));
+        REQUIRE_FALSE(aborted.contains_error());
+        REQUIRE(services::disk::publish_revert_misses() == 4);
     }
 
     INFO("revert_appends for it is a miss");
     {
-        std::vector<components::pg_catalog_append_range_t> ranges;
-        ranges.push_back(components::pg_catalog_append_range_t{nowhere, 0, 3});
+        components::table::txn_abort_drain_t drain;
+        drain.txn = txn_ctx().txn;
+        drain.base_appends.push_back(components::pg_catalog_append_range_t{nowhere, 0, 3});
         // An unowned oid is reported through publish_revert_misses and skipped, not refused, so the
         // handler itself must still answer no_error -- which is what the next line counts on.
         REQUIRE_FALSE(
-            fx.invoke(&manager_disk_t::storage_revert_appends, txn_ctx(), std::move(ranges)).contains_error());
-        REQUIRE(services::disk::publish_revert_misses() == 4);
+            fx.invoke(&manager_disk_t::undo_appends_and_storages, session_id_t{}, std::move(drain)).contains_error());
+        REQUIRE(services::disk::publish_revert_misses() == 5);
     }
 
     INFO("an oid WITH storage is no miss on any leg, and a zero-count range stays a no-op");
@@ -726,6 +830,6 @@ TEST_CASE("services::disk::error::a_publish_or_revert_that_finds_no_storage_says
         fx.invoke(&manager_disk_t::storage_publish_commits, txn_ctx(), std::uint64_t{2000}, std::move(ranges));
         std::set<catalog::oid_t> tables{table_oid};
         fx.invoke(&manager_disk_t::storage_publish_deletes, txn_ctx(), std::uint64_t{2000}, std::move(tables));
-        REQUIRE(services::disk::publish_revert_misses() == 4);
+        REQUIRE(services::disk::publish_revert_misses() == 5);
     }
 }

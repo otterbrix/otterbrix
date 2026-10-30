@@ -23,7 +23,7 @@ TEST_CASE("integration::cpp::test_uuid_cursor_roundtrip::both_halves_survive") {
 
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(exec(d, "CREATE DATABASE w;")->is_success());
+    REQUIRE(exec(d, "CREATE SCHEMA w;")->is_success());
     REQUIRE(exec(d, "CREATE TABLE w.t (id BIGINT, u UUID);")->is_success());
     // No SQL literal yields a UUID (text does not assign to uuid, CAST(... AS UUID) is refused),
     // so the row goes in as a typed chunk through the plan API; the read is plain SQL.
@@ -38,7 +38,7 @@ TEST_CASE("integration::cpp::test_uuid_cursor_roundtrip::both_halves_survive") {
             absl::MakeUint128(0x0123456789abcdefULL, 0xfedcba9876543210ULL);
         chunk.set_cardinality(1);
         auto node = components::sql::transform::name_catalog_target(
-            core::dbname_t{"w"},
+            core::schema_t{"w"},
             core::relname_t{"t"},
             components::logical_plan::make_node_insert(resource, std::move(chunk)));
         auto ins = d->execute_plan(otterbrix::session_id_t(),

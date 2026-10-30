@@ -41,19 +41,19 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_total_rows>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch_next_batch>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_close_cursor>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_reduce>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_append>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_update>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_delete_rows>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_commits>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_publish_deletes>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_appends>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_deletes>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_namespace>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_offer>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_run_block>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_close_block>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_release_block>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::undo_appends_and_storages>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function_by_name>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::find_cast_oid>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::list_namespaces>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::allocate_oids_batch>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::append_pg_catalog_row>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::delete_pg_catalog_rows>,
@@ -73,9 +73,9 @@ namespace services::disk {
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::abort_transaction>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_open_scan_hold>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_compact_epoch>,
-            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::revert_column_stamps>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_prepare>,
             actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_release_prepared>,
+            actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_set_not_null>,
         };
 
         constexpr bool behavior_covers_all_implements() noexcept {
@@ -105,6 +105,10 @@ namespace services::disk {
                                      const std::filesystem::path& otbx_path)
         : buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_) {
+        if (buffer_pool_.construction_error().contains_error()) {
+            construction_error_ = core::error_on(resource, buffer_pool_.construction_error());
+            return;
+        }
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
@@ -123,6 +127,10 @@ namespace services::disk {
                                      bool allow_schemaless)
         : buffer_pool_(resource, uint64_t(1) << 32, false, uint64_t(1) << 24)
         , buffer_manager_(resource, fs_, buffer_pool_) {
+        if (buffer_pool_.construction_error().contains_error()) {
+            construction_error_ = core::error_on(resource, buffer_pool_.construction_error());
+            return;
+        }
         auto bm = std::make_unique<components::table::storage::single_file_block_manager_t>(buffer_manager_,
                                                                                             fs_,
                                                                                             otbx_path.string());
@@ -343,7 +351,7 @@ namespace services::disk {
                                  buffer_manager_.resource()};
             msg += std::pmr::string{old_attname, buffer_manager_.resource()};
             msg += std::pmr::string{"'", buffer_manager_.resource()};
-            return core::error_t{core::error_code_t::missing_table, std::move(msg)};
+            return core::error_t{core::error_code_t::internal_error, std::move(msg)};
         }
         return table_->rename_column(old_attname, new_attname);
     }
@@ -362,80 +370,86 @@ namespace services::disk {
         , config_(std::move(config))
         , pump_(pump) {
         trace(log_, "manager_disk start");
-        if (!config_.path.empty()) {
-            // The engine factory creates the directory before it spawns the managers.
-            assert([this] {
-                std::error_code ec;
-                return std::filesystem::is_directory(config_.path, ec);
-            }());
-            create_agent(config.agent);
+        // Refuses a relative-path database under the process CWD (every binding fills config_disk::path).
+        if (config_.path.empty()) {
+            construction_error_ = core::error_t(core::error_code_t::invalid_parameter,
+                                                std::pmr::string{"manager_disk_t: config_disk::path is empty — there "
+                                                                 "is no directory to keep the tables in",
+                                                                 resource_});
+            return;
         }
+        // The engine factory creates the directory before it spawns the managers.
+        assert([this] {
+            std::error_code ec;
+            return std::filesystem::is_directory(config_.path, ec);
+        }());
+        create_agent(config.agent);
         // This thread owns all message processing; senders only push into inbox_ and wake it.
-        loop_thread_ = std::thread([this] {
-            // this->resource(): the ctor parameter `resource` shadows the member fn.
-            auto& in_flight = in_flight_;
-            while (loop_running_.load(std::memory_order_acquire)) {
-                actor_zeta::mailbox::message* raw = nullptr;
-                while (inbox_.pop(raw)) {
-                    in_flight.emplace_back();
-                    in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr{raw};
+        construction_error_ =
+            loop_thread_.start<manager_disk_t, &manager_disk_t::loop_body>(resource_, "manager_disk", this);
+        trace(log_, "manager_disk finish");
+    }
+
+    void manager_disk_t::loop_body() {
+        auto& in_flight = in_flight_;
+        while (loop_running_.load(std::memory_order_acquire)) {
+            actor_zeta::mailbox::message* raw = nullptr;
+            while (inbox_.pop(raw)) {
+                in_flight.emplace_back();
+                in_flight.back().pending_msg = actor_zeta::mailbox::message_ptr{raw};
+            }
+            bool progress = true;
+            while (progress) {
+                progress = false;
+                // pending_msg stays in the slot: the coroutine holds a raw pointer to it across suspensions.
+                for (auto& e : in_flight) {
+                    if (e.pending_msg && !e.behavior) {
+                        e.behavior = behavior(e.pending_msg.get());
+                        progress = true;
+                        break;
+                    }
                 }
-                bool progress = true;
-                while (progress) {
-                    progress = false;
-                    // pending_msg stays in the slot: the coroutine holds a raw pointer to it across suspensions.
+                if (progress) {
+                    continue;
+                }
+                {
+                    actor_zeta::detail::coroutine_handle<> cont{};
                     for (auto& e : in_flight) {
-                        if (e.pending_msg && !e.behavior) {
-                            e.behavior = behavior(e.pending_msg.get());
-                            progress = true;
-                            break;
-                        }
-                    }
-                    if (progress) {
-                        continue;
-                    }
-                    {
-                        actor_zeta::detail::coroutine_handle<> cont{};
-                        for (auto& e : in_flight) {
-                            if (e.behavior.is_awaited_ready()) {
-                                cont = e.behavior.take_awaited_continuation();
-                                if (cont) {
-                                    break;
-                                }
+                        if (e.behavior.is_awaited_ready()) {
+                            cont = e.behavior.take_awaited_continuation();
+                            if (cont) {
+                                break;
                             }
                         }
-                        if (cont) {
-                            cont.resume(); // disk: no poll_pending — no pending_<T>_ containers.
-                            progress = true;
-                            continue;
-                        }
                     }
-                    for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
-                        if (it->behavior && it->behavior.done()) {
-                            in_flight.erase(it);
-                            progress = true;
-                            break;
-                        }
+                    if (cont) {
+                        cont.resume(); // disk: no poll_pending — no pending_<T>_ containers.
+                        progress = true;
+                        continue;
                     }
                 }
-#ifdef DEV_MODE
-                const dev_pump_wait_t pump_probe{in_flight.empty()};
-#endif
-                std::unique_lock<std::mutex> lk(mutex_);
-                pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
-                    return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
-                });
+                for (auto it = in_flight.begin(); it != in_flight.end(); ++it) {
+                    if (it->behavior && it->behavior.done()) {
+                        in_flight.erase(it);
+                        progress = true;
+                        break;
+                    }
+                }
             }
-        });
-        trace(log_, "manager_disk finish");
+#ifdef DEV_MODE
+            const dev_pump_wait_t pump_probe{in_flight.empty()};
+#endif
+            std::unique_lock<std::mutex> lk(mutex_);
+            pump_cv_.wait_for(lk, in_flight.empty() ? pump_.idle : pump_.in_flight, [this] {
+                return !inbox_.empty() || !loop_running_.load(std::memory_order_acquire);
+            });
+        }
     }
 
     void manager_disk_t::stop_loop() noexcept {
         loop_running_.store(false, std::memory_order_release);
         wake_loop_();
-        if (loop_thread_.joinable()) {
-            loop_thread_.join();
-        }
+        loop_thread_.join();
     }
 
     manager_disk_t::~manager_disk_t() {
@@ -516,8 +530,24 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_compact_epoch, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::revert_column_stamps>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::revert_column_stamps, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_set_not_null>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_set_not_null, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_offer>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_offer, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_run_block>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_run_block, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_close_block>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_close_block, msg);
+                break;
+            }
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_release_block>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_release_block, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_prepare>: {
@@ -526,10 +556,6 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_release_prepared>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_release_prepared, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_reduce>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_reduce, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_fetch>: {
@@ -556,16 +582,8 @@ namespace services::disk {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::storage_publish_deletes, msg);
                 break;
             }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_appends>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_revert_appends, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::storage_revert_deletes>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::storage_revert_deletes, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_namespace>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::resolve_namespace, msg);
+            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::undo_appends_and_storages>: {
+                co_await actor_zeta::dispatch(this, &manager_disk_t::undo_appends_and_storages, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::resolve_function_by_name>: {
@@ -574,10 +592,6 @@ namespace services::disk {
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::find_cast_oid>: {
                 co_await actor_zeta::dispatch(this, &manager_disk_t::find_cast_oid, msg);
-                break;
-            }
-            case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::list_namespaces>: {
-                co_await actor_zeta::dispatch(this, &manager_disk_t::list_namespaces, msg);
                 break;
             }
             case actor_zeta::msg_id<manager_disk_t, &manager_disk_t::allocate_oids_batch>: {
@@ -676,43 +690,47 @@ namespace services::disk {
         co_return;
     }
 
-    void manager_disk_t::set_manager_dispatcher_sync(actor_zeta::address_t address) {
+    void manager_disk_t::set_manager_dispatcher_sync(const bootstrap_t& boot, actor_zeta::address_t address) {
         // Bootstrap-only; the manager keeps no copy since only the agents send to the dispatcher.
         for (auto& agent_ptr : agents_) {
-            agent_ptr->set_manager_dispatcher_sync(address);
+            agent_disk_t::bootstrap_t{*agent_ptr, boot}.set_manager_dispatcher(address);
         }
     }
 
-    void manager_disk_t::register_dropped_storage_sync(components::catalog::oid_t oid,
+    collection_storage_entry_t* manager_disk_t::boot_entry(const bootstrap_t& boot,
+                                                           components::catalog::oid_t table_oid) noexcept {
+        if (agents_.empty()) {
+            return nullptr;
+        }
+        return agent_disk_t::bootstrap_t{*agents_[pool_idx_for_oid(table_oid, agents_.size())], boot}.entry(table_oid);
+    }
+
+    void manager_disk_t::register_dropped_storage_sync(const bootstrap_t& boot,
+                                                       components::catalog::oid_t oid,
                                                        uint64_t dropped_at_commit_id,
-                                                       std::filesystem::path path,
-                                                       std::pmr::vector<std::filesystem::path> sidecar_paths) {
-        // Bootstrap-only (base_spaces catalog rebuild); runtime DROP uses mark_storage_dropped_many below.
+                                                       std::filesystem::path path) {
+        // Bootstrap-only (the engine's rebuild from pg_class); runtime DROP uses mark_storage_dropped_many below.
         if (!agents_.empty()) {
-            const auto idx = pool_idx_for_oid(oid, agents_.size());
-            std::pmr::vector<std::filesystem::path> agent_sidecars{resource()};
-            agent_sidecars.reserve(sidecar_paths.size());
-            for (const auto& sidecar : sidecar_paths) {
-                agent_sidecars.push_back(sidecar);
-            }
-            agents_[idx]->register_dropped_storage_inner_sync(oid,
-                                                              dropped_at_commit_id,
-                                                              std::move(path),
-                                                              std::move(agent_sidecars));
+            agent_disk_t::bootstrap_t{*agents_[pool_idx_for_oid(oid, agents_.size())], boot}.register_dropped(
+                oid,
+                dropped_at_commit_id,
+                std::move(path));
         }
     }
 
-    manager_disk_t::unique_future<void>
-    manager_disk_t::mark_storage_dropped_many(session_id_t /*session*/,
+    manager_disk_t::unique_future<core::result_wrapper_t<ddl_reply_t>>
+    manager_disk_t::mark_storage_dropped_many(execution_context_t ctx,
                                               std::pmr::vector<components::catalog::oid_t> table_oids,
-                                              uint64_t dropped_at_commit_id) {
+                                              std::pmr::vector<qualified_name_t> /*names*/) {
         // Each agent derives its own path, so the manager never borrows agent state across the boundary.
+        const uint64_t dropped_at_commit_id = ctx.txn.transaction_id;
         trace(log_,
               "manager_disk_t::mark_storage_dropped_many , oids : {} , commit_id : {}",
               table_oids.size(),
               dropped_at_commit_id);
+        ddl_reply_t reply{true, host_rows_t{}};
         if (agents_.empty()) {
-            co_return;
+            co_return reply;
         }
         std::pmr::vector<std::pmr::vector<components::catalog::oid_t>> per_agent{resource()};
         per_agent.reserve(agents_.size());
@@ -745,7 +763,7 @@ namespace services::disk {
         for (auto& f : agent_futures) {
             co_await std::move(f);
         }
-        co_return;
+        co_return reply;
     }
 
     manager_disk_t::unique_future<void>
@@ -772,8 +790,24 @@ namespace services::disk {
     }
 
     manager_disk_t::unique_future<core::error_t>
-    manager_disk_t::abort_transaction(session_id_t session, components::table::txn_abort_drain_t drain) {
-        trace(log_, "manager_disk::abort_transaction , txn_id : {}", drain.txn.transaction_id);
+    manager_disk_t::abort_transaction(execution_context_t ctx,
+                                      uint64_t from_sub_id,
+                                      std::pmr::set<components::catalog::oid_t> tables) {
+        trace(log_,
+              "manager_disk::abort_transaction , txn_id : {} , from_sub_id : {}",
+              ctx.txn.transaction_id,
+              from_sub_id);
+        if (tables.empty()) {
+            co_return core::error_t::no_error();
+        }
+        co_await storage_revert_deletes(ctx, from_sub_id, std::vector<catalog::oid_t>{tables.begin(), tables.end()});
+        co_await revert_column_stamps(ctx, from_sub_id, std::move(tables));
+        co_return core::error_t::no_error();
+    }
+
+    manager_disk_t::unique_future<core::error_t>
+    manager_disk_t::undo_appends_and_storages(session_id_t session, components::table::txn_abort_drain_t drain) {
+        trace(log_, "manager_disk::undo_appends_and_storages , txn_id : {}", drain.txn.transaction_id);
         const execution_context_t ctx{session, drain.txn, {}};
 
         auto reverted = core::error_t::no_error();
@@ -781,22 +815,6 @@ namespace services::disk {
         appends.insert(appends.end(), drain.base_appends.begin(), drain.base_appends.end());
         if (!appends.empty()) {
             reverted = co_await storage_revert_appends(ctx, std::move(appends));
-        }
-
-        std::set<catalog::oid_t> delete_tables = std::move(drain.base_delete_tables);
-        delete_tables.insert(drain.pg_catalog_delete_tables.begin(), drain.pg_catalog_delete_tables.end());
-        if (!delete_tables.empty()) {
-            co_await storage_revert_deletes(ctx,
-                                            drain.from_sub_id,
-                                            std::vector<catalog::oid_t>{delete_tables.begin(), delete_tables.end()});
-        }
-
-        if (!drain.column_stamped_tables.empty()) {
-            co_await revert_column_stamps(ctx,
-                                          drain.from_sub_id,
-                                          std::pmr::set<catalog::oid_t>{drain.column_stamped_tables.begin(),
-                                                                        drain.column_stamped_tables.end(),
-                                                                        resource()});
         }
 
         if (!drain.dropped_storage_oids.empty()) {

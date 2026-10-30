@@ -56,8 +56,38 @@ namespace components::casts::kernels {
         inline constexpr bool is_128_bit_integer =
             std::is_same_v<T, types::int128_t> || std::is_same_v<T, types::uint128_t>;
 
+        // PostgreSQL tells a malformed literal (22P02) from a well-formed one that does not fit (22003).
+        enum class parse_outcome
+        {
+            parsed,
+            malformed,
+            out_of_range
+        };
+
+        [[nodiscard]] inline bool is_integer_syntax(std::string_view text) noexcept {
+            if (!text.empty() && text.front() == '-') {
+                text.remove_prefix(1);
+            }
+            if (text.empty()) {
+                return false;
+            }
+            for (const char character : text) {
+                if (character < '0' || character > '9') {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        [[nodiscard]] inline core::error_t parse_refusal(parse_outcome outcome, std::pmr::memory_resource* resource) {
+            return core::error_t{outcome == parse_outcome::out_of_range
+                                     ? core::error_code_t::numeric_value_out_of_range
+                                     : core::error_code_t::invalid_text_representation,
+                                 std::pmr::string{"parse error", resource}};
+        }
+
         template<typename Target>
-        [[nodiscard]] inline bool parse_number(std::string_view text, Target& out) noexcept {
+        [[nodiscard]] inline parse_outcome parse_number(std::string_view text, Target& out) noexcept {
             size_t begin = 0;
             size_t end = text.size();
             while (begin < end && is_ascii_space(text[begin])) {
@@ -72,10 +102,14 @@ namespace components::casts::kernels {
                 ++first;
             }
             if (first == last) {
-                return false;
+                return parse_outcome::malformed;
             }
             if constexpr (is_128_bit_integer<Target>) {
-                return absl::SimpleAtoi(std::string_view{first, static_cast<size_t>(last - first)}, &out);
+                const std::string_view digits{first, static_cast<size_t>(last - first)};
+                if (absl::SimpleAtoi(digits, &out)) {
+                    return parse_outcome::parsed;
+                }
+                return is_integer_syntax(digits) ? parse_outcome::out_of_range : parse_outcome::malformed;
             } else {
                 std::from_chars_result parsed;
                 if constexpr (std::is_floating_point_v<Target>) {
@@ -83,7 +117,13 @@ namespace components::casts::kernels {
                 } else {
                     parsed = std::from_chars(first, last, out); // base 10
                 }
-                return parsed.ec == std::errc() && parsed.ptr == last;
+                if (parsed.ptr != last) {
+                    return parse_outcome::malformed;
+                }
+                if (parsed.ec == std::errc::result_out_of_range) {
+                    return parse_outcome::out_of_range;
+                }
+                return parsed.ec == std::errc() ? parse_outcome::parsed : parse_outcome::malformed;
             }
         }
 
@@ -111,7 +151,7 @@ namespace components::casts::kernels {
             return decimal_token::none;
         }
 
-        [[nodiscard]] inline bool
+        [[nodiscard]] inline parse_outcome
         parse_decimal(std::string_view text, uint8_t width, uint8_t scale, types::int128_t* out) noexcept {
             size_t index = 0;
             size_t size = text.size();
@@ -121,21 +161,27 @@ namespace components::casts::kernels {
                 ++index;
             }
             bool seen_digit = false;
+            // Too many integer digits is decided after the whole text is read: a malformed text is 22P02 first.
+            bool overflow = false;
             types::int128_t integer_value = 0;
             types::int128_t integer_capacity = types::POWERS_OF_TEN[width - scale];
             while (index < size && text[index] >= '0' && text[index] <= '9') {
-                // Keep integer_value below 10^37 before the * 10 to prevent overflow
-                if (integer_value >= types::POWERS_OF_TEN[37]) {
-                    return false;
-                }
-                integer_value = integer_value * 10 + (text[index] - '0');
-                if (integer_value >= integer_capacity) {
-                    return false; // more integer digits than the target can hold
-                }
                 seen_digit = true;
                 ++index;
+                if (overflow) {
+                    continue;
+                }
+                // Keep integer_value below 10^37 before the * 10 to prevent overflow
+                if (integer_value >= types::POWERS_OF_TEN[37]) {
+                    overflow = true;
+                    continue;
+                }
+                integer_value = integer_value * 10 + (text[index - 1] - '0');
+                if (integer_value >= integer_capacity) {
+                    overflow = true; // more integer digits than the target can hold
+                }
             }
-            types::int128_t raw = integer_value * types::POWERS_OF_TEN[scale];
+            types::int128_t raw = overflow ? types::int128_t{0} : integer_value * types::POWERS_OF_TEN[scale];
             if (index < size && text[index] == '.') {
                 ++index;
                 for (uint8_t position = 0; position < scale; ++position) {
@@ -161,7 +207,10 @@ namespace components::casts::kernels {
                 }
             }
             if (index != size || !seen_digit) {
-                return false;
+                return parse_outcome::malformed;
+            }
+            if (overflow) {
+                return parse_outcome::out_of_range;
             }
             if (negative) {
                 raw = -raw;
@@ -169,10 +218,10 @@ namespace components::casts::kernels {
             // A round-up can push the magnitude to exactly 10^width (e.g. 9.99 -> 10.0),
             // which no longer fits.
             if (raw >= types::POWERS_OF_TEN[width] || raw <= -types::POWERS_OF_TEN[width]) {
-                return false;
+                return parse_outcome::out_of_range;
             }
             *out = raw;
-            return true;
+            return parse_outcome::parsed;
         }
 
         template<typename To>
@@ -247,9 +296,9 @@ namespace components::casts::kernels {
                 continue;
             }
             Target value;
-            if (!detail::parse_number<Target>(source.get_value<std::string_view>(row), value)) {
-                return core::error_t{core::error_code_t::conversion_failure,
-                                     std::pmr::string{"parse error", result->resource()}};
+            if (const auto outcome = detail::parse_number<Target>(source.get_value<std::string_view>(row), value);
+                outcome != detail::parse_outcome::parsed) {
+                return detail::parse_refusal(outcome, result->resource());
             }
             result->set_value(row, value);
         }
@@ -267,7 +316,8 @@ namespace components::casts::kernels {
                 continue;
             }
             Target value;
-            if (!detail::parse_number<Target>(source.get_value<std::string_view>(row), value)) {
+            if (detail::parse_number<Target>(source.get_value<std::string_view>(row), value) !=
+                detail::parse_outcome::parsed) {
                 result->set_null(row, true);
                 continue;
             }
@@ -330,9 +380,9 @@ namespace components::casts::kernels {
                     break;
             }
             types::int128_t raw;
-            if (!detail::parse_decimal(trimmed, width, scale, &raw)) {
-                return core::error_t{core::error_code_t::conversion_failure,
-                                     std::pmr::string{"parse error", result->resource()}};
+            if (const auto outcome = detail::parse_decimal(trimmed, width, scale, &raw);
+                outcome != detail::parse_outcome::parsed) {
+                return detail::parse_refusal(outcome, result->resource());
             }
             detail::write_decimal_raw(result, row, raw);
         }
@@ -367,7 +417,7 @@ namespace components::casts::kernels {
                     break;
             }
             types::int128_t raw;
-            if (!detail::parse_decimal(trimmed, width, scale, &raw)) {
+            if (detail::parse_decimal(trimmed, width, scale, &raw) != detail::parse_outcome::parsed) {
                 result->set_null(row, true);
                 continue;
             }
@@ -403,7 +453,7 @@ namespace components::casts::kernels {
             }
             const std::optional<To> parsed = detail::parse_datetime<To>(source.get_value<std::string_view>(row));
             if (!parsed.has_value()) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::invalid_datetime_format,
                                      std::pmr::string{"parse error", result->resource()}};
             }
             result->set_value(row, *parsed);
@@ -455,7 +505,7 @@ namespace components::casts::kernels {
             }
             std::optional<bool> parsed = detail::parse_bool(source.get_value<std::string_view>(row));
             if (!parsed.has_value()) {
-                return core::error_t{core::error_code_t::conversion_failure,
+                return core::error_t{core::error_code_t::invalid_text_representation,
                                      std::pmr::string{"parse error", result->resource()}};
             }
             result->set_value(row, *parsed);

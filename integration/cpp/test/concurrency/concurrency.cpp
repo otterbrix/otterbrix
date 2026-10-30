@@ -115,8 +115,11 @@ namespace concurrency {
             INFO("step " << number << ", " << step.session.name() << ": " << step.sql);
             auto answer = step.session.send(step.sql);
             CHECK(answered_within(answer, ANSWER_WINDOW));
-            const bool succeeded = await(answer, step.sql)->is_success();
-            REQUIRE(succeeded == (step.outcome == outcome_t::succeeds));
+            const auto cursor = await(answer, step.sql);
+            REQUIRE(cursor->is_success() == (step.outcome == outcome_t::succeeds));
+            if (step.status) {
+                CHECK(cursor->transaction_status() == *step.status);
+            }
         }
     }
 

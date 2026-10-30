@@ -68,7 +68,7 @@ namespace otterbrix {
                               "cannot inspect '" + path.string() + "': " + ec.message());
         } else if (!std::filesystem::is_directory(status)) {
             return path_error(resource,
-                              core::error_code_t::invalid_parameter,
+                              core::error_code_t::object_not_in_prerequisite_state,
                               "'" + path.string() + "' exists and is not a directory");
         } else if (!directory_is_empty(path) && !looks_like_otterbrix_database(path)) {
             // A directory holding somebody else's files is a loud refusal,

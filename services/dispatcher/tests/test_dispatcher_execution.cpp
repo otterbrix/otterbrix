@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include "registry_statements.hpp"
+
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -28,6 +30,7 @@
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/table/column_definition.hpp>
@@ -38,6 +41,7 @@
 #include <core/tests/wait_ready.hpp>
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <services/index/manager_index.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
@@ -53,14 +57,6 @@ using components::types::complex_logical_type;
 using components::types::logical_type;
 
 namespace {
-
-    std::atomic<uint64_t> g_host_pass_calls{0};
-
-    components::logical_plan::node_ptr counting_host_pass(std::pmr::memory_resource*,
-                                                          components::logical_plan::node_ptr node) {
-        g_host_pass_calls.fetch_add(1, std::memory_order_relaxed);
-        return node;
-    }
 
     std::string dispatcher_dir(const char* leaf) {
         return "/tmp/test_dispatcher_execution_" + std::to_string(::getpid()) + "/" + leaf;
@@ -90,7 +86,12 @@ namespace {
     components::compute::function_ptr make_probe_func(std::pmr::memory_resource* resource, const std::string& name) {
         using namespace components::compute;
         function_doc doc{resource, "short_doc", "full_doc", {"arg"}, false};
-        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource, name, arity::unary(), doc, size_t{1});
+        auto fn = core::pmr::make_polymorphic_unique<vector_function>(resource,
+                                                                      name,
+                                                                      arity::unary(),
+                                                                      doc,
+                                                                      size_t{1},
+                                                                      components::compute::volatility_t::volatile_);
         kernel_signature_t sig(function_type_t::vector,
                                {parameter_type::exact(logical_type::BIGINT)},
                                {output_type::fixed(logical_type::BIGINT)});
@@ -103,10 +104,7 @@ namespace {
 } // namespace
 
 struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
-    dispatcher_fixture(std::pmr::memory_resource* resource,
-                       const std::string& disk_path,
-                       std::span<const components::planner::optimizer_rule_t> optimizer_rules = {},
-                       bool wire_index = true)
+    dispatcher_fixture(std::pmr::memory_resource* resource, const std::string& disk_path, bool wire_index = true)
         : actor_zeta::actor::actor_mixin<dispatcher_fixture>()
         , resource_(resource)
         , disk_path_(scrubbed(disk_path))
@@ -136,19 +134,24 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
                                                                   wire_index ? manager_index_->address()
                                                                              : components::pipeline::no_mailbox(),
                                                                   configuration::pump_intervals_t{}))
-        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(
-              resource,
-              scheduler_,
-              log_,
-              manager_wal_->address(),
-              manager_disk_->address(),
-              wire_index ? manager_index_->address() : components::pipeline::no_mailbox(),
-              configuration::config_execution{},
-              components::planner::primitives_t{optimizer_rules, {}})) {
-        manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
-        manager_disk_->set_manager_wal_sync(manager_wal_->address());
-        manager_index_->set_manager_dispatcher_sync(manager_dispatcher_->address());
-        REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
+        , manager_dispatcher_(actor_zeta::spawn<manager_dispatcher_t>(resource,
+                                                                      scheduler_,
+                                                                      log_,
+                                                                      manager_wal_->address(),
+                                                                      manager_disk_->address(),
+                                                                      wire_index ? manager_index_->address()
+                                                                                 : components::pipeline::no_mailbox(),
+                                                                      configuration::config_execution{},
+                                                                      components::planner::primitives_t{},
+                                                                      services::dispatcher::dispatcher_seed_t{})) {
+        const services::bootstrap_token_t token{};
+        manager_wal_replicate_t::bootstrap_t wal_boot{*manager_wal_, token};
+        manager_disk_t::bootstrap_t disk_boot{*manager_disk_, token};
+        services::index::manager_index_t::bootstrap_t index_boot{*manager_index_, token};
+        wal_boot.set_manager_dispatcher_sync(manager_dispatcher_->address());
+        disk_boot.set_manager_wal_sync(manager_wal_->address());
+        index_boot.set_manager_dispatcher_sync(manager_dispatcher_->address());
+        REQUIRE_FALSE(disk_boot.bootstrap_system_tables_sync().contains_error());
     }
 
     ~dispatcher_fixture() {
@@ -173,16 +176,18 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
         return out;
     }
 
-    cursor_t_ptr execute_sql(const std::string& query) {
+    cursor_t_ptr execute_sql(const std::string& query) { return execute_sql(session_id_t{}, query); }
+
+    cursor_t_ptr execute_sql(const session_id_t& session, const std::string& query) {
         parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
-        auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
+        auto parse_result = linitial(parse_ok(parser_arena_.get(), query.c_str()));
         components::sql::transform::transformer local_transformer(resource_);
         auto wrap =
             local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
         REQUIRE(!wrap.has_error());
         auto [_, future] = actor_zeta::otterbrix::send(manager_dispatcher_->address(),
                                                        &manager_dispatcher_t::execute_plan,
-                                                       session_id_t{},
+                                                       session,
                                                        std::move(wrap.value()));
         return pump(std::move(future));
     }
@@ -199,6 +204,13 @@ struct dispatcher_fixture : actor_zeta::actor::actor_mixin<dispatcher_fixture> {
     auto dispatcher_invoke(Fn fn, Args&&... args) {
         auto [_, fut] = actor_zeta::otterbrix::send(manager_dispatcher_->address(), fn, std::forward<Args>(args)...);
         return pump(std::move(fut));
+    }
+
+    void begin_shutdown() {
+        auto [_, fut] =
+            actor_zeta::otterbrix::send(manager_dispatcher_->address(), &manager_dispatcher_t::begin_shutdown);
+        REQUIRE(test_helpers::wait_ready(fut, scheduler_));
+        scheduler_->run(10000);
     }
 
     template<typename Fn, typename... Args>
@@ -250,7 +262,7 @@ TEST_CASE("services::dispatcher::insert_select_registers_computed_columns") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("insert_select_computed"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE cdc;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA cdc;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cdc.src (id bigint, price bigint);")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO cdc.src (id, price) VALUES (1, 10), (2, 20);")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cdc.docs ();")->is_success());
@@ -279,7 +291,7 @@ TEST_CASE("services::dispatcher::alter_unresolved_table_is_refused") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("alter_unresolved"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
 
     auto cur = test.execute_sql("ALTER TABLE db.no_such_table ADD COLUMN extra bigint;");
     REQUIRE(cur->is_error());
@@ -291,7 +303,7 @@ TEST_CASE("services::dispatcher::boolean_subquery_unstamped_schema_is_refused") 
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("bool_subq_unstamped"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO db.t (b) VALUES (1);")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.docs ();")->is_success());
@@ -304,7 +316,7 @@ TEST_CASE("services::dispatcher::array_equality_subquery_unstamped_schema_is_ref
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("array_subq_unstamped"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO db.t (b) VALUES (1);")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.docs ();")->is_success());
@@ -313,29 +325,13 @@ TEST_CASE("services::dispatcher::array_equality_subquery_unstamped_schema_is_ref
     REQUIRE(cur->is_error());
 }
 
-// Storing the host rules without forwarding them into optimize() would silently ignore them.
-TEST_CASE("services::dispatcher::host_optimizer_rules_reach_optimize") {
-    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
-    g_host_pass_calls.store(0, std::memory_order_relaxed);
-    const components::planner::optimizer_rule_t rules[] = {
-        {components::planner::optimizer_stage::last, &counting_host_pass}};
-    dispatcher_fixture test(mr.get(), dispatcher_dir("host_pass"), rules);
-
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
-    REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
-    REQUIRE(test.execute_sql("INSERT INTO db.t (b) VALUES (7);")->is_success());
-    REQUIRE(test.execute_sql("SELECT * FROM db.t;")->is_success());
-
-    REQUIRE(g_host_pass_calls.load(std::memory_order_relaxed) > 0);
-}
-
 // The transformer registers the referenced table's resolve under its OWN database, not the child's.
 TEST_CASE("services::dispatcher::cross_db_foreign_key_binds") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("cross_db_fk"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db1;")->is_success());
-    REQUIRE(test.execute_sql("CREATE DATABASE db2;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db1;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db2;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db1.parent (id bigint, PRIMARY KEY (id));")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO db1.parent (id) VALUES (1);")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db2.child (pid bigint);")->is_success());
@@ -358,8 +354,8 @@ TEST_CASE("services::dispatcher::cross_db_foreign_key_binds") {
     }
 }
 
-// register_udf fans out to every per-executor registry BEFORE the operator's catalog work.
-TEST_CASE("services::dispatcher::register_udf_operator_refusal_unwinds_executors") {
+// A registration the operator refuses leaves no registry holding the function: the next one meets the catalog again.
+TEST_CASE("services::dispatcher::register_udf_operator_refusal_leaves_no_registry_entry") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("udf_unwind"));
 
@@ -367,19 +363,15 @@ TEST_CASE("services::dispatcher::register_udf_operator_refusal_unwinds_executors
     test.seed_pg_proc_row(fname);
 
     {
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
-                                          session_id_t{},
-                                          components::compute::function_ptr{make_probe_func(mr.get(), fname)});
+        auto err = registry_statements::register_udf(test, make_probe_func(mr.get(), fname));
         REQUIRE(err.contains_error());
         REQUIRE(mentions(err, "already exists in the catalog"));
     }
     {
-        auto err = test.dispatcher_invoke(&manager_dispatcher_t::register_udf,
-                                          session_id_t{},
-                                          components::compute::function_ptr{make_probe_func(mr.get(), fname)});
+        auto err = registry_statements::register_udf(test, make_probe_func(mr.get(), fname));
         REQUIRE(err.contains_error());
         REQUIRE(mentions(err, "already exists in the catalog"));
-        REQUIRE(err.type == core::error_code_t::already_exists);
+        REQUIRE(err.type == core::error_code_t::duplicate_function);
     }
 }
 
@@ -388,7 +380,7 @@ TEST_CASE("services::dispatcher::alter_add_column_gates_persistable_type") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("alter_add_gate"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (b bigint);")->is_success());
 
     // LIST nested past MAX_SPEC_DEPTH (64) — encode_type_spec refuses it.
@@ -399,7 +391,7 @@ TEST_CASE("services::dispatcher::alter_add_column_gates_persistable_type") {
     auto node = components::logical_plan::make_node_alter_table_add_column(
         mr.get(),
         components::table::column_definition_t{"too_deep", deep});
-    node->set_target(qualified_name_t{core::dbname_t{"db"}, core::relname_t{"t"}});
+    node->set_target(qualified_name_t{core::schema_t{"db"}, core::relname_t{"t"}});
     components::logical_plan::execution_plan_t plan{mr.get(),
                                                     components::logical_plan::node_ptr{node},
                                                     components::logical_plan::make_parameter_node(mr.get())};
@@ -414,7 +406,7 @@ TEST_CASE("services::dispatcher::insert_select_column_list_renames_into_computed
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("insert_select_rename_computed"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE cdd;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA cdd;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cdd.src (a bigint, b bigint);")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO cdd.src (a, b) VALUES (10, 100), (20, 200);")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cdd.docs ();")->is_success());
@@ -452,7 +444,7 @@ TEST_CASE("services::dispatcher::create_index_refuses_a_taken_name") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("create_index_name_unique"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE cdi;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA cdi;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cdi.t (a bigint, b bigint);")->is_success());
     REQUIRE(test.execute_sql("CREATE INDEX idx ON cdi.t (a);")->is_success());
 
@@ -472,7 +464,7 @@ TEST_CASE("services::dispatcher::insert_names_the_all_null_column_it_drops") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("insert_all_null_column_named"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE anc;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA anc;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE anc.t ();")->is_success());
 
     auto cur = test.execute_sql("INSERT INTO anc.t (a, x) VALUES (NULL, 'z');");
@@ -499,10 +491,9 @@ TEST_CASE("services::dispatcher::create_index_refuses_without_an_index_manager")
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(),
                             dispatcher_dir("create_index_no_index_manager"),
-                            {},
                             /*wire_index=*/false);
 
-    REQUIRE(test.execute_sql("CREATE DATABASE cim;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA cim;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE cim.t (a bigint);")->is_success());
 
     auto cur = test.execute_sql("CREATE INDEX idx ON cim.t (a);");
@@ -516,7 +507,7 @@ TEST_CASE("services::dispatcher::alter_add_column_default_is_coerced_like_create
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("alter_add_default_type"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
 
     REQUIRE(test.execute_sql("CREATE TABLE db.created (a bigint, c integer DEFAULT 7);")->is_success());
     REQUIRE(test.execute_sql("INSERT INTO db.created (a) VALUES (1);")->is_success());
@@ -598,7 +589,7 @@ TEST_CASE("services::dispatcher::default_fills_every_row_of_a_large_insert") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     dispatcher_fixture test(mr.get(), dispatcher_dir("default_fill_large"));
 
-    REQUIRE(test.execute_sql("CREATE DATABASE db;")->is_success());
+    REQUIRE(test.execute_sql("CREATE SCHEMA db;")->is_success());
     REQUIRE(test.execute_sql("CREATE TABLE db.t (a bigint, s text DEFAULT 'filled', n bigint DEFAULT NULL, "
                              "d numeric(10,2) DEFAULT 12.5);")
                 ->is_success());
@@ -802,4 +793,22 @@ TEST_CASE("services::dispatcher::attdefspec_type_tag_spares_null_and_reaches_eve
         CHECK(components::catalog::decode_default_spec(resource, bad, spec, wrong).contains_error());
         CHECK_FALSE(wrong.has_value());
     }
+}
+
+TEST_CASE("services::dispatcher::a_statement_refused_at_shutdown_carries_the_open_block") {
+    auto mr = std::make_unique<core::pmr::otterbrix_resource>();
+    dispatcher_fixture test(mr.get(), dispatcher_dir("status_at_shutdown"));
+    using components::session::transaction_status_t;
+
+    const session_id_t session{};
+    auto begin = test.execute_sql(session, "BEGIN;");
+    REQUIRE(begin->is_success());
+    CHECK(begin->transaction_status() == transaction_status_t::in_transaction);
+
+    test.begin_shutdown();
+
+    auto refused = test.execute_sql(session, "SELECT 1;");
+    REQUIRE(refused->is_error());
+    CHECK(refused->get_error().type == core::error_code_t::connection_closed);
+    CHECK(refused->transaction_status() == transaction_status_t::in_transaction);
 }

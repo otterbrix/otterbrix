@@ -54,7 +54,7 @@ TEST_CASE("integration::cpp::test_oid_alloc_refusal::create_table_refuses_when_t
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE oidfail;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA oidfail;")->is_success());
 
     oid_alloc_fault_scope_t fault;
 
@@ -97,7 +97,7 @@ TEST_CASE("integration::cpp::test_oid_alloc_refusal::create_table_refuses_when_t
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(test_helpers::exec(dispatcher, "CREATE DATABASE oidshort;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA oidshort;")->is_success());
 
     oid_alloc_fault_scope_t fault;
 

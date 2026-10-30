@@ -18,6 +18,7 @@
 #include <components/log/test/test_log.hpp>
 #include <components/session/session.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <components/types/types.hpp>
@@ -27,6 +28,7 @@
 #include <services/disk/manager_disk.hpp>
 #include <services/disk/tests/catalog_probe.hpp>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <services/wal/manager_wal_replicate.hpp>
 
 using namespace services;
@@ -37,7 +39,7 @@ using namespace components::catalog;
 using namespace components::cursor;
 using namespace components::types;
 
-// Catalog assertions go through manager_disk_t::resolve_namespace and test_probe; there is no
+// Catalog assertions go through test_probe; there is no
 // in-memory snapshot to read.
 
 namespace {
@@ -82,11 +84,15 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
                                                                       manager_disk_->address(),
                                                                       components::pipeline::no_mailbox(),
                                                                       configuration::config_execution{},
-                                                                      components::planner::primitives_t{})) {
-        manager_wal_->set_manager_dispatcher_sync(manager_dispatcher_->address());
-        manager_disk_->set_manager_wal_sync(manager_wal_->address());
+                                                                      components::planner::primitives_t{},
+                                                                      services::dispatcher::dispatcher_seed_t{})) {
+        const services::bootstrap_token_t token{};
+        manager_wal_replicate_t::bootstrap_t wal_boot{*manager_wal_, token};
+        manager_disk_t::bootstrap_t disk_boot{*manager_disk_, token};
+        wal_boot.set_manager_dispatcher_sync(manager_dispatcher_->address());
+        disk_boot.set_manager_wal_sync(manager_wal_->address());
 
-        REQUIRE_FALSE(manager_disk_->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(disk_boot.bootstrap_system_tables_sync().contains_error());
     }
 
     ~test_dispatcher() {
@@ -132,17 +138,12 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
         return result;
     }
 
-    resolve_namespace_result_t resolve_namespace(const std::string& name) {
+    test_probe::probe_namespace_result_t resolve_namespace(const std::string& name) {
         components::execution_context_t ctx{components::session::session_id_t{},
                                             components::table::transaction_data::committed(),
                                             {}};
-        auto [_, fut] =
-            actor_zeta::otterbrix::send(manager_disk_->address(), &manager_disk_t::resolve_namespace, ctx, name);
-        REQUIRE(test_helpers::wait_ready(fut, scheduler_));
-        // A failed read isn't {found=false}; no case here expects one, avoiding that conflation.
-        auto r = std::move(fut).take_ready();
-        REQUIRE_FALSE(r.has_error());
-        return std::move(r.value());
+        auto adapter = probe_fx();
+        return test_probe::probe_namespace(adapter, ctx, name);
     }
 
     test_probe::probe_table_result_t resolve_table(components::catalog::oid_t ns_oid, const std::string& tname) {
@@ -155,7 +156,7 @@ struct test_dispatcher : actor_zeta::actor::actor_mixin<test_dispatcher> {
 
     void execute_sql(const std::string& query) {
         parser_arena_ = std::make_unique<std::pmr::monotonic_buffer_resource>(resource_);
-        auto parse_result = linitial(raw_parser(parser_arena_.get(), query.c_str()));
+        auto parse_result = linitial(parse_ok(parser_arena_.get(), query.c_str()));
         components::sql::transform::transformer local_transformer(resource_);
         auto _wrap =
             local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_result)).finalize();
@@ -188,7 +189,7 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     test_dispatcher test(mr.get(), catalog_dir("disk_schemeful"));
 
-    test.execute_sql("CREATE DATABASE test;");
+    test.execute_sql("CREATE SCHEMA test;");
     (void) test.take_result();
 
     test.execute_sql("CREATE TABLE test.test(fld1 int, fld2 string);");
@@ -233,7 +234,7 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
             }
         }
 
-        test.execute_sql("DROP DATABASE test;");
+        test.execute_sql("DROP SCHEMA test CASCADE;");
         {
             auto cur = test.take_result();
             REQUIRE(cur->is_success());
@@ -243,7 +244,7 @@ TEST_CASE("services::dispatcher::schemeful_operations") {
     }
 
     SECTION("drop_database") {
-        test.execute_sql("DROP DATABASE test;");
+        test.execute_sql("DROP SCHEMA test CASCADE;");
         {
             auto cur = test.take_result();
             REQUIRE(cur->is_success());
@@ -257,7 +258,7 @@ TEST_CASE("services::dispatcher::computed_operations") {
     auto mr = std::make_unique<core::pmr::otterbrix_resource>();
     test_dispatcher test(mr.get(), catalog_dir("disk_computed"));
 
-    test.execute_sql("CREATE DATABASE test;");
+    test.execute_sql("CREATE SCHEMA test;");
     (void) test.take_result();
 
     test.execute_sql("CREATE TABLE test.test();");
@@ -358,7 +359,7 @@ namespace {
     };
 
     planted_table_t create_two_column_table(test_dispatcher& test) {
-        test.execute_sql("CREATE DATABASE conkey_db;");
+        test.execute_sql("CREATE SCHEMA conkey_db;");
         REQUIRE(test.take_result()->is_success());
         test.execute_sql("CREATE TABLE conkey_db.t (id bigint, code bigint);");
         REQUIRE(test.take_result()->is_success());
@@ -483,7 +484,7 @@ TEST_CASE("services::dispatcher::null_source_column::insert_select_names_the_typ
         return test.take_result();
     };
 
-    REQUIRE(run("CREATE DATABASE nsc;")->is_success());
+    REQUIRE(run("CREATE SCHEMA nsc;")->is_success());
     REQUIRE(run("CREATE TABLE nsc.src();")->is_success());
     REQUIRE(run("INSERT INTO nsc.src (a, b) VALUES (1, 2);")->is_success());
 

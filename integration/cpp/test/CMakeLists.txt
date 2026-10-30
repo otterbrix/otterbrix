@@ -20,6 +20,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_delete_column_pruning.cpp
         test_index_create_failure.cpp
         test_index_key_type_gate.cpp
+        test_kernel_type_reachability.cpp
         test_catalog_scan_cost.cpp
         test_log_laziness.cpp
         test_index_mirror_gate.cpp
@@ -72,6 +73,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_wal_address_always_wired.cpp
         test_replay_floor_reopen.cpp
         test_delete_floor_resurrection.cpp
+        test_delete_row_windows.cpp
         test_index_scan_compact_race.cpp
         test_index_stale_window_measure.cpp
         test_index_stale_window_refusal.cpp
@@ -91,6 +93,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_inline_constraints.cpp
         test_constraint_entry_lost_target.cpp
         test_check_row_without_expression.cpp
+        test_hand_built_constraints.cpp
+        test_created_oid.cpp
         test_fk_cascade_unknown_action.cpp
         test_fk_cascade_parent_index_width.cpp
         test_constraint_unresolvable_target.cpp
@@ -126,6 +130,18 @@ set( ${PROJECT_NAME}_SOURCES
         test_insert_positional_values.cpp
         test_dml_without_columns.cpp
         test_create_in_missing_database.cpp
+        test_schema_level.cpp
+        test_current_place.cpp
+        test_remote_databases.cpp
+        test_remote_ddl.cpp
+        test_not_null.cpp
+        test_host_transactions.cpp
+        test_close_session.cpp
+        test_udf_cast_in_block.cpp
+        test_streaming_cursor.cpp
+        test_describe.cpp
+        test_host_pushdown.cpp
+        test_decorrelation.cpp
         test_long_string_literal.cpp
         test_tinyint_numeric_cast.cpp
         test_alter_add_column_reads.cpp
@@ -155,7 +171,6 @@ set( ${PROJECT_NAME}_SOURCES
         test_view_expansion.cpp
         test_view_binding.cpp
         test_statement_shape_refusal.cpp
-        test_list_tables.cpp
         test_index_null_correctness.cpp
         test_aggregate_filter.cpp
         test_dispatcher_watchdog_log.cpp
@@ -173,7 +188,6 @@ set( ${PROJECT_NAME}_SOURCES
         test_extension_source.cpp
         test_host_tables.cpp
         test_host_name_resolution.cpp
-        test_host_optimizer_stages.cpp
         test_join_raw.cpp
         test_name_resolution.cpp
         test_connections.cpp
@@ -202,6 +216,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_parser_extension.cpp
         test_engine_lifecycle.cpp
         test_parameterized_queries.cpp
+        test_prepare.cpp
         test_list_array.cpp
         test_quantified.cpp
         test_lost_wakeup_streaming.cpp
@@ -214,6 +229,11 @@ set( ${PROJECT_NAME}_SOURCES
         test_streaming_join.cpp
         test_autocommit.cpp
         test_savepoint.cpp
+        test_transaction_status.cpp
+        test_empty_statement_transaction.cpp
+        test_sqlstate_codes.cpp
+        test_session_settings.cpp
+        test_parse_error_position.cpp
         test_streaming_ddl_leaf.cpp
         test_streaming_recursive_cte.cpp
         test_large_aggregate_dml.cpp
@@ -222,8 +242,8 @@ set( ${PROJECT_NAME}_SOURCES
         test_bounded_dml_flush.cpp
         test_aggregate_pushdown_e2e.cpp
         test_clause_answers.cpp
+        test_disk_pushdown.cpp
         test_pushdown_traffic.cpp
-        test_pushed_reduce_scan_lateral.cpp
         test_jsonb_support.cpp
         test_select_intermediate.cpp
         test_empty_result_schema.cpp

@@ -14,19 +14,14 @@ namespace components::operators {
 
     // Leaf operator that resolves EVERY entry on a kind()==table resolve node,
     // stamping each entry's namespace_oid + table_md. All tables a statement
-    // depends on — across every sub-query — are resolved in this one run, and the
-    // per-dbname namespace lookup is cached across entries.
+    // depends on — across every sub-query — are resolved in this one run.
     //
     // Per entry, table identity is resolved at EXECUTION time:
-    //   - dbname non-empty -> pg_namespace scan by nspname first, then the
-    //     MANDATORY two-key (relname, relnamespace) pg_class scan. A namespace miss
-    //     is a hard not-found: a qualified name never degrades to a relname-only
-    //     scan (that degradation was the #557 cross-database leak — the first
-    //     same-named table from ANY database won).
-    //   - dbname empty (unqualified name) -> pg_class scan by relname alone. No
-    //     session default-database substitution exists, so this is what makes
-    //     unqualified access work. Deliberately NO ""->public defaulting (unlike
-    //     resolve_type): unqualified CREATE TABLE writes relnamespace=INVALID.
+    //   - a bare name is a system table of main.pg_catalog first (PostgreSQL 18
+    //     namespace.c), then a relation of the place's schema;
+    //   - a qualified name is completed with the place ([connection.]database.schema)
+    //     and looked up by (relname, relnamespace) in that schema only: a missing
+    //     database or schema is a not-found, never a wider scan.
     //
     // Then, per resolved table:
     //   1. read pg_class by oid -> capture relkind, relnamespace.

@@ -38,7 +38,7 @@ namespace components::table {
     core::result_wrapper_t<uint64_t> list_column_data_t::fetch_list_offset(int64_t row_idx) {
         auto segment = data_.get_segment(row_idx);
         if (!segment) {
-            return core::error_t(core::error_code_t::invalid_parameter,
+            return core::error_t(core::error_code_t::internal_error,
                                  std::pmr::string("list column: the row id names no offsets segment", resource_));
         }
         column_fetch_state fetch_state;

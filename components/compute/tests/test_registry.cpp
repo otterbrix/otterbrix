@@ -18,7 +18,8 @@ TEST_CASE("components::compute::registry::basic") {
                                                                 "only_in_other",
                                                                 arity::unary(),
                                                                 function_doc{&resource},
-                                                                /*available_kernel_slots=*/size_t{1}));
+                                                                /*available_kernel_slots=*/size_t{1},
+                                                                components::compute::volatility_t::volatile_));
         REQUIRE_FALSE(added.has_error());
         REQUIRE(other.find_functions("only_in_other").size() == 1);
         REQUIRE(reg->find_functions("only_in_other").empty());
@@ -39,11 +40,21 @@ TEST_CASE("components::compute::registry::basic") {
                 REQUIRE(fn->fn_arity().num_args == 2);
                 REQUIRE(fn->fn_arity().varargs == true);
             } else if (name == "regexp_replace") {
+                // regexp_replace(string, pattern, replacement[, flags]),
+                // (string, pattern, replacement, start[, N[, flags]]) — 3 to 6 args
                 REQUIRE(fn->fn_arity().num_args == 3);
+                REQUIRE(fn->fn_arity().varargs == true);
+                REQUIRE(fn->num_kernels() == 5);
             } else if (name == "regexp_like") {
                 // regexp_like(subject, pattern[, flags]) — 2 or 3 args
                 REQUIRE(fn->fn_arity().num_args == 2);
                 REQUIRE(fn->fn_arity().varargs == true);
+                REQUIRE(fn->num_kernels() == 2);
+            } else if (name == "like_match") {
+                // like_match(subject, pattern, mode)
+                REQUIRE(fn->fn_arity().num_args == 3);
+                REQUIRE(fn->fn_arity().varargs == false);
+                REQUIRE(fn->num_kernels() == 1);
             } else if (name == "generate_series") {
                 // generate_series(start, stop[, step]) — 2 or 3 args
                 REQUIRE(fn->fn_arity().num_args == 2);
@@ -68,7 +79,7 @@ TEST_CASE("components::compute::registry::add_function_refuses_a_null_payload") 
 
     auto added = registry.add_function(no_function());
     REQUIRE(added.has_error());
-    REQUIRE(added.error().type == core::error_code_t::function_registry_error);
+    REQUIRE(added.error().type == core::error_code_t::internal_error);
 }
 
 TEST_CASE("components::compute::registry::a_refused_null_payload_never_enters_the_registry") {
@@ -96,7 +107,8 @@ TEST_CASE("components::compute::registry::shifted_builtin_table_never_serves") {
                                                             "stray",
                                                             arity::unary(),
                                                             function_doc{&resource},
-                                                            /*available_kernel_slots=*/size_t{1}));
+                                                            /*available_kernel_slots=*/size_t{1},
+                                                            components::compute::volatility_t::volatile_));
     REQUIRE_FALSE(added.has_error());
     REQUIRE(added.value() == 0);
 
@@ -120,7 +132,8 @@ TEST_CASE("components::compute::registry::poisoned_builtin_registration_reports_
                                                             "stray",
                                                             arity::unary(),
                                                             function_doc{&resource},
-                                                            /*available_kernel_slots=*/size_t{1}));
+                                                            /*available_kernel_slots=*/size_t{1},
+                                                            components::compute::volatility_t::volatile_));
     REQUIRE_FALSE(added.has_error());
 
     register_default_functions(registry);
@@ -128,7 +141,7 @@ TEST_CASE("components::compute::registry::poisoned_builtin_registration_reports_
     // the channel names the shift
     const auto& err = registry.builtin_registration_error();
     REQUIRE(err.contains_error());
-    CHECK(err.type == core::error_code_t::function_registry_error);
+    CHECK(err.type == core::error_code_t::internal_error);
     CHECK(std::string(err.what).find("shifted") != std::string::npos);
 
     // a poisoned registry serves nothing — the stray is gone too
@@ -144,9 +157,10 @@ TEST_CASE("components::compute::registry::poisoned_builtin_registration_reports_
                                                             "late",
                                                             arity::unary(),
                                                             function_doc{&resource},
-                                                            /*available_kernel_slots=*/size_t{1}));
+                                                            /*available_kernel_slots=*/size_t{1},
+                                                            components::compute::volatility_t::volatile_));
     REQUIRE(after.has_error());
-    CHECK(after.error().type == core::error_code_t::function_registry_error);
+    CHECK(after.error().type == core::error_code_t::internal_error);
 }
 
 // The green half: on a clean registry the builtins land EXACTLY on their
@@ -174,4 +188,12 @@ TEST_CASE("components::compute::registry::every builtin uid is its own DEFAULT_F
         CHECK(is_builtin(DEFAULT_FUNCTIONS[i].second));
     }
     CHECK_FALSE(is_builtin(DEFAULT_FUNCTIONS.size()));
+}
+
+TEST_CASE("components::compute::registry::like_match is the one internal builtin") {
+    REQUIRE(DEFAULT_FUNCTIONS[like_match_uid].first == "like_match");
+    for (const auto& [name, uid] : DEFAULT_FUNCTIONS) {
+        INFO(name);
+        CHECK(is_internal(uid) == (name == "like_match"));
+    }
 }

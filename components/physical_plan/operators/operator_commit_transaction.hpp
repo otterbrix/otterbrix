@@ -11,6 +11,11 @@
 
 namespace components::operators {
 
+#ifdef DEV_MODE
+    // Test seam: runs once, in the next commit, right after the dispatcher published it.
+    void dev_set_after_publish_hook(void (*hook)()) noexcept;
+#endif
+
     struct commit_table_checks_t {
         components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
         std::vector<components::catalog::unique_key_t> unique_constraints;
@@ -62,6 +67,11 @@ namespace components::operators {
         // Releases commit_id and undoes every write, as ROLLBACK would.
         actor_zeta::unique_future<void>
         refuse_(pipeline::context_t* ctx, components::table::txn_abort_drain_t undo, core::error_t refusal);
+        // The transaction ended: every storage that kept state of it lets that go.
+        actor_zeta::unique_future<void>
+        release_participants_(pipeline::context_t* ctx,
+                              components::table::transaction_data txn,
+                              const std::vector<components::table::participant_t>& participants);
 
         bool is_ddl_commit_{false};
         std::uint64_t txn_id_{0};
@@ -69,6 +79,8 @@ namespace components::operators {
         std::uint64_t commit_id_{0};
         services::dispatcher::txn_commit_drain_t drain_;
         commit_checks_t checks_;
+        // The backends whose part already committed (storage_prepare succeeded).
+        std::vector<table::storage_address_t> prepared_participants_;
     };
 
 } // namespace components::operators

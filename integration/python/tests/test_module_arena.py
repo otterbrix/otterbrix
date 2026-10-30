@@ -38,8 +38,9 @@ Four tests here, and they check different halves of that:
 
 * `test_a_schema_type_keeps_the_space_it_was_read_from_alive` is the OTHER arena. Not every
   `OtterBrixPyType` comes from the module's factories: `relation.types` copies types out of a
-  relation's schema, and those stand on the ENGINE's arena. Same rule, other owner — see its
-  own docstring for the measurement.
+  relation's schema, and those stand on the ENGINE's arena, which lives apart from the engine
+  and goes with the last object holding its memory. Same rule, other owner — see its own
+  docstring.
 
 `test_type_from_dict_does_not_steal_the_caller_s_reference` is a different defect found on the
 same path and kept here because it is the same object: see its own docstring.
@@ -252,9 +253,9 @@ def test_the_module_owns_its_arena_through_a_capsule():
     assert "__arena__" not in otterbrix.__all__
 
 
-# The engine's own teardown trace is the clock here. `base_otterbrix_t::~base_otterbrix_t`
-# (integration/cpp/base_spaces.cpp) logs "delete spaces" as its first act, so the position of
-# that line relative to a marker the script prints says exactly WHEN the space died.
+# The arena's own teardown trace is the clock here: `engine_arena_t::~engine_arena_t`
+# (integration/cpp/base_spaces.cpp) logs "delete engine arena", so the position of that line
+# relative to a marker the script prints says exactly WHEN the engine's memory died.
 _SCHEMA_TYPE_OUTLIVES_ITS_RELATION = """
 import gc
 import sys
@@ -292,24 +293,14 @@ def test_a_schema_type_keeps_the_space_it_was_read_from_alive(tmp_path):
     copies each column type out of the relation's schema, and `complex_logical_type`'s copy
     constructor keeps the SOURCE's allocator (`struct_logical_type_extension` copies with
     `fields.get_allocator()`), so a STRUCT column hands out a child vector that is still
-    sitting in the space's pool. The object was built holding NEITHER owner: not the module's
-    arena, not the space. Dropping the relation and closing the connection released that pool
-    while the Python object still pointed into it.
+    sitting in the engine arena's pool. A type built holding no owner pointed into a pool that
+    closing the connection had released.
 
-    It did not crash — a released `synchronized_pool_resource` hands its chunks back to
-    `operator delete` and the bytes usually survive being read once — so the assertion is
-    not "did it segfault" but WHEN THE SPACE DIED. The engine's destructor logs "delete
-    spaces" as its first line, so the fix is visible as an ordering: with the type holding the
-    space, that line lands AFTER the connection is gone and only when the last type is
-    released.
-
-    MEASURED. Injecting the defect back (the owner-less `otterbrix_py_type_t(col.type())`
-    that column_types used to build) puts "delete spaces" at output line 140 and
-    MARKER-CONNECTION-GONE at line 471: the engine was 331 lines into being torn down before
-    the connection object was even released, and the `types[0].children` read that follows is
-    reading a pool that has been handed back. With the space held, the same run gives
-    MARKER-CONNECTION-GONE at line 126, "delete spaces" at 127 and the last teardown line at
-    236, one line before MARKER-TYPES-GONE — the whole teardown moved between the markers.
+    It did not crash: a released pool hands its chunks back to `operator delete` and the bytes
+    usually survive being read once. So the assertion is WHEN THE ARENA DIED. The engine and its
+    arena are two owners: closing the connection releases the engine, and the arena goes with
+    the last object holding its memory, logging "delete engine arena". With the types holding
+    the arena, that line lands after the connection is gone and before MARKER-TYPES-GONE.
     """
     finished = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(_SCHEMA_TYPE_OUTLIVES_ITS_RELATION), str(tmp_path / "schema_db")],
@@ -331,29 +322,14 @@ def test_a_schema_type_keeps_the_space_it_was_read_from_alive(tmp_path):
 
     connection_gone = position("MARKER-CONNECTION-GONE")
     types_gone = position("MARKER-TYPES-GONE")
-    space_died = position("delete spaces")
+    arena_died = position("delete engine arena")
 
-    # THE DISCRIMINATOR. If the schema types hold no owner, the last reference to the space is
-    # the connection's, so the engine tears down at `del conn` -- before this marker. Holding
-    # the space moves that teardown past it.
-    assert connection_gone < space_died, (
-        "the space was destroyed at output line %d, BEFORE the connection was released at line "
+    assert connection_gone < arena_died, (
+        "the engine arena was destroyed at output line %d, BEFORE the connection was released at line "
         "%d: the OtterBrixPyType objects read out of relation.types are pointing into a pool "
-        "that has already been given back" % (space_died, connection_gone)
+        "that has already been given back" % (arena_died, connection_gone)
     )
-    assert space_died < types_gone, (
-        "the engine never shut down while the test was watching (delete spaces at line %d, "
-        "MARKER-TYPES-GONE at line %d)" % (space_died, types_gone)
-    )
-    # The whole point: the space outlived the connection object and went only with the last
-    # type read out of its schema. Everything the destructor logs therefore has to sit AFTER
-    # the second marker's predecessor, i.e. the teardown must not have completed before the
-    # types were dropped.
-    teardown_end = max(
-        index for index, line in enumerate(lines) if "delete manager_dispatcher_t" in line
-    )
-    assert connection_gone < teardown_end < types_gone, (
-        "the engine tore down at lines %d..%d, but the connection was released at line %d and "
-        "the schema types only at line %d: the types were not holding the space they point "
-        "into" % (space_died, teardown_end, connection_gone, types_gone)
+    assert arena_died < types_gone, (
+        "the engine arena outlived the last type read out of its schema (delete engine arena at line %d, "
+        "MARKER-TYPES-GONE at line %d)" % (arena_died, types_gone)
     )

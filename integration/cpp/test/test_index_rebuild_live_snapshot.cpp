@@ -22,7 +22,7 @@ TEST_CASE("integration::cpp::index_rebuild_live_snapshot::open_snapshot_checkpoi
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE b;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA b;")->is_success());
     REQUIRE(exec("CREATE TABLE b.t (id bigint, k bigint);")->is_success());
     REQUIRE(exec("CREATE INDEX k_idx ON b.t (k);")->is_success());
 

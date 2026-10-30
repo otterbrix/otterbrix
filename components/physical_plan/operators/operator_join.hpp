@@ -19,7 +19,7 @@ namespace components::operators {
     // Like operator_hash_join_t, the join is a SINK on its build (RIGHT) side and
     // STREAMING on its probe (LEFT) side. The build (right_->output()) is
     // materialized by a separate sub-plan (traverse_plan_) before the first push();
-    // execute_pipeline pushes each LEFT probe batch through push() and, after the
+    // pump_pipeline_ pushes each LEFT probe batch through push() and, after the
     // probe is drained, drains unmatched build rows (right/full) via finalize().
     //
     // A SINGLE core (probe_batch_ + emit_unmatched_build_, built on the shared
@@ -32,7 +32,8 @@ namespace components::operators {
         operator_join_t(std::pmr::memory_resource* resource,
                         log_t log,
                         type join_type,
-                        const expressions::expression_ptr& expression);
+                        const expressions::expression_ptr& expression,
+                        bool single_match = false);
 
         // SINK on the build side, streaming on the probe side (see class comment).
         // ALL join types stream now, cross included: a cross join is the cartesian
@@ -64,8 +65,12 @@ namespace components::operators {
         }
 
     private:
+        std::pmr::string explain_label_impl() const override;
+
         type join_type_;
         expressions::expression_ptr expression_;
+        // A scalar sub-query's LEFT join: a second match of one probe row is SQL's error.
+        bool single_match_;
         std::vector<size_t> indices_left_;
         std::vector<size_t> indices_right_;
 

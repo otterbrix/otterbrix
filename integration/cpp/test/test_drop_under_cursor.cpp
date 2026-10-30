@@ -49,7 +49,7 @@ namespace {
     };
 
     void seed(otterbrix::wrapper_dispatcher_t* d) {
-        REQUIRE(exec(d, "CREATE DATABASE adb;")->is_success());
+        REQUIRE(exec(d, "CREATE SCHEMA adb;")->is_success());
         REQUIRE(exec(d, "CREATE TABLE adb.t (id bigint);")->is_success());
         std::size_t done = 0;
         while (done < ROWS) {

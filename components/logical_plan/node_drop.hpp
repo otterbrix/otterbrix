@@ -12,6 +12,7 @@ namespace components::logical_plan {
     enum class drop_target_kind : uint8_t
     {
         database,
+        schema,
         collection,
         type,
         sequence,
@@ -30,6 +31,9 @@ namespace components::logical_plan {
 
         const core::indexname_t& index_name() const noexcept { return index_name_; }
         void set_index_name(core::indexname_t name) { index_name_ = std::move(name); }
+
+        components::catalog::oid_t database_oid() const noexcept { return database_oid_; }
+        void set_database_oid(components::catalog::oid_t oid) noexcept { database_oid_ = oid; }
 
         components::catalog::oid_t namespace_oid() const noexcept { return namespace_oid_; }
         void set_namespace_oid(components::catalog::oid_t oid) noexcept { namespace_oid_ = oid; }
@@ -56,6 +60,7 @@ namespace components::logical_plan {
 
         const drop_target_kind kind_;
         core::indexname_t index_name_;
+        components::catalog::oid_t database_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t namespace_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t type_oid_{components::catalog::INVALID_OID};
         components::catalog::oid_t index_oid_{components::catalog::INVALID_OID};

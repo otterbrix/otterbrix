@@ -2,7 +2,9 @@
 #include "test_config.hpp"
 #include <catch2/catch_test_macros.hpp>
 
+#include <components/casts/default_casts.hpp>
 #include <components/compute/function.hpp>
+#include <components/expressions/cast_expression.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/expressions/key.hpp>
 #include <components/log/log.hpp>
@@ -142,6 +144,40 @@ TEST_CASE("integration::cpp::hash_join::substitution") {
         REQUIRE(plan);
         CHECK(plan->type() == operator_type::join);
     }
+
+    INFO("a key under a cast on either side is still an equi-join key");
+    {
+        casts::cast_registry_t casts_registry{res};
+        casts::register_default_casts(casts_registry);
+        const types::complex_logical_type to_double{types::logical_type::DOUBLE};
+        auto cast = casts_registry.resolve(types::complex_logical_type{types::logical_type::BIGINT},
+                                           to_double,
+                                           casts::cast_type::explicit_only);
+        REQUIRE(cast.has_value());
+        auto widened = [&](const char* name, side_t side) {
+            return expressions::param_storage{expressions::expression_ptr(
+                expressions::make_cast_expression(res,
+                                                  expressions::param_storage{make_key(res, name, side, 0)},
+                                                  to_double,
+                                                  *cast,
+                                                  casts::cast_kind::cast))};
+        };
+        auto cond = expressions::make_compare_expression(res,
+                                                         compare_type::eq,
+                                                         widened("l", side_t::left),
+                                                         widened("r", side_t::right));
+        auto join = logical_plan::make_node_join(res, join_type::inner);
+        join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
+        join->append_child(logical_plan::make_node_raw_data(res, build_two_int_chunk(res)));
+        join->append_expression(cond);
+        auto optimized = planner::optimizer::rewrite_hash_joins(res, join);
+        auto plan_planned =
+            services::planner::create_plan(context, registry, optimized, logical_plan::limit_t::all(), nullptr);
+        REQUIRE_FALSE(plan_planned.has_error());
+        auto plan = plan_planned.value();
+        REQUIRE(plan);
+        CHECK(plan->type() == operator_type::hash_join);
+    }
 }
 
 static const std::string db = "hashjoindb";
@@ -153,7 +189,7 @@ TEST_CASE("integration::cpp::hash_join::correctness") {
     auto dispatcher = space.dispatcher();
     auto session = otterbrix::session_id_t();
 
-    dispatcher->execute_sql(session, "CREATE DATABASE " + db + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + db + ";");
 
     auto create = [&](const std::string& t) {
         REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + db + "." + t + "();")->is_success());
@@ -226,7 +262,7 @@ TEST_CASE("integration::cpp::hash_join::multi_build_chunk_values") {
     auto session = otterbrix::session_id_t();
 
     const std::string mdb = "mbchunkdb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + mdb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + mdb + ";");
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + mdb + ".mbl();")->is_success());
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + mdb + ".mbr();")->is_success());
 
@@ -380,7 +416,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_swap_values") {
     auto session = otterbrix::session_id_t();
 
     const std::string sdb = "buildsidedb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + sdb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + sdb + ";");
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + sdb + ".small();")->is_success());
     REQUIRE(dispatcher->execute_sql(session, "CREATE TABLE " + sdb + ".large();")->is_success());
 
@@ -472,7 +508,7 @@ TEST_CASE("integration::cpp::hash_join::multiway_comma_join") {
     auto session = otterbrix::session_id_t();
 
     const std::string wdb = "multiwaydb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + wdb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + wdb + ";");
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
 
     REQUIRE(run("CREATE TABLE " + wdb + ".lo();")->is_success()); // lineorder-shaped fact
@@ -571,7 +607,7 @@ TEST_CASE("integration::cpp::hash_join::filtered_side_swap_requires_size_evidenc
         join->append_child(wrapper);
         join->append_child(tiny);
         join->append_expression(cond);
-        join->set_equi_columns(0, 0); // post-rewrite_hash_joins state: algo -> hash
+        join->set_algo(logical_plan::node_join_t::join_algo::hash); // post-rewrite_hash_joins state
 
         auto plan_planned =
             services::planner::create_plan(context, registry, join, logical_plan::limit_t::all(), nullptr);
@@ -610,7 +646,7 @@ TEST_CASE("integration::cpp::hash_join::build_side_syntactic_inmemory") {
     auto session = otterbrix::session_id_t();
 
     const std::string sdb = "synbuilddb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + sdb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + sdb + ";");
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
     REQUIRE(run("CREATE TABLE " + sdb + ".filt ();")->is_success()); // (k, x)
     REQUIRE(run("CREATE TABLE " + sdb + ".pln ();")->is_success());  // (k, y)
@@ -688,7 +724,7 @@ TEST_CASE("integration::cpp::hash_join::filtered_left_count_fetched_through_wrap
     auto session = otterbrix::session_id_t();
 
     const std::string wdb = "wrapcountdb";
-    dispatcher->execute_sql(session, "CREATE DATABASE " + wdb + ";");
+    dispatcher->execute_sql(session, "CREATE SCHEMA " + wdb + ";");
     auto run = [&](const std::string& sql) { return dispatcher->execute_sql(session, sql); };
     REQUIRE(run("CREATE TABLE " + wdb + ".big ();")->is_success());  // (k, x)
     REQUIRE(run("CREATE TABLE " + wdb + ".tiny ();")->is_success()); // (k, y)

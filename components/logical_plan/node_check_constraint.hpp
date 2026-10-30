@@ -17,12 +17,10 @@ namespace components::logical_plan {
     class node_check_constraint_t final : public node_t {
     public:
         explicit node_check_constraint_t(std::pmr::memory_resource* resource,
-                                         core::dbname_t dbname,
+                                         core::schema_t schema,
                                          core::relname_t relname,
-                                         std::vector<std::string> not_null_columns,
                                          std::vector<std::pair<std::string, uint64_t>> array_size_reqs = {});
 
-        const std::vector<std::string>& not_null_columns() const { return not_null_columns_; }
         const std::vector<std::pair<std::string, uint64_t>>& array_size_reqs() const { return array_size_reqs_; }
 
         void set_check_predicates(std::vector<std::pair<std::string, expressions::expression_ptr>> v) {
@@ -53,7 +51,6 @@ namespace components::logical_plan {
         hash_t hash_impl() const override;
         std::string to_string_impl() const override;
 
-        std::vector<std::string> not_null_columns_;
         std::vector<std::pair<std::string, uint64_t>> array_size_reqs_; // (name, declared array size)
         // resolved expressions, not SQL text: text would need a hand-written recogniser
         // and would compile everything outside its shapes to the constant TRUE

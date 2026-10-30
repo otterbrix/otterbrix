@@ -44,7 +44,7 @@ namespace components::operators {
 
     actor_zeta::unique_future<void> operator_create_index_backfill_t::await_async_and_resume(pipeline::context_t* ctx) {
         if (ctx->index_address == actor_zeta::address_t::empty_address()) {
-            set_error(core::error_t{core::error_code_t::index_create_fail,
+            set_error(core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"CREATE INDEX: no index manager is wired to this executor; "
                                                      "the index was not created",
                                                      resource()}});
@@ -111,16 +111,14 @@ namespace components::operators {
             // renumbers ids stamped below); held, never advanced, across the whole read.
             uint64_t gate_cursor_id = 0;
             {
-                auto [_g, gf] =
-                    actor_zeta::otterbrix::send(ctx->disk_address,
-                                                &services::disk::manager_disk_t::storage_fetch_next_batch,
-                                                ctx->session,
-                                                table_oid_,
-                                                uint64_t{0},
-                                                std::unique_ptr<components::table::pushed_filter_t>(nullptr),
-                                                int64_t{-1},
-                                                std::vector<size_t>{0},
-                                                ctx->txn);
+                auto [_g, gf] = actor_zeta::otterbrix::send(ctx->disk_address,
+                                                            &services::disk::manager_disk_t::storage_fetch_next_batch,
+                                                            ctx->session,
+                                                            table_oid_,
+                                                            uint64_t{0},
+                                                            int64_t{-1},
+                                                            std::vector<size_t>{0},
+                                                            ctx->txn);
                 auto gate_r = co_await std::move(gf);
                 if (gate_r.has_error()) {
                     set_error(gate_r.error());

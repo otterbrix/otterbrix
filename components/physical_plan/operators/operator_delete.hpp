@@ -4,6 +4,7 @@
 #include <components/logical_plan/node_limit.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_select.hpp>
+#include <components/table/storage_address.hpp>
 
 namespace components::operators {
 
@@ -25,6 +26,8 @@ namespace components::operators {
         operator_delete(std::pmr::memory_resource* resource,
                         log_t log,
                         components::catalog::oid_t table_oid,
+                        table::storage_address_t address,
+                        std::pmr::string name,
                         std::pmr::vector<projected_column_t> returning,
                         expressions::expression_ptr expr = nullptr,
                         // DELETE...LIMIT n bound for the USING path (no-source is capped upstream).
@@ -41,13 +44,10 @@ namespace components::operators {
 
         // Defaults to true: an unstamped plan must not guess "no index" and skip a real one.
         void set_table_has_indexes(bool value) noexcept { table_has_indexes_ = value; }
-
-        // A table with external storage: the matched rows, numbered by its scan in row_ids, go to the storage's
-        // delete sink instead of the disk, the WAL, the index and the MVCC marker.
-        void set_storage_sink(operator_ptr sink, std::pmr::vector<types::complex_logical_type> columns) {
-            storage_sink_ = std::move(sink);
-            storage_columns_ = std::move(columns);
-        }
+        // The table's visible columns, from the catalog: an empty RETURNING has them.
+        void set_table_types(std::pmr::vector<types::complex_logical_type> types) { table_types_ = std::move(types); }
+        // The table's columns the scan reads, in its order (dml_detail::as_scanned).
+        void set_scan_columns(std::vector<size_t> columns) { scan_columns_ = std::move(columns); }
 
         // The catalog form is a SOURCELESS sink (no children, no scan input): its entire effect is
         // the WAL-first commit in await_async_and_resume, driven directly by needs_async_finalize.
@@ -63,13 +63,12 @@ namespace components::operators {
         [[nodiscard]] uint64_t buffered_rows() const noexcept override { return modified_ ? modified_->size() : 0; }
 
     private:
-        // EXPLAIN labels a write into external storage the way its sink does, like postgres_fdw's "Foreign Delete on".
-        std::pmr::string explain_label_impl() const override {
-            return storage_sink_ ? storage_sink_->explain_label() : std::pmr::string{resource_};
-        }
-        std::pmr::vector<std::pmr::string> explain_details_impl() const override {
-            return storage_sink_ ? storage_sink_->explain_details() : std::pmr::vector<std::pmr::string>{resource_};
-        }
+        // Learns the storage's shape before the first row: the most rows one write may carry, and the columns an
+        // empty RETURNING is typed by.
+        actor_zeta::unique_future<core::error_t> open_impl(pipeline::context_t* ctx) override;
+        bool opens_at_start_impl() const noexcept override { return oid_col_idx_ < 0; }
+        // EXPLAIN names a write into a connection's table like postgres_fdw's "Foreign Delete on".
+        std::pmr::string explain_label_impl() const override;
 
         // Matches expression_ over one scan chunk, staging matched rows/ids for RETURNING and the index mirror.
         core::error_t consume_batch_(pipeline::context_t* ctx, const vector::data_chunk_t& chunk);
@@ -81,6 +80,8 @@ namespace components::operators {
         void ensure_simple_init_();
 
         components::catalog::oid_t table_oid_;
+        table::storage_address_t address_;
+        std::pmr::string name_;
         expressions::expression_ptr expression_;
         expressions::condition_kind condition_{expressions::condition_kind::always};
         std::unique_ptr<execution_dag::execution_dag_t> graph_;
@@ -89,6 +90,8 @@ namespace components::operators {
         std::unique_ptr<execution_dag::execution_dag_t> returning_graph_;
         // index_old_chunks_ merged row i pairs with index_old_row_ids_[i] for the index mirror.
         chunks_vector_t returning_staged_{resource_};
+        // DELETE ... USING ... RETURNING: the USING row of each staged row, in lockstep with index_old_chunks_.
+        chunks_vector_t returning_from_chunks_{resource_};
         chunks_vector_t index_old_chunks_{resource_};
         std::pmr::vector<int64_t> index_old_row_ids_{resource_};
         bool simple_init_done_{false};
@@ -100,8 +103,8 @@ namespace components::operators {
         // < 0 marks "not a catalog delete" — the predicate-scan path runs instead.
         std::int64_t oid_col_idx_{-1};
         components::catalog::oid_t target_oid_{components::catalog::INVALID_OID};
-        operator_ptr storage_sink_;
-        std::pmr::vector<types::complex_logical_type> storage_columns_{resource_};
+        std::pmr::vector<types::complex_logical_type> table_types_{resource_};
+        std::vector<size_t> scan_columns_;
     };
 
 } // namespace components::operators

@@ -68,6 +68,12 @@ namespace components::table {
         uint64_t transaction_id{0};
         uint64_t start_time{0};
         uint64_t sub_id{0};
+        // The statement's number in its transaction block (PostgreSQL 18's command id): the transaction's own inserts
+        // and deletes carry it; 0 outside a block.
+        uint64_t command_id{0};
+        // A portal reads its transaction's own writes as its DECLARE found them (PostgreSQL 18's curcid): a write of a
+        // command at or after this one is not seen; 0 sees them all.
+        uint64_t sees_commands_before{0};
 
         // snapshot_horizon: ids above this committed after the snapshot, invisible. in_flight_snapshot:
         // allocated-but-unpublished ids, invisible even below the horizon. Default = see-all-committed.
@@ -126,6 +132,8 @@ namespace components::table {
 
         uint64_t insert_id;
         uint64_t delete_id;
+        // The command id of the transaction's own insert (see transaction_data::command_id).
+        uint64_t insert_command_id{0};
 
         uint64_t indexing_vector(transaction_data transaction,
                                  vector::indexing_vector_t& indexing_vector,
@@ -157,6 +165,9 @@ namespace components::table {
         uint64_t deleted[vector::DEFAULT_VECTOR_CAPACITY];
         bool any_deleted;
         std::unique_ptr<uint64_t[]> deleted_sub_ids;
+        // The command ids of the transaction's own inserts and deletes; made by the first write of a command in a block.
+        std::unique_ptr<uint64_t[]> inserted_command_ids;
+        std::unique_ptr<uint64_t[]> deleted_command_ids;
 
         uint64_t indexing_vector(transaction_data transaction,
                                  vector::indexing_vector_t& indexing_vector,
@@ -167,9 +178,10 @@ namespace components::table {
         uint64_t committed_deleted_count(uint64_t max_count) override;
         bool has_version_above(uint64_t watermark, uint64_t max_count) const override;
 
-        void append(uint64_t start, uint64_t end, uint64_t commit_id);
+        void append(uint64_t start, uint64_t end, uint64_t commit_id, uint64_t command_id);
 
-        uint64_t delete_rows(uint64_t transaction_id, uint64_t sub_id, int64_t rows[], uint64_t count);
+        uint64_t
+        delete_rows(uint64_t transaction_id, uint64_t sub_id, uint64_t command_id, int64_t rows[], uint64_t count);
         void commit_delete(uint64_t commit_id, const delete_info& info);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id);
@@ -238,8 +250,12 @@ namespace components::table {
         void revert_append(uint64_t start_row);
         void cleanup_append(uint64_t lowest_active_transaction, uint64_t row_group_start, uint64_t count);
 
-        uint64_t
-        delete_rows(uint64_t vector_idx, uint64_t transaction_id, uint64_t sub_id, int64_t rows[], uint64_t count);
+        uint64_t delete_rows(uint64_t vector_idx,
+                             uint64_t transaction_id,
+                             uint64_t sub_id,
+                             uint64_t command_id,
+                             int64_t rows[],
+                             uint64_t count);
         void commit_delete(uint64_t vector_idx, uint64_t commit_id, const delete_info& info);
         void commit_all_deletes(uint64_t txn_id, uint64_t commit_id);
         void revert_all_deletes(uint64_t txn_id, uint64_t from_sub_id);

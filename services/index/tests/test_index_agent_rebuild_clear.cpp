@@ -104,7 +104,8 @@ namespace {
                                                                 session,
                                                                 compare_type::eq,
                                                                 make_scalar(resource, key),
-                                                                txn_id);
+                                                                txn_id,
+                                                                true);
             REQUIRE_FALSE(answer.has_error());
             return sorted(std::move(answer.value()));
         };

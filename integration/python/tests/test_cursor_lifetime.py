@@ -24,7 +24,7 @@ from otterbrix import Client
 
 path = sys.argv[1]
 client = Client(path)
-client.execute("CREATE DATABASE d;")
+client.execute("CREATE SCHEMA d;")
 client.execute("CREATE TABLE d.t (id INTEGER);")
 client.execute("INSERT INTO d.t (id) VALUES (1), (2);")
 cursor = client.execute("SELECT id FROM d.t;")

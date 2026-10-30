@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <limits>
 #include <services/disk/tests/test_directory.hpp>
+#include <services/engine/bootstrap_token_def.hpp>
 #include <thread>
 #include <unistd.h>
 
@@ -45,12 +46,13 @@ namespace {
         core::non_thread_scheduler::scheduler_test_t* scheduler;
         configuration::config_disk disk_config;
         std::unique_ptr<manager_disk_t, actor_zeta::pmr::deleter_t> manager;
+        manager_disk_t::bootstrap_t boot{*manager, services::bootstrap_token_t{}};
 
         explicit fresh_disk(const std::filesystem::path& path)
             : log(make_test_log())
             , scheduler(new core::non_thread_scheduler::scheduler_test_t(1, 1))
             , disk_config([&]() {
-                configuration::config_disk c;
+                configuration::config_disk c{path};
                 c.path = path;
                 return c;
             }())
@@ -101,7 +103,12 @@ namespace {
                                                        components::table::transaction_data::committed(),
                                                        {},
                                                        table_oid};
-            auto r = fd.invoke(&manager_disk_t::storage_append, append_ctx, table_oid, std::move(batch));
+            auto r = fd.invoke(&manager_disk_t::storage_append,
+                               append_ctx,
+                               table_oid,
+                               std::pmr::vector<catalog::oid_t>(1, catalog::INVALID_OID, &fd.resource),
+                               std::move(batch),
+                               false);
             REQUIRE_FALSE(r.has_error());
             written += rows;
         }
@@ -113,12 +120,15 @@ namespace {
         columns.emplace_back("value", components::types::complex_logical_type{components::types::logical_type::BIGINT});
         auto table_oid = test_create_table(fd, ns_oid, "sealed", columns);
         REQUIRE(table_oid >= catalog::FIRST_USER_OID);
-        fd.invoke(&manager_disk_t::create_storage_disk,
-                  session_id_t{},
-                  table_oid,
-                  catalog::well_known_oid::main_database,
-                  columns,
-                  /*is_computed=*/false);
+        REQUIRE_FALSE(
+            fd.invoke(&manager_disk_t::create_storage_disk,
+                      components::execution_context_t{session_id_t{}, components::table::transaction_data{0, 0}, {}},
+                      table_oid,
+                      catalog::well_known_oid::main_database,
+                      qualified_name_t{},
+                      columns,
+                      /*is_computed=*/false)
+                .has_error());
         append_rows(fd, table_oid, 0, rows);
         return table_oid;
     }
@@ -128,7 +138,6 @@ namespace {
                                session_id_t{},
                                table_oid,
                                uint64_t{0}, // 0 == OPEN
-                               std::unique_ptr<components::table::pushed_filter_t>(nullptr),
                                int64_t{-1},
                                std::vector<size_t>{},
                                with_open_snapshot(0, 0));
@@ -149,7 +158,7 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
 
     {
         fresh_disk fd(dir);
-        REQUIRE_FALSE(fd.manager->bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd.boot.bootstrap_system_tables_sync().contains_error());
         table_oid = make_seeded_table(fd, kRowsBeforeSeal);
 
         REQUIRE(fd.checkpoint_round(services::wal::id_t{100}) == services::wal::id_t{0});
@@ -160,13 +169,13 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
 
         const auto cursor_id = open_undrained_cursor(fd, table_oid);
         REQUIRE(cursor_id != 0);
-        REQUIRE(fd.manager->has_active_scan_for_oid_sync(table_oid));
+        REQUIRE(fd.boot.has_active_scan_for_oid_sync(table_oid));
 
         REQUIRE(fd.checkpoint_round(services::wal::id_t{300}) == services::wal::id_t{100});
 
         REQUIRE(fd.checkpoint_round(services::wal::id_t{400}) == services::wal::id_t{100});
 
-        auto peeked = fd.manager->peek_checkpoint_wal_id_from_disk(table_oid, catalog::well_known_oid::main_database);
+        auto peeked = fd.boot.peek_checkpoint_wal_id_from_disk(table_oid, catalog::well_known_oid::main_database);
         REQUIRE_FALSE(peeked.has_error());
         REQUIRE(peeked.value() == services::wal::id_t{200});
     }
@@ -174,9 +183,9 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
     // A fresh manager reopens the table from the round-2 root, so rows appended after it exist only in the WAL.
     {
         fresh_disk fd2(dir);
-        REQUIRE_FALSE(fd2.manager->bootstrap_system_tables_sync().contains_error());
-        fd2.manager->restore_oid_generator_sync();
-        REQUIRE_FALSE(fd2.manager->load_user_table_storages_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.bootstrap_system_tables_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.restore_oid_generator_sync().contains_error());
+        REQUIRE_FALSE(fd2.boot.load_user_table_storages_sync().contains_error());
 
         const auto durable_rows =
             disk_test_helpers::read_ok(fd2.invoke(&manager_disk_t::storage_total_rows, session_id_t{}, table_oid));

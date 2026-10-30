@@ -5,14 +5,18 @@
 #include <components/expressions/scalar_expression.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
+#include <components/vector/operations/apply_quantified.hpp>
 
 using namespace components::sql;
 using namespace components::sql::transform;
 
 using components::vector::make_null;
 using components::vector::make_scalar;
+using components::vector::operations::match_flags_t;
+using components::vector::operations::match_mode_of;
 using vec = std::vector<components::vector::vector_t>;
 
 // Transformer now wraps SELECT in sequence_t(resolve_*..., aggregate); descend
@@ -20,7 +24,7 @@ using vec = std::vector<components::vector::vector_t>;
 #define TEST_SIMPLE_SELECT(QUERY, RESULT, PARAMS)                                                                      \
     {                                                                                                                  \
         SECTION(QUERY) {                                                                                               \
-            auto select = linitial(raw_parser(&arena_resource, QUERY));                                                \
+            auto select = linitial(parse_ok(&arena_resource, QUERY));                                                  \
             auto _wrap = transformer.transform(pg_cell_to_node_cast(select)).finalize();                               \
             REQUIRE(!_wrap.has_error());                                                                               \
             auto result = _wrap.value();                                                                               \
@@ -146,9 +150,10 @@ TEST_CASE("components::sql::select_from_where") {
         R"_($not: [$or: ["name": {$eq: #1}, "count": {$eq: #2}]]]}})_",
         vec({make_scalar(&resource, 10l), make_scalar(&resource, "doc 10"), make_scalar(&resource, 2l)}));
 
-    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pattern';)_",
-                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0, #1}}}})_",
-                       vec({make_scalar(&resource, "pattern"), make_scalar(&resource, "l")}));
+    TEST_SIMPLE_SELECT(
+        R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pattern';)_",
+        R"_($aggregate: {$match: {$function: {name: {"like_match"}, args: {"name", #0, #1}}}})_",
+        vec({make_scalar(&resource, "pattern"), make_scalar(&resource, match_mode_of(match_flags_t{.glob = true}))}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT (column_name).field FROM TestCollection WHERE (column_name).field > 9.99;)_",
@@ -183,19 +188,22 @@ TEST_CASE("components::sql::select_from_where") {
                        R"_($aggregate: {$match: {$and: ["count": {$ne: #0}, "count": {$ne: #1}]}})_",
                        vec({make_scalar(&resource, 1l), make_scalar(&resource, 2l)}));
 
-    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE '%test%';)_",
-                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0, #1}}}})_",
-                       vec({make_scalar(&resource, "%test%"), make_scalar(&resource, "l")}));
+    TEST_SIMPLE_SELECT(
+        R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE '%test%';)_",
+        R"_($aggregate: {$match: {$function: {name: {"like_match"}, args: {"name", #0, #1}}}})_",
+        vec({make_scalar(&resource, "%test%"), make_scalar(&resource, match_mode_of(match_flags_t{.glob = true}))}));
 
-    TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pre_fix';)_",
-                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0, #1}}}})_",
-                       vec({make_scalar(&resource, "pre_fix"), make_scalar(&resource, "l")}));
+    TEST_SIMPLE_SELECT(
+        R"_(SELECT * FROM TestDatabase.TestCollection WHERE name LIKE 'pre_fix';)_",
+        R"_($aggregate: {$match: {$function: {name: {"like_match"}, args: {"name", #0, #1}}}})_",
+        vec({make_scalar(&resource, "pre_fix"), make_scalar(&resource, match_mode_of(match_flags_t{.glob = true}))}));
 
     // NULL NOT LIKE p is UNKNOWN: the match itself inverts, and a NULL subject never reaches it, so
-    // the negated form is the same call with an 'n' flag — no union_not, no is_not_null guard.
+    // the negated form is the same call with the negate bit in its mode — no union_not, no is_not_null guard.
     TEST_SIMPLE_SELECT(R"_(SELECT * FROM TestDatabase.TestCollection WHERE name NOT LIKE '%test%';)_",
-                       R"_($aggregate: {$match: {$function: {name: {"regexp_like"}, args: {"name", #0, #1}}}})_",
-                       vec({make_scalar(&resource, "%test%"), make_scalar(&resource, "ln")}));
+                       R"_($aggregate: {$match: {$function: {name: {"like_match"}, args: {"name", #0, #1}}}})_",
+                       vec({make_scalar(&resource, "%test%"),
+                            make_scalar(&resource, match_mode_of(match_flags_t{.glob = true, .negate = true}))}));
 
     TEST_SIMPLE_SELECT(
         R"_(SELECT * FROM TestDatabase.TestCollection WHERE name IS NOT NULL AND count IN (1, 2);)_",
@@ -384,7 +392,7 @@ TEST_CASE("components::sql::aggregate_distinct_survives_having_and_nesting") {
 
     // The group node absorbs the select-list expressions, so walking its children alone sees both projection and HAVING aggregates.
     auto calls_of = [&](const char* query) {
-        auto stmt = linitial(raw_parser(&arena_resource, query));
+        auto stmt = linitial(parse_ok(&arena_resource, query));
         auto wrap = transformer.transform(pg_cell_to_node_cast(stmt)).finalize();
         REQUIRE(!wrap.has_error());
         auto node = wrap.value().sub_queries.back();

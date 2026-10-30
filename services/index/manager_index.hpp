@@ -26,10 +26,11 @@
 #include <limits>
 #include <list>
 #include <mutex>
+#include <services/bootstrap_token.hpp>
+#include <services/loop_thread.hpp>
 
 #include <components/configuration/configuration.hpp>
 #include <set>
-#include <thread>
 #include <unordered_map>
 
 namespace services::index {
@@ -127,7 +128,9 @@ namespace services::index {
         requires(actor_zeta::type_traits::is_unique_future_v<ReturnType>) [[nodiscard]] ReturnType
             enqueue_impl(actor_zeta::actor::address_t sender, actor_zeta::mailbox::message_id cmd, Args&&... args);
 
-        void mark_table_dropped_sync(components::catalog::oid_t oid, uint64_t dropped_at_commit_id);
+        class bootstrap_t;
+
+        [[nodiscard]] const core::error_t& construction_error() const noexcept { return construction_error_; }
 
         unique_future<void>
         mark_table_dropped(session_id_t session, components::catalog::oid_t table_oid, uint64_t dropped_at_commit_id);
@@ -137,32 +140,10 @@ namespace services::index {
 
         unique_future<void> abort_transaction(session_id_t session, components::table::txn_abort_drain_t drain);
 
-        void set_manager_dispatcher_sync(actor_zeta::address_t address);
-
-        // Empty != absent: absent means CREATE INDEX on this table would be a bookkeeping bug.
-        void bootstrap_engine_sync(components::catalog::oid_t oid);
-
-        [[nodiscard]] core::error_t bootstrap_index_sync(components::catalog::oid_t table_oid,
-                                                         components::catalog::oid_t index_oid,
-                                                         components::logical_plan::index_type type,
-                                                         components::index::keys_base_storage_t keys,
-                                                         std::pmr::set<std::uint64_t> commit_ids);
-
-        void bootstrap_dropped_sync(components::catalog::oid_t oid, uint64_t delete_id);
-
-#ifdef DEV_MODE
-        // Raw, non-owning handles (an address_t can't be resumed).
-        [[nodiscard]] std::pmr::vector<bitcask_index_agent_t*> owned_bitcask_agents_sync();
-        [[nodiscard]] std::pmr::vector<btree_index_agent_t*> owned_btree_agents_sync();
-#endif
-
         struct pending_index_rebuild_t {
             components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
             components::catalog::oid_t index_oid{components::catalog::INVALID_OID};
         };
-
-        // An index named here holds pre-compact row ids and must not be wired.
-        [[nodiscard]] std::pmr::vector<pending_index_rebuild_t> pending_index_rebuilds_sync() const;
 
         unique_future<void> register_collection(session_id_t session, components::catalog::oid_t table_oid);
         unique_future<void> unregister_collection(session_id_t session, components::catalog::oid_t table_oid);
@@ -225,8 +206,8 @@ namespace services::index {
                components::index::keys_base_storage_t keys,
                components::vector::vector_t key,
                components::expressions::compare_type compare,
-               uint64_t start_time,
                uint64_t txn_id,
+               bool hides_own_deletes,
                core::date::timezone_offset_t session_tz);
 
         unique_future<core::result_wrapper_t<index_search_result_t>>
@@ -236,8 +217,8 @@ namespace services::index {
                                    components::vector::vector_t key,
                                    components::expressions::compare_type compare,
                                    components::logical_plan::index_type preferred_type,
-                                   uint64_t start_time,
                                    uint64_t txn_id,
+                                   bool hides_own_deletes,
                                    core::date::timezone_offset_t session_tz);
 
         unique_future<core::error_t> flush_all_indexes(session_id_t session);
@@ -294,6 +275,29 @@ namespace services::index {
                                                        &manager_index_t::apply_wal_record_for_index>;
 
     private:
+#ifdef DEV_MODE
+        // Raw, non-owning handles (an address_t can't be resumed).
+        [[nodiscard]] std::pmr::vector<btree_index_agent_t*> owned_btree_agents_sync();
+#endif
+
+        void mark_table_dropped_sync(components::catalog::oid_t oid, uint64_t dropped_at_commit_id);
+
+        void set_manager_dispatcher_sync(actor_zeta::address_t address);
+
+        // Empty != absent: absent means CREATE INDEX on this table would be a bookkeeping bug.
+        void bootstrap_engine_sync(components::catalog::oid_t oid);
+
+        [[nodiscard]] core::error_t bootstrap_index_sync(components::catalog::oid_t table_oid,
+                                                         components::catalog::oid_t index_oid,
+                                                         components::logical_plan::index_type type,
+                                                         components::index::keys_base_storage_t keys,
+                                                         std::pmr::set<std::uint64_t> commit_ids);
+
+        void bootstrap_dropped_sync(components::catalog::oid_t oid, uint64_t delete_id);
+
+        // An index named here holds pre-compact row ids and must not be wired.
+        [[nodiscard]] std::pmr::vector<pending_index_rebuild_t> pending_index_rebuilds_sync() const;
+
         std::pmr::memory_resource* resource_;
         actor_zeta::scheduler_raw scheduler_;
         log_t log_;
@@ -416,9 +420,46 @@ namespace services::index {
         configuration::pump_intervals_t pump_;
         void wake_loop_() noexcept;
         std::pmr::list<in_flight_entry_t> in_flight_{resource_};
-        std::thread loop_thread_;
+        void loop_body();
+        core::error_t construction_error_{core::error_t::no_error()};
         std::atomic<bool> loop_running_{true};
         boost::lockfree::queue<actor_zeta::mailbox::message*> inbox_{128};
+        loop_thread_t loop_thread_;
+    };
+
+    class manager_index_t::bootstrap_t final {
+    public:
+        bootstrap_t(manager_index_t& manager, const services::bootstrap_token_t&) noexcept
+            : manager_(manager) {}
+
+        void mark_table_dropped_sync(components::catalog::oid_t oid, uint64_t dropped_at_commit_id) {
+            manager_.mark_table_dropped_sync(oid, dropped_at_commit_id);
+        }
+        void set_manager_dispatcher_sync(actor_zeta::address_t address) {
+            manager_.set_manager_dispatcher_sync(std::move(address));
+        }
+        void bootstrap_engine_sync(components::catalog::oid_t oid) { manager_.bootstrap_engine_sync(oid); }
+        [[nodiscard]] core::error_t bootstrap_index_sync(components::catalog::oid_t table_oid,
+                                                         components::catalog::oid_t index_oid,
+                                                         components::logical_plan::index_type type,
+                                                         components::index::keys_base_storage_t keys,
+                                                         std::pmr::set<std::uint64_t> commit_ids) {
+            return manager_.bootstrap_index_sync(table_oid, index_oid, type, std::move(keys), std::move(commit_ids));
+        }
+        void bootstrap_dropped_sync(components::catalog::oid_t oid, uint64_t delete_id) {
+            manager_.bootstrap_dropped_sync(oid, delete_id);
+        }
+        [[nodiscard]] std::pmr::vector<pending_index_rebuild_t> pending_index_rebuilds_sync() const {
+            return manager_.pending_index_rebuilds_sync();
+        }
+#ifdef DEV_MODE
+        [[nodiscard]] std::pmr::vector<btree_index_agent_t*> owned_btree_agents_sync() const {
+            return manager_.owned_btree_agents_sync();
+        }
+#endif
+
+    private:
+        manager_index_t& manager_;
     };
 
     template<typename ReturnType, typename... Args>

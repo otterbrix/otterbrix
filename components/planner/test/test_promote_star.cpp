@@ -61,6 +61,20 @@ using namespace components::expressions;
 using expressions::compare_type;
 using expressions::scalar_type;
 using expressions::side_t;
+
+namespace {
+    // The column the left / right ON operand reads: rewrite_hash_joins puts the left side's operand first.
+    size_t on_column(const components::logical_plan::node_join_t* join, bool right) {
+        REQUIRE_FALSE(join->expressions().empty());
+        const auto* on =
+            static_cast<const components::expressions::compare_expression_t*>(join->expressions().front().get());
+        const auto& operand = right ? on->right() : on->left();
+        REQUIRE(components::expressions::is_key(operand));
+        return components::expressions::as_key(operand).path()[0];
+    }
+    size_t on_left_col(const components::logical_plan::node_join_t* join) { return on_column(join, false); }
+    size_t on_right_col(const components::logical_plan::node_join_t* join) { return on_column(join, true); }
+} // namespace
 using expressions::sort_order;
 
 // ============================================================================
@@ -397,30 +411,30 @@ TEST_CASE("optimizer::promote_star::fact_last_star_reordered_fact_first") {
     auto* j_part = static_cast<node_join_t*>(agg_after->children()[0].get());
     CHECK(j_part->type() == join_type::inner);
     CHECK(j_part->algo() == node_join_t::join_algo::hash);
-    CHECK(j_part->left_col() == 3);
-    CHECK(j_part->right_col() == 0);
+    CHECK(on_left_col(j_part) == 3);
+    CHECK(on_right_col(j_part) == 0);
     REQUIRE(j_part->children().size() == 2);
     CHECK(j_part->children()[1].get() == s.part.get());
 
     auto* j_supp = static_cast<node_join_t*>(j_part->children()[0].get());
     REQUIRE(j_supp->type() == join_type::inner);
     CHECK(j_supp->algo() == node_join_t::join_algo::hash);
-    CHECK(j_supp->left_col() == 4);
-    CHECK(j_supp->right_col() == 0);
+    CHECK(on_left_col(j_supp) == 4);
+    CHECK(on_right_col(j_supp) == 0);
     CHECK(j_supp->children()[1].get() == s.supplier.get());
 
     auto* j_cust = static_cast<node_join_t*>(j_supp->children()[0].get());
     REQUIRE(j_cust->type() == join_type::inner);
     CHECK(j_cust->algo() == node_join_t::join_algo::hash);
-    CHECK(j_cust->left_col() == 2);
-    CHECK(j_cust->right_col() == 0);
+    CHECK(on_left_col(j_cust) == 2);
+    CHECK(on_right_col(j_cust) == 0);
     CHECK(j_cust->children()[1].get() == s.customer.get());
 
     auto* j_date = static_cast<node_join_t*>(j_cust->children()[0].get());
     REQUIRE(j_date->type() == join_type::inner);
     CHECK(j_date->algo() == node_join_t::join_algo::hash);
-    CHECK(j_date->left_col() == 5);
-    CHECK(j_date->right_col() == 0);
+    CHECK(on_left_col(j_date) == 5);
+    CHECK(on_right_col(j_date) == 0);
     CHECK(j_date->children()[0].get() == s.lineorder.get()); // fact bottom-left
     CHECK(j_date->children()[1].get() == s.dim_date.get());
 
@@ -512,16 +526,16 @@ TEST_CASE("optimizer::promote_star::three_table_chain_not_reordered") {
     auto* oj = static_cast<node_join_t*>(agg_after->children()[0].get());
     CHECK(oj->type() == join_type::inner);
     CHECK(oj->algo() == node_join_t::join_algo::hash);
-    CHECK(oj->left_col() == 3);
-    CHECK(oj->right_col() == 0);
+    CHECK(on_left_col(oj) == 3);
+    CHECK(on_right_col(oj) == 0);
     CHECK(oj->children()[1].get() == c.get());
 
     // Inner join claims a_k=b_k, leaves a,b in FROM order.
     auto* ij = static_cast<node_join_t*>(oj->children()[0].get());
     CHECK(ij->type() == join_type::inner);
     CHECK(ij->algo() == node_join_t::join_algo::hash);
-    CHECK(ij->left_col() == 1);
-    CHECK(ij->right_col() == 0);
+    CHECK(on_left_col(ij) == 1);
+    CHECK(on_right_col(ij) == 0);
     CHECK(ij->children()[0].get() == a.get());
     CHECK(ij->children()[1].get() == b.get());
 

@@ -13,6 +13,8 @@
 #include <vector>
 
 #include <components/base/collection_full_name.hpp>
+#include <components/catalog/catalog_oids.hpp>
+#include <components/session/transaction_status.hpp>
 #include <components/types/types.hpp>
 #include <components/vector/data_chunk.hpp>
 
@@ -49,7 +51,7 @@ namespace components::cursor {
 
         std::size_t size() const;
         std::size_t column_count() const;
-        // A name the result does not carry is a field_not_exists error, not a sentinel index.
+        // A name the result does not carry is an undefined_column error, not a sentinel index.
         [[nodiscard]] core::result_wrapper_t<std::size_t> column_index(std::string_view key) const;
 
         bool has_next() const;
@@ -88,6 +90,20 @@ namespace components::cursor {
         [[nodiscard]] bool is_write() const noexcept;
         void set_written(std::uint64_t rows) noexcept;
 
+        [[nodiscard]] catalog::oid_t created_oid() const noexcept;
+        void set_created_oid(catalog::oid_t oid) noexcept;
+        // The portal the answer leaves open (0 for none) and whether it may hold rows still to fetch: a window's first
+        // answer, a FETCH of a cursor that is still open.
+        [[nodiscard]] std::uint64_t portal_id() const noexcept;
+        [[nodiscard]] bool has_more() const noexcept;
+        void set_portal(std::uint64_t portal_id, bool has_more) noexcept;
+        [[nodiscard]] session::transaction_status_t transaction_status() const noexcept;
+        void set_transaction_status(session::transaction_status_t status) noexcept;
+
+        // A describe's answer: the type of $n at index n-1. Empty for every other result.
+        [[nodiscard]] const std::pmr::vector<components::types::complex_logical_type>& parameter_types() const noexcept;
+        void set_parameter_types(const std::pmr::vector<components::types::complex_logical_type>& types);
+
     private:
         struct cell_t {
             const vector::vector_t* vec;
@@ -112,9 +128,14 @@ namespace components::cursor {
         // chunk_starts_[i] = rows before chunks_[i]; empty chunks repeat the next start.
         std::pmr::vector<uint64_t> chunk_starts_;
         std::pmr::vector<components::types::complex_logical_type> type_data_;
+        std::pmr::vector<components::types::complex_logical_type> parameter_types_;
         core::error_t error_;
         std::uint64_t affected_rows_ = 0;
         bool is_write_ = false;
+        catalog::oid_t created_oid_ = catalog::INVALID_OID;
+        std::uint64_t portal_id_ = 0;
+        bool has_more_ = false;
+        session::transaction_status_t transaction_status_ = session::transaction_status_t::idle;
     };
 
     namespace detail {
@@ -164,7 +185,7 @@ namespace components::cursor {
                 case physical_type::DOUBLE:
                     return detail::from_floating<T>(vec.get_value<double>(index));
                 default:
-                    return make_error(core::error_code_t::conversion_failure,
+                    return make_error(core::error_code_t::datatype_mismatch,
                                       "the column's physical type is not numeric");
             }
         } else {
@@ -174,7 +195,7 @@ namespace components::cursor {
                               std::is_same_v<T, core::date::timestamptz_t> || std::is_same_v<T, core::date::interval_t>,
                           "cursor_t::get<T>: no cell type reads as T");
             if (vec.type().type() != types::to_logical_type<T>()) {
-                return make_error(core::error_code_t::conversion_failure,
+                return make_error(core::error_code_t::datatype_mismatch,
                                   "the column's type cannot be read as the requested type");
             }
             return vec.get_value<T>(index);
@@ -187,7 +208,7 @@ namespace components::cursor {
         assert(!is_write_ && "result is a row count, not a data");
         VALUE_OR_RETURN(const auto cell, resolve_cell(col_idx, row_idx, path));
         if (cell.is_null) {
-            return make_error(core::error_code_t::conversion_failure, "cell is NULL");
+            return make_error(core::error_code_t::null_value_no_indicator_parameter, "cell is NULL");
         }
         return read_cell<T>(*cell.vec, cell.index);
     }

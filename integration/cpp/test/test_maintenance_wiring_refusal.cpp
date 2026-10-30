@@ -48,7 +48,7 @@ TEST_CASE("integration::cpp::maintenance_wiring::drop_index_with_nothing_to_scru
     INFO("no catalog delete specs and no disk actor: nothing this statement could verify as dropped");
     CHECK_FALSE(op->is_executed());
     REQUIRE(op->has_error());
-    CHECK(op->get_error().type == core::error_code_t::index_not_exists);
+    CHECK(op->get_error().type == core::error_code_t::internal_error);
 }
 
 // index_scan is only built once the planner has proved the index exists, so this path is the same
@@ -82,7 +82,7 @@ TEST_CASE("integration::cpp::maintenance_wiring::index_scan_without_index_servic
 
     INFO("an unwired index service must be an error on the source, not an empty drain");
     REQUIRE(first.has_error());
-    CHECK(first.error().type == core::error_code_t::index_not_exists);
+    CHECK(first.error().type == core::error_code_t::internal_error);
     CHECK(op.has_error());
     CHECK_FALSE(op.is_executed());
 }

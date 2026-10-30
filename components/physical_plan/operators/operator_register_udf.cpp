@@ -23,15 +23,17 @@ namespace components::operators {
     operator_register_udf_t::operator_register_udf_t(std::pmr::memory_resource* resource,
                                                      log_t log,
                                                      components::compute::function_ptr function,
-                                                     executor_uids_t executor_uids)
+                                                     components::compute::function_uid uid,
+                                                     components::catalog::oid_t schema_oid)
         : read_only_operator_t(resource, std::move(log), operator_type::register_udf)
+        , schema_oid_(schema_oid)
         , function_(std::move(function))
-        , executor_uids_(std::move(executor_uids)) {}
+        , uid_(uid) {}
 
     actor_zeta::unique_future<void> operator_register_udf_t::await_async_and_resume(pipeline::context_t* ctx) {
         if (!function_) {
             set_error(
-                core::error_t{core::error_code_t::invalid_parameter,
+                core::error_t{core::error_code_t::internal_error,
                               std::pmr::string{"register_udf: the plan node carries no function payload", resource_}});
             mark_failed();
             co_return;
@@ -45,7 +47,7 @@ namespace components::operators {
         // 1. PostgreSQL 18 ProcedureCreate, one pg_proc row per kernel signature: a row with this name and these
         //    inputs is kept (oid, and the edges of what depends on it) and rewritten, because prouid belongs to this
         //    process; other inputs are another function, a row of its own next to the old ones. A name the engine
-        //    seeded (pg_catalog) is not taken. A signature the executors already hold was refused before this runs.
+        //    seeded (pg_catalog) is not taken. A signature the statement's registry holds was refused before this runs.
         std::pmr::vector<catalog::oid_t> row_oids(signatures.size(), catalog::INVALID_OID, resource_);
         std::pmr::vector<catalog::oid_t> rewritten(resource_);
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
@@ -66,7 +68,7 @@ namespace components::operators {
                     return m.namespace_oid == catalog::well_known_oid::pg_catalog_namespace;
                 })) {
                 set_error(core::error_t{
-                    core::error_code_t::already_exists,
+                    core::error_code_t::duplicate_function,
                     std::pmr::string{"register_udf: a function named '" + func_name + "' already exists in the catalog",
                                      resource_}});
                 mark_failed();
@@ -74,13 +76,13 @@ namespace components::operators {
             }
             for (std::size_t i = 0; i < signatures.size(); ++i) {
                 const auto existing = std::find_if(matches.begin(), matches.end(), [&](const auto& m) {
-                    return m.signature.proargmatchers == signatures[i].proargmatchers;
+                    return m.namespace_oid == schema_oid_ && m.signature.proargmatchers == signatures[i].proargmatchers;
                 });
                 if (existing == matches.end()) {
                     continue;
                 }
                 if (existing->signature != signatures[i]) {
-                    set_error(core::error_t{core::error_code_t::already_exists,
+                    set_error(core::error_t{core::error_code_t::invalid_function_definition,
                                             std::pmr::string{"register_udf: cannot change return type of existing "
                                                              "function \"" +
                                                                  func_name + "\"\nHINT: Use unregister_udf first.",
@@ -93,29 +95,7 @@ namespace components::operators {
             }
         }
 
-        // 2. Validate the per-executor uids the dispatcher pre-collected (it already dropped any executor
-        //    that errored). Empty means nothing to mirror; non-empty must agree on one non-invalid uid
-        //    across all executors, or the registration is rejected.
-        const auto& uids = executor_uids_;
-        if (!uids.empty()) {
-            const auto first_uid = uids.front();
-            const bool agree = std::all_of(uids.begin(), uids.end(), [first_uid](components::compute::function_uid u) {
-                return u != components::compute::invalid_function_uid && u == first_uid;
-            });
-            if (!agree) {
-                set_error(core::error_t{core::error_code_t::function_registry_error,
-                                        std::pmr::string{"register_udf: the executor registries did not agree on a "
-                                                         "single valid uid for '" +
-                                                             func_name + "'",
-                                                         resource_}});
-                mark_failed();
-                co_return;
-            }
-        }
-
-        // 3. Everything that can refuse (oid round, namespace lookup/resolve, pg_proc/pg_depend appends) runs
-        //    here, before the dispatcher adds the function to its master registry, so a refusal leaves the
-        //    master without a function the catalog has no row for.
+        // 2. The oid of each new row.
         if (ctx->disk_address != actor_zeta::address_t::empty_address()) {
             for (auto& oid : row_oids) {
                 if (oid != catalog::INVALID_OID) {
@@ -133,43 +113,9 @@ namespace components::operators {
                 }
             }
 
-            // 4. Persist to pg_proc, attached to the first existing user namespace;
-            //    if none exists, the row lives in pg_catalog.
-            catalog::oid_t target_ns = catalog::well_known_oid::pg_catalog_namespace;
-            {
-                auto [_ln, lnf] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                              &services::disk::manager_disk_t::list_namespaces,
-                                                              exec_ctx);
-                auto ns_names_r = co_await std::move(lnf);
-                if (ns_names_r.has_error()) {
-                    // Losing this lookup does not merely lose a lookup: target_ns would stay
-                    // pg_catalog and the pg_proc row would be written into the WRONG namespace.
-                    set_error(ns_names_r.error());
-                    mark_failed();
-                    co_return;
-                }
-                for (auto& nname : ns_names_r.value()) {
-                    if (!nname.empty() && nname != "pg_catalog") {
-                        auto [_rn, rnf] =
-                            actor_zeta::otterbrix::send(ctx->disk_address,
-                                                        &services::disk::manager_disk_t::resolve_namespace,
-                                                        exec_ctx,
-                                                        std::string(nname));
-                        auto rns_r = co_await std::move(rnf);
-                        if (rns_r.has_error()) {
-                            set_error(rns_r.error());
-                            mark_failed();
-                            co_return;
-                        }
-                        if (rns_r.value().found) {
-                            target_ns = rns_r.value().oid;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            const std::int64_t prouid = uids.empty() ? std::int64_t{0} : static_cast<std::int64_t>(uids.front());
+            // 3. Persist to pg_proc, in the schema of the registering session's place.
+            const catalog::oid_t target_ns = schema_oid_;
+            const auto prouid = static_cast<std::int64_t>(uid_);
 
             if (!rewritten.empty()) {
                 if (auto ec = co_await drop_function_rows(resource_,

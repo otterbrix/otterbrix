@@ -19,7 +19,7 @@ TEST_CASE("integration::cpp::concurrency::visibility::interleaved", "[interleave
     engine_t engine("visibility_interleaved");
     session_t writer(engine, "writer");
     session_t reader(engine, "reader");
-    require_ok(writer, "CREATE DATABASE db;");
+    require_ok(writer, "CREATE SCHEMA db;");
     require_ok(writer, "CREATE TABLE db.t (id bigint, v bigint);");
     require_ok(writer, "INSERT INTO db.t (id, v) VALUES (1, 10), (2, 20), (3, 30);");
 
@@ -199,7 +199,7 @@ TEST_CASE("integration::cpp::concurrency::visibility::overlapping", "[overlappin
     engine_t engine("visibility_overlapping");
     session_t first(engine, "first");
     session_t second(engine, "second");
-    require_ok(first, "CREATE DATABASE db;");
+    require_ok(first, "CREATE SCHEMA db;");
     require_ok(first, "CREATE TABLE db.big (id bigint, v bigint);");
     insert_numbered_rows(first, "db.big", PAUSABLE_TABLE_ROWS);
     const auto rows_where = [&](const std::string& condition) {
@@ -267,7 +267,7 @@ TEST_CASE("integration::cpp::concurrency::visibility::overlapping", "[overlappin
 TEST_CASE("integration::cpp::concurrency::visibility::parallel", "[parallel]") {
     engine_t engine("visibility_parallel");
     session_t admin(engine, "admin");
-    require_ok(admin, "CREATE DATABASE db;");
+    require_ok(admin, "CREATE SCHEMA db;");
     require_ok(admin, "CREATE TABLE db.t (id bigint, v bigint);");
 
     SECTION("a reader never sees part of a transaction") {

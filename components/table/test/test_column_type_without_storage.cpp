@@ -70,6 +70,6 @@ TEST_CASE("components::table::column_type_without_storage::a_NULL_typed_column_r
     REQUIRE_FALSE(table.append_lock(state).has_error());
     auto opened = table.initialize_append(state);
     REQUIRE(opened.has_error());
-    CHECK(opened.error().type == core::error_code_t::invalid_parameter);
+    CHECK(opened.error().type == core::error_code_t::unimplemented_yet);
     std::remove(path.c_str());
 }

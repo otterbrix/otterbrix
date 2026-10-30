@@ -18,7 +18,7 @@ namespace {
         "FOREIGN KEY constraint \"fk_child_parent\" still depends on it.";
 
     core::error_t produced_on(std::pmr::memory_resource* producer) {
-        return core::error_t{core::error_code_t::schema_error,
+        return core::error_t{core::error_code_t::internal_error,
                              std::pmr::string{refusal.begin(), refusal.end(), producer}};
     }
 
@@ -43,7 +43,7 @@ TEST_CASE("components::operators::set_error_leaves_the_message_on_the_operator_r
         op.set_error(error);
 
         REQUIRE(op.has_error());
-        CHECK(op.get_error().type == core::error_code_t::schema_error);
+        CHECK(op.get_error().type == core::error_code_t::internal_error);
         CHECK(std::string_view{op.get_error().what} == refusal);
 
         CHECK(op.get_error().what.get_allocator().resource() == &owner);

@@ -10,6 +10,7 @@ set(${PROJECT_NAME}_SOURCES
 
     # collection
         collection/executor.cpp
+
         collection/view_definition.cpp
         collection/explain/explain_plan.cpp
         collection/explain/renderer_postgres.cpp
@@ -22,10 +23,12 @@ set(${PROJECT_NAME}_SOURCES
         disk/manager_disk_ddl.cpp
         disk/manager_disk_resolve.cpp
         disk/manager_disk_storage.cpp
+        disk/manager_disk_offer.cpp
         disk/oid_reservation.cpp
 
     # dispatcher
        dispatcher/dispatcher.cpp
+       dispatcher/registry_changes.cpp
        dispatcher/enrich_logical_plan.cpp
        dispatcher/resolve_type.cpp
        dispatcher/resolve_arithmetic.cpp
@@ -33,6 +36,7 @@ set(${PROJECT_NAME}_SOURCES
        dispatcher/validate_logical_plan.cpp
        dispatcher/validation/schema.cpp
        dispatcher/validation/resolve_expression.cpp
+       dispatcher/validation/parameter_types.cpp
 
     # engine
         engine/engine.cpp

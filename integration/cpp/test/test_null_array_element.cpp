@@ -34,7 +34,7 @@ TEST_CASE("integration::cpp::null_arr_elem::fixed_array_null_cell") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE ae;"));
+    REQUIRE(ok(d, "CREATE SCHEMA ae;"));
     REQUIRE(ok(d, "CREATE TABLE ae.t (id bigint, v int[3]);"));
     REQUIRE(ok(d, "INSERT INTO ae.t (id, v) VALUES (1, ARRAY[10, 20, 30]);"));
     REQUIRE(ok(d, "INSERT INTO ae.t (id, v) VALUES (2, NULL);")); // whole array cell NULL
@@ -56,7 +56,7 @@ TEST_CASE("integration::cpp::null_arr_elem::fixed_array_null_padded_element") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE ae;"));
+    REQUIRE(ok(d, "CREATE SCHEMA ae;"));
     REQUIRE(ok(d, "CREATE TABLE ae.t (id bigint, v int[3]);"));
     REQUIRE(ok(d, "INSERT INTO ae.t (id, v) VALUES (1, ARRAY[10, 20, 30]);"));
     // A short array pads the missing tail elements with NULL (the column has no default).
@@ -75,7 +75,7 @@ TEST_CASE("integration::cpp::null_arr_elem::variadic_list") {
     test_clear_directory(config);
     test_spaces space(config);
     auto* d = space.dispatcher();
-    REQUIRE(ok(d, "CREATE DATABASE ae;"));
+    REQUIRE(ok(d, "CREATE SCHEMA ae;"));
     REQUIRE(ok(d, "CREATE TABLE ae.l (id bigint, v int[]);"));
     REQUIRE(ok(d, "INSERT INTO ae.l (id, v) VALUES (1, ARRAY[10, 20]);"));
     REQUIRE(ok(d, "INSERT INTO ae.l (id, v) VALUES (2, NULL);"));      // whole list NULL

@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <components/logical_plan/node_catalog_resolve.hpp>
 
 #include <components/catalog/catalog_oids.hpp>
 #include <components/compute/function.hpp>
@@ -7,6 +8,7 @@
 #include <components/logical_plan/node_drop.hpp>
 #include <components/logical_plan/node_sequence.hpp>
 #include <components/physical_plan/operators/operator.hpp>
+#include <components/physical_plan/operators/operator_sequence.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 
 #include <components/table/column_definition.hpp>
@@ -33,6 +35,16 @@ namespace {
         return add;
     }
 
+    // The table the ALTERs name, as the plan resolved it: the planner takes its storage from the metadata.
+    const lp::resolved_table_metadata_t* altered_table() {
+        static lp::resolved_table_metadata_t table = [] {
+            lp::resolved_table_metadata_t resolved;
+            resolved.table_oid = components::catalog::oid_t{16400};
+            return resolved;
+        }();
+        return &table;
+    }
+
     lp::node_ptr make_unlowerable_leaf(std::pmr::memory_resource* res) {
         return lp::make_node_drop(res, lp::drop_target_kind::collection);
     }
@@ -44,6 +56,7 @@ TEST_CASE("physical_plan_generator::sequence::an_unlowerable_first_child_refuses
     auto* res = &arena;
     services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
+    context.table_metadata[components::catalog::oid_t{16400}] = altered_table();
 
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
     seq->append_child(make_unlowerable_leaf(res));
@@ -62,6 +75,7 @@ TEST_CASE("physical_plan_generator::sequence::an_unlowerable_later_child_refuses
     auto* res = &arena;
     services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
+    context.table_metadata[components::catalog::oid_t{16400}] = altered_table();
 
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
     seq->append_child(make_lowerable_alter_add(res, "c1"));
@@ -72,11 +86,12 @@ TEST_CASE("physical_plan_generator::sequence::an_unlowerable_later_child_refuses
     REQUIRE(plan.has_error());
 }
 
-TEST_CASE("physical_plan_generator::sequence::all_lowerable_children_still_chain") {
+TEST_CASE("physical_plan_generator::sequence::the_children_are_steps_not_a_chain") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
     services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
+    context.table_metadata[components::catalog::oid_t{16400}] = altered_table();
 
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
     seq->append_child(make_lowerable_alter_add(res, "c1"));
@@ -86,15 +101,45 @@ TEST_CASE("physical_plan_generator::sequence::all_lowerable_children_still_chain
 
     REQUIRE_FALSE(plan.has_error());
     const auto& root = plan.value();
-    REQUIRE(root->left() != nullptr);
-    REQUIRE(root->left()->left() == nullptr);
+    REQUIRE(root->type() == components::operators::operator_type::sequence);
+    const auto& steps = static_cast<const components::operators::operator_sequence_t&>(*root).steps();
+    REQUIRE(steps.size() == 2);
+    for (const auto& step : steps) {
+        CHECK(step->left() == nullptr);
+        CHECK(step->right() == nullptr);
+    }
 }
 
-TEST_CASE("physical_plan_generator::sequence::the_first_written_clause_executes_first_in_the_alter_chain") {
+TEST_CASE("physical_plan_generator::sequence::ten_thousand_steps_stay_flat") {
     std::pmr::monotonic_buffer_resource arena;
     auto* res = &arena;
     services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
     components::compute::function_registry_t registry(res);
+    context.table_metadata[components::catalog::oid_t{16400}] = altered_table();
+
+    constexpr std::size_t count = 10000;
+    auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
+    for (std::size_t i = 0; i < count; ++i) {
+        seq->append_child(make_lowerable_alter_add(res, "c"));
+    }
+
+    auto plan = services::planner::create_plan(context, registry, seq, lp::limit_t::all(), nullptr);
+    REQUIRE_FALSE(plan.has_error());
+    std::size_t depth = 0;
+    for (auto* op = plan.value().get(); op != nullptr; op = op->left().get()) {
+        ++depth;
+    }
+    CHECK(depth == 1);
+    REQUIRE(plan.value()->type() == components::operators::operator_type::sequence);
+    CHECK(static_cast<const components::operators::operator_sequence_t&>(*plan.value()).steps().size() == count);
+}
+
+TEST_CASE("physical_plan_generator::sequence::the_first_written_clause_is_the_first_step") {
+    std::pmr::monotonic_buffer_resource arena;
+    auto* res = &arena;
+    services::context_storage_t context(res, log_t{}, components::catalog::session_catalog_t{});
+    components::compute::function_registry_t registry(res);
+    context.table_metadata[components::catalog::oid_t{16400}] = altered_table();
 
     auto seq = boost::intrusive_ptr(new lp::node_sequence_t(res));
     seq->append_child(make_lowerable_alter_add(res, "c1"));
@@ -108,8 +153,10 @@ TEST_CASE("physical_plan_generator::sequence::the_first_written_clause_executes_
     REQUIRE_FALSE(plan.has_error());
     const auto& root = plan.value();
 
-    // The executor runs bottom-up (deepest-left first); children[0] must sit deepest, or attnum order runs backwards.
-    REQUIRE(root->type() == components::operators::operator_type::alter_column_rename);
-    REQUIRE(root->left() != nullptr);
-    REQUIRE(root->left()->type() == components::operators::operator_type::alter_column_add);
+    // The executor runs the steps in order; children[0] must run first, or attnum order runs backwards.
+    REQUIRE(root->type() == components::operators::operator_type::sequence);
+    const auto& steps = static_cast<const components::operators::operator_sequence_t&>(*root).steps();
+    REQUIRE(steps.size() == 2);
+    CHECK(steps[0]->type() == components::operators::operator_type::alter_column_add);
+    CHECK(steps[1]->type() == components::operators::operator_type::alter_column_rename);
 }

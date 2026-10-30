@@ -52,7 +52,7 @@ namespace components::planner::optimizer {
             if (!std::holds_alternative<core::parameter_id_t>(slot)) {
                 return false;
             }
-            return !is_foldable(parameters, std::get<core::parameter_id_t>(slot));
+            return !is_foldable(parameters, components::expressions::as_parameter(slot));
         }
 
         // Every operand of a scalar expression is a foldable parameter id.
@@ -85,11 +85,11 @@ namespace components::planner::optimizer {
                 return false;
             }
 
-            const auto left_id = std::get<core::parameter_id_t>(expr.params()[0]);
+            const auto left_id = components::expressions::as_parameter(expr.params()[0]);
             if (storage.is_null(left_id)) {
                 return false;
             }
-            const auto right_id = arity == 2 ? std::get<core::parameter_id_t>(expr.params()[1]) : left_id;
+            const auto right_id = arity == 2 ? components::expressions::as_parameter(expr.params()[1]) : left_id;
             if (storage.is_null(right_id)) {
                 return false;
             }
@@ -122,7 +122,7 @@ namespace components::planner::optimizer {
                 return std::nullopt;
             }
             const auto& storage = parameters->parameters();
-            const auto child_id = std::get<core::parameter_id_t>(expr.child());
+            const auto child_id = components::expressions::as_parameter(expr.child());
             if (!is_foldable(storage, child_id) || !has_free_id(storage)) {
                 return std::nullopt;
             }
@@ -205,11 +205,11 @@ namespace components::planner::optimizer {
             vector::operations::element_test_t test{to_operator_code(expr.inner_op())};
             if (expr.inner_op() == compare_type::regex) {
                 auto flags = expr.regex_flags_param();
-                if (!flags.has_value()) {
+                if (!flags.has_value() || storage.type(*flags).type() != types::logical_type::UTINYINT) {
                     return {false, types::tri_bool_t::unknown};
                 }
                 test = vector::operations::element_test_t{
-                    vector::operations::match_flags_of(storage.at(*flags).get_value<std::string_view>(0))};
+                    vector::operations::match_flags_of(storage.at(*flags).get_value<uint8_t>(0))};
             } else if (!vector::operations::is_quantifiable(test.code())) {
                 return {false, types::tri_bool_t::unknown};
             }
@@ -241,7 +241,8 @@ namespace components::planner::optimizer {
             bool right_is_param = std::holds_alternative<core::parameter_id_t>(expr.right());
 
             if (left_is_param != right_is_param && is_value_comparison(expr.type())) {
-                const auto constant_id = std::get<core::parameter_id_t>(left_is_param ? expr.left() : expr.right());
+                const auto constant_id =
+                    components::expressions::as_parameter(left_is_param ? expr.left() : expr.right());
                 if (parameters->parameters().is_null(constant_id)) {
                     expr.set_type(compare_type::all_unknown);
                 }
@@ -253,8 +254,8 @@ namespace components::planner::optimizer {
                 return;
             }
 
-            auto left_id = std::get<core::parameter_id_t>(expr.left());
-            auto right_id = std::get<core::parameter_id_t>(expr.right());
+            auto left_id = components::expressions::as_parameter(expr.left());
+            auto right_id = components::expressions::as_parameter(expr.right());
 
             const auto& storage = parameters->parameters();
             bool quantified = expr.type() == compare_type::any || expr.type() == compare_type::all;
@@ -321,7 +322,7 @@ namespace components::planner::optimizer {
             if (!std::holds_alternative<expression_ptr>(slot)) {
                 return;
             }
-            auto& nested = std::get<expression_ptr>(slot);
+            auto& nested = components::expressions::as_expr(slot);
             if (!nested) {
                 return;
             }
@@ -330,7 +331,7 @@ namespace components::planner::optimizer {
                 // operator the fold refused still applies it.
                 if (fold_expression(resource, nested, parameters, ctx)) {
                     auto* ns = static_cast<scalar_expression_t*>(nested.get());
-                    auto id = std::get<core::parameter_id_t>(ns->params()[0]);
+                    auto id = components::expressions::as_parameter(ns->params()[0]);
                     slot = id;
                 }
             } else if (nested->group() == expression_group::cast) {

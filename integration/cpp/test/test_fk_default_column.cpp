@@ -36,7 +36,7 @@ namespace {
         REQUIRE_FALSE(answer.has_error());                                                                             \
         return answer.value();                                                                                         \
     };                                                                                                                 \
-    REQUIRE(exec("CREATE DATABASE f;")->is_success());                                                                 \
+    REQUIRE(exec("CREATE SCHEMA f;")->is_success());                                                                   \
     REQUIRE(exec("CREATE TABLE f.parent (id bigint, val text);")->is_success());                                       \
     REQUIRE(exec("INSERT INTO f.parent (id, val) VALUES (1, 'p1');")->is_success())
 

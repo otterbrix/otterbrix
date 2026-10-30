@@ -11,19 +11,20 @@
 namespace components::sql::transform {
 
     namespace {
-        // The new type's own name (for collision detection — the resolve stamps a result iff pg_type already has
-        // the name) plus every nested UDT referenced by struct fields. check_type_exists / probe_type_in_path read
-        // those stamps back.
-        std::vector<std::string> type_names_of(const types::complex_logical_type& type) {
-            std::vector<std::string> names;
-            names.emplace_back(type.type_name());
+        // Every UDT the struct fields reference; the new type's own name is registered in its schema by the
+        // executor, which completes the target with the session's place.
+        std::vector<qualified_name_t> field_type_names_of(const types::complex_logical_type& type) {
+            std::vector<qualified_name_t> names;
             if (type.type() == types::logical_type::STRUCT) {
                 for (const auto& field : type.child_types()) {
-                    types::walk_user_type_refs(field, [&](std::string_view nm) { names.emplace_back(nm); });
+                    types::walk_user_type_refs(field, [&](const types::complex_logical_type& ref) {
+                        auto name = type_reference_of(ref);
+                        if (std::find(names.begin(), names.end(), name) == names.end()) {
+                            names.push_back(std::move(name));
+                        }
+                    });
                 }
             }
-            std::sort(names.begin(), names.end());
-            names.erase(std::unique(names.begin(), names.end()), names.end());
             return names;
         }
     } // namespace
@@ -34,10 +35,8 @@ namespace components::sql::transform {
         auto type = types::complex_logical_type::create_struct(written.collection.t, fields);
         auto type_copy = type;
         auto created = logical_plan::make_node_create_type(resource_, std::move(type_copy));
-        // A type always lands in "public"; a name that spells uid or schema goes to enrich to refuse.
-        set_target(*created, written, target_slots::database);
-        register_namespace("public");
-        register_types(type_names_of(type));
+        register_namespace(set_target(*created, written, target_slots::schema));
+        register_types(field_type_names_of(type));
         return created;
     }
 
@@ -56,9 +55,8 @@ namespace components::sql::transform {
         auto type = types::complex_logical_type::create_enum(written.collection.t, std::move(values));
         auto type_copy = type;
         auto created = logical_plan::make_node_create_type(resource_, std::move(type_copy));
-        set_target(*created, written, target_slots::database);
-        register_namespace("public");
-        register_types(type_names_of(type));
+        register_namespace(set_target(*created, written, target_slots::schema));
+        register_types(field_type_names_of(type));
         return created;
     }
 

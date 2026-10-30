@@ -102,6 +102,14 @@ namespace components::compute {
             : result(std::move(init)) {}
     };
 
+    // PostgreSQL's provolatile.
+    enum class volatility_t : uint8_t
+    {
+        immutable,
+        stable,
+        volatile_
+    };
+
     class function {
     public:
         function(const function&) = delete;
@@ -110,6 +118,7 @@ namespace components::compute {
 
         std::string_view name() const noexcept { return name_; }
         const arity& fn_arity() const { return arity_; }
+        volatility_t volatility() const noexcept { return volatility_; }
         const function_doc& doc() const { return doc_; }
 
         virtual size_t num_kernels() const = 0;
@@ -160,13 +169,15 @@ namespace components::compute {
                  std::string_view name,
                  arity fn_arity,
                  const function_doc& doc,
-                 const function_options* default_options);
+                 const function_options* default_options,
+                 volatility_t volatility);
         function(std::pmr::memory_resource* resource, const function& other);
 
         std::pmr::string name_;
         arity arity_;
         function_doc doc_;
         const function_options* default_options_;
+        volatility_t volatility_;
     };
 
     using function_uid = size_t;
@@ -176,6 +187,13 @@ namespace components::compute {
         function_uid uid{invalid_function_uid};
         size_t signature{0};
     };
+    // The functions a call may reach (as a relation name): a bare call the built-ins (pg_catalog) and the
+    // user functions of the session's schema, a qualified one those of its schema. The executor scopes every call
+    // of a statement; an unscoped call reaches the built-ins only.
+    struct function_scope_t {
+        bool builtins{true};
+        std::uint32_t schema_oid{0};
+    };
     namespace detail {
         template<typename KernelType>
         class function_impl : public function {
@@ -184,8 +202,9 @@ namespace components::compute {
                           std::string_view name,
                           arity fn_arity,
                           const function_doc& doc,
-                          size_t available_kernel_slots)
-                : function(resource, name, fn_arity, doc, nullptr)
+                          size_t available_kernel_slots,
+                          volatility_t volatility)
+                : function(resource, name, fn_arity, doc, nullptr, volatility)
                 , kernel_slots_(available_kernel_slots)
                 , kernels_(resource) {
                 kernels_.reserve(kernel_slots_);
@@ -215,7 +234,7 @@ namespace components::compute {
 
             core::error_t add_kernel(std::pmr::memory_resource* resource, KernelType kernel) {
                 if (kernels_.size() >= kernel_slots_) {
-                    return core::error_t(core::error_code_t::kernel_error,
+                    return core::error_t(core::error_code_t::internal_error,
                                          std::pmr::string{"Cannot append kernel: all " + std::to_string(kernel_slots_) +
                                                               " slots are taken!",
                                                           resource});
@@ -223,7 +242,7 @@ namespace components::compute {
 
                 size_t input_sz = kernel.signature().input_types.size();
                 if (!arity_.varargs && input_sz != arity_.num_args) {
-                    return core::error_t(core::error_code_t::kernel_error,
+                    return core::error_t(core::error_code_t::internal_error,
                                          std::pmr::string{"Cannot append kernel: arity mismatch, function requires " +
                                                               std::to_string(arity_.num_args) +
                                                               " args, while kernel: " + std::to_string(input_sz),
@@ -288,7 +307,8 @@ namespace components::compute {
                         std::string_view name,
                         arity fn_arity,
                         const function_doc& doc,
-                        size_t available_kernel_slots);
+                        size_t available_kernel_slots,
+                        volatility_t volatility);
         vector_function(std::pmr::memory_resource* resource, const vector_function& other);
         void accept_visitor(function_visitor& visitor) const override;
 
@@ -302,7 +322,8 @@ namespace components::compute {
                            arity fn_arity,
                            const function_doc& doc,
                            size_t available_kernel_slots,
-                           bool mergeable);
+                           bool mergeable,
+                           volatility_t volatility);
         aggregate_function(std::pmr::memory_resource* resource, const aggregate_function& other);
         void accept_visitor(function_visitor& visitor) const override;
 
@@ -320,7 +341,8 @@ namespace components::compute {
                         std::string_view name,
                         arity fn_arity,
                         const function_doc& doc,
-                        size_t available_kernel_slots);
+                        size_t available_kernel_slots,
+                        volatility_t volatility);
         expand_function(std::pmr::memory_resource* resource, const expand_function& other);
         void accept_visitor(function_visitor& visitor) const override;
 
@@ -331,8 +353,13 @@ namespace components::compute {
     class function_registry_t {
     public:
         explicit function_registry_t(std::pmr::memory_resource* resource);
+        // Every function copied onto `resource`, under the uid and in the schema it has here.
+        function_registry_t(const function_registry_t& other, std::pmr::memory_resource* resource);
 
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function(function_ptr function);
+        // A uid no function of this registry has nor will be given by add_function: the uid
+        // add_function_with_uid adds a function under later.
+        [[nodiscard]] function_uid reserve_uid() noexcept { return current_uid_++; }
         // Used when the canonical UID was chosen by the executors' copies, so the dispatcher's master
         // names a function by the same uid they do.
         [[nodiscard]] core::result_wrapper_t<function_uid> add_function_with_uid(function_uid uid,
@@ -346,16 +373,20 @@ namespace components::compute {
         function* get_function(function_uid uid) const;
         [[nodiscard]] std::vector<std::pair<std::string, function_uid>> get_functions() const;
         [[nodiscard]] std::pmr::vector<function_uid> find_functions(std::string_view name) const;
-        // The function `name` with a signature these inputs match, invalid_function_uid when there is none.
+        // The user function `name` of the schema `schema_oid` with a signature these inputs match,
+        // invalid_function_uid when there is none.
         [[nodiscard]] function_uid find_overload(std::string_view name,
-                                                 const std::pmr::vector<types::complex_logical_type>& inputs) const;
+                                                 const std::pmr::vector<types::complex_logical_type>& inputs,
+                                                 std::uint32_t schema_oid) const;
+
+        // The schema (pg_namespace oid) a user function was registered in; 0 for a built-in.
+        void set_schema(function_uid uid, std::uint32_t schema_oid);
+        [[nodiscard]] std::uint32_t schema_of(function_uid uid) const noexcept;
+        // Whether `scope` reaches the function `uid`.
+        [[nodiscard]] bool reaches(const function_scope_t& scope, function_uid uid) const noexcept;
 
         // Remove a function by uid (DROP FUNCTION / unregister_udf path). No-op if uid not present.
         bool remove_function(function_uid uid);
-        // Remove a function by (name, input types) signature match — used by dispatcher to drop a
-        // single overload.
-        bool remove_function_by_signature(const std::string& name,
-                                          const std::pmr::vector<types::complex_logical_type>& inputs);
 
         std::pmr::memory_resource* resource() const noexcept;
 
@@ -366,6 +397,7 @@ namespace components::compute {
 
         std::pmr::memory_resource* resource_;
         std::pmr::unordered_map<function_uid, function_ptr> functions_;
+        std::pmr::unordered_map<function_uid, std::uint32_t> schemas_;
         function_uid current_uid_{0};
         core::error_t builtin_error_{core::error_t::no_error()};
     };
@@ -373,7 +405,7 @@ namespace components::compute {
     // WARNING: array size, names order, uid and signatures has to be the same as in register_default_functions()
     // TODO: could be constexpr after C++20
     // TODO: initialize DEFAULT_FUNCTIONS with register_default_functions() call
-    static const std::array<std::pair<std::string, function_uid>, 17> DEFAULT_FUNCTIONS{
+    static const std::array<std::pair<std::string, function_uid>, 20> DEFAULT_FUNCTIONS{
         std::pair<std::string, function_uid>{"sum", 0},
         std::pair<std::string, function_uid>{"min", 1},
         std::pair<std::string, function_uid>{"max", 2},
@@ -390,9 +422,16 @@ namespace components::compute {
         std::pair<std::string, function_uid>{"pow", 13},
         std::pair<std::string, function_uid>{"sqrt", 14},
         std::pair<std::string, function_uid>{"cbrt", 15},
-        std::pair<std::string, function_uid>{"factorial", 16}};
+        std::pair<std::string, function_uid>{"factorial", 16},
+        std::pair<std::string, function_uid>{"like_match", 17},
+        std::pair<std::string, function_uid>{"current_database", 18},
+        std::pair<std::string, function_uid>{"current_schema", 19}};
 
     inline bool is_builtin(function_uid uid) noexcept { return uid < DEFAULT_FUNCTIONS.size(); }
+
+    inline constexpr function_uid like_match_uid = 17;
+    inline constexpr std::string_view like_match_name = "like_match";
+    inline bool is_internal(function_uid uid) noexcept { return uid == like_match_uid; }
 
     // Goes through add_builtin, which pins uids to DEFAULT_FUNCTIONS and poisons the registry on
     // mismatch; check builtin_registration_error() for the outcome.
@@ -403,5 +442,12 @@ namespace components::compute {
     void register_string_functions(function_registry_t& registry);
     void register_expand_functions(function_registry_t& registry);
     void register_math_functions(function_registry_t& registry);
+    void register_internal_functions(function_registry_t& registry);
+    void register_place_functions(function_registry_t& registry);
+
+    // current_database() / current_schema(): the executor reads the session's place from the catalog
+    // and binds its name (NULL when it is gone) as the one argument; the function answers it.
+    inline constexpr std::string_view current_database_name = "current_database";
+    inline constexpr std::string_view current_schema_name = "current_schema";
 
 } // namespace components::compute

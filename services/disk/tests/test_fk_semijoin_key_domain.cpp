@@ -103,7 +103,7 @@ TEST_CASE("services::disk::fk_hash_semijoin::a_fractional_key_matches_no_integer
 }
 
 // A key the stored column cannot hold is answered "no match", not a failed statement -- a
-// conversion_failure here would abort the whole FK check, taking in-domain keys down with it.
+// A cast refusal here would abort the whole FK check, taking in-domain keys down with it.
 TEST_CASE("services::disk::fk_hash_semijoin::an_out_of_domain_key_misses_instead_of_failing") {
     core::pmr::otterbrix_resource resource;
 

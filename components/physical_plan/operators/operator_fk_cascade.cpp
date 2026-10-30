@@ -82,7 +82,7 @@ namespace components::operators {
             what.append(" referencing column(s) vs ");
             what.append(std::to_string(par_indices.size()).c_str());
             what.append(" referenced column(s)");
-            co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
 
         // `absent` means the key never resolved, not that it matched nothing.
@@ -97,10 +97,10 @@ namespace components::operators {
                 what.append("\" ");
             }
             what.append("has no resolved position in the parent row — the ON DELETE action cannot be evaluated");
-            co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
         if (par_indices.empty()) {
-            co_return core::error_t{core::error_code_t::invalid_constraint,
+            co_return core::error_t{core::error_code_t::internal_error,
                                     std::pmr::string{"FK constraint: no referenced columns resolved — the ON DELETE "
                                                      "action cannot be evaluated",
                                                      resource_}};
@@ -113,7 +113,7 @@ namespace components::operators {
             what.append(std::to_string(fk_.child_col_indices.size()).c_str());
             what.append(" referencing column(s) — a column with no spec would silently be set to "
                         "NULL instead of its default");
-            co_return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+            co_return core::error_t{core::error_code_t::internal_error, std::move(what)};
         }
 
         std::pmr::vector<std::string> key_cols(resource_);
@@ -136,7 +136,7 @@ namespace components::operators {
             what.append("at position ");
             what.append(std::to_string(pidx).c_str());
             what.append(" — the ON DELETE action cannot be evaluated");
-            return core::error_t{core::error_code_t::invalid_constraint, std::move(what)};
+            return core::error_t{core::error_code_t::internal_error, std::move(what)};
         };
 
         std::pmr::vector<types::complex_logical_type> key_types(resource_);
@@ -194,7 +194,7 @@ namespace components::operators {
                 for (const auto& child_ids : per_row_child_ids) {
                     if (!child_ids.empty()) {
                         set_error(core::error_t{
-                            core::error_code_t::invalid_constraint,
+                            core::error_code_t::foreign_key_violation,
                             std::pmr::string{"FK constraint violated: child rows reference deleted parent row",
                                              resource_}});
                         co_return;
@@ -208,11 +208,13 @@ namespace components::operators {
                 if (row_ids.empty())
                     break;
 
-                auto [_d, dfut] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                              &services::disk::manager_disk_t::storage_delete_rows,
-                                                              exec_ctx,
-                                                              fk_.child_table_oid,
-                                                              std::move(row_ids));
+                // A FOREIGN KEY joins two tables of otterbrix's own: the child's storage is the disk.
+                auto [_d, dfut] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_delete_rows>(
+                    ctx->disk_storage(),
+                    exec_ctx,
+                    fk_.child_table_oid,
+                    std::move(row_ids),
+                    false);
                 auto deleted_r = co_await std::move(dfut);
                 if (deleted_r.has_error()) {
                     set_error(deleted_r.error());
@@ -266,7 +268,7 @@ namespace components::operators {
                                                   "set to NULL"
                                                 : "has no resolved position in the child table — it cannot be "
                                                   "set to its default");
-                        set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+                        set_error(core::error_t{core::error_code_t::internal_error, std::move(what)});
                         mark_failed();
                         co_return;
                     }
@@ -295,7 +297,7 @@ namespace components::operators {
                             what.append(" column(s), too few to hold referencing column at position ");
                             what.append(std::to_string(schema_idx).c_str());
                             what.append(" — the ON DELETE action cannot be applied");
-                            set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+                            set_error(core::error_t{core::error_code_t::internal_error, std::move(what)});
                             mark_failed();
                             co_return;
                         }
@@ -321,12 +323,13 @@ namespace components::operators {
                     upd_ids_batch.emplace_back(std::move(ids));
                     upd_data_batch.emplace_back(std::move(chunk));
                 }
-                auto [_u, ufut] = actor_zeta::otterbrix::send(ctx->disk_address,
-                                                              &services::disk::manager_disk_t::storage_update,
-                                                              exec_ctx,
-                                                              fk_.child_table_oid,
-                                                              std::move(upd_ids_batch),
-                                                              std::move(upd_data_batch));
+                auto [_u, ufut] = actor_zeta::otterbrix::send<&services::disk::storage_contract::storage_update>(
+                    ctx->disk_storage(),
+                    exec_ctx,
+                    fk_.child_table_oid,
+                    std::move(upd_ids_batch),
+                    std::move(upd_data_batch),
+                    false);
                 auto update_result = co_await std::move(ufut);
                 if (update_result.has_error()) {
                     set_error(update_result.error());
@@ -334,7 +337,8 @@ namespace components::operators {
                     co_return;
                 }
                 if (ctx->txn.transaction_id != 0) {
-                    auto [upd_row_start, upd_row_count] = update_result.value().range;
+                    const auto upd_row_start = update_result.value().receipt.start_row;
+                    const auto upd_row_count = update_result.value().receipt.count;
                     if (upd_row_count > 0) {
                         ctx->dml_appends.push_back(
                             components::table::dml_append_range_t{fk_.child_table_oid, upd_row_start, upd_row_count});
@@ -350,7 +354,7 @@ namespace components::operators {
                 what.append(std::pmr::string(1, fk_.del_action, resource_));
                 what.append("' in pg_constraint.confdeltype is not one of the actions this build can apply "
                             "— the cascade cannot be evaluated");
-                set_error(core::error_t{core::error_code_t::invalid_constraint, std::move(what)});
+                set_error(core::error_t{core::error_code_t::internal_error, std::move(what)});
                 mark_failed();
                 co_return;
             }

@@ -40,7 +40,7 @@ TEST_CASE("integration::cpp::unresolved_target_dml_refusal") {
 
     INFO("initialization");
     {
-        REQUIRE(exec("CREATE DATABASE edb;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA edb;")->is_success());
         REQUIRE(exec("CREATE TABLE edb.t (id bigint);")->is_success());
         REQUIRE(exec("INSERT INTO edb.t (id) VALUES (1), (2), (3);")->is_success());
         REQUIRE(count_rows(dispatcher, "edb.t") == 3);

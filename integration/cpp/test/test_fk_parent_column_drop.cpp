@@ -16,7 +16,7 @@ namespace {
             auto session = otterbrix::session_id_t();
             return d->execute_sql(session, sql);
         };
-        REQUIRE(exec("CREATE DATABASE fkdrop;")->is_success());
+        REQUIRE(exec("CREATE SCHEMA fkdrop;")->is_success());
         REQUIRE(exec("CREATE TABLE fkdrop.parent (id bigint, name text);")->is_success());
         REQUIRE(exec("CREATE TABLE fkdrop.child (id bigint, pid bigint);")->is_success());
         REQUIRE(exec("ALTER TABLE fkdrop.parent ADD CONSTRAINT parent_pk PRIMARY KEY (id);")->is_success());

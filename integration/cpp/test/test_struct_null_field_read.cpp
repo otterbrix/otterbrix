@@ -22,7 +22,7 @@ TEST_CASE("integration::cpp::test_struct_null_field_read::select_whole_struct_ce
         return d->execute_sql(session, sql);
     };
 
-    REQUIRE(exec("CREATE DATABASE snf;")->is_success());
+    REQUIRE(exec("CREATE SCHEMA snf;")->is_success());
     REQUIRE(exec("CREATE TYPE snf_pair AS (a BIGINT, b BIGINT);")->is_success());
     REQUIRE(exec("CREATE TABLE snf.t (id BIGINT, p snf_pair);")->is_success());
     REQUIRE(exec("INSERT INTO snf.t (id, p) VALUES (1, ROW(11, 12));")->is_success());

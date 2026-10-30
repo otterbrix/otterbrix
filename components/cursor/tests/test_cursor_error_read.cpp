@@ -36,7 +36,7 @@ namespace {
                                        std::pmr::memory_resource* owner,
                                        std::string_view message) {
         return make_cursor(owner,
-                           core::error_t{core::error_code_t::schema_error,
+                           core::error_t{core::error_code_t::internal_error,
                                          std::pmr::string{message.begin(), message.end(), producer}});
     }
 
@@ -44,7 +44,8 @@ namespace {
     // the overload services/collection/executor.cpp's refusal sites take directly.
     cursor_t_ptr
     refuse_by_name(std::pmr::memory_resource* producer, std::pmr::memory_resource* owner, std::string_view message) {
-        core::error_t err{core::error_code_t::schema_error, std::pmr::string{message.begin(), message.end(), producer}};
+        core::error_t err{core::error_code_t::internal_error,
+                          std::pmr::string{message.begin(), message.end(), producer}};
         REQUIRE(err.what.get_allocator().resource() == producer);
         return make_cursor(owner, err);
     }
@@ -69,7 +70,7 @@ namespace {
             INFO("refusal #" << i << " of 8, message is " << expected.size() << " bytes");
 
             REQUIRE(cur.is_error());
-            REQUIRE(cur.get_error().type == core::error_code_t::schema_error);
+            REQUIRE(cur.get_error().type == core::error_code_t::internal_error);
 
             const core::error_t& error = cur.get_error();
             CHECK(error.what.size() == expected.size());
@@ -139,7 +140,7 @@ TEST_CASE("components::cursor::error_string_lives_on_the_cursor_resource") {
     resource_tracer_t owner;
 
     {
-        core::error_t error{core::error_code_t::schema_error,
+        core::error_t error{core::error_code_t::internal_error,
                             std::pmr::string{long_refusal.begin(), long_refusal.end(), &producer}};
         const std::size_t produced = producer.live_allocations();
         REQUIRE(produced >= 1);
@@ -167,7 +168,7 @@ TEST_CASE("components::cursor::error_string_lives_on_the_cursor_resource_when_pa
     resource_tracer_t owner;
 
     {
-        core::error_t error{core::error_code_t::schema_error,
+        core::error_t error{core::error_code_t::internal_error,
                             std::pmr::string{long_refusal.begin(), long_refusal.end(), &producer}};
         const std::size_t produced = producer.live_allocations();
         REQUIRE(produced >= 1);

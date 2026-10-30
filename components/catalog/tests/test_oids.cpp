@@ -1,6 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
 #include <components/catalog/catalog_oids.hpp>
-#include <components/catalog/table_id.hpp>
 #include <components/table/column_definition.hpp>
 #include <components/types/types.hpp>
 #include <core/pmr.hpp>
@@ -125,38 +124,14 @@ TEST_CASE("test_column_oid_assignment") {
     REQUIRE(col.oid() == components::table::storage::INVALID_INDEX);
 }
 
-// 9. Re-stamping the same OID is idempotent; a DIFFERENT value ABORTS table_id::set_oid in
-//    every build. The abort itself isn't exercised (a death test
-//    would take the binary with it) — only the idempotent path is. Contrast:
-//    column_definition_t::set_attoid (components/table/column_definition.cpp) REFUSES
-//    instead of aborting on the same disagreement, because its stamps can arrive FROM DISK
-//    on the load/bootstrap path, where aborting would make the database unopenable.
+// 9. Re-stamping the same attoid is idempotent. column_definition_t::set_attoid
+//    (components/table/column_definition.cpp) REFUSES rather than aborting on a different value, because its stamps
+//    can arrive FROM DISK on the load/bootstrap path, where aborting would make the database unopenable.
 TEST_CASE("test_oid_immutability") {
-    core::pmr::otterbrix_resource resource;
-    SECTION("table_id::set_oid") {
-        qualified_name_t cfn(core::dbname_t{"main"}, core::relname_t{"users"});
-        table_id tid(&resource, cfn);
-        tid.set_oid(20000);
-        tid.set_oid(20000); // idempotent
-        REQUIRE(tid.oid() == 20000);
-    }
-
     SECTION("column_definition_t::set_attoid") {
         components::table::column_definition_t col("price", components::types::logical_type::DOUBLE);
         col.set_attoid(42);
         col.set_attoid(42); // idempotent
         REQUIRE(col.attoid() == 42);
     }
-}
-
-// 10. table_id OID round-trip.
-//     Doc test alias: test_table_oid_assignment.
-TEST_CASE("test_table_oid_assignment") {
-    core::pmr::otterbrix_resource resource;
-
-    qualified_name_t cfn(core::dbname_t{"main"}, core::relname_t{"users"});
-    table_id tid(&resource, cfn);
-    REQUIRE(tid.oid() == INVALID_OID);
-    tid.set_oid(20000);
-    REQUIRE(tid.oid() == 20000);
 }

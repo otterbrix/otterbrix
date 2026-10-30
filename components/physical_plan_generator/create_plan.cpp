@@ -17,6 +17,7 @@
 #include "impl/create_plan_computed_field_unregister.hpp"
 #include "impl/create_plan_create_matview.hpp"
 #include "impl/create_plan_cte_scan.hpp"
+#include "impl/create_plan_cursor.hpp"
 #include "impl/create_plan_data.hpp"
 #include "impl/create_plan_delete.hpp"
 #include "impl/create_plan_dynamic_cascade_delete.hpp"
@@ -28,7 +29,11 @@
 #include "impl/create_plan_insert_on_conflict.hpp"
 #include "impl/create_plan_join.hpp"
 #include "impl/create_plan_match.hpp"
+#include "impl/create_plan_prepared_statement.hpp"
 #include "impl/create_plan_recursive_cte.hpp"
+#include "impl/create_plan_register_cast.hpp"
+#include "impl/create_plan_register_udf.hpp"
+#include "impl/create_plan_remote.hpp"
 #include "impl/create_plan_resolve_constraint.hpp"
 #include "impl/create_plan_resolve_database.hpp"
 #include "impl/create_plan_resolve_namespace.hpp"
@@ -43,10 +48,10 @@
 #include "impl/create_plan_unregister_udf.hpp"
 #include "impl/create_plan_update.hpp"
 #include "impl/create_plan_vacuum.hpp"
+#include <components/physical_plan/operators/operator_alter_column_set_not_null.hpp>
 
 #include <components/logical_plan/node_alter_column.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
-#include <components/logical_plan/node_extension.hpp>
 #include <components/logical_plan/node_transaction.hpp>
 
 namespace services::planner {
@@ -54,29 +59,113 @@ namespace services::planner {
     using components::logical_plan::node_type;
 
     core::error_t plan_refusal(std::pmr::memory_resource* resource, std::string_view what) {
-        return core::error_t{core::error_code_t::create_physical_plan_error, std::pmr::string{what, resource}};
+        return core::error_t{core::error_code_t::internal_error, std::pmr::string{what, resource}};
     }
 
-    core::error_t
-    unresolved_table_refusal(std::pmr::memory_resource* resource, std::string_view dbname, std::string_view relname) {
+    core::error_t unresolved_table_refusal(std::pmr::memory_resource* resource, const qualified_name_t& name) {
         std::pmr::string what{"relation \"", resource};
-        if (!dbname.empty()) {
-            what += dbname;
-            what += '.';
-        }
-        what += relname;
+        what += name.to_string();
         what += "\" has no resolved table in this plan";
         return plan_refusal(resource, what);
     }
 
-    plan_result_t storage_operator(std::pmr::memory_resource* resource, std::string_view relname, plan_result_t built) {
-        if (built.has_error() || built.value()) {
-            return built;
+    core::result_wrapper_t<components::table::storage_address_t>
+    storage_address_of(const context_storage_t& context, components::catalog::oid_t table_oid) {
+        // The no-table sentinel (a SELECT without FROM) reads no storage.
+        if (table_oid == components::catalog::INVALID_OID) {
+            return components::table::storage_address_t{};
         }
-        std::pmr::string what{"the storage of \"", resource};
-        what += relname;
-        what += "\" built no operator";
-        return plan_refusal(resource, what);
+        if (const auto* table = context.table_metadata_for(table_oid); table != nullptr) {
+            return table->address;
+        }
+        if (components::catalog::is_catalog_table(table_oid)) {
+            return components::table::storage_address_t{context.disk_address, {}};
+        }
+        std::pmr::string what{"no table metadata for oid ", context.resource};
+        what += std::to_string(static_cast<unsigned>(table_oid));
+        return core::error_t{core::error_code_t::internal_error, std::move(what)};
+    }
+
+    qualified_name_t qualified_name_of(const components::logical_plan::resolved_table_metadata_t& table) {
+        return qualified_name_t{core::connection_name_t{table.connection},
+                                core::dbname_t{table.database},
+                                core::schema_t{table.schema},
+                                core::relname_t{table.name}};
+    }
+
+    std::vector<size_t> scan_columns_of(const context_storage_t& context,
+                                        components::catalog::oid_t table_oid,
+                                        const std::vector<size_t>& projected) {
+        const auto* table = context.table_metadata_for(table_oid);
+        if (table == nullptr || table->relkind != components::catalog::relkind::computed) {
+            return projected;
+        }
+        std::vector<size_t> live;
+        live.reserve(table->columns.size());
+        for (const auto& column : table->columns) {
+            if (column.chunk_position >= 0) {
+                live.push_back(static_cast<size_t>(column.chunk_position));
+            }
+        }
+        return live;
+    }
+
+    core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>
+    page_types_of(const context_storage_t& context,
+                  components::catalog::oid_t table_oid,
+                  const std::vector<size_t>& projected) {
+        std::pmr::vector<components::types::complex_logical_type> types{context.resource};
+        // The no-table sentinel (a SELECT without FROM) reads no column.
+        if (table_oid == components::catalog::INVALID_OID) {
+            return types;
+        }
+        const auto* table = context.table_metadata_for(table_oid);
+        if (table == nullptr) {
+            std::pmr::string what{"table oid ", context.resource};
+            what += std::to_string(static_cast<unsigned>(table_oid));
+            what += " has no columns in this plan";
+            return plan_refusal(context.resource, what);
+        }
+        if (table->relkind == components::catalog::relkind::computed) {
+            const auto at = [&table](size_t position) -> const components::logical_plan::resolved_column_metadata_t* {
+                for (const auto& column : table->columns) {
+                    if (column.chunk_position == static_cast<std::int32_t>(position)) {
+                        return &column;
+                    }
+                }
+                return nullptr;
+            };
+            const auto read = projected.empty() ? scan_columns_of(context, table_oid, projected) : projected;
+            for (const auto position : read) {
+                const auto* column = at(position);
+                if (column == nullptr) {
+                    return plan_refusal(context.resource, "a computed table's scan reads a column it does not have");
+                }
+                types.push_back(column->type);
+            }
+            return types;
+        }
+        if (projected.empty()) {
+            for (const auto& column : table->columns) {
+                types.push_back(column.type);
+            }
+            return types;
+        }
+        for (const auto position : projected) {
+            if (position >= table->columns.size()) {
+                return plan_refusal(context.resource, "a scan reads a column its table does not have");
+            }
+            types.push_back(table->columns[position].type);
+        }
+        return types;
+    }
+
+    std::pmr::string full_name_of(const context_storage_t& context, components::catalog::oid_t table_oid) {
+        const auto* table = context.table_metadata_for(table_oid);
+        if (table == nullptr) {
+            return std::pmr::string{context.resource};
+        }
+        return std::pmr::string{qualified_name_of(*table).to_string(), context.resource};
     }
 
     plan_result_t create_plan(const context_storage_t& context,
@@ -86,11 +175,6 @@ namespace services::planner {
                               const components::logical_plan::storage_parameters* params) {
         switch (node->type()) {
             case node_type::aggregate_t:
-                // Aggregate-pushdown is lowered INSIDE create_plan_aggregate: when the group
-                // child is stamped pushdown() and the shape is POD-representable it returns a
-                // group_merge over a pushed_reduce_scan carrying the reduce spec (the owning agent
-                // reduces its slice); otherwise it builds the normal coordinator aggregate chain.
-                // No separate routing here.
                 return impl::create_plan_aggregate(context, function_registry, node, std::move(limit), params);
             case node_type::data_t:
                 return impl::create_plan_data(node);
@@ -142,8 +226,10 @@ namespace services::planner {
                         case components::logical_plan::alter_column_op::drop:
                             return impl::create_plan_computed_field_unregister(context, node);
                         case components::logical_plan::alter_column_op::rename:
+                        case components::logical_plan::alter_column_op::set_not_null:
                             // rewrite_alter_table never sets computed_ on a rename clause: a document table's
-                            // RENAME is answered by operator_alter_column_rename_t itself.
+                            // RENAME is answered by operator_alter_column_rename_t itself; a document table has
+                            // no PRIMARY KEY.
                             break;
                     }
                     assert(false && "a computed column is never renamed by ALTER");
@@ -156,6 +242,12 @@ namespace services::planner {
                         return impl::create_plan_alter_column_rename(context, node);
                     case components::logical_plan::alter_column_op::drop:
                         return impl::create_plan_alter_column_drop(context, node);
+                    case components::logical_plan::alter_column_op::set_not_null:
+                        return components::operators::operator_ptr{
+                            new components::operators::operator_alter_column_set_not_null_t(context.resource,
+                                                                                            context.log.clone(),
+                                                                                            ac->table_oid(),
+                                                                                            ac->attoid())};
                 }
                 assert(false && "unknown ALTER COLUMN operation");
                 std::abort();
@@ -164,14 +256,28 @@ namespace services::planner {
                 return impl::create_plan_dynamic_cascade_delete(context, node);
             case node_type::checkpoint_t:
                 return impl::create_plan_checkpoint(context, node);
+            case node_type::fetch_t:
+                return impl::create_plan_fetch(context, node);
+            case node_type::close_cursor_t:
+                return impl::create_plan_close_cursor(context, node);
             case node_type::set_setting_t:
                 return impl::create_plan_set_setting(context, node);
+            case node_type::prepare_t:
+                return impl::create_plan_prepare(context, node);
+            case node_type::deallocate_t:
+                return impl::create_plan_deallocate(context, node);
             case node_type::vacuum_t:
                 return impl::create_plan_vacuum(context, node);
             case node_type::create_matview_t:
                 return impl::create_plan_create_matview(context, node);
+            case node_type::register_udf_t:
+                return impl::create_plan_register_udf(context, node);
             case node_type::unregister_udf_t:
                 return impl::create_plan_unregister_udf(context, node);
+            case node_type::register_cast_t:
+                return impl::create_plan_register_cast(context, node);
+            case node_type::unregister_cast_t:
+                return impl::create_plan_unregister_cast(context, node);
             case node_type::transaction_t: {
                 const auto* txn = static_cast<const components::logical_plan::node_transaction_t*>(node.get());
                 switch (txn->op()) {
@@ -212,26 +318,8 @@ namespace services::planner {
                 return impl::create_plan_allocate_oids(context, node);
             case node_type::function_t:
                 return impl::create_plan_function(context, function_registry, node);
-            case node_type::extension_t: {
-                const auto& ext = static_cast<const components::logical_plan::node_extension_t&>(*node);
-                VALUE_OR_RETURN(auto op, ext.operator_fn()(context, function_registry, ext));
-                // A host rule's function, unlike the engine's generators, may build nothing.
-                if (!op) {
-                    std::pmr::string what{"the physical plan generator built no operator for ", context.resource};
-                    what += node->to_string();
-                    return plan_refusal(context.resource, what);
-                }
-                if (!node->children().empty()) {
-                    VALUE_OR_RETURN(auto child,
-                                    create_plan(context,
-                                                function_registry,
-                                                node->children().front(),
-                                                components::logical_plan::limit_t::all(),
-                                                params));
-                    op->set_children(std::move(child));
-                }
-                return op;
-            }
+            case node_type::remote_t:
+                return impl::create_plan_remote(context, node);
             default:
                 break;
         }

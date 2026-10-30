@@ -2,7 +2,7 @@
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/param_storage.hpp>
 #include <components/sql/parser/parser.h>
-#include <components/sql/parser/pg_functions.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 
@@ -10,19 +10,25 @@ using namespace components::sql;
 
 #define TEST_PARSER_ERROR(QUERY, RESULT)                                                                               \
     SECTION(QUERY) {                                                                                                   \
-        bool exception_thrown = false;                                                                                 \
-        try {                                                                                                          \
-            raw_parser(&arena_resource, QUERY);                                                                        \
-        } catch (const parser_exception_t& e) {                                                                        \
-            exception_thrown = true;                                                                                   \
-            REQUIRE(std::string_view{e.what()} == RESULT);                                                             \
-        }                                                                                                              \
-        REQUIRE(exception_thrown);                                                                                     \
+        auto parsed = raw_parser(&arena_resource, QUERY);                                                              \
+        REQUIRE(parsed.has_error());                                                                                   \
+        CHECK(parsed.error().type == core::error_code_t::sql_parse_error);                                             \
+        REQUIRE(std::string_view{parsed.error().what} == RESULT);                                                      \
+    }
+
+// POSITION is PostgreSQL's cursor position: the 1-based character the error points at
+#define TEST_PARSER_ERROR_AT(QUERY, RESULT, POSITION)                                                                  \
+    SECTION(QUERY) {                                                                                                   \
+        auto parsed = raw_parser(&arena_resource, QUERY);                                                              \
+        REQUIRE(parsed.has_error());                                                                                   \
+        CHECK(parsed.error().type == core::error_code_t::sql_parse_error);                                             \
+        REQUIRE(std::string_view{parsed.error().what} == RESULT);                                                      \
+        CHECK(parsed.error().position == POSITION);                                                                    \
     }
 
 #define TEST_TRANSFORMER_ERROR(QUERY, RESULT)                                                                          \
     SECTION(QUERY) {                                                                                                   \
-        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
+        auto select = linitial(parse_ok(&arena_resource, QUERY));                                                      \
         transform::transformer local(&resource, QUERY);                                                                \
         auto result = local.transform(transform::pg_cell_to_node_cast(select));                                        \
         REQUIRE(std::string_view{result.get_error().what} == RESULT);                                                  \
@@ -30,7 +36,7 @@ using namespace components::sql;
 
 #define TEST_TRANSFORMER_OK(QUERY)                                                                                     \
     SECTION(QUERY) {                                                                                                   \
-        auto select = linitial(raw_parser(&arena_resource, QUERY));                                                    \
+        auto select = linitial(parse_ok(&arena_resource, QUERY));                                                      \
         transform::transformer local(&resource, QUERY);                                                                \
         auto result = local.transform(transform::pg_cell_to_node_cast(select));                                        \
         REQUIRE_FALSE(result.get_error().contains_error());                                                            \
@@ -207,7 +213,7 @@ TEST_CASE("components::sql::errors") {
     SECTION("unsupported statements name their tag") {
         // TRUNCATE has its own refusal (test_name_bugs.cpp).
         for (const char* q : {"GRANT SELECT ON d.t TO alice;", "COPY d.t FROM '/tmp/x';"}) {
-            auto stmt = linitial(raw_parser(&arena_resource, q));
+            auto stmt = linitial(parse_ok(&arena_resource, q));
             auto result = transformer.transform(transform::pg_cell_to_node_cast(stmt));
             const std::string what{result.get_error().what.c_str()};
             INFO(q << " -> " << what);
@@ -225,6 +231,76 @@ TEST_CASE("components::sql::errors") {
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE (5 -> 'a') ? 'b';",
                            R"_(unsupported base operand for jsonb operator)_");
     TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE 5 ? 'a';", R"_(unsupported base operand for jsonb operator)_");
+    TEST_TRANSFORMER_ERROR("SELECT 1 WHERE ? 'a';", R"_(operator ? is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT 1 WHERE ~~ 'x';", R"_(operator ~~ is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT 1 WHERE -> 'a';", R"_(operator -> is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT j ? FROM d.t;", R"_(operator ? is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE j ?;", R"_(operator ? is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE j ~~;", R"_(operator ~~ is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT * FROM d.t WHERE (-> 'a') ? 'b';", R"_(operator -> is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT j ->> FROM d.t;", R"_(operator ->> is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("SELECT #- 'a' FROM d.t;", R"_(operator #- is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 |);", R"_(operator | is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 <=);", R"_(operator <= is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 ~~);", R"_(operator ~~ is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 ?);", R"_(operator ? is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 ->);", R"_(operator -> is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 + (2 |));", R"_(operator | is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t (a) VALUES (1), (2 |);", R"_(operator | is missing its operand)_");
+    TEST_TRANSFORMER_ERROR("INSERT INTO d.t VALUES (1 OPERATOR(pg_catalog.+));",
+                           R"_(operator + is missing its operand)_");
+    TEST_TRANSFORMER_OK("SELECT * FROM d.t WHERE j ? 'k';");
+}
+
+TEST_CASE("components::sql::errors::parser_error_carries_its_position") {
+    auto resource = core::pmr::otterbrix_resource();
+    std::pmr::monotonic_buffer_resource arena_resource(&resource);
+
+    // grammar: bison's syntax error at the token it could not shift
+    TEST_PARSER_ERROR_AT("SELEC 1", R"_(syntax error at or near "SELEC")_", 1);
+    TEST_PARSER_ERROR_AT("SELECT 1 +", R"_(syntax error at end of input)_", 11);
+    TEST_PARSER_ERROR_AT("SELECT * FROM t WHERE a = = 1", R"_(syntax error at or near "=")_", 27);
+    // the position counts characters, not bytes
+    TEST_PARSER_ERROR_AT("SELECT 'жжж' FROM", R"_(syntax error at end of input)_", 18);
+    // lexer: the scanner's error wins over the syntax error bison reports once it is handed end of input
+    TEST_PARSER_ERROR_AT("SELECT 'abc", R"_(unterminated quoted string at or near "'abc")_", 8);
+    TEST_PARSER_ERROR_AT("SELECT 1 /* open", R"_(unterminated /* comment at or near "/* open")_", 10);
+    TEST_PARSER_ERROR_AT("SELECT U&'\\D800'", R"_(invalid Unicode surrogate pair at or near "'")_", 16);
+    // grammar action
+    TEST_PARSER_ERROR_AT("CREATE SCHEMA IF NOT EXISTS s CREATE TABLE t(a INT)",
+                         R"_(CREATE SCHEMA IF NOT EXISTS cannot include schema elements)_",
+                         31);
+    // grammar helpers: the action that called them aborts the parse
+    TEST_PARSER_ERROR_AT("(SELECT 1 ORDER BY 1) ORDER BY 2", R"_(multiple ORDER BY clauses not allowed)_", 32);
+    TEST_PARSER_ERROR_AT("SELECT a.*.b FROM t", R"_(improper use of "*" at or near "FROM")_", 14);
+    TEST_PARSER_ERROR_AT("ALTER TYPE a.b.c.d ADD ATTRIBUTE x INT",
+                         R"_(improper qualified name (too many dotted names): a.b.c.d)_",
+                         12);
+    TEST_PARSER_ERROR_AT("WITH a AS (SELECT 1) (WITH b AS (SELECT 2) SELECT 3)",
+                         R"_(multiple WITH clauses not allowed)_",
+                         1);
+    TEST_PARSER_ERROR_AT("CREATE TABLE t (a int, CHECK (a > 0) DEFERRABLE)",
+                         R"_(CHECK constraints cannot be marked DEFERRABLE)_",
+                         38);
+    TEST_PARSER_ERROR_AT(R"_(CREATE TABLE t (a text COLLATE "C" COLLATE "POSIX"))_",
+                         R"_(multiple COLLATE clauses not allowed)_",
+                         36);
+    TEST_PARSER_ERROR_AT("CREATE FUNCTION f(OUT a int) RETURNS TABLE (b int) AS 'SELECT 1' LANGUAGE sql",
+                         R"_(OUT arguments aren't allowed in TABLE functions)_",
+                         -1);
+    TEST_PARSER_ERROR_AT(
+        "SELECT sum(a) OVER (ORDER BY a ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW EXCLUDE TIES) "
+        "FROM t",
+        R"_(window EXCLUDE clause not yet implemented)_",
+        -1);
+
+    SECTION("the next statement on the same arena parses") {
+        auto failed = raw_parser(&arena_resource, "SELECT 'abc");
+        REQUIRE(failed.has_error());
+        auto parsed = raw_parser(&arena_resource, "SELECT 1");
+        REQUIRE_FALSE(parsed.has_error());
+        CHECK(list_length(parsed.value()) == 1);
+    }
 }
 
 // Ignoring CONCURRENTLY would run a plain refresh under the caller's name.
@@ -232,7 +308,7 @@ TEST_CASE("components::sql::errors::refresh_concurrently_is_refused") {
     auto resource = core::pmr::otterbrix_resource();
     std::pmr::monotonic_buffer_resource arena_resource(&resource);
     const char* query = "REFRESH MATERIALIZED VIEW CONCURRENTLY d.mv;";
-    auto stmt = linitial(raw_parser(&arena_resource, query));
+    auto stmt = linitial(parse_ok(&arena_resource, query));
     transform::transformer transformer(&resource, query);
     auto result = transformer.transform(transform::pg_cell_to_node_cast(stmt));
     REQUIRE(result.get_error().contains_error());
@@ -240,7 +316,7 @@ TEST_CASE("components::sql::errors::refresh_concurrently_is_refused") {
     CHECK(std::string_view{result.get_error().what} == "REFRESH MATERIALIZED VIEW CONCURRENTLY is not supported");
 
     const char* plain = "REFRESH MATERIALIZED VIEW d.mv;";
-    auto plain_stmt = linitial(raw_parser(&arena_resource, plain));
+    auto plain_stmt = linitial(parse_ok(&arena_resource, plain));
     transform::transformer plain_transformer(&resource, plain);
     REQUIRE_FALSE(
         plain_transformer.transform(transform::pg_cell_to_node_cast(plain_stmt)).get_error().contains_error());
@@ -285,7 +361,7 @@ namespace {
         // Needs the statement text: slice_check_expression pulls a CHECK's expression from it,
         // so a transformer without it refuses every ADD CONSTRAINT ... CHECK.
         transform::transformer t(resource, query);
-        auto stmt = linitial(raw_parser(&arena, query));
+        auto stmt = linitial(parse_ok(&arena, query));
         auto result = t.transform(transform::pg_cell_to_node_cast(stmt));
         if (result.has_error()) {
             return {true, std::string{result.get_error().what.c_str()}, false};

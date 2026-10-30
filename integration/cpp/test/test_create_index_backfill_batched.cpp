@@ -33,7 +33,7 @@ TEST_CASE("integration::cpp::create_index_backfill::large_table_streams_multiple
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE IdxDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA IdxDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE IdxDb.t (id bigint, grp int, val bigint);")->is_success());
 
     seed(dispatcher);
@@ -65,7 +65,7 @@ TEST_CASE("integration::cpp::create_index_backfill::aborted_create_index_leaves_
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE IdxDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA IdxDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE IdxDb.t (id bigint, grp int, val bigint);")->is_success());
     seed(dispatcher);
 
@@ -97,7 +97,7 @@ TEST_CASE("integration::cpp::create_index_backfill::backfill_after_delete_maps_c
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE IdxDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA IdxDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE IdxDb.t (id bigint, grp int, val bigint);")->is_success());
     seed(dispatcher);
 
@@ -148,7 +148,7 @@ TEST_CASE("integration::cpp::create_index_backfill::backfill_over_a_mid_batch_ho
     test_spaces space(config);
     auto* dispatcher = space.dispatcher();
 
-    REQUIRE(exec(dispatcher, "CREATE DATABASE IdxDb;")->is_success());
+    REQUIRE(exec(dispatcher, "CREATE SCHEMA IdxDb;")->is_success());
     REQUIRE(exec(dispatcher, "CREATE TABLE IdxDb.t (id bigint, grp int, val bigint);")->is_success());
     seed(dispatcher);
 

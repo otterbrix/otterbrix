@@ -31,7 +31,7 @@ import otterbrix
 @pytest.fixture(scope="module")
 def conn(tmp_path_factory):
     connection = otterbrix.connect(str(tmp_path_factory.mktemp("connection_execute_db")))
-    connection.execute("CREATE DATABASE ex;")
+    connection.execute("CREATE SCHEMA ex;")
     connection.execute("CREATE TABLE ex.rows (id INTEGER, name TEXT);")
     connection.execute("INSERT INTO ex.rows (id, name) VALUES (1, 'a'), (2, 'b'), (3, 'c');")
     yield connection
@@ -56,6 +56,14 @@ def test_a_write_reports_how_many_rows_it_wrote(conn):
     assert written.rowcount == 2
     assert len(written) == 0
     assert conn.execute("SELECT id FROM ex.writes ORDER BY id;").fetchall() == [(7,), (8,)]
+
+
+def test_create_table_reports_the_oid_it_created(conn):
+    created = conn.execute("CREATE TABLE ex.created (id INTEGER);").created_oid
+    assert created is not None
+    catalog = conn.execute("SELECT oid FROM pg_catalog.pg_class WHERE relname = 'created';")
+    assert catalog.created_oid is None
+    assert catalog.fetchall() == [(created,)]
 
 
 def test_select_rows_are_reachable_as_a_dataframe(conn):
@@ -87,18 +95,18 @@ def test_execute_refuses_a_query_that_is_not_a_string(conn):
         conn.execute(["SELECT 1;"])
 
 
-def test_a_result_outlives_the_connection_that_produced_it(tmp_path):
-    """The rows must still be readable after the connection is closed: the
-    result owns the batch it was handed, not a borrowed view into a space that
-    `close()` may have been the last reference to."""
+def test_a_result_of_a_closed_connection_is_refused(tmp_path):
+    """close() ends what the connection answered, as DuckDB's does: reading a result
+    afterwards is refused, and the refusal does not touch memory the close released."""
     connection = otterbrix.connect(str(tmp_path / "outlive_db"))
-    connection.execute("CREATE DATABASE ol;")
+    connection.execute("CREATE SCHEMA ol;")
     connection.execute("CREATE TABLE ol.rows (id INTEGER);")
     connection.execute("INSERT INTO ol.rows (id) VALUES (11), (12);")
     result = connection.execute("SELECT id FROM ol.rows ORDER BY id;")
     connection.close()
     del connection
-    assert result.fetchall() == [(11,), (12,)]
+    with pytest.raises(RuntimeError, match="the connection is closed"):
+        result.fetchall()
 
 
 def _run_probe(body, database):

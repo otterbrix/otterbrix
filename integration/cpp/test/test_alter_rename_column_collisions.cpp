@@ -34,7 +34,7 @@ namespace {
     }
 
     void seed(otterbrix::wrapper_dispatcher_t* dispatcher, const otterbrix::session_id_t& session) {
-        run_ok(dispatcher, session, "CREATE DATABASE db;");
+        run_ok(dispatcher, session, "CREATE SCHEMA db;");
         run_ok(dispatcher, session, "CREATE TABLE db.t (a int, b int);");
         run_ok(dispatcher, session, "INSERT INTO db.t (a, b) VALUES (1, 2);");
     }
@@ -89,7 +89,9 @@ TEST_CASE("integration::cpp::alter_rename_column_collisions") {
         run_ok(dispatcher, session, "BEGIN;");
         run_ok(dispatcher, session, "ALTER TABLE db.t RENAME COLUMN a TO x;");
         REQUIRE(run(dispatcher, session, "ALTER TABLE db.t RENAME COLUMN b TO x;")->is_error());
-        REQUIRE(run(dispatcher, session, "COMMIT;")->is_error());
+        auto commit = run(dispatcher, session, "COMMIT;");
+        REQUIRE(commit->is_success());
+        CHECK(commit->transaction_status() == components::session::transaction_status_t::idle);
         INFO("the failed transaction took the first rename with it");
         CHECK(run_ok(dispatcher, session, "SELECT a, b FROM db.t;")->size() == 1);
     }

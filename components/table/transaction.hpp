@@ -1,10 +1,12 @@
 #pragma once
 
+#include <algorithm>
 #include <components/base/collection_full_name.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
+#include <components/table/storage_address.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <memory_resource>
@@ -37,6 +39,17 @@ namespace components::table {
         std::vector<int64_t> row_ids;
     };
 
+    // A storage that keeps state of the transaction (a host's backend): every one the transaction read or wrote gets
+    // its end. `tables` are the transaction's tables there; `wrote`: it holds writes COMMIT must prepare.
+    struct participant_t {
+        storage_address_t address;
+        std::set<catalog::oid_t> tables{};
+        bool wrote{false};
+    };
+
+    // Adds `added` to `participants`, one entry per actor and connection: two connections of one actor are two.
+    void merge_participant(std::vector<participant_t>& participants, const participant_t& added);
+
     // An index CREATE INDEX made (table oid + pg_index.indexrelid); parked until COMMIT/ABORT resolves it.
     struct created_index_t {
         components::catalog::oid_t table_oid;
@@ -44,8 +57,8 @@ namespace components::table {
     };
 
     // Everything an aborting (or refused-commit) transaction left behind. Plain std containers: it crosses the
-    // dispatcher, disk and index mailboxes. manager_disk_t::abort_transaction and manager_index_t::abort_transaction
-    // each undo their half of it.
+    // dispatcher, disk and index mailboxes. The disk (abort_transaction, undo_appends_and_storages) and
+    // manager_index_t::abort_transaction each undo their half of it; every participant gets its abort_transaction.
     //
     // base_append_tables / base_delete_tables name the user tables whose PENDING index entries / delete markers must
     // be reverted; pg_catalog tables are absent, they carry no indexes. pg_catalog_delete_tables are the catalog
@@ -69,6 +82,8 @@ namespace components::table {
         // Storage oids / indexes a CREATE in this txn brought into being; dropped again.
         std::vector<catalog::oid_t> created_storage_oids{};
         std::vector<created_index_t> created_indexes{};
+        // Every storage the transaction kept state in; ROLLBACK TO undoes their writes of from_sub_id and above.
+        std::vector<participant_t> participants{};
     };
 
     // Sizes of the ordered parked lists when a savepoint was taken
@@ -124,9 +139,12 @@ namespace components::table {
         transaction_data data() const {
             transaction_data out(transaction_id_, start_time_, snapshot_horizon_, in_flight_snapshot_);
             out.sub_id = current_sub_id_;
+            out.command_id = command_id_;
             return out;
         }
         uint64_t transaction_id() const { return transaction_id_; }
+        // The next statement of the block, as PostgreSQL 18's CommandCounterIncrement: its writes carry the new number.
+        void start_command() noexcept { ++command_id_; }
         uint64_t start_time() const { return start_time_; }
         uint64_t commit_id() const { return commit_id_; }
         session::session_id_t session() const { return session_; }
@@ -149,6 +167,24 @@ namespace components::table {
         void push_savepoint(std::string_view name);
         bool release_savepoint(std::string_view name);
         bool rollback_to_savepoint(std::string_view name, txn_abort_drain_t* drain);
+        // The level of the latest savepoint `name`; 0 when there is none.
+        uint64_t savepoint_sub_id(std::string_view name) const;
+
+        // Kept to the end of the transaction, savepoints included: a storage that saw the transaction gets its end.
+        void accumulate_participant(const participant_t& participant) {
+            merge_participant(participants_, participant);
+            if (participant.wrote && write_connection_.empty()) {
+                write_connection_ = participant.address.connection();
+            }
+        }
+        const std::vector<participant_t>& participants() const noexcept { return participants_; }
+        std::vector<participant_t> drain_participants() {
+            std::vector<participant_t> out(std::move(participants_));
+            participants_.clear();
+            return out;
+        }
+        // The connection the transaction wrote to: set at its first write there, kept to its end.
+        const std::string& write_connection() const noexcept { return write_connection_; }
 
         void accumulate_base_append(dml_append_range_t range) { pending_base_appends_.push_back(range); }
         void accumulate_base_delete(dml_delete_range_t range) { pending_base_deletes_.push_back(range); }
@@ -227,7 +263,10 @@ namespace components::table {
         bool has_accumulated() const {
             return !pending_base_appends_.empty() || !pending_base_deletes_.empty() || !pg_catalog_appends.empty() ||
                    !pg_catalog_delete_tables.empty() || !pg_attribute_commit_id_backfills.empty() ||
-                   !dropped_storage_oids_.empty() || !created_storage_oids_.empty() || !created_indexes_.empty();
+                   !dropped_storage_oids_.empty() || !created_storage_oids_.empty() || !created_indexes_.empty() ||
+                   std::any_of(participants_.begin(), participants_.end(), [](const participant_t& participant) {
+                       return participant.wrote;
+                   });
         }
 
         struct append_info {
@@ -268,9 +307,12 @@ namespace components::table {
         std::vector<components::catalog::oid_t> created_storage_oids_;
         std::vector<created_index_t> created_indexes_;
         std::vector<referenced_delete_t> referenced_deletes_;
+        std::vector<participant_t> participants_;
+        std::string write_connection_;
 
         uint64_t last_sub_id_{0};
         uint64_t current_sub_id_{0};
+        uint64_t command_id_{0};
         std::pmr::vector<savepoint_t> savepoints_;
     };
 

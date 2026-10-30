@@ -61,7 +61,7 @@ namespace {
     }
 
     void seed_table(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        run_sql(dispatcher, "CREATE DATABASE TestDatabase;");
+        run_sql(dispatcher, "CREATE SCHEMA TestDatabase;");
         run_sql(dispatcher, "CREATE TABLE TestDatabase.t (id INT, b BIGINT, c BIGINT);");
         std::size_t done = 0;
         while (done < ROWS) {

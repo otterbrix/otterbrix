@@ -20,6 +20,9 @@ namespace components::table {
         // Collect per-segment stats while flushing
         std::vector<base_statistics_t> seg_stats;
         for (auto& segment : column_data_.data_.segments()) {
+            if (segment.count == 0) {
+                continue;
+            }
             // flush_segment returns out_of_memory when pinning the segment buffer fails;
             // propagate it up the checkpoint chain to the agent_disk boundary.
             auto flushed = state.flush_segment(segment, static_cast<uint64_t>(segment.start), segment.count);

@@ -60,7 +60,7 @@ fn test_execute_sql() {
         assert!(refusal.message.is_null());
         assert!(!db.is_null());
 
-        let cursor = execute_sql(db, make_sv("CREATE DATABASE test_db;"));
+        let cursor = execute_sql(db, make_sv("CREATE SCHEMA test_db;"));
         assert!(!cursor.is_null());
         assert!(cursor_is_success(cursor));
         release_cursor(cursor);

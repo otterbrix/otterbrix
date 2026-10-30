@@ -204,7 +204,7 @@ namespace core::b_plus_tree {
         return (nodes_ != nodes_end_) ? (*(nodes_end_ - 1))->max_index() : std::numeric_limits<index_t>::max();
     }
 
-    btree_t::leaf_node_t::leaf_node_t(std::pmr::memory_resource* resource,
+    btree_t::leaf_node_t::leaf_node_t(core::pmr::budget_resource_t* resource,
                                       filesystem::local_file_system_t& fs,
                                       filesystem::path_t file_path,
                                       index_t (*func)(const item_data&),
@@ -278,7 +278,7 @@ namespace core::b_plus_tree {
     bool btree_t::leaf_node_t::flush() const { return segment_tree_->flush(); }
     void btree_t::leaf_node_t::load() { segment_tree_->lazy_load(); }
 
-    btree_t::btree_t(std::pmr::memory_resource* resource,
+    btree_t::btree_t(core::pmr::budget_resource_t* resource,
                      filesystem::local_file_system_t& fs,
                      const filesystem::path_t& storage_directory,
                      index_t (*func)(const item_data&),
@@ -758,7 +758,10 @@ namespace core::b_plus_tree {
         if (leaf_nodes_count_ == 0) {
             std::filesystem::path empty_name = storage_directory_;
             empty_name /= std::filesystem::path(metadata_file_name_);
-            size_t* empty_buffer = static_cast<size_t*>(resource_->allocate(METADATA_SIZE));
+            size_t* empty_buffer = static_cast<size_t*>(resource_->try_allocate(METADATA_SIZE));
+            if (empty_buffer == nullptr) {
+                return false;
+            }
             std::memset(static_cast<void*>(empty_buffer), 0, METADATA_SIZE);
             *empty_buffer = item_count_;
             *(empty_buffer + 1) = leaf_nodes_count_;
@@ -791,7 +794,11 @@ namespace core::b_plus_tree {
         leaf_node_t* first_leaf = static_cast<leaf_node_t*>(current_node);
         leaf_node_t* node = first_leaf;
 
-        size_t* buffer = static_cast<size_t*>(resource_->allocate(METADATA_SIZE));
+        size_t* buffer = static_cast<size_t*>(resource_->try_allocate(METADATA_SIZE));
+        if (buffer == nullptr) {
+            tree_mutex_.unlock();
+            return false;
+        }
         std::memset(static_cast<void*>(buffer), 0, METADATA_SIZE);
         *buffer = item_count_;
         uint64_t* buffer_writer = reinterpret_cast<uint64_t*>(buffer + 2);
@@ -853,13 +860,20 @@ namespace core::b_plus_tree {
             delete root_;
             root_ = nullptr;
         }
+        item_count_ = 0;
+        leaf_nodes_count_ = 0;
         std::unique_ptr<core::filesystem::file_handle_t> file = open_file(fs_, file_name, file_flags::READ);
         if (file == nullptr) {
             failures_.report(load_failure_t::io_error);
             tree_mutex_.unlock();
             return;
         }
-        size_t* buffer = static_cast<size_t*>(resource_->allocate(METADATA_SIZE));
+        size_t* buffer = static_cast<size_t*>(resource_->try_allocate(METADATA_SIZE));
+        if (buffer == nullptr) {
+            failures_.report(load_failure_t::out_of_memory);
+            tree_mutex_.unlock();
+            return;
+        }
         std::memset(static_cast<void*>(buffer), 0, METADATA_SIZE);
         if (!file->read(static_cast<void*>(buffer), METADATA_SIZE, 0)) {
             failures_.report(load_failure_t::io_error);
@@ -868,20 +882,16 @@ namespace core::b_plus_tree {
             return;
         }
 
-        item_count_ = *buffer;
-        leaf_nodes_count_ = *(buffer + 1);
-        if (leaf_nodes_count_ > MAX_LEAF_NODES) {
+        const size_t stored_items = *buffer;
+        const size_t stored_leaves = *(buffer + 1);
+        if (stored_leaves > MAX_LEAF_NODES) {
             // A torn counter sizes an over-large read/allocation, so refuse it instead of risking std::bad_alloc.
             failures_.report(load_failure_t::data_corruption);
-            item_count_ = 0;
-            leaf_nodes_count_ = 0;
-            root_ = nullptr;
             resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
             tree_mutex_.unlock();
             return;
         }
-        if (leaf_nodes_count_ == 0) {
-            root_ = nullptr;
+        if (stored_leaves == 0) {
             resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
             tree_mutex_.unlock();
             return;
@@ -889,11 +899,17 @@ namespace core::b_plus_tree {
         uint64_t* buffer_reader = reinterpret_cast<uint64_t*>(buffer + 2);
 
         base_node_t** nodes_layer =
-            static_cast<base_node_t**>(resource_->allocate(leaf_nodes_count_ * sizeof(base_node_t*)));
+            static_cast<base_node_t**>(resource_->try_allocate(stored_leaves * sizeof(base_node_t*)));
+        if (nodes_layer == nullptr) {
+            failures_.report(load_failure_t::out_of_memory);
+            resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
+            tree_mutex_.unlock();
+            return;
+        }
         base_node_t* left_node = nullptr;
         std::vector<uint64_t> ids_; // will be used to restore missing_ids_
-        ids_.reserve(leaf_nodes_count_);
-        for (size_t i = 0; i < leaf_nodes_count_; i++) {
+        ids_.reserve(stored_leaves);
+        for (size_t i = 0; i < stored_leaves; i++) {
             uint64_t segment_tree_id = *buffer_reader;
             buffer_reader++;
             ids_.push_back(segment_tree_id);
@@ -905,10 +921,8 @@ namespace core::b_plus_tree {
                 for (size_t j = 0; j < i; j++) {
                     delete *(nodes_layer + j);
                 }
-                resource_->deallocate(static_cast<void*>(nodes_layer), leaf_nodes_count_ * sizeof(base_node_t*));
+                resource_->deallocate(static_cast<void*>(nodes_layer), stored_leaves * sizeof(base_node_t*));
                 resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
-                item_count_ = 0;
-                leaf_nodes_count_ = 0;
                 tree_mutex_.unlock();
                 return;
             }
@@ -933,7 +947,7 @@ namespace core::b_plus_tree {
 
         size_t upper_layer_index = 0;
         size_t layer_index = 0;
-        size_t layer_count = leaf_nodes_count_;
+        size_t layer_count = stored_leaves;
         left_node = nullptr;
         while (layer_count > 1) {
             while (layer_index < layer_count) {
@@ -961,10 +975,12 @@ namespace core::b_plus_tree {
         }
 
         root_ = *nodes_layer;
+        item_count_ = stored_items;
+        leaf_nodes_count_ = stored_leaves;
 
         tree_mutex_.unlock();
         resource_->deallocate(static_cast<void*>(buffer), METADATA_SIZE);
-        resource_->deallocate(static_cast<void*>(nodes_layer), leaf_nodes_count_ * sizeof(base_node_t*));
+        resource_->deallocate(static_cast<void*>(nodes_layer), stored_leaves * sizeof(base_node_t*));
     }
 
     bool btree_t::contains_index(const index_t& index) {

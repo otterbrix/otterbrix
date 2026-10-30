@@ -59,7 +59,7 @@ namespace {
     }
 
     void seed_three_columns(otterbrix::wrapper_dispatcher_t* dispatcher) {
-        run_sql(dispatcher, "CREATE DATABASE TestDatabase;");
+        run_sql(dispatcher, "CREATE SCHEMA TestDatabase;");
         run_sql(dispatcher, "CREATE TABLE TestDatabase.t (a BIGINT, b BIGINT, c BIGINT);");
         insert_all_columns(dispatcher, 0, ROWS);
     }
@@ -238,7 +238,7 @@ TEST_CASE("integration::cpp::alter_drop_column") {
         {
             test_spaces space(config);
             auto* dispatcher = space.dispatcher();
-            run_sql(dispatcher, "CREATE DATABASE TestDatabase;");
+            run_sql(dispatcher, "CREATE SCHEMA TestDatabase;");
             run_sql(dispatcher, "CREATE TABLE TestDatabase.t (a BIGINT, b BIGINT, c BIGINT);");
             insert_all_columns(dispatcher, 0, FEW);
             run_sql(dispatcher, "ALTER TABLE TestDatabase.t DROP COLUMN b;");

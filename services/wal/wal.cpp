@@ -38,7 +38,7 @@ namespace services::wal {
                   attoid_count,
                   column_count);
             return core::result_wrapper_t<wal::id_t>{
-                core::error_t{core::error_code_t::invalid_parameter,
+                core::error_t{core::error_code_t::internal_error,
                               std::pmr::string{"wal record refused: " + std::to_string(attoid_count) + " attoids for " +
                                                    std::to_string(column_count) + " columns of table oid " +
                                                    std::to_string(static_cast<unsigned>(table_oid)),

@@ -227,9 +227,8 @@ namespace components::planner::optimizer {
                 return 0;
             }
             const auto* metadata = aggregate.table_metadata();
-            if (metadata == nullptr || metadata->storage != nullptr ||
-                (metadata->relkind != catalog::relkind::regular &&
-                 metadata->relkind != catalog::relkind::materialized_view)) {
+            if (metadata == nullptr || (metadata->relkind != catalog::relkind::regular &&
+                                        metadata->relkind != catalog::relkind::materialized_view)) {
                 return 0;
             }
             return metadata->columns.size();
@@ -359,8 +358,6 @@ namespace components::planner::optimizer {
                 }
             }
 
-            bool hashed = join.algo() == lp::node_join_t::join_algo::hash;
-            size_t equi[2]{join.left_col(), join.right_col()};
             narrowing_t narrowings[2]{identity(widths[0]), identity(widths[1])};
             key_refs_t inside[2]{key_refs_t(aggregate.resource()), key_refs_t(aggregate.resource())};
             bool narrowed = false;
@@ -382,9 +379,6 @@ namespace components::planner::optimizer {
                 add_used(above, side == 0 ? 0 : widths[0], widths[side], used);
                 add_used(on[side], 0, widths[side], used);
                 add_used(inside[side], 0, widths[side], used);
-                if (hashed) {
-                    used.push_back(equi[side]);
-                }
                 auto narrowing = narrowing_of(widths[side], std::move(used));
                 if (narrowing.kept.empty() || !narrowing.narrows()) {
                     continue;
@@ -405,9 +399,6 @@ namespace components::planner::optimizer {
                 rebase(on[side], [&](size_t old) { return narrowings[side].remap(old); });
                 child.set_output_types(narrowed_types(child.output_types(), narrowings[side]));
                 child.set_projected_cols(narrowings[side].kept);
-            }
-            if (hashed) {
-                join.set_equi_columns(narrowings[0].remap(equi[0]), narrowings[1].remap(equi[1]));
             }
 
             // The joined row is [left..., right...]; slots past it move down by what both sides lost.
@@ -448,9 +439,8 @@ namespace components::planner::optimizer {
                 return;
             }
             const auto* metadata = node.table_metadata();
-            if (metadata == nullptr || metadata->storage != nullptr ||
-                (metadata->relkind != catalog::relkind::regular &&
-                 metadata->relkind != catalog::relkind::materialized_view)) {
+            if (metadata == nullptr || (metadata->relkind != catalog::relkind::regular &&
+                                        metadata->relkind != catalog::relkind::materialized_view)) {
                 return;
             }
             size_t width = metadata->columns.size();

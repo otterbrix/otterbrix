@@ -47,10 +47,10 @@ namespace components::sql::transform {
         auto coldefs = reinterpret_cast<List*>(node.tableElts);
 
         VALUE_OR_RETURN(auto col_defs, get_column_definitions(resource_, *coldefs));
-        register_referenced_tables(&catalog_resolves_, *coldefs);
 
         auto qn = rangevar_to_qualified_name(node.relation);
-        const std::string& dbname = database_for(qn, namespace_policy::default_public).t;
+        const qualified_name_t& owner = qn;
+        register_referenced_tables(&catalog_resolves_, owner, *coldefs);
 
         // Column-level (`code bigint UNIQUE`) and table-level (`UNIQUE (code)`) constraints
         // land in one list, column-level first in declaration order; downstream treats them identically.
@@ -105,13 +105,20 @@ namespace components::sql::transform {
                                          "column references, and constants",
                                          resource_});
                 }
-                const std::string ref_db = tc.ref_database.empty() ? dbname : tc.ref_database;
-                auto cstr = logical_plan::make_node_create_constraint(
-                    resource_,
-                    qualified_name_t{core::dbname_t{dbname}, qn.collection},
-                    core::constraint_name_t{tc.name},
-                    kind,
-                    qualified_name_t{core::dbname_t{ref_db}, core::relname_t{tc.ref_collection}});
+                // An unqualified target lives in the owner's schema.
+                const qualified_name_t ref = tc.ref_schema.empty()
+                                                 ? qualified_name_t{owner.connection,
+                                                                    owner.database,
+                                                                    owner.schema,
+                                                                    core::relname_t{tc.ref_collection}}
+                                                 : qualified_name_t{core::dbname_t{tc.ref_database},
+                                                                    core::schema_t{tc.ref_schema},
+                                                                    core::relname_t{tc.ref_collection}};
+                auto cstr = logical_plan::make_node_create_constraint(resource_,
+                                                                      owner,
+                                                                      core::constraint_name_t{tc.name},
+                                                                      kind,
+                                                                      ref);
                 cstr->set_inline_with_table(true);
                 cstr->set_local_col_names(tc.columns);
                 if (kind == logical_plan::constraint_kind::check) {
@@ -125,14 +132,12 @@ namespace components::sql::transform {
                     // A key pointing back at the table being created has nothing to look up
                     // yet (both oids are minted by the same rewrite) — a lookup would read
                     // as "referenced relation does not exist".
-                    const bool self_ref =
-                        !tc.ref_collection.empty() && tc.ref_collection == qn.collection.t && ref_db == dbname;
+                    const bool self_ref = !tc.ref_collection.empty() && ref == owner;
                     cstr->set_self_reference(self_ref);
                     if (!self_ref && !tc.ref_collection.empty()) {
                         // Omitted column list binds to the parent's PRIMARY KEY (its
                         // pg_constraint rows) — same constraint gather as the ALTER path.
-                        register_table(ref_db,
-                                       tc.ref_collection,
+                        register_table(ref,
                                        tc.ref_columns.empty() ? constraint_resolve_kind::outgoing
                                                               : constraint_resolve_kind::none);
                     }
@@ -143,18 +148,19 @@ namespace components::sql::transform {
         // Collect every UDT type_name referenced by the column defs
         // (including nested STRUCT children) so Pass 1's resolve_type
         // operator can stamp pg_type metadata into the plan-tree idx.
-        std::vector<std::string> udt_names;
+        std::vector<qualified_name_t> udt_names;
         // Re-read col_defs from the constructed node (we moved it above).
         for (const auto& col : cn->column_definitions()) {
-            components::types::walk_user_type_refs(col.type(),
-                                                   [&](std::string_view nm) { udt_names.emplace_back(nm); });
+            components::types::walk_user_type_refs(col.type(), [&](const types::complex_logical_type& ref) {
+                auto name = type_reference_of(ref);
+                if (std::find(udt_names.begin(), udt_names.end(), name) == udt_names.end()) {
+                    udt_names.push_back(std::move(name));
+                }
+            });
         }
-        std::sort(udt_names.begin(), udt_names.end());
-        udt_names.erase(std::unique(udt_names.begin(), udt_names.end()), udt_names.end());
         // The target namespace stays ON the node: enrich binds it to a resolved
         // namespace entry by name and stamps namespace_oid() from there.
         register_namespace(set_target(*cn, qn, target_slots::relation));
-        // Probe the "public" namespace by default (resolve_one_type's first hit).
         // pg_catalog builtins are not in udt_names since walk_user_type_refs only
         // emits STRUCT/ENUM/UNKNOWN; pg_catalog scalars resolve via resolve_builtin
         // earlier.
@@ -217,13 +223,23 @@ namespace components::sql::transform {
             set_target(*drop, written, target_slots::relation);
             // One drop_behavior_of choke-point for all six DROP arms (bare = restrict_, PostgreSQL parity).
             drop->set_behavior(drop_behavior_of(node.behavior));
-            register_table(written.database.t, written.collection.t, constraint_resolve_kind::none);
+            register_table(written, constraint_resolve_kind::none);
             return n;
         };
-        // The catalog holds a relname and a relnamespace, so the arms below plan at most those two (and
-        // an index name). A table spelled with uid or schema is recorded for enrich to refuse, the same
-        // way a CREATE is — see set_target.
         switch (node.removeType) {
+            case OBJECT_SCHEMA: {
+                // PostgreSQL 18 takes a simple name here; the schema is the current database's.
+                const auto& parts = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
+                if (parts.size() != 1) {
+                    return core::error_t(core::error_code_t::sql_parse_error,
+                                         std::pmr::string{"DROP SCHEMA takes a simple name", resource_});
+                }
+                auto n = drop_node(logical_plan::drop_target_kind::schema);
+                n->set_target(qualified_name_t{core::schema_t{strVal(parts.front().data)}, core::relname_t{}});
+                n->set_behavior(drop_behavior_of(node.behavior));
+                register_namespace(n->target());
+                return n;
+            }
             case OBJECT_INDEX: {
                 auto drop_name = reinterpret_cast<List*>(node.objects->lst.front().data)->lst;
                 if (drop_name.empty()) {
@@ -239,19 +255,23 @@ namespace components::sql::transform {
                         // Not read yet (rewrite_drop_index builds its own delete sequence, not the
                         // dynamic cascade), but this is the only place it could be set.
                         drop->set_behavior(drop_behavior_of(node.behavior));
-                        register_table(written.database.t, written.collection.t, constraint_resolve_kind::none);
-                        register_table(written.database.t, index_name, constraint_resolve_kind::none);
+                        register_table(written, constraint_resolve_kind::none);
+                        register_table(qualified_name_t{written.connection,
+                                                        written.database,
+                                                        written.schema,
+                                                        core::relname_t{index_name}},
+                                       constraint_resolve_kind::none);
                         return n;
                     };
                 //when casting to enum -1 is used to account for obligated index name
                 switch (static_cast<table_name>(drop_name.size() - 1)) {
-                    case database_table: {
+                    case schema_table: {
                         auto it = drop_name.begin();
-                        std::string database = strVal(it++->data);
+                        std::string schema = strVal(it++->data);
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
                         auto n = drop_node(logical_plan::drop_target_kind::index);
-                        return wrap_index(qualified_name_t{core::dbname_t{database}, core::relname_t{collection}},
+                        return wrap_index(qualified_name_t{core::schema_t{schema}, core::relname_t{collection}},
                                           name,
                                           std::move(n));
                     }
@@ -268,15 +288,15 @@ namespace components::sql::transform {
                                           name,
                                           std::move(n));
                     }
-                    case uuid_database_schema_table: {
+                    case connection_database_schema_table: {
                         auto it = drop_name.begin();
-                        std::string uuid = strVal(it++->data);
+                        std::string connection = strVal(it++->data);
                         std::string database = strVal(it++->data);
                         std::string schema = strVal(it++->data);
                         std::string collection = strVal(it++->data);
                         std::string name = strVal(it->data);
                         auto n = drop_node(logical_plan::drop_target_kind::index);
-                        return wrap_index(qualified_name_t{core::uid_t{uuid},
+                        return wrap_index(qualified_name_t{core::connection_name_t{connection},
                                                            core::dbname_t{database},
                                                            core::schema_t{schema},
                                                            core::relname_t{collection}},
@@ -322,12 +342,13 @@ namespace components::sql::transform {
         }
         // The dropped type's name stays ON the node (in the target's relname slot)
         // so enrich binds it to the resolved type entry and stamps type_oid from there.
-        const std::string type_db = set_target(*n, written, target_slots::relation);
+        const auto type_target = set_target(*n, written, target_slots::relation);
         // Unlike DROP INDEX, this arm does reach the dynamic cascade
         // (planner's rewrite_drop routes drop_target_kind::type there).
         n->set_behavior(drop_behavior_of(node.behavior));
-        register_namespace(type_db);
-        register_types(std::span<const std::string>{&written.collection.t, 1});
+        register_namespace(type_target);
+        const qualified_name_t dropped_type{written.database, written.schema, written.collection};
+        register_types(std::span<const qualified_name_t>{&dropped_type, 1});
         return n;
     }
 } // namespace components::sql::transform

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "node.hpp"
+#include "node_catalog_resolve.hpp"
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/catalog_oids.hpp>
 #include <components/catalog/results/ddl_result.hpp>

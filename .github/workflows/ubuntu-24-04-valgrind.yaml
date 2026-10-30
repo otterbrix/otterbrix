@@ -1,0 +1,72 @@
+name: ubuntu 24.04 valgrind
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  run:
+    name: Run
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CCACHE_MAXSIZE: 5G
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt update && sudo apt install -y build-essential ninja-build python3-pip curl gnupg apt-transport-https ccache valgrind
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+
+      - name: conan installation and configuration
+        run: |
+          pipx install conan==2.30.0
+          conan profile detect --force
+          conan remote add otterbrix https://conan.otterbrix.com --allowed-packages "actor-zeta/*"
+          echo "CONAN_COMPILER=$(sed -n 's/^compiler=//p; s/^compiler\.version=//p' "$(conan config home)/profiles/default" | paste -sd- -)" >> "$GITHUB_ENV"
+
+      - name: Cache conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-ubuntu-24.04-valgrind-${{ env.CONAN_COMPILER }}-${{ hashFiles('conanfile.py', 'profiles/**') }}
+          restore-keys: conan-ubuntu-24.04-valgrind-${{ env.CONAN_COMPILER }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-ubuntu-24.04-valgrind-${{ env.CONAN_COMPILER }}-${{ github.sha }}
+          restore-keys: ccache-ubuntu-24.04-valgrind-${{ env.CONAN_COMPILER }}-
+
+      - name: download dependencies
+        run: |
+          conan install . -pr:h profiles/release -pr:b default --build=missing -of build/valgrind
+          conan cache clean "*" --source --build --download --temp
+
+      - name: build
+        env:
+          CC: gcc
+        run: |
+          cmake --preset valgrind
+          cmake --build --preset valgrind --target test_table test_otterbrix
+
+      # Errors: uninitialised bytes used or passed to pwrite (a checkpoint once wrote whole
+      # segment buffers), and definite leaks. Not "possibly lost": file_buffer_t holds its
+      # allocation by a pointer past the alignment lead, an interior pointer to memcheck.
+      - name: valgrind
+        run: |
+          vg="valgrind --error-exitcode=1 --track-origins=yes --num-callers=40 --leak-check=full --errors-for-leak-kinds=definite --show-leak-kinds=definite"
+          (cd build/valgrind/components/table/test && $vg ./test_table "checkpoint_load:*")
+          (cd build/valgrind/integration/cpp/test && $vg ./test_otterbrix "integration::cpp::test_null_persistence::*")

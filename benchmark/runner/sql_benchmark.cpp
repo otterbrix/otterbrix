@@ -444,7 +444,7 @@ void sql_benchmark_t::load(benchmark_state_t& state) {
     // groups (e.g. SSB) idempotent — first sub-query creates the DB, the rest
     // reuse it without erroring on re-CREATE.
     if (!database_.empty()) {
-        auto create_db = "CREATE DATABASE IF NOT EXISTS " + database_;
+        auto create_db = "CREATE SCHEMA IF NOT EXISTS " + database_;
         auto cursor = state.dispatcher->execute_sql(state.session, create_db);
         if (cursor->is_error()) {
             std::cerr << "Cannot create database: " << cursor->get_error().what << "\n";

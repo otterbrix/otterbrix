@@ -20,7 +20,7 @@ namespace components::operators {
     // That admits it to the streaming routing seam WHEN it is itself the chain bottom and
     // every operator above it on the left-chain is a sink/source (no role()==none op). The
     // fixpoint co_awaits run_subplan, which can only run from inside await_async_and_resume;
-    // execute_pipeline drives that await in its bottom-up needs_async_finalize pass and then
+    // pump_pipeline_ drives that await in its bottom-up needs_async_finalize pass and then
     // streams the produced output_ UP through the sink ancestors (see executor.cpp).
     //
     // At the TOP level the outer query `SELECT ... FROM cte ...` always lowers to
@@ -30,7 +30,7 @@ namespace components::operators {
     // returns FALSE. (The streaming sourceless-sink-root shape assumes the bottom
     // sink's effect is a pure async commit; this operator instead PRODUCES rows in
     // await_async_and_resume that must flow UP through the match/sort/select ancestors,
-    // which execute_pipeline's pass order — PUMP/FLUSH before async-finalize — does not
+    // which pump_pipeline_'s pass order — PUMP/FLUSH before async-finalize — does not
     // yet support.) The sink role only takes effect if this operator is ever driven as
     // a bare sourceless-sink root. await_async_and_resume reaches the drive_fixpoint_ core.
     class operator_recursive_cte_t final : public read_only_operator_t {
@@ -43,7 +43,7 @@ namespace components::operators {
         // Sourceless async-finalize sink: see the class note. left()==nullptr (anchor_/
         // recursive_ are private members), so the executor admits this as a
         // sourceless sink root; needs_async_finalize routes the fixpoint through
-        // execute_pipeline's bottom-up await_async_and_resume pass.
+        // pump_pipeline_'s bottom-up await_async_and_resume pass.
         [[nodiscard]] bool needs_async_finalize() const noexcept override { return true; }
 
         // Returns a pointer to the working-set slot so operator_cte_scan_t can point into it.

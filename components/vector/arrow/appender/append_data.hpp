@@ -5,9 +5,11 @@
 
 #include <components/types/types.hpp>
 #include <components/vector/vector.hpp>
+#include <core/result_wrapper.hpp>
 
 #include <array>
 #include <memory>
+#include <memory_resource>
 #include <vector>
 
 namespace components::vector::arrow::appender {
@@ -31,20 +33,21 @@ namespace components::vector::arrow::appender {
         }
     }
 
-    typedef void (*initialize_t)(arrow_append_data_t& result,
-                                 const types::complex_logical_type& type,
-                                 uint64_t capacity);
-    typedef void (*append_vector_t)(arrow_append_data_t& append_data,
-                                    vector_t& input,
-                                    uint64_t from,
-                                    uint64_t to,
-                                    uint64_t input_size);
-    typedef void (*finalize_t)(arrow_append_data_t& append_data,
-                               const types::complex_logical_type& type,
-                               ArrowArray* result);
+    typedef core::error_t (*initialize_t)(arrow_append_data_t& result,
+                                          const types::complex_logical_type& type,
+                                          uint64_t capacity);
+    typedef core::error_t (*append_vector_t)(arrow_append_data_t& append_data,
+                                             vector_t& input,
+                                             uint64_t from,
+                                             uint64_t to,
+                                             uint64_t input_size);
+    typedef core::error_t (*finalize_t)(arrow_append_data_t& append_data,
+                                        const types::complex_logical_type& type,
+                                        ArrowArray* result);
 
     struct arrow_append_data_t {
-        explicit arrow_append_data_t() {
+        explicit arrow_append_data_t(std::pmr::memory_resource* resource)
+            : resource(resource) {
             dictionary.release = nullptr;
             arrow_buffers_.resize(3);
         }
@@ -87,6 +90,7 @@ namespace components::vector::arrow::appender {
             }
         }
 
+        std::pmr::memory_resource* resource;
         uint64_t row_count = 0;
         uint64_t null_count = 0;
 

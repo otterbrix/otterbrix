@@ -3,6 +3,7 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_data.hpp>
 #include <components/sql/parser/parser.h>
+#include <components/sql/test/parse_ok.hpp>
 #include <components/sql/transformer/transformer.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <core/counting_resource.hpp>
@@ -28,8 +29,8 @@ TEST_CASE("components::sql::insert_into") {
 
     SECTION("insert into with TestDatabase") {
         auto select =
-            linitial(raw_parser(&arena_resource,
-                                "INSERT INTO TestDatabase.TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
+            linitial(parse_ok(&arena_resource,
+                              "INSERT INTO TestDatabase.TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -45,8 +46,8 @@ TEST_CASE("components::sql::insert_into") {
     }
 
     SECTION("insert into without TestDatabase") {
-        auto select = linitial(
-            raw_parser(&arena_resource, "INSERT INTO TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
+        auto select =
+            linitial(parse_ok(&arena_resource, "INSERT INTO TestCollection (id, name, count) VALUES (1, 'Name', 1);"));
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -63,7 +64,7 @@ TEST_CASE("components::sql::insert_into") {
 
     SECTION("insert into with quoted") {
         auto select = linitial(
-            raw_parser(&arena_resource, R"(INSERT INTO TestCollection (id, "name", "count") VALUES (1, 'Name', 1);)"));
+            parse_ok(&arena_resource, R"(INSERT INTO TestCollection (id, "name", "count") VALUES (1, 'Name', 1);)"));
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -79,7 +80,7 @@ TEST_CASE("components::sql::insert_into") {
     }
 
     SECTION("insert into struct") {
-        auto select = linitial(raw_parser(
+        auto select = linitial(parse_ok(
             &arena_resource,
             R"(INSERT INTO TestCollection (struct_type.field_1, struct_type.field_3) VALUES(43, 'some text');)"));
         auto result = ([](auto _w) {
@@ -98,7 +99,7 @@ TEST_CASE("components::sql::insert_into") {
 
     SECTION("insert into array") {
         auto select =
-            linitial(raw_parser(&arena_resource, R"(INSERT INTO TestCollection (array_type) VALUES(ARRAY[1, 2, 3]);)"));
+            linitial(parse_ok(&arena_resource, R"(INSERT INTO TestCollection (array_type) VALUES(ARRAY[1, 2, 3]);)"));
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -121,13 +122,13 @@ TEST_CASE("components::sql::insert_into") {
     }
 
     SECTION("insert into multi-documents") {
-        auto select = linitial(raw_parser(&arena_resource,
-                                          "INSERT INTO TestCollection (id, name, count) VALUES "
-                                          "(1, 'Name1', 1), "
-                                          "(2, 'Name2', 2), "
-                                          "(3, 'Name3', 3), "
-                                          "(4, 'Name4', 4), "
-                                          "(5, 'Name5', 5);"));
+        auto select = linitial(parse_ok(&arena_resource,
+                                        "INSERT INTO TestCollection (id, name, count) VALUES "
+                                        "(1, 'Name1', 1), "
+                                        "(2, 'Name2', 2), "
+                                        "(3, 'Name3', 3), "
+                                        "(4, 'Name4', 4), "
+                                        "(5, 'Name5', 5);"));
         auto result = ([](auto _w) {
             REQUIRE_FALSE(_w.has_error());
             return _w.value();
@@ -146,7 +147,7 @@ TEST_CASE("components::sql::insert_into") {
     }
 
     SECTION("insert from select") {
-        auto select = linitial(raw_parser(&arena_resource, R"_(INSERT INTO table2 (column1, column2, column3)
+        auto select = linitial(parse_ok(&arena_resource, R"_(INSERT INTO table2 (column1, column2, column3)
 SELECT column1, column2, column3
 FROM table1
 WHERE condition = true;)_"));
@@ -177,7 +178,7 @@ TEST_CASE("components::sql::insert_into takes nothing from the default resource"
         sql += ", (" + std::to_string(row) + ", 'y')";
     }
     sql += ";";
-    auto select = linitial(raw_parser(&arena_resource, sql.c_str()));
+    auto select = linitial(parse_ok(&arena_resource, sql.c_str()));
 
     core::pmr::default_resource_counter_t default_resource;
     auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
@@ -199,7 +200,7 @@ namespace {
                 sql += ", " + row;
             }
             sql += ";";
-            auto select = linitial(raw_parser(&arena_resource, sql.c_str()));
+            auto select = linitial(parse_ok(&arena_resource, sql.c_str()));
             counter.reset();
             auto result = transformer.transform(pg_cell_to_node_cast(select)).finalize();
             REQUIRE_FALSE(result.has_error());

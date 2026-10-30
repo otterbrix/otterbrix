@@ -7,7 +7,12 @@
 #include <vector>
 
 #include <components/context/context.hpp>
+#include <components/expressions/cast_expression.hpp>
+#include <components/expressions/compare_expression.hpp>
+#include <components/expressions/scalar_expression.hpp>
+#include <components/physical_plan/operators/operator.hpp>
 #include <components/physical_plan/operators/operator_data.hpp>
+#include <components/physical_plan/operators/operator_select.hpp>
 #include <components/table/transaction.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <components/vector/vector_operations.hpp>
@@ -53,7 +58,7 @@ namespace components::operators::dml_detail {
         return sliced;
     }
 
-    // Matched rows of `source` as a slice. The row ids are gathered into an owned vector, since the storage sink
+    // Matched rows of `source` as a slice. The row ids are gathered into an owned vector, since the write
     // overwrites them in place.
     inline vector::data_chunk_t slice_matched(std::pmr::memory_resource* resource,
                                               const vector::data_chunk_t& source,
@@ -104,6 +109,197 @@ namespace components::operators::dml_detail {
             }
         }
         return false;
+    }
+
+    // `chunks` cut into rounds of at most `rows_per_round` rows (0: one round), each round a write message of its
+    // own. A chunk that spans two rounds is copied in parts.
+    inline std::pmr::vector<chunks_vector_t>
+    split_rounds(std::pmr::memory_resource* resource, chunks_vector_t& chunks, uint64_t rows_per_round) {
+        std::pmr::vector<chunks_vector_t> rounds{resource};
+        uint64_t in_round = 0;
+        for (auto& chunk : chunks) {
+            const uint64_t rows = chunk.size();
+            if (rows == 0) {
+                continue;
+            }
+            uint64_t offset = 0;
+            while (offset < rows) {
+                if (rounds.empty() || (rows_per_round != 0 && in_round == rows_per_round)) {
+                    rounds.emplace_back();
+                    in_round = 0;
+                }
+                const uint64_t take =
+                    rows_per_round == 0 ? rows - offset : std::min(rows - offset, rows_per_round - in_round);
+                if (take == rows) {
+                    rounds.back().push_back(std::move(chunk));
+                } else {
+                    rounds.back().push_back(chunk.partial_copy(resource, offset, take));
+                }
+                offset += take;
+                in_round += take;
+            }
+        }
+        return rounds;
+    }
+
+    // Parallel chunk lists (chunk k of each non-empty list describes the same rows) cut into the same rounds of at
+    // most `rows_per_round` rows (0: one round). Round r holds, per list, its chunks of that round (none for an
+    // empty list).
+    inline std::pmr::vector<std::pmr::vector<chunks_vector_t>>
+    split_parallel_rounds(std::pmr::memory_resource* resource,
+                          std::initializer_list<chunks_vector_t*> lists,
+                          uint64_t rows_per_round) {
+        std::pmr::vector<std::pmr::vector<chunks_vector_t>> rounds{resource};
+        const auto& primary = **lists.begin();
+        auto open_round = [&] {
+            auto& round = rounds.emplace_back();
+            for (std::size_t list = 0; list < lists.size(); ++list) {
+                round.emplace_back();
+            }
+        };
+        uint64_t in_round = 0;
+        for (std::size_t index = 0; index < primary.size(); ++index) {
+            const uint64_t rows = primary[index].size();
+            if (rows == 0) {
+                continue;
+            }
+            uint64_t offset = 0;
+            while (offset < rows) {
+                if (rounds.empty() || (rows_per_round != 0 && in_round == rows_per_round)) {
+                    open_round();
+                    in_round = 0;
+                }
+                const uint64_t take =
+                    rows_per_round == 0 ? rows - offset : std::min(rows - offset, rows_per_round - in_round);
+                std::size_t list_index = 0;
+                for (auto* list : lists) {
+                    if (!list->empty()) {
+                        assert(list->size() == primary.size() &&
+                               "split_parallel_rounds: the lists describe the same rows");
+                        auto& chunk = (*list)[index];
+                        if (take == rows) {
+                            rounds.back()[list_index].push_back(std::move(chunk));
+                        } else {
+                            rounds.back()[list_index].push_back(chunk.partial_copy(resource, offset, take));
+                        }
+                    }
+                    ++list_index;
+                }
+                offset += take;
+                in_round += take;
+            }
+        }
+        return rounds;
+    }
+
+    // The columns of a whole row a scan read, in the scan's order (`columns` empty: the scan read every one). A
+    // storage answers every column of a deleted row, while a DELETE's RETURNING is bound to its scan's columns.
+    inline vector::data_chunk_t
+    as_scanned(std::pmr::memory_resource* resource, vector::data_chunk_t&& row, const std::vector<size_t>& columns) {
+        if (columns.empty()) {
+            return std::move(row);
+        }
+        std::pmr::vector<types::complex_logical_type> types(resource);
+        types.reserve(columns.size());
+        for (const auto column : columns) {
+            types.push_back(row.data[column].type());
+        }
+        vector::data_chunk_t scanned(resource, types, std::max<uint64_t>(row.size(), 1));
+        for (size_t index = 0; index < columns.size(); ++index) {
+            vector::vector_ops::copy(row.data[columns[index]], scanned.data[index], row.size(), 0, 0);
+        }
+        scanned.set_cardinality(row.size());
+        return scanned;
+    }
+
+    // Arithmetic and casts of literals and bound parameters only: what PostgreSQL 18 folds while planning (an
+    // immutable expression of constants), so its error comes before the statement runs.
+    inline bool is_constant_arithmetic(const expressions::param_storage& param,
+                                       const logical_plan::storage_parameters& parameters) {
+        if (expressions::is_parameter(param)) {
+            return parameters.kind(expressions::as_parameter(param)) != vector::parameter_kind::execution;
+        }
+        if (!expressions::is_expr(param) || expressions::as_expr(param) == nullptr) {
+            return false;
+        }
+        const auto& expression = expressions::as_expr(param);
+        if (expression->group() == expressions::expression_group::cast) {
+            return is_constant_arithmetic(static_cast<const expressions::cast_expression_t&>(*expression).child(),
+                                          parameters);
+        }
+        if (expression->group() != expressions::expression_group::scalar) {
+            return false;
+        }
+        const auto& scalar = static_cast<const expressions::scalar_expression_t&>(*expression);
+        switch (scalar.type()) {
+            case expressions::scalar_type::add:
+            case expressions::scalar_type::subtract:
+            case expressions::scalar_type::multiply:
+            case expressions::scalar_type::divide:
+            case expressions::scalar_type::mod:
+            case expressions::scalar_type::unary_minus:
+                break;
+            default:
+                return false;
+        }
+        if (scalar.params().empty()) {
+            return false;
+        }
+        for (const auto& operand : scalar.params()) {
+            if (!is_constant_arithmetic(operand, parameters)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // The RETURNING columns of constants only, computed once before the first write: a division by zero there is
+    // the statement's error before any row reaches the storage.
+    inline core::error_t check_constant_returning(std::pmr::memory_resource* resource,
+                                                  const std::pmr::vector<projected_column_t>& returning,
+                                                  const pipeline::context_t& ctx) {
+        std::pmr::vector<projected_column_t> constant(resource);
+        for (const auto& column : returning) {
+            if (is_constant_arithmetic(column.value, ctx.parameters)) {
+                constant.push_back(column);
+            }
+        }
+        if (constant.empty()) {
+            return core::error_t::no_error();
+        }
+        vector::data_chunk_t one_row(resource, std::pmr::vector<types::complex_logical_type>{resource}, 1);
+        one_row.set_cardinality(1);
+        std::unique_ptr<execution_dag::execution_dag_t> graph;
+        auto computed =
+            evaluate_projection(resource, constant, &one_row, ctx.parameters, ctx.execution_context, &graph);
+        return computed.has_error() ? computed.error() : core::error_t::no_error();
+    }
+
+    // `count` rows of `chunks` from the row `offset` on, counted across the chunks, copied into one chunk.
+    inline vector::data_chunk_t
+    rows_at(std::pmr::memory_resource* resource, const chunks_vector_t& chunks, uint64_t offset, uint64_t count) {
+        assert(!chunks.empty());
+        vector::data_chunk_t out(resource, chunks.front().types(), std::max<uint64_t>(count, 1));
+        uint64_t written = 0;
+        uint64_t skipped = 0;
+        for (const auto& chunk : chunks) {
+            if (written == count) {
+                break;
+            }
+            if (skipped + chunk.size() <= offset) {
+                skipped += chunk.size();
+                continue;
+            }
+            const uint64_t from = offset > skipped ? offset - skipped : 0;
+            const uint64_t take = std::min(chunk.size() - from, count - written);
+            for (uint64_t column = 0; column < out.column_count(); ++column) {
+                vector::vector_ops::copy(chunk.data[column], out.data[column], from + take, from, written);
+            }
+            written += take;
+            skipped += chunk.size();
+        }
+        out.set_cardinality(written);
+        return out;
     }
 
     // Normalized result of one operator storage op, handed to record_flush().

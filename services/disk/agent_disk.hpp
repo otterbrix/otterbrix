@@ -113,8 +113,6 @@ namespace services::disk {
 
         ~agent_disk_t();
 
-        [[nodiscard]] bool has_storage_sync(components::catalog::oid_t oid) const noexcept;
-
         // An open cursor holds an absolute row position that compact()'s row swap would shift; checkpoint_inner defers.
         [[nodiscard]] bool has_active_scan_for_oid(components::catalog::oid_t oid) const noexcept {
             for (const auto& [_cursor, scan] : active_scans_) {
@@ -128,7 +126,8 @@ namespace services::disk {
         [[nodiscard]] const collection_storage_entry_t*
         storage_entry_sync(components::catalog::oid_t oid) const noexcept;
 
-        [[nodiscard]] bool
+        // false: the oid is already in this slice; an error: the .otbx could not be opened.
+        [[nodiscard]] core::result_wrapper_t<bool>
         bootstrap_disk_inner_sync(components::catalog::oid_t oid,
                                   const std::filesystem::path& otbx_path,
                                   wal::id_t sidecar_wal_id,

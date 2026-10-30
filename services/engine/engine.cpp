@@ -232,18 +232,29 @@ namespace services::engine {
                     "engine startup REFUSED , config.wal.path is empty: the WAL is the table's only redo "
                     "record between checkpoints and has nowhere to write");
             }
+            if (config.disk.path.empty()) {
+                return startup_error(resource,
+                                     core::error_code_t::invalid_parameter,
+                                     "engine startup REFUSED , config.disk.path is empty: the disk manager would "
+                                     "start no disk agent, so no table could be created, read or written");
+            }
+            if (config.disk.agent < 1) {
+                return startup_error(resource,
+                                     core::error_code_t::invalid_parameter,
+                                     "engine startup REFUSED , config.disk.agent is " +
+                                         std::to_string(config.disk.agent) +
+                                         ": at least one disk agent must own the system catalog");
+            }
 
             VALUE_OR_RETURN(auto lock, detail::directory_lock_t::acquire(resource, config.main_path));
 
-            if (!config.disk.path.empty()) {
-                std::error_code ec;
-                std::filesystem::create_directories(config.disk.path, ec);
-                if (ec) {
-                    return startup_error(resource,
-                                         core::error_code_t::io_error,
-                                         "engine startup REFUSED , the table directory " + config.disk.path.string() +
-                                             " could not be created: " + ec.message());
-                }
+            std::error_code ec;
+            std::filesystem::create_directories(config.disk.path, ec);
+            if (ec) {
+                return startup_error(resource,
+                                     core::error_code_t::io_error,
+                                     "engine startup REFUSED , the table directory " + config.disk.path.string() +
+                                         " could not be created: " + ec.message());
             }
 
             auto parts = std::make_unique<engine_parts_t>(resource, log, std::move(lock));

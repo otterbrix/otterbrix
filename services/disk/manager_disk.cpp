@@ -370,14 +370,20 @@ namespace services::disk {
         , config_(std::move(config))
         , pump_(pump) {
         trace(log_, "manager_disk start");
-        if (!config_.path.empty()) {
-            // The engine factory creates the directory before it spawns the managers.
-            assert([this] {
-                std::error_code ec;
-                return std::filesystem::is_directory(config_.path, ec);
-            }());
-            create_agent(config.agent);
+        // Refuses a relative-path database under the process CWD (every binding fills config_disk::path).
+        if (config_.path.empty()) {
+            construction_error_ = core::error_t(core::error_code_t::invalid_parameter,
+                                                std::pmr::string{"manager_disk_t: config_disk::path is empty — there "
+                                                                 "is no directory to keep the tables in",
+                                                                 resource_});
+            return;
         }
+        // The engine factory creates the directory before it spawns the managers.
+        assert([this] {
+            std::error_code ec;
+            return std::filesystem::is_directory(config_.path, ec);
+        }());
+        create_agent(config.agent);
         // This thread owns all message processing; senders only push into inbox_ and wake it.
         construction_error_ =
             loop_thread_.start<manager_disk_t, &manager_disk_t::loop_body>(resource_, "manager_disk", this);

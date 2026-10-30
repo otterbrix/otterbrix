@@ -219,17 +219,10 @@ TEST_CASE("integration::cpp::test_catalog_read_refusal::register_udf_fails_when_
     }
     REQUIRE_FALSE(reads.empty());
 
-    // Load offsets are read twice (probe construction + agent reopen); restore_oid_generator_sync's
-    // block is read once. Exactly one such offset must exist, or this case needs re-deriving,
-    // not silently skipping.
-    std::vector<uint64_t> read_once;
-    for (const auto off : reads) {
-        if (std::count(reads.begin(), reads.end(), off) == 1) {
-            read_once.push_back(off);
-        }
-    }
-    REQUIRE(read_once.size() == 1);
-    const uint64_t data_block = read_once.front();
+    // A start opens pg_proc once (its header and metadata blocks), then restore_oid_generator_sync scans it: the
+    // last block read is the data block. A load block here would refuse the start below, not survive it.
+    const uint64_t data_block = reads.back();
+    REQUIRE(std::count(reads.begin(), reads.end(), data_block) == 1);
 
     otterbrix_test::fault_plan_t plan;
     plan.fail_reads_at_location = data_block;

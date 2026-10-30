@@ -223,8 +223,8 @@ TEST_CASE("services::disk::sysboot::restart_loads_all_10") {
     cleanup_boot_dir();
 }
 
-// Empty config_disk.path makes bootstrap refuse, instead of manufacturing a relative-path db under the CWD.
-TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
+// Empty config_disk.path is refused at construction, instead of manufacturing a relative-path db under the CWD.
+TEST_CASE("services::disk::sysboot::no_path_is_refused") {
     core::pmr::otterbrix_resource resource;
     log_t log = make_test_log();
     auto* scheduler = new core::non_thread_scheduler::scheduler_test_t(1, 1);
@@ -236,11 +236,8 @@ TEST_CASE("services::disk::sysboot::no_path_is_safe_noop") {
                                                test_directory::created(c),
                                                log,
                                                configuration::pump_intervals_t{});
-    manager_disk_t::bootstrap_t boot{*m, services::bootstrap_token_t{}};
-
-    REQUIRE_FALSE(boot.bootstrap_system_tables_sync().contains_error());
-    REQUIRE_FALSE(boot.bootstrap_system_tables_sync().contains_error());
-    REQUIRE_FALSE(boot.restore_oid_generator_sync().contains_error());
+    REQUIRE(m->construction_error().contains_error());
+    CHECK(m->construction_error().type == core::error_code_t::invalid_parameter);
 
     m.reset();
     scheduler->stop();

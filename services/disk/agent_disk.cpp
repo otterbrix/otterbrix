@@ -96,10 +96,6 @@ namespace services::disk {
 
     agent_disk_t::~agent_disk_t() { trace(log_, "delete agent_disk_t"); }
 
-    bool agent_disk_t::has_storage_sync(components::catalog::oid_t oid) const noexcept {
-        return storages_.find(oid) != storages_.end();
-    }
-
     const collection_storage_entry_t* agent_disk_t::storage_entry_sync(components::catalog::oid_t oid) const noexcept {
         auto it = storages_.find(oid);
         if (it == storages_.end()) {
@@ -108,12 +104,13 @@ namespace services::disk {
         return it->second.get();
     }
 
-    bool agent_disk_t::bootstrap_disk_inner_sync(components::catalog::oid_t oid,
-                                                 const std::filesystem::path& otbx_path,
-                                                 wal::id_t sidecar_wal_id,
-                                                 bool sidecar_readable,
-                                                 std::vector<components::table::column_definition_t> catalog_columns,
-                                                 bool is_computed) noexcept {
+    core::result_wrapper_t<bool>
+    agent_disk_t::bootstrap_disk_inner_sync(components::catalog::oid_t oid,
+                                            const std::filesystem::path& otbx_path,
+                                            wal::id_t sidecar_wal_id,
+                                            bool sidecar_readable,
+                                            std::vector<components::table::column_definition_t> catalog_columns,
+                                            bool is_computed) noexcept {
         // Probed before construction: open-then-close on a duplicate would release the live entry's WRITE_LOCK.
         if (storages_.find(oid) != storages_.end()) {
             trace(log_,
@@ -139,7 +136,7 @@ namespace services::disk {
                  static_cast<unsigned>(oid),
                  otbx_path.string(),
                  entry->table_storage.construction_error().what.c_str());
-            return false;
+            return core::error_on(resource(), entry->table_storage.construction_error());
         }
         if (!sidecar_readable) {
             // A default 0 would misread as "never checkpointed, replay everything", so carry "unknown".

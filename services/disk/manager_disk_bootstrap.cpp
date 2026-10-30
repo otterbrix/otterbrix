@@ -117,13 +117,6 @@ namespace services::disk {
     } // namespace
 
     core::error_t manager_disk_t::bootstrap_system_tables_sync() {
-        // Refuses a relative-path database under the process CWD (every binding fills config_disk::path).
-        if (config_.path.empty()) {
-            error(log_,
-                  "manager_disk_t::bootstrap_system_tables_sync: config_disk::path is empty — there is no "
-                  "directory to bootstrap pg_catalog into; refusing");
-            return core::error_t::no_error();
-        }
         const auto sys_db_oid = catalog::well_known_oid::main_database;
         const std::filesystem::path sys_dir = config_.path / std::to_string(static_cast<unsigned>(sys_db_oid));
         std::error_code dir_ec;
@@ -156,11 +149,10 @@ namespace services::disk {
         auto bootstrap_one = [&](const components::catalog::system_table_def_t& def) -> core::result_wrapper_t<bool> {
             const auto tbl_oid = def.relation_oid;
             if (!agents_.empty() && agents_[0] != nullptr) {
-                if (agents_[0]->has_storage_sync(tbl_oid))
+                if (agents_[0]->storage_entry_sync(tbl_oid) != nullptr)
                     return false;
             }
             bool needs_seeding = false;
-            bool took_create_leg = false;
             const auto otbx = sys_dir / std::to_string(static_cast<unsigned>(tbl_oid)) / "table.otbx";
             {
                 std::error_code table_dir_ec;
@@ -212,21 +204,8 @@ namespace services::disk {
                                                                   std::string(create_err.what.c_str()),
                                                               resource()});
                     }
-                    took_create_leg = true;
                     needs_seeding = true;
                 }
-            }
-            if (agents_.empty() || agents_[0] == nullptr || !agents_[0]->has_storage_sync(tbl_oid)) {
-                error(log_,
-                      "bootstrap REFUSED , system table {} oid={} did not come up on the {} leg (path {})",
-                      std::string(def.name),
-                      static_cast<unsigned>(tbl_oid),
-                      took_create_leg ? "create" : "load",
-                      otbx.string());
-                return core::error_t(core::error_code_t::io_error,
-                                     std::pmr::string{"a pg_catalog system table did not come up, refusing to start: " +
-                                                          std::string(def.name),
-                                                      resource()});
             }
             return needs_seeding;
         };
@@ -613,9 +592,6 @@ namespace services::disk {
     }
 
     core::error_t manager_disk_t::load_user_table_storages_sync() {
-        if (config_.path.empty()) {
-            return core::error_t::no_error();
-        }
         const auto listing_refused = [this](const core::error_t& why) {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"load_user_table_storages_sync: the tables under " +
@@ -699,17 +675,11 @@ namespace services::disk {
     }
 
     core::result_wrapper_t<std::size_t> manager_disk_t::rehydrate_missing_user_storages_sync() {
-        // The four early returns below use error_t, not 0 — 0 is also what a healthy, empty database answers.
+        // The early returns below use error_t, not 0 — 0 is also what a healthy, empty database answers.
         if (agents_.empty() || agents_[0] == nullptr) {
             return core::error_t(core::error_code_t::io_error,
                                  std::pmr::string{"rehydrate_missing_user_storages_sync: there is no catalog agent to "
                                                   "read pg_class from; no alive table could be examined",
-                                                  resource()});
-        }
-        if (config_.path.empty()) {
-            return core::error_t(core::error_code_t::io_error,
-                                 std::pmr::string{"rehydrate_missing_user_storages_sync: config_disk::path is empty — "
-                                                  "no directory to recreate a lost .otbx in; refusing",
                                                   resource()});
         }
         std::size_t unclosed = 0;

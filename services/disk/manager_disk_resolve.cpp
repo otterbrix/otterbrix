@@ -102,7 +102,7 @@ namespace services::disk {
         batch.reserve(count);
         for (std::size_t i = 0; i < count; ++i) {
             const auto oid = oid_gen_.allocate();
-            if (!config_.path.empty() && oid >= oid_reserved_until_) {
+            if (oid >= oid_reserved_until_) {
                 components::catalog::oid_t bound = oid + OID_RESERVATION_BLOCK;
                 if (auto persisted = persist_oid_reservation(resource(), config_.path, bound);
                     persisted.contains_error()) {

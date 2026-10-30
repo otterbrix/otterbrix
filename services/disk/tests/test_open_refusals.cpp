@@ -815,11 +815,6 @@ TEST_CASE("services::disk::open::a_sidecar_that_cannot_be_located_is_not_a_sidec
     INFO("a namespace the catalog does not name gives no directory to look in");
     CHECK(no_namespace.has_error());
 
-    open_fixture pathless(std::filesystem::path{});
-    auto no_path = pathless.boot.peek_checkpoint_wal_id_from_disk(table_oid, ns_oid);
-    INFO("an empty disk path names no directory a sidecar could live in");
-    CHECK(no_path.has_error());
-
     cleanup_refusal_dir();
 }
 

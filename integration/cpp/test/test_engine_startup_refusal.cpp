@@ -37,6 +37,32 @@ TEST_CASE("integration::cpp::engine_startup_refusal::an_unwritable_disk_path_ans
     CHECK(mentions(opened.error(), "could not be created"));
 }
 
+// An empty disk.path would start an engine with no disk agent, so every table statement would fail later.
+TEST_CASE("integration::cpp::engine_startup_refusal::an_empty_disk_path_answers_an_error") {
+    auto config = make_test_config(integration_fixture_path("test_engine_startup_refusal/empty_disk_path"));
+    config.log.level = log_t::level::off;
+    config.disk.path.clear();
+
+    auto opened = otterbrix::base_otterbrix_t::open(config);
+    REQUIRE(opened.has_error());
+    INFO("refusal: " << opened.error().what.c_str());
+    CHECK(opened.error().type == core::error_code_t::invalid_parameter);
+    CHECK(mentions(opened.error(), "config.disk.path is empty"));
+}
+
+// Zero disk agents is a configuration error, refused before the directory is touched, not as a failed bootstrap.
+TEST_CASE("integration::cpp::engine_startup_refusal::zero_disk_agents_answer_an_error") {
+    auto config = make_test_config(integration_fixture_path("test_engine_startup_refusal/zero_disk_agents"));
+    config.log.level = log_t::level::off;
+    config.disk.agent = 0;
+
+    auto opened = otterbrix::base_otterbrix_t::open(config);
+    REQUIRE(opened.has_error());
+    INFO("refusal: " << opened.error().what.c_str());
+    CHECK(opened.error().type == core::error_code_t::invalid_parameter);
+    CHECK(mentions(opened.error(), "config.disk.agent"));
+}
+
 TEST_CASE("integration::cpp::engine_startup_refusal::a_zero_executor_pool_answers_an_error") {
     auto config = make_test_config(integration_fixture_path("test_engine_startup_refusal/pool_zero"));
     config.log.level = log_t::level::off;

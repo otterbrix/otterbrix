@@ -581,7 +581,7 @@ namespace services::disk {
             const std::size_t idx = pool_idx_for_oid(table_oid, agents_.size());
             if (idx >= agents_.size() || agents_[idx] == nullptr)
                 return false;
-            return agents_[idx]->has_storage_sync(table_oid);
+            return agents_[idx]->storage_entry_sync(table_oid) != nullptr;
         }
         // Wrapped: a bare 0 would be ambiguous with "never checkpointed".
         core::result_wrapper_t<wal::id_t>

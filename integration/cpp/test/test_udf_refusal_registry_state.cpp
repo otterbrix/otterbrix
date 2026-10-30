@@ -212,15 +212,10 @@ TEST_CASE("integration::cpp::test_udf_refusal_registry_state::register_udf_leave
     }
     REQUIRE_FALSE(reads.empty());
 
-    // Offsets seen twice belong to the load path; the one seen once is pg_namespace's data block.
-    std::vector<uint64_t> read_once;
-    for (const auto off : reads) {
-        if (std::count(reads.begin(), reads.end(), off) == 1) {
-            read_once.push_back(off);
-        }
-    }
-    REQUIRE(read_once.size() == 1);
-    const uint64_t data_block = read_once.front();
+    // A start opens pg_namespace once (its header and metadata blocks), then scans it: the last block read is the
+    // data block. A load block here would refuse the start below, not survive it.
+    const uint64_t data_block = reads.back();
+    REQUIRE(std::count(reads.begin(), reads.end(), data_block) == 1);
 
     otterbrix_test::fault_plan_t plan;
     plan.fail_reads_at_location = data_block;

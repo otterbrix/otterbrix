@@ -3550,6 +3550,7 @@ namespace services::collection::executor {
                                                                 std::move(plan.sub_queries.back()),
                                                                 plan.parameters.get(),
                                                                 context_storage.execution_context,
+                                                                context_storage.indexes,
                                                                 can_push_to_agent);
         if (auto offered = co_await offer_blocks_(session, plan, resolve_txn, context_storage.execution_context);
             offered.contains_error()) {

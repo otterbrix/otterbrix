@@ -5,6 +5,7 @@
 #include "optimizer/rules/drop_redundant_distinct.hpp"
 #include "optimizer/rules/eager_aggregation.hpp"
 #include "optimizer/rules/hash_join.hpp"
+#include "optimizer/rules/index_selection.hpp"
 #include "optimizer/rules/promote_cross_join.hpp"
 #include "optimizer/rules/pushdown_aggregate.hpp"
 #include "optimizer/rules/pushdown_filter.hpp"
@@ -16,6 +17,7 @@ namespace components::planner {
                                     logical_plan::node_ptr node,
                                     logical_plan::parameter_node_t* parameters,
                                     const graph_execution_context& ctx,
+                                    const logical_plan::index_facts_t& indexes,
                                     bool can_push_to_agent) {
         if (!node) {
             return nullptr;
@@ -86,6 +88,10 @@ namespace components::planner {
         if (can_push_to_agent) {
             node = optimizer::pushdown_aggregate(resource, std::move(node));
         }
+
+        // The index is chosen here, before the executor offers blocks to the tables' storages: a stamped WHERE
+        // ends a block. Before prune_columns, which only rebases the key's path, never its name.
+        optimizer::select_indexes(node, indexes);
 
         // Column pruning runs LAST — after pushdown_filter has relocalized any
         // single-table filters below the join and rewrite_hash_joins has settled the

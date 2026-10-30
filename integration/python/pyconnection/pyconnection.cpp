@@ -237,8 +237,11 @@ namespace otterbrix {
         refuse_if_closed();
         auto node = node_in;
         if (optimize) {
-            node =
-                components::planner::optimize(node->resource(), node, nullptr, components::graph_execution_context{});
+            node = components::planner::optimize(node->resource(),
+                                                 node,
+                                                 nullptr,
+                                                 components::graph_execution_context{},
+                                                 components::logical_plan::index_facts_t{node->resource()});
         }
         return space->dispatcher()->execute_plan(
             session_->id(),

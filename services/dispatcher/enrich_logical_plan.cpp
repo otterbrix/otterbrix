@@ -1244,11 +1244,11 @@ namespace services::dispatcher {
                 auto keys = co_await std::move(keys_futures[i]);
                 catalog_resolve::stamp_table_has_indexes(root.get(), queried_oids[i], !keys.empty());
                 catalog_resolve::stamp_index_key_columns(root.get(), queried_oids[i], keys);
-                collections_ctx->index_info_slot(queried_oids[i]).keys = std::move(keys);
+                collections_ctx->indexes.index_info_slot(queried_oids[i]).keys = std::move(keys);
             }
             for (std::size_t i = 0; i < desc_futures.size(); ++i) {
                 auto descriptions = co_await std::move(desc_futures[i]);
-                collections_ctx->index_info_slot(queried_oids[i]).descriptions = std::move(descriptions);
+                collections_ctx->indexes.index_info_slot(queried_oids[i]).descriptions = std::move(descriptions);
             }
         }
         co_return core::error_t::no_error();

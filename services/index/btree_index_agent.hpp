@@ -48,7 +48,7 @@ namespace services::index {
         static constexpr components::logical_plan::index_type index_type_v =
             components::logical_plan::index_type::single;
 
-        // can_use_index refuses lt/lte/gt/gte unless a non-hashed index covers the key.
+        // select_indexes (index_selection) gives lt/lte/gt/gte an index only when a non-hashed one covers the key.
         static constexpr bool supports_ordered_probe_v = true;
 
         // This family owns no segments or txn log; on-disk directory is ${path_db}/${table_oid}/${index_oid}/.

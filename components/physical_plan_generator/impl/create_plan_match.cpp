@@ -4,8 +4,6 @@
 #include <cassert>
 #include <cstdlib>
 
-#include "index_selection_helpers.hpp"
-
 #include <components/catalog/catalog_codes.hpp>
 #include <components/expressions/compare_expression.hpp>
 #include <components/logical_plan/node_match.hpp>
@@ -21,62 +19,6 @@ namespace services::planner::impl {
     namespace {
 
         namespace expr = components::expressions;
-
-        bool is_range_compare(expr::compare_type type) {
-            return type == expr::compare_type::lt || type == expr::compare_type::lte ||
-                   type == expr::compare_type::gt || type == expr::compare_type::gte;
-        }
-
-        // Index info is scoped per table_oid; another table's indexes from the same statement never apply.
-        [[maybe_unused]] bool can_use_index(const context_storage_t& context,
-                                            components::catalog::oid_t table_oid,
-                                            const expr::compare_expression_t& comp,
-                                            bool& key_on_left) {
-            if (expr::is_union_compare_condition(comp.type())) {
-                return false;
-            }
-            switch (comp.type()) {
-                case expr::compare_type::eq:
-                case expr::compare_type::lt:
-                case expr::compare_type::lte:
-                case expr::compare_type::gt:
-                case expr::compare_type::gte:
-                case expr::compare_type::is_null:
-                case expr::compare_type::is_not_null:
-                    break;
-                default:
-                    return false;
-            }
-            if (!context.parameters) {
-                return false;
-            }
-
-            if (std::holds_alternative<expr::key_t>(comp.left()) &&
-                std::holds_alternative<core::parameter_id_t>(comp.right())) {
-                const auto& key = components::expressions::as_key(comp.left());
-                const bool range = is_range_compare(comp.type());
-                if (context.has_index_on(table_oid, key) &&
-                    (!range || context.has_index_on_with_other_type(table_oid,
-                                                                    key,
-                                                                    components::logical_plan::index_type::hashed))) {
-                    key_on_left = true;
-                    return true;
-                }
-            }
-            if (std::holds_alternative<core::parameter_id_t>(comp.left()) &&
-                std::holds_alternative<expr::key_t>(comp.right())) {
-                const auto& key = components::expressions::as_key(comp.right());
-                const bool range = is_range_compare(comp.type());
-                if (context.has_index_on(table_oid, key) &&
-                    (!range || context.has_index_on_with_other_type(table_oid,
-                                                                    key,
-                                                                    components::logical_plan::index_type::hashed))) {
-                    key_on_left = false;
-                    return true;
-                }
-            }
-            return false;
-        }
 
         bool is_pure_compare(const components::expressions::expression_ptr& expr) {
             using namespace components::expressions;
@@ -145,39 +87,33 @@ namespace services::planner::impl {
         }
 
         plan_result_t create_plan_match_(const context_storage_t& context,
-                                         components::catalog::oid_t table_oid,
-                                         const components::expressions::expression_ptr& expr,
+                                         const components::logical_plan::node_match_t& match,
                                          components::logical_plan::row_cap_t cap,
                                          const std::vector<size_t>& requested_cols) {
+            const auto table_oid = match.table_oid();
+            const auto& expr = match.expressions().front();
             if (context.has_table_oid(table_oid)) {
                 const auto projected_cols = scan_columns_of(context, table_oid, requested_cols);
+                if (const auto& index = match.index(); index.has_value()) {
+                    const auto& compare = static_cast<const expr::compare_expression_t&>(*expr);
+                    const auto& key = expr::as_key(index->key_on_left ? compare.left() : compare.right());
+                    const auto param_id = expr::as_parameter(index->key_on_left ? compare.right() : compare.left());
+                    return boost::intrusive_ptr(new components::operators::index_scan(
+                        context.resource,
+                        context.log.clone(),
+                        table_oid,
+                        key,
+                        param_id,
+                        index->compare,
+                        index->type,
+                        cap,
+                        projected_cols,
+                        indexed_chunk_position(context, table_oid, key, projected_cols)));
+                }
                 VALUE_OR_RETURN(auto address, storage_address_of(context, table_oid));
                 // Only the disk evaluates a predicate while it reads; any other storage is read whole, filtered above.
                 if (is_pure_compare(expr) && !address.is_remote()) {
                     auto comp_expr = boost::static_pointer_cast<expr::compare_expression_t>(expr);
-                    if (!comp_expr->is_union()) {
-                        bool key_on_left = true;
-                        if (can_use_index(context, table_oid, *comp_expr, key_on_left)) {
-                            auto& key = key_on_left ? components::expressions::as_key(comp_expr->left())
-                                                    : components::expressions::as_key(comp_expr->right());
-                            auto param_id = key_on_left ? components::expressions::as_parameter(comp_expr->right())
-                                                        : components::expressions::as_parameter(comp_expr->left());
-                            auto ctype = key_on_left ? comp_expr->type() : mirror_compare(comp_expr->type());
-                            auto preferred_index_type = context.preferred_index_type_for_compare(table_oid, key, ctype);
-                            return boost::intrusive_ptr(new components::operators::index_scan(
-                                context.resource,
-                                context.log.clone(),
-                                table_oid,
-                                key,
-                                param_id,
-                                ctype,
-                                preferred_index_type,
-                                cap,
-                                projected_cols,
-                                indexed_chunk_position(context, table_oid, key, projected_cols)));
-                        }
-                    }
-
                     auto scan =
                         boost::intrusive_ptr(new components::operators::full_scan(context.resource,
                                                                                   context.log.clone(),
@@ -266,10 +202,8 @@ namespace services::planner::impl {
             assert(false && "unknown source of a WHERE scan");
             std::abort();
         } else {
-            const auto* match_node = static_cast<const components::logical_plan::node_match_t*>(node.get());
             return create_plan_match_(context,
-                                      match_node->table_oid(),
-                                      match_node->expressions()[0],
+                                      static_cast<const components::logical_plan::node_match_t&>(*node),
                                       cap,
                                       projected_cols);
         }

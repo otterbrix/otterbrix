@@ -1,6 +1,7 @@
 #pragma once
 
 #include <components/execution_context/graph_execution_context.hpp>
+#include <components/logical_plan/index_facts.hpp>
 #include <components/logical_plan/node.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -21,6 +22,7 @@ namespace components::planner {
     //     no disk-manager address, so there is no owning agent to push to and pushable
     //     aggregates must stay coordinator-side. Defaults false so a bare
     //     3-arg caller (unit/planner tests without a disk manager) does not stamp.
+    //   - index_selection — stamps each WHERE an index of `indexes` answers.
     // On DDL trees (sequence_t of primitive writes) it is a harmless no-op:
     // the planner leaves the match_t/join_t/aggregate_t these rules target
     // intact (DML wrappers sit on top; DDL has no such nodes).
@@ -28,6 +30,7 @@ namespace components::planner {
                                     logical_plan::node_ptr node,
                                     logical_plan::parameter_node_t* parameters,
                                     const graph_execution_context& ctx,
+                                    const logical_plan::index_facts_t& indexes,
                                     bool can_push_to_agent = false);
 
 } // namespace components::planner

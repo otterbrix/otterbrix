@@ -397,6 +397,14 @@ TEST_CASE("integration::cpp::describe::a statement that is not a query answers n
         CHECK(columns_of(described) == std::vector<column_t>{{"QUERY PLAN", logical_type::STRING_LITERAL}});
         CHECK(db.rows("s.t") == 1);
     }
+    SECTION("REFRESH MATERIALIZED VIEW refreshes nothing") {
+        db.ok(session, "CREATE MATERIALIZED VIEW s.mv AS SELECT a FROM s.t WITH NO DATA;");
+        db.ok(session, "REFRESH MATERIALIZED VIEW s.mv;");
+        db.ok(session, "INSERT INTO s.t (a, b) VALUES (3, 3);");
+        auto described = db.described(session, "REFRESH MATERIALIZED VIEW s.mv;");
+        CHECK(described->type_data().empty());
+        CHECK(db.rows("s.mv") == 1);
+    }
 }
 
 TEST_CASE("integration::cpp::describe::an error is the run's error") {
@@ -442,6 +450,41 @@ TEST_CASE("integration::cpp::describe::transactions") {
         CHECK(db.described(session, "COMMIT;")->transaction_status() == transaction_status_t::failed);
         CHECK(db.described(session, "ROLLBACK;")->transaction_status() == transaction_status_t::failed);
         CHECK(db.ok(session, "ROLLBACK;")->transaction_status() == transaction_status_t::idle);
+    }
+    SECTION("a failed block admits the describe of ROLLBACK TO and stays failed") {
+        db.ok(session, "BEGIN;");
+        db.ok(session, "SAVEPOINT p;");
+        REQUIRE(db.run(session, "SELECT * FROM s.nope;")->is_error());
+        auto described = db.described(session, "ROLLBACK TO SAVEPOINT p;");
+        CHECK(described->type_data().empty());
+        CHECK(described->transaction_status() == transaction_status_t::failed);
+        CHECK(db.refused(session, "SELECT 1;").type == code::transaction_finalized);
+        CHECK(db.ok(session, "ROLLBACK TO SAVEPOINT p;")->transaction_status() == transaction_status_t::in_transaction);
+        db.ok(session, "ROLLBACK;");
+    }
+    SECTION("inside a block describe SAVEPOINT makes no savepoint") {
+        db.ok(session, "BEGIN;");
+        db.described(session, "SAVEPOINT p;");
+        CHECK(db.refused(session, "ROLLBACK TO SAVEPOINT p;").type == code::missing_savepoint);
+        db.ok(session, "ROLLBACK;");
+    }
+    SECTION("inside a block describe SAVEPOINT keeps no settings for a ROLLBACK TO") {
+        db.ok(session, "BEGIN;");
+        db.ok(session, "SAVEPOINT p;");
+        db.ok(session, "SET autocommit = off;");
+        db.described(session, "SAVEPOINT p;");
+        db.ok(session, "ROLLBACK TO SAVEPOINT p;");
+        db.ok(session, "COMMIT;");
+        CHECK(db.ok(session, "INSERT INTO s.t (a, b) VALUES (2, 2);")->transaction_status() ==
+              transaction_status_t::idle);
+    }
+    SECTION("inside a block describe of DDL leaves the block's work to its COMMIT") {
+        db.ok(session, "BEGIN;");
+        db.ok(session, "INSERT INTO s.t (a, b) VALUES (5, 5);");
+        auto described = db.described(session, "CREATE TABLE s.t (x INT);");
+        CHECK(described->transaction_status() == transaction_status_t::in_transaction);
+        db.ok(session, "COMMIT;");
+        CHECK(db.rows("s.t") == 2);
     }
     SECTION("a describe that fails inside a block fails the block") {
         db.ok(session, "BEGIN;");

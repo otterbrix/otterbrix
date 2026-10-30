@@ -179,6 +179,38 @@ namespace services::collection::executor {
             }
         }
 
+        // A statement a describe answers no columns for and checks nothing of, as PostgreSQL 18 answers NoData:
+        // neither a query nor a write.
+        bool is_utility(const components::logical_plan::node_t& root) {
+            using components::logical_plan::node_type;
+            switch (root.type()) {
+                case node_type::create_collection_t:
+                case node_type::create_database_t:
+                case node_type::create_schema_t:
+                case node_type::create_index_t:
+                case node_type::create_type_t:
+                case node_type::drop_t:
+                case node_type::create_sequence_t:
+                case node_type::create_view_t:
+                case node_type::create_macro_t:
+                case node_type::create_matview_t:
+                case node_type::refresh_matview_t:
+                case node_type::checkpoint_t:
+                case node_type::vacuum_t:
+                case node_type::alter_table_t:
+                case node_type::create_constraint_t:
+                case node_type::register_udf_t:
+                case node_type::unregister_udf_t:
+                case node_type::register_cast_t:
+                case node_type::unregister_cast_t:
+                case node_type::transaction_t:
+                case node_type::set_setting_t:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         void collect_inner_hash_join_oids(const components::logical_plan::node_ptr& node,
                                           std::pmr::set<components::catalog::oid_t>& out) {
             if (!node) {
@@ -2070,9 +2102,12 @@ namespace services::collection::executor {
         using components::logical_plan::node_t;
         using components::logical_plan::resolve_kind;
 
+        const bool describe = components::logical_plan::is_describe(plan.explain);
+        if (describe && plan.sub_queries.back() && is_utility(*plan.sub_queries.back())) {
+            co_return execute_result_t{make_cursor(resource())};
+        }
         const bool plan_only = plan.explain == components::logical_plan::explain_type::plan;
         const bool capture_ir = plan.explain == components::logical_plan::explain_type::analyze;
-        const bool describe = components::logical_plan::is_describe(plan.explain);
         const bool run_sub_queries = !plan_only && !describe;
         std::pmr::vector<explain_plan_node> captured_subplans{resource()};
         for (std::size_t i = 0; (run_sub_queries || plan_only || describe) && i + 1 < plan.sub_queries.size(); ++i) {

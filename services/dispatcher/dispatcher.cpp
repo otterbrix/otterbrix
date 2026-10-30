@@ -430,37 +430,6 @@ namespace services::dispatcher {
             return components::logical_plan::is_describe(plan.explain);
         }
 
-        // A statement a describe answers no columns for: neither a query nor a write.
-        bool is_utility(const components::logical_plan::node_t& root) {
-            using components::logical_plan::node_type;
-            switch (root.type()) {
-                case node_type::create_collection_t:
-                case node_type::create_database_t:
-                case node_type::create_schema_t:
-                case node_type::create_index_t:
-                case node_type::create_type_t:
-                case node_type::drop_t:
-                case node_type::create_sequence_t:
-                case node_type::create_view_t:
-                case node_type::create_macro_t:
-                case node_type::create_matview_t:
-                case node_type::refresh_matview_t:
-                case node_type::checkpoint_t:
-                case node_type::vacuum_t:
-                case node_type::alter_table_t:
-                case node_type::create_constraint_t:
-                case node_type::register_udf_t:
-                case node_type::unregister_udf_t:
-                case node_type::register_cast_t:
-                case node_type::unregister_cast_t:
-                case node_type::transaction_t:
-                case node_type::set_setting_t:
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
         // PostgreSQL 18 IsTransactionExitStmt: COMMIT, ROLLBACK, ROLLBACK TO.
         bool ends_transaction(const components::logical_plan::node_t& root) {
             if (root.type() != components::logical_plan::node_type::transaction_t) {
@@ -535,20 +504,7 @@ namespace services::dispatcher {
         if (after_close) {
             co_return refuse_closed_(session);
         }
-        if (describes(plan) && plan.sub_queries.back() && is_utility(*plan.sub_queries.back())) {
-            co_return describe_utility_(session, *plan.sub_queries.back());
-        }
         co_return co_await run_statement_(session, control, std::move(plan));
-    }
-
-    components::cursor::cursor_t_ptr
-    manager_dispatcher_t::describe_utility_(components::session::session_id_t session,
-                                            const components::logical_plan::node_t& root) {
-        if (failed_sessions_.contains(session) && !ends_transaction(root)) {
-            return stamp_transaction_status_(session,
-                                             components::cursor::make_cursor(resource(), failed_transaction_()));
-        }
-        return stamp_transaction_status_(session, components::cursor::make_cursor(resource()));
     }
 
     core::error_t manager_dispatcher_t::failed_transaction_() const {
@@ -563,9 +519,9 @@ namespace services::dispatcher {
                                          components::table::transaction_control_t control,
                                          components::logical_plan::execution_plan_t plan) {
         const auto settings_statement = settings_statement_of(plan);
+        const bool failed_at_admission = failed_sessions_.contains(session);
         // A failed transaction's writes wait for its end; a COMMIT ends it as a ROLLBACK.
-        bool commits_failed =
-            control == components::table::transaction_control_t::commit && failed_sessions_.contains(session);
+        bool commits_failed = control == components::table::transaction_control_t::commit && failed_at_admission;
         auto executed = commits_failed ? make_rollback_plan(resource()) : std::move(plan);
         auto resolved = create_session_context(session, &executed);
         if (resolved.has_error()) {
@@ -590,7 +546,8 @@ namespace services::dispatcher {
               exec_result.cursor->is_success());
         if (exec_result.cursor && exec_result.cursor->is_error()) {
             co_await finish_failed_statement_(session, statement_txn_id);
-        } else if (control == components::table::transaction_control_t::none && failed_sessions_.contains(session)) {
+        } else if (control == components::table::transaction_control_t::none && !failed_at_admission &&
+                   failed_sessions_.contains(session)) {
             exec_result.cursor = components::cursor::make_cursor(
                 resource(),
                 core::error_t{core::error_code_t::transaction_finalized,
@@ -1177,13 +1134,14 @@ namespace services::dispatcher {
     manager_dispatcher_t::create_session_context(components::session::session_id_t session,
                                                  components::logical_plan::execution_plan_t* plan) {
         if (failed_sessions_.contains(session)) {
-            const auto control = transaction_control_of(*plan);
-            if (control == components::table::transaction_control_t::none ||
-                control == components::table::transaction_control_t::savepoint) {
+            if (!ends_transaction(*plan->sub_queries.back())) {
                 return failed_transaction_();
             }
-            // A ROLLBACK TO clears the failure only once it has undone the work (execute_plan).
-            if (control != components::table::transaction_control_t::rollback_to) {
+            // A ROLLBACK TO clears the failure only once it has undone the work (run_statement_); a describe of an
+            // end clears nothing.
+            const auto control = transaction_control_of(*plan);
+            if (control == components::table::transaction_control_t::commit ||
+                control == components::table::transaction_control_t::rollback) {
                 failed_sessions_.erase(session);
             }
         }
@@ -1251,7 +1209,7 @@ namespace services::dispatcher {
     manager_dispatcher_t::settings_statement_of(const components::logical_plan::execution_plan_t& plan) const {
         settings_statement_t statement{false, {}, std::pmr::string{resource()}, false};
         const auto* root = plan.sub_queries.back().get();
-        if (root == nullptr) {
+        if (root == nullptr || describes(plan)) {
             return statement;
         }
         if (root->type() == components::logical_plan::node_type::transaction_t) {

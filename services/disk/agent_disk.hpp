@@ -113,35 +113,8 @@ namespace services::disk {
 
         ~agent_disk_t();
 
-        // An open cursor holds an absolute row position that compact()'s row swap would shift; checkpoint_inner defers.
-        [[nodiscard]] bool has_active_scan_for_oid(components::catalog::oid_t oid) const noexcept {
-            for (const auto& [_cursor, scan] : active_scans_) {
-                if (scan.table_oid == oid) {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        [[nodiscard]] const collection_storage_entry_t*
-        storage_entry_sync(components::catalog::oid_t oid) const noexcept;
-
-        // false: the oid is already in this slice; an error: the .otbx could not be opened.
-        [[nodiscard]] core::result_wrapper_t<bool>
-        bootstrap_disk_inner_sync(components::catalog::oid_t oid,
-                                  const std::filesystem::path& otbx_path,
-                                  wal::id_t sidecar_wal_id,
-                                  bool sidecar_readable,
-                                  std::vector<components::table::column_definition_t> catalog_columns,
-                                  bool is_computed) noexcept;
-
-        // is_computed (relkind='g') is resolved by the caller, never inferred from an empty column set.
-        // false: the oid is already in this slice; an error: the storage could not be constructed.
-        [[nodiscard]] core::result_wrapper_t<bool>
-        bootstrap_create_disk_inner_sync(components::catalog::oid_t oid,
-                                         std::vector<components::table::column_definition_t> columns,
-                                         const std::filesystem::path& otbx_path,
-                                         bool is_computed) noexcept;
+        // Bootstrap and WAL replay reach the slice only through this; it is built from manager_disk_t::bootstrap_t.
+        class bootstrap_t;
 
         unique_future<core::result_wrapper_t<bool>>
         // `relname`: what the table's refusals name it by (PostgreSQL 18's relation "t"); empty keeps the default.
@@ -150,23 +123,6 @@ namespace services::disk {
                                   std::filesystem::path otbx_path,
                                   bool is_computed,
                                   std::string relname);
-
-        // WAL-replay only, before scheduler.start; the storage_* handlers replace these after.
-        [[nodiscard]] core::error_t no_replay_storage_error(const char* who, components::catalog::oid_t table_oid);
-        [[nodiscard]] core::error_t delete_sync(components::catalog::oid_t table_oid,
-                                                const std::pmr::vector<int64_t>& row_ids,
-                                                uint64_t count,
-                                                const components::table::transaction_data& txn);
-        [[nodiscard]] core::result_wrapper_t<components::storage::appended_range_t>
-        update_sync(components::catalog::oid_t table_oid,
-                    const std::pmr::vector<int64_t>& row_ids,
-                    const std::pmr::vector<components::catalog::oid_t>& attoids,
-                    components::vector::data_chunk_t& new_data,
-                    components::table::transaction_data txn);
-        [[nodiscard]] core::error_t direct_add_column_sync(components::catalog::oid_t table_oid,
-                                                           const std::pmr::vector<components::catalog::oid_t>& attoids,
-                                                           const components::vector::data_chunk_t& schema_chunk,
-                                                           uint64_t first_position);
 
         // Mutation handlers: a not-owned oid REFUSES on every leg below; only an empty request succeeds as a no-op.
         // `attoids` name the payload's columns: the table's visible ones, in order (a computed table: none).
@@ -300,11 +256,6 @@ namespace services::disk {
         unique_future<void> storage_drop_aborted_inner(uint64_t txn_id,
                                                        std::pmr::vector<components::catalog::oid_t> oids);
 
-        // Bootstrap: the user-table load runs before replay knows of the drop, so a loaded entry is closed here.
-        void register_dropped_storage_inner_sync(components::catalog::oid_t oid,
-                                                 uint64_t dropped_at_commit_id,
-                                                 std::filesystem::path path);
-
         unique_future<void> drop_storage_many_inner(std::pmr::vector<components::catalog::oid_t> oids);
 
         unique_future<core::result_wrapper_t<components::pg_catalog_append_range_t>>
@@ -374,10 +325,6 @@ namespace services::disk {
                                                                 components::catalog::oid_t table_oid,
                                                                 components::catalog::oid_t attoid);
 
-        void set_manager_dispatcher_sync(actor_zeta::address_t address);
-
-        void set_manager_wal_sync(actor_zeta::address_t address);
-
         using dispatch_traits = actor_zeta::dispatch_traits<&agent_disk_t::storage_append_inner,
                                                             &agent_disk_t::storage_publish_commits_inner,
                                                             &agent_disk_t::storage_publish_deletes_inner,
@@ -426,6 +373,35 @@ namespace services::disk {
         actor_zeta::behavior_t behavior(actor_zeta::mailbox::message* msg);
 
     private:
+        // An open cursor holds an absolute row position that compact()'s row swap would shift; checkpoint_inner defers.
+        [[nodiscard]] bool has_active_scan_for_oid(components::catalog::oid_t oid) const noexcept {
+            for (const auto& [_cursor, scan] : active_scans_) {
+                if (scan.table_oid == oid) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // is_computed (relkind='g') is resolved by the caller, never inferred from an empty column set.
+        // false: the oid is already in this slice; an error: the storage could not be constructed.
+        [[nodiscard]] core::result_wrapper_t<bool>
+        create_local(components::catalog::oid_t oid,
+                     std::vector<components::table::column_definition_t> columns,
+                     const std::filesystem::path& otbx_path,
+                     bool is_computed) noexcept;
+
+        // false: the oid is already in this slice; an error: the .otbx could not be opened.
+        [[nodiscard]] core::result_wrapper_t<bool>
+        load_local(components::catalog::oid_t oid,
+                   const std::filesystem::path& otbx_path,
+                   wal::id_t sidecar_wal_id,
+                   bool sidecar_readable,
+                   std::vector<components::table::column_definition_t> catalog_columns,
+                   bool is_computed) noexcept;
+
+        [[nodiscard]] collection_storage_entry_t* entry_local(components::catalog::oid_t oid) noexcept;
+
         [[nodiscard]] core::result_wrapper_t<std::pmr::vector<components::vector::data_chunk_t>>
         scan_local(components::catalog::oid_t table_oid,
                    components::table::table_filter_t* filter,

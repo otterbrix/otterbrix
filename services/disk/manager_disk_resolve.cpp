@@ -9,8 +9,8 @@ namespace services::disk {
     namespace catalog = components::catalog;
     using namespace detail;
 
-    // Catalog reads route to agent-0 (pool_idx_for_oid); reading via the mailbox instead of a
-    // borrowed storage_entry_sync pointer avoids racing agent-0's compact path (checkpoint/vacuum/
+    // Catalog reads route to agent-0 (pool_idx_for_oid); reading via the mailbox instead of an entry
+    // borrowed through agent_disk_t::bootstrap_t avoids racing agent-0's compact path (checkpoint/vacuum/
     // maybe_cleanup_inner). committed() is the see-everything-committed snapshot.
 
     // A read that could not be performed must be an error, never an empty batch: empty is also

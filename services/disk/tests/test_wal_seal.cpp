@@ -169,7 +169,7 @@ TEST_CASE("services::disk::wal_seal::floor_pinned_by_deferred_table") {
 
         const auto cursor_id = open_undrained_cursor(fd, table_oid);
         REQUIRE(cursor_id != 0);
-        REQUIRE(fd.manager->has_active_scan_for_oid_sync(table_oid));
+        REQUIRE(fd.boot.has_active_scan_for_oid_sync(table_oid));
 
         REQUIRE(fd.checkpoint_round(services::wal::id_t{300}) == services::wal::id_t{100});
 

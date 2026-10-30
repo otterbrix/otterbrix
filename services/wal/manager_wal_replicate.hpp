@@ -197,7 +197,7 @@ namespace services::wal {
         std::uintmax_t total_wal_bytes() const noexcept;
 
     private:
-        // base_spaces wires this before scheduler.start; empty in test topologies without a dispatcher.
+        // open_engine wires this before scheduler.start; empty in test topologies without a dispatcher.
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
 
         wal_worker_t* get_or_create_worker(components::catalog::oid_t database_oid);

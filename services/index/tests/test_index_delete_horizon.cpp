@@ -148,7 +148,7 @@ TEST_CASE("services::index::a committed delete reaches the store only once the h
                                             one_key(&resource),
                                             std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent = agents.front();
 
@@ -238,7 +238,7 @@ TEST_CASE("services::index::tearing an index down drops the erases it was still 
                                             one_key(&resource),
                                             std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent = agents.front();
 

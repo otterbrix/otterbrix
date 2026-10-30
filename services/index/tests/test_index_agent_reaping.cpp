@@ -107,7 +107,7 @@ TEST_CASE("services::index::on_horizon_advanced frees the agents of a reclaimed 
                       .contains_error());
     REQUIRE(live_index_agents() == agents_before + 1);
 
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent_raw = agents.front();
 
@@ -158,7 +158,7 @@ TEST_CASE("services::index::unregister_collection frees the agents of the table 
                       .contains_error());
     REQUIRE(live_index_agents() == agents_before + 1);
 
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent_raw = agents.front();
 

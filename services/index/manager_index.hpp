@@ -140,11 +140,6 @@ namespace services::index {
 
         unique_future<void> abort_transaction(session_id_t session, components::table::txn_abort_drain_t drain);
 
-#ifdef DEV_MODE
-        // Raw, non-owning handles (an address_t can't be resumed).
-        [[nodiscard]] std::pmr::vector<btree_index_agent_t*> owned_btree_agents_sync();
-#endif
-
         struct pending_index_rebuild_t {
             components::catalog::oid_t table_oid{components::catalog::INVALID_OID};
             components::catalog::oid_t index_oid{components::catalog::INVALID_OID};
@@ -280,6 +275,11 @@ namespace services::index {
                                                        &manager_index_t::apply_wal_record_for_index>;
 
     private:
+#ifdef DEV_MODE
+        // Raw, non-owning handles (an address_t can't be resumed).
+        [[nodiscard]] std::pmr::vector<btree_index_agent_t*> owned_btree_agents_sync();
+#endif
+
         void mark_table_dropped_sync(components::catalog::oid_t oid, uint64_t dropped_at_commit_id);
 
         void set_manager_dispatcher_sync(actor_zeta::address_t address);
@@ -452,6 +452,11 @@ namespace services::index {
         [[nodiscard]] std::pmr::vector<pending_index_rebuild_t> pending_index_rebuilds_sync() const {
             return manager_.pending_index_rebuilds_sync();
         }
+#ifdef DEV_MODE
+        [[nodiscard]] std::pmr::vector<btree_index_agent_t*> owned_btree_agents_sync() const {
+            return manager_.owned_btree_agents_sync();
+        }
+#endif
 
     private:
         manager_index_t& manager_;

@@ -690,20 +690,31 @@ namespace services::disk {
         co_return;
     }
 
-    void manager_disk_t::set_manager_dispatcher_sync(actor_zeta::address_t address) {
+    void manager_disk_t::set_manager_dispatcher_sync(const bootstrap_t& boot, actor_zeta::address_t address) {
         // Bootstrap-only; the manager keeps no copy since only the agents send to the dispatcher.
         for (auto& agent_ptr : agents_) {
-            agent_ptr->set_manager_dispatcher_sync(address);
+            agent_disk_t::bootstrap_t{*agent_ptr, boot}.set_manager_dispatcher(address);
         }
     }
 
-    void manager_disk_t::register_dropped_storage_sync(components::catalog::oid_t oid,
+    collection_storage_entry_t* manager_disk_t::boot_entry(const bootstrap_t& boot,
+                                                           components::catalog::oid_t table_oid) noexcept {
+        if (agents_.empty()) {
+            return nullptr;
+        }
+        return agent_disk_t::bootstrap_t{*agents_[pool_idx_for_oid(table_oid, agents_.size())], boot}.entry(table_oid);
+    }
+
+    void manager_disk_t::register_dropped_storage_sync(const bootstrap_t& boot,
+                                                       components::catalog::oid_t oid,
                                                        uint64_t dropped_at_commit_id,
                                                        std::filesystem::path path) {
-        // Bootstrap-only (base_spaces catalog rebuild); runtime DROP uses mark_storage_dropped_many below.
+        // Bootstrap-only (the engine's rebuild from pg_class); runtime DROP uses mark_storage_dropped_many below.
         if (!agents_.empty()) {
-            const auto idx = pool_idx_for_oid(oid, agents_.size());
-            agents_[idx]->register_dropped_storage_inner_sync(oid, dropped_at_commit_id, std::move(path));
+            agent_disk_t::bootstrap_t{*agents_[pool_idx_for_oid(oid, agents_.size())], boot}.register_dropped(
+                oid,
+                dropped_at_commit_id,
+                std::move(path));
         }
     }
 

@@ -159,7 +159,7 @@ TEST_CASE("services::index::a CREATE INDEX catchup delete never shrinks the buil
                                             one_key(&resource),
                                             std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent = agents.front();
 
@@ -263,7 +263,7 @@ TEST_CASE("services::index::the horizon does not erase what a CREATE INDEX catch
                                             one_key(&resource),
                                             std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent = agents.front();
 

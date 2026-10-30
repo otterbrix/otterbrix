@@ -545,12 +545,32 @@ namespace {
     OTTERBRIX_PUBLIC_MEMBER(cache_settings_sync)
     OTTERBRIX_PUBLIC_MEMBER(set_disk_has_dropped_sync)
     OTTERBRIX_PUBLIC_MEMBER(set_index_has_dropped_sync)
+    OTTERBRIX_PUBLIC_MEMBER(has_storage_sync)
+    OTTERBRIX_PUBLIC_MEMBER(storage_entry_sync)
+    OTTERBRIX_PUBLIC_MEMBER(bootstrap_disk_inner_sync)
+    OTTERBRIX_PUBLIC_MEMBER(bootstrap_create_disk_inner_sync)
+    OTTERBRIX_PUBLIC_MEMBER(register_dropped_storage_inner_sync)
+    OTTERBRIX_PUBLIC_MEMBER(has_active_scan_for_oid)
+    OTTERBRIX_PUBLIC_MEMBER(no_replay_storage_error)
+    OTTERBRIX_PUBLIC_MEMBER(has_active_scan_for_oid_sync)
+    OTTERBRIX_PUBLIC_MEMBER(owned_btree_agents_sync)
+    OTTERBRIX_PUBLIC_MEMBER(entry)
+    OTTERBRIX_PUBLIC_MEMBER(load)
+    OTTERBRIX_PUBLIC_MEMBER(create)
+    OTTERBRIX_PUBLIC_MEMBER(register_dropped)
+    OTTERBRIX_PUBLIC_MEMBER(set_manager_wal)
+    OTTERBRIX_PUBLIC_MEMBER(set_manager_dispatcher)
+    OTTERBRIX_PUBLIC_MEMBER(entry_local)
+    OTTERBRIX_PUBLIC_MEMBER(load_local)
+    OTTERBRIX_PUBLIC_MEMBER(create_local)
+    OTTERBRIX_PUBLIC_MEMBER(register_dropped_local)
 
 #undef OTTERBRIX_PUBLIC_MEMBER
 
 } // namespace
 
 TEST_CASE("services::engine::bootstrap::no_manager_exposes_a_bootstrap_step") {
+    using services::disk::agent_disk_t;
     using services::disk::manager_disk_t;
     using services::dispatcher::manager_dispatcher_t;
     using services::index::manager_index_t;
@@ -602,6 +622,26 @@ TEST_CASE("services::engine::bootstrap::no_manager_exposes_a_bootstrap_step") {
     CHECK_FALSE(public_set_disk_has_dropped_sync<manager_dispatcher_t>);
     CHECK_FALSE(public_set_index_has_dropped_sync<manager_dispatcher_t>);
 
+    CHECK_FALSE(public_has_storage_sync<agent_disk_t>);
+    CHECK_FALSE(public_storage_entry_sync<agent_disk_t>);
+    CHECK_FALSE(public_bootstrap_disk_inner_sync<agent_disk_t>);
+    CHECK_FALSE(public_bootstrap_create_disk_inner_sync<agent_disk_t>);
+    CHECK_FALSE(public_register_dropped_storage_inner_sync<agent_disk_t>);
+    CHECK_FALSE(public_has_active_scan_for_oid<agent_disk_t>);
+    CHECK_FALSE(public_no_replay_storage_error<agent_disk_t>);
+    CHECK_FALSE(public_delete_sync<agent_disk_t>);
+    CHECK_FALSE(public_update_sync<agent_disk_t>);
+    CHECK_FALSE(public_direct_add_column_sync<agent_disk_t>);
+    CHECK_FALSE(public_set_manager_dispatcher_sync<agent_disk_t>);
+    CHECK_FALSE(public_set_manager_wal_sync<agent_disk_t>);
+    CHECK_FALSE(public_entry_local<agent_disk_t>);
+    CHECK_FALSE(public_load_local<agent_disk_t>);
+    CHECK_FALSE(public_create_local<agent_disk_t>);
+    CHECK_FALSE(public_register_dropped_local<agent_disk_t>);
+
+    CHECK_FALSE(public_has_active_scan_for_oid_sync<manager_disk_t>);
+    CHECK_FALSE(public_owned_btree_agents_sync<manager_index_t>);
+
     CHECK(public_has_storage<manager_disk_t::bootstrap_t>);
     CHECK(public_peek_checkpoint_wal_id_from_disk<manager_disk_t::bootstrap_t>);
     CHECK(public_load_storage_for_wal_replay_sync<manager_disk_t::bootstrap_t>);
@@ -639,6 +679,17 @@ TEST_CASE("services::engine::bootstrap::no_manager_exposes_a_bootstrap_step") {
     CHECK(public_pending_index_rebuilds_sync<manager_index_t::bootstrap_t>);
 
     CHECK(public_set_manager_dispatcher_sync<manager_wal_replicate_t::bootstrap_t>);
+
+    CHECK(public_entry<agent_disk_t::bootstrap_t>);
+    CHECK(public_load<agent_disk_t::bootstrap_t>);
+    CHECK(public_create<agent_disk_t::bootstrap_t>);
+    CHECK(public_register_dropped<agent_disk_t::bootstrap_t>);
+    CHECK(public_set_manager_wal<agent_disk_t::bootstrap_t>);
+    CHECK(public_set_manager_dispatcher<agent_disk_t::bootstrap_t>);
+    CHECK(public_has_active_scan_for_oid<agent_disk_t::bootstrap_t>);
+
+    CHECK(public_has_active_scan_for_oid_sync<manager_disk_t::bootstrap_t>);
+    CHECK(public_owned_btree_agents_sync<manager_index_t::bootstrap_t>);
 }
 
 namespace {

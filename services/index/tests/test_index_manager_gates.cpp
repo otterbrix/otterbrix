@@ -330,7 +330,7 @@ TEST_CASE("services::index::manager::a staging record naming an unregistered ind
     }
 
     {
-        auto agents = manager->owned_btree_agents_sync();
+        auto agents = boot.owned_btree_agents_sync();
         REQUIRE(agents.size() == 1);
         auto revert = manager->revert_insert(ctx_for(session, build_txn), kTableOid);
         settle(revert, agents.front());
@@ -369,7 +369,7 @@ TEST_CASE("services::index::manager::a catchup staging the agent refused fails t
                                             keys_of(&resource, {"id"}),
                                             std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent = agents.front();
 
@@ -443,7 +443,7 @@ TEST_CASE("services::index::manager::a refused deferred erase is re-queued, not 
                                             keys_of(&resource, {"id"}),
                                             std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent = agents.front();
 

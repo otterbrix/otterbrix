@@ -96,7 +96,7 @@ namespace services::disk {
 
     agent_disk_t::~agent_disk_t() { trace(log_, "delete agent_disk_t"); }
 
-    const collection_storage_entry_t* agent_disk_t::storage_entry_sync(components::catalog::oid_t oid) const noexcept {
+    collection_storage_entry_t* agent_disk_t::entry_local(components::catalog::oid_t oid) noexcept {
         auto it = storages_.find(oid);
         if (it == storages_.end()) {
             return nullptr;
@@ -105,16 +105,16 @@ namespace services::disk {
     }
 
     core::result_wrapper_t<bool>
-    agent_disk_t::bootstrap_disk_inner_sync(components::catalog::oid_t oid,
-                                            const std::filesystem::path& otbx_path,
-                                            wal::id_t sidecar_wal_id,
-                                            bool sidecar_readable,
-                                            std::vector<components::table::column_definition_t> catalog_columns,
-                                            bool is_computed) noexcept {
+    agent_disk_t::load_local(components::catalog::oid_t oid,
+                             const std::filesystem::path& otbx_path,
+                             wal::id_t sidecar_wal_id,
+                             bool sidecar_readable,
+                             std::vector<components::table::column_definition_t> catalog_columns,
+                             bool is_computed) noexcept {
         // Probed before construction: open-then-close on a duplicate would release the live entry's WRITE_LOCK.
         if (storages_.find(oid) != storages_.end()) {
             trace(log_,
-                  "agent_disk_t::bootstrap_disk_inner_sync: agent[{}] oid {} already in slice — drop "
+                  "agent_disk_t::load_local: agent[{}] oid {} already in slice — drop "
                   "incoming load (path={})",
                   pool_idx_,
                   static_cast<unsigned>(oid),
@@ -122,7 +122,7 @@ namespace services::disk {
             return false;
         }
         trace(log_,
-              "agent_disk_t::bootstrap_disk_inner_sync: agent[{}] load oid={} path={} sidecar_wal_id={} readable={}",
+              "agent_disk_t::load_local: agent[{}] load oid={} path={} sidecar_wal_id={} readable={}",
               pool_idx_,
               static_cast<unsigned>(oid),
               otbx_path.string(),
@@ -131,7 +131,7 @@ namespace services::disk {
         auto entry = std::make_unique<collection_storage_entry_t>(resource(), otbx_path, catalog_columns, is_computed);
         if (entry->table_storage.construction_failed()) {
             warn(log_,
-                 "agent_disk_t::bootstrap_disk_inner_sync: agent[{}] load oid={} path={} failed: {}",
+                 "agent_disk_t::load_local: agent[{}] load oid={} path={} failed: {}",
                  pool_idx_,
                  static_cast<unsigned>(oid),
                  otbx_path.string(),
@@ -148,14 +148,13 @@ namespace services::disk {
         return storages_.try_emplace(oid, std::move(entry)).second;
     }
 
-    core::result_wrapper_t<bool>
-    agent_disk_t::bootstrap_create_disk_inner_sync(components::catalog::oid_t oid,
-                                                   std::vector<components::table::column_definition_t> columns,
-                                                   const std::filesystem::path& otbx_path,
-                                                   bool is_computed) noexcept {
+    core::result_wrapper_t<bool> agent_disk_t::create_local(components::catalog::oid_t oid,
+                                                            std::vector<components::table::column_definition_t> columns,
+                                                            const std::filesystem::path& otbx_path,
+                                                            bool is_computed) noexcept {
         if (storages_.find(oid) != storages_.end()) {
             trace(log_,
-                  "agent_disk_t::bootstrap_create_disk_inner_sync: agent[{}] oid {} already in slice — drop "
+                  "agent_disk_t::create_local: agent[{}] oid {} already in slice — drop "
                   "incoming create (path={})",
                   pool_idx_,
                   static_cast<unsigned>(oid),
@@ -163,7 +162,7 @@ namespace services::disk {
             return false;
         }
         trace(log_,
-              "agent_disk_t::bootstrap_create_disk_inner_sync: agent[{}] create oid={} path={}",
+              "agent_disk_t::create_local: agent[{}] create oid={} path={}",
               pool_idx_,
               static_cast<unsigned>(oid),
               otbx_path.string());
@@ -171,7 +170,7 @@ namespace services::disk {
             std::make_unique<collection_storage_entry_t>(resource(), std::move(columns), otbx_path, is_computed);
         if (entry->table_storage.construction_failed()) {
             warn(log_,
-                 "agent_disk_t::bootstrap_create_disk_inner_sync: agent[{}] create oid={} path={} failed: {}",
+                 "agent_disk_t::create_local: agent[{}] create oid={} path={} failed: {}",
                  pool_idx_,
                  static_cast<unsigned>(oid),
                  otbx_path.string(),
@@ -204,7 +203,7 @@ namespace services::disk {
             what.append(ec.message().c_str());
             co_return core::error_t{core::error_code_t::io_error, std::move(what)};
         }
-        auto created = bootstrap_create_disk_inner_sync(oid, std::move(columns), otbx_path, is_computed);
+        auto created = create_local(oid, std::move(columns), otbx_path, is_computed);
         if (!created.has_error() && created.value() && !relname.empty()) {
             storages_[oid]->table_storage.table().set_table_name(std::move(relname));
         }
@@ -216,154 +215,6 @@ namespace services::disk {
                   otbx_path.string());
         }
         co_return created;
-    }
-
-    core::error_t agent_disk_t::no_replay_storage_error(const char* who, components::catalog::oid_t table_oid) {
-        std::pmr::string msg{"agent_disk::", resource()};
-        msg += std::pmr::string{who, resource()};
-        msg += std::pmr::string{": no storage on the owning agent for table oid ", resource()};
-        msg += std::pmr::string{std::to_string(static_cast<unsigned>(table_oid)), resource()};
-        msg += std::pmr::string{" — the journalled change was NOT replayed", resource()};
-        return core::error_t{core::error_code_t::io_error, std::move(msg)};
-    }
-
-    core::error_t agent_disk_t::delete_sync(components::catalog::oid_t table_oid,
-                                            const std::pmr::vector<int64_t>& row_ids,
-                                            uint64_t count,
-                                            const components::table::transaction_data& txn) {
-        if (row_ids.empty() && count == 0) {
-            return core::error_t::no_error();
-        }
-        if (static_cast<uint64_t>(row_ids.size()) != count) {
-            std::pmr::string what{"agent_disk::delete_sync: the record counts ", resource()};
-            what.append(std::to_string(count).c_str());
-            what.append(" row(s) but names ");
-            what.append(std::to_string(row_ids.size()).c_str());
-            what.append(" row id(s) for table oid ");
-            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            what.append(" — the journalled delete is NOT replayed");
-            return core::error_t{core::error_code_t::io_error, std::move(what)};
-        }
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-            return no_replay_storage_error("delete_sync", table_oid);
-        }
-        auto& entry = it->second;
-        auto ids_batch = components::table::make_row_id_batch(resource(), row_ids);
-        // The storage refuses a row id that names no row group; the count-mismatch check below
-        // stays for the case where it deleted fewer than journalled without refusing.
-        VALUE_OR_RETURN(const uint64_t deleted, entry->storage->delete_rows(ids_batch, txn));
-        if (deleted != count) {
-            std::pmr::string what{"agent_disk::delete_sync: the storage deleted ", resource()};
-            what.append(std::to_string(deleted).c_str());
-            what.append(" of ");
-            what.append(std::to_string(count).c_str());
-            what.append(" journalled row(s) for table oid ");
-            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            what.append(" — the rest are NOT replayed");
-            return core::error_t{core::error_code_t::io_error, std::move(what)};
-        }
-        return core::error_t::no_error();
-    }
-
-    core::result_wrapper_t<components::storage::appended_range_t>
-    agent_disk_t::update_sync(components::catalog::oid_t table_oid,
-                              const std::pmr::vector<int64_t>& row_ids,
-                              const std::pmr::vector<components::catalog::oid_t>& attoids,
-                              components::vector::data_chunk_t& new_data,
-                              components::table::transaction_data txn) {
-        if (row_ids.empty() && new_data.size() == 0) {
-            return components::storage::appended_range_t{};
-        }
-        if (row_ids.size() != static_cast<std::size_t>(new_data.size())) {
-            std::pmr::string what{"agent_disk::update_sync: the record carries ", resource()};
-            what.append(std::to_string(new_data.size()).c_str());
-            what.append(" row(s) but names ");
-            what.append(std::to_string(row_ids.size()).c_str());
-            what.append(" row id(s) for table oid ");
-            what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-            what.append(" — the journalled update is NOT replayed");
-            return core::error_t{core::error_code_t::io_error, std::move(what)};
-        }
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-            return no_replay_storage_error("update_sync", table_oid);
-        }
-        auto& entry = it->second;
-        const auto count = static_cast<uint64_t>(row_ids.size());
-        components::vector::vector_t ids_vec(
-            resource(),
-            components::types::complex_logical_type(components::types::logical_type::BIGINT),
-            count);
-        for (uint64_t i = 0; i < count; i++) {
-            ids_vec.set_value(i, row_ids[i]);
-        }
-        components::vector::data_chunk_t local(resource(), new_data.types(), new_data.size());
-        new_data.copy(local, 0);
-
-        if (!entry->storage->columns().empty() && local.column_count() > 0) {
-            const auto& table = entry->table_storage.table();
-            if (auto widened =
-                    entry->is_computed ? table.widen_by_name(txn, local) : table.widen_by_attoid(attoids, local);
-                widened.contains_error()) {
-                return widened;
-            }
-        }
-        return entry->storage->update(ids_vec, local, txn);
-    }
-
-    core::error_t agent_disk_t::direct_add_column_sync(components::catalog::oid_t table_oid,
-                                                       const std::pmr::vector<components::catalog::oid_t>& attoids,
-                                                       const components::vector::data_chunk_t& schema_chunk,
-                                                       uint64_t first_position) {
-        auto it = storages_.find(table_oid);
-        if (it == storages_.end() || it->second == nullptr || it->second->storage == nullptr) {
-            return no_replay_storage_error("direct_add_column_sync", table_oid);
-        }
-        auto& entry = it->second;
-        for (uint64_t col = 0; col < schema_chunk.column_count(); ++col) {
-            uint64_t stored = entry->table_storage.table().column_count();
-            if (!entry->is_computed) {
-                const auto& columns = entry->table_storage.table().columns();
-                bool present = std::any_of(columns.begin(), columns.end(), [&](const auto& column) {
-                    return column.attoid() == attoids[col];
-                });
-                if (present) {
-                    continue;
-                }
-            }
-            uint64_t position = entry->is_computed ? first_position + col : stored;
-            if (position < stored) {
-                continue;
-            }
-            if (position > stored) {
-                std::pmr::string what{"direct_add_column_sync: table oid ", resource()};
-                what.append(std::to_string(static_cast<unsigned>(table_oid)).c_str());
-                what.append(" holds ");
-                what.append(std::to_string(stored).c_str());
-                what.append(" column(s), the journalled ADD COLUMN lands at position ");
-                what.append(std::to_string(position).c_str());
-                what.append(" — a column in between was never journalled; the ADD is NOT replayed");
-                return core::error_t{core::error_code_t::data_corruption, std::move(what)};
-            }
-            const auto& ctype = schema_chunk.data[col].type();
-            std::optional<components::vector::vector_t> default_value;
-            if (schema_chunk.size() > 0 && !schema_chunk.data[col].is_null(0)) {
-                default_value = components::vector::make_constant_copy(resource(), schema_chunk.data[col], 0);
-            }
-            components::table::column_definition_t def(ctype.has_alias() ? std::string(ctype.alias()) : std::string{},
-                                                       ctype,
-                                                       std::move(default_value));
-            def.set_attoid(attoids[col]);
-            entry->add_column(def, resource());
-            if (entry->storage == nullptr) {
-                return no_replay_storage_error("direct_add_column_sync", table_oid);
-            }
-            if (entry->table_storage.table().has_construction_error()) {
-                return core::error_on(resource(), entry->table_storage.table().construction_error());
-            }
-        }
-        return core::error_t::no_error();
     }
 
     actor_zeta::behavior_t agent_disk_t::behavior(actor_zeta::mailbox::message* msg) {
@@ -2549,20 +2400,6 @@ namespace services::disk {
         co_return;
     }
 
-    // Bootstrap-only; after scheduler.start the address is read-only.
-    void agent_disk_t::set_manager_dispatcher_sync(actor_zeta::address_t address) {
-        manager_dispatcher_addr_ = std::move(address);
-    }
-
-    void agent_disk_t::set_manager_wal_sync(actor_zeta::address_t address) { manager_wal_addr_ = std::move(address); }
-
-    void agent_disk_t::register_dropped_storage_inner_sync(components::catalog::oid_t oid,
-                                                           uint64_t dropped_at_commit_id,
-                                                           std::filesystem::path path) {
-        storages_.erase(oid);
-        register_dropped_local(oid, dropped_at_commit_id, std::move(path));
-    }
-
     void agent_disk_t::register_dropped_local(components::catalog::oid_t oid,
                                               uint64_t dropped_at_commit_id,
                                               std::filesystem::path path) {
@@ -3140,7 +2977,12 @@ namespace services::disk {
                       static_cast<unsigned>(table_oid));
             }
         }
-        if (auto del_err = delete_sync(table_oid, row_ids, static_cast<std::uint64_t>(row_ids.size()), ctx.txn);
+        if (auto del_err = apply_journalled_delete(resource(),
+                                                   entry_local(table_oid),
+                                                   table_oid,
+                                                   row_ids,
+                                                   static_cast<std::uint64_t>(row_ids.size()),
+                                                   ctx.txn);
             del_err.contains_error()) {
             error(log_,
                   "agent_disk[{}]::delete_pg_catalog_rows_inner: the slice it had just scanned refused the "
@@ -3280,11 +3122,13 @@ namespace services::disk {
             }
         }
 
-        auto stamped = update_sync(pg_attr_oid,
-                                   row_ids,
-                                   components::catalog::system_column_attoids(resource(), pg_attr_oid),
-                                   patch,
-                                   ctx.txn);
+        auto stamped = apply_journalled_update(resource(),
+                                               entry_local(pg_attr_oid),
+                                               pg_attr_oid,
+                                               row_ids,
+                                               components::catalog::system_column_attoids(resource(), pg_attr_oid),
+                                               patch,
+                                               ctx.txn);
         if (stamped.has_error()) {
             error(log_,
                   "agent_disk[{}]::update_pg_attribute_commit_id_field_inner: the slice it had just read "

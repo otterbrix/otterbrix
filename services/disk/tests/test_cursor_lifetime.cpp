@@ -163,7 +163,7 @@ TEST_CASE("services::disk::cursor_lifetime::open_cursor_holds_the_compact_gate")
     REQUIRE(cursor_id != 0);
 
     INFO("an open fetch-next cursor must gate compact on its table");
-    CHECK(fx.manager->has_active_scan_for_oid_sync(table_oid));
+    CHECK(fx.boot.has_active_scan_for_oid_sync(table_oid));
 }
 
 TEST_CASE("services::disk::cursor_lifetime::closing_an_abandoned_cursor_lifts_the_compact_gate") {
@@ -171,12 +171,12 @@ TEST_CASE("services::disk::cursor_lifetime::closing_an_abandoned_cursor_lifts_th
     auto table_oid = make_seeded_table(fx);
     auto cursor_id = open_undrained_cursor(fx, table_oid);
 
-    REQUIRE(fx.manager->has_active_scan_for_oid_sync(table_oid));
+    REQUIRE(fx.boot.has_active_scan_for_oid_sync(table_oid));
 
     fx.invoke(&manager_disk_t::storage_close_cursor, session_id_t{}, table_oid, cursor_id);
 
     INFO("releasing an abandoned cursor must lift the compact gate");
-    CHECK_FALSE(fx.manager->has_active_scan_for_oid_sync(table_oid));
+    CHECK_FALSE(fx.boot.has_active_scan_for_oid_sync(table_oid));
 }
 
 TEST_CASE("services::disk::cursor_lifetime::closing_a_cursor_is_idempotent") {
@@ -186,10 +186,10 @@ TEST_CASE("services::disk::cursor_lifetime::closing_a_cursor_is_idempotent") {
     // Idempotence matters because the drain paths erase the entry themselves too, so a source
     // that drains then releases must not error; a never-minted id (424242) is the same shape.
     fx.invoke(&manager_disk_t::storage_close_cursor, session_id_t{}, table_oid, uint64_t{424242});
-    CHECK_FALSE(fx.manager->has_active_scan_for_oid_sync(table_oid));
+    CHECK_FALSE(fx.boot.has_active_scan_for_oid_sync(table_oid));
 
     auto cursor_id = open_undrained_cursor(fx, table_oid);
     fx.invoke(&manager_disk_t::storage_close_cursor, session_id_t{}, table_oid, cursor_id);
     fx.invoke(&manager_disk_t::storage_close_cursor, session_id_t{}, table_oid, cursor_id);
-    CHECK_FALSE(fx.manager->has_active_scan_for_oid_sync(table_oid));
+    CHECK_FALSE(fx.boot.has_active_scan_for_oid_sync(table_oid));
 }

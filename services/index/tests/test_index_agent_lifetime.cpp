@@ -128,7 +128,7 @@ TEST_CASE("services::index::drop_index keeps the agent alive under an outstandin
                                             one_key(&resource),
                                             std::pmr::set<std::uint64_t>(&resource))
                       .contains_error());
-    auto agents = manager->owned_btree_agents_sync();
+    auto agents = boot.owned_btree_agents_sync();
     REQUIRE(agents.size() == 1);
     auto* agent_raw = agents.front();
 

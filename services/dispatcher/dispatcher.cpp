@@ -2,6 +2,9 @@
 #include <atomic>
 #include <services/dev_pump.hpp>
 
+#include <components/logical_plan/node_deallocate.hpp>
+#include <components/logical_plan/node_execute.hpp>
+#include <components/logical_plan/node_prepare.hpp>
 #include <components/logical_plan/node_set_setting.hpp>
 #include <components/logical_plan/node_transaction.hpp>
 #include <components/logical_plan/param_storage.hpp>
@@ -447,9 +450,9 @@ namespace services::dispatcher {
             return components::table::transaction_control_t::none;
         }
 
-        // The registries a statement sees are its session's: one that changes them runs alone, as the end of a
+        // A statement that changes its session's registries or prepared statements runs alone, as the end of a
         // transaction does.
-        bool changes_registries(const components::logical_plan::execution_plan_t& plan) {
+        bool changes_session_state(const components::logical_plan::execution_plan_t& plan) {
             using components::logical_plan::node_type;
             const auto* root = plan.sub_queries.back().get();
             if (root == nullptr || describes(plan)) {
@@ -460,9 +463,31 @@ namespace services::dispatcher {
                 case node_type::unregister_udf_t:
                 case node_type::register_cast_t:
                 case node_type::unregister_cast_t:
+                case node_type::prepare_t:
+                case node_type::deallocate_t:
                     return true;
                 default:
                     return false;
+            }
+        }
+
+        // The prepared statement a statement names: none for any other statement and for DEALLOCATE ALL.
+        const std::string* prepared_name_of(const components::logical_plan::node_t* root) {
+            using components::logical_plan::node_type;
+            if (root == nullptr) {
+                return nullptr;
+            }
+            switch (root->type()) {
+                case node_type::execute_t:
+                    return &static_cast<const components::logical_plan::node_execute_t*>(root)->name();
+                case node_type::prepare_t:
+                    return &static_cast<const components::logical_plan::node_prepare_t*>(root)->name();
+                case node_type::deallocate_t: {
+                    const auto* deallocate = static_cast<const components::logical_plan::node_deallocate_t*>(root);
+                    return deallocate->all() ? nullptr : &deallocate->name();
+                }
+                default:
+                    return nullptr;
             }
         }
 
@@ -496,9 +521,9 @@ namespace services::dispatcher {
                         std::pmr::string{"the engine is shutting down: only CHECKPOINT is admitted", resource()}}));
         }
         const auto control = transaction_control_of(plan);
-        const auto turn_of_plan = control != components::table::transaction_control_t::none || changes_registries(plan)
-                                      ? turn_t::alone
-                                      : turn_t::beside;
+        const auto turn_of_plan =
+            control != components::table::transaction_control_t::none || changes_session_state(plan) ? turn_t::alone
+                                                                                                     : turn_t::beside;
         const bool after_close = is_closed_(session);
         co_await take_turn_(session, turn_of_plan);
         session_turn_t turn{this, session, turn_of_plan};
@@ -537,6 +562,14 @@ namespace services::dispatcher {
                                                                                    : registry_changes_.end();
         auto own_changes =
             own == registry_changes_.end() ? registry_changes_t{} : own->second.changes().copy(resource());
+        if (const auto* name = prepared_name_of(executed.sub_queries.back().get()); name != nullptr) {
+            if (const auto stored = prepared_statements_.find(session); stored != prepared_statements_.end()) {
+                if (const auto found = stored->second.find(std::pmr::string{*name, resource()});
+                    found != stored->second.end()) {
+                    session_ctx.prepared = found->second;
+                }
+            }
+        }
         const uint64_t statement_txn_id = session_ctx.txn.transaction_id;
         const std::size_t pool_idx = next_executor_index();
         trace(log_, "manager_dispatcher_t::run_statement_: routing to executor[{}]", pool_idx);
@@ -569,6 +602,7 @@ namespace services::dispatcher {
         }
         finish_registry_changes_(session, settings_statement, exec_result);
         finish_settings_(session, settings_statement, commits_failed, exec_result);
+        finish_prepared_(session, exec_result);
         co_return stamp_transaction_status_(session, std::move(exec_result.cursor));
     }
 
@@ -625,6 +659,7 @@ namespace services::dispatcher {
             }
         }
         session_settings_.erase(session);
+        prepared_statements_.erase(session);
     }
 
     manager_dispatcher_t::unique_future<core::error_t>
@@ -880,6 +915,32 @@ namespace services::dispatcher {
                 scheduler_->enqueue(executors_[i].get());
             }
             registry_acks_.push_back(std::move(ack));
+        }
+    }
+
+    void manager_dispatcher_t::finish_prepared_(components::session::session_id_t session,
+                                                const collection::executor::execute_result_t& result) {
+        using kind_t = components::logical_plan::prepared_change_t::kind_t;
+        const auto& change = result.prepared_change;
+        if (change.kind == kind_t::none || !result.cursor || !result.cursor->is_success()) {
+            return;
+        }
+        if (change.kind == kind_t::store) {
+            // The outer map's allocator constructs the session's map on its resource.
+            prepared_statements_[session].insert_or_assign(std::pmr::string{change.name, resource()}, change.statement);
+            return;
+        }
+        const auto own = prepared_statements_.find(session);
+        if (own == prepared_statements_.end()) {
+            return;
+        }
+        if (change.kind == kind_t::drop_all) {
+            prepared_statements_.erase(own);
+            return;
+        }
+        own->second.erase(std::pmr::string{change.name, resource()});
+        if (own->second.empty()) {
+            prepared_statements_.erase(own);
         }
     }
 

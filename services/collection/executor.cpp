@@ -16,6 +16,7 @@
 #include <components/catalog/catalog_codes.hpp>
 #include <components/catalog/helpers.hpp>
 #include <components/catalog/place.hpp>
+#include <components/catalog/type_display.hpp>
 #include <components/context/execution_context.hpp>
 #include <components/planner/planner.hpp>
 #include <components/vector/vector_builders.hpp>
@@ -43,13 +44,16 @@
 #include <components/logical_plan/node_create_type.hpp>
 #include <components/logical_plan/node_create_view.hpp>
 #include <components/logical_plan/node_data.hpp>
+#include <components/logical_plan/node_deallocate.hpp>
 #include <components/logical_plan/node_delete.hpp>
 #include <components/logical_plan/node_drop.hpp>
+#include <components/logical_plan/node_execute.hpp>
 #include <components/logical_plan/node_function.hpp>
 #include <components/logical_plan/node_insert.hpp>
 #include <components/logical_plan/node_insert_on_conflict.hpp>
 #include <components/logical_plan/node_join.hpp>
 #include <components/logical_plan/node_match.hpp>
+#include <components/logical_plan/node_prepare.hpp>
 #include <components/logical_plan/node_refresh_matview.hpp>
 #include <components/logical_plan/node_register_cast.hpp>
 #include <components/logical_plan/node_register_udf.hpp>
@@ -64,6 +68,7 @@
 #include <components/physical_plan/operators/scan/guard_chunk.hpp>
 #include <components/physical_plan_generator/create_plan.hpp>
 #include <components/planner/optimizer.hpp>
+#include <components/planner/prepared_expansion.hpp>
 #include <components/planner/view_expansion.hpp>
 #include <components/sql/transformer/utils.hpp>
 #include <core/executor.hpp>
@@ -205,10 +210,28 @@ namespace services::collection::executor {
                 case node_type::unregister_cast_t:
                 case node_type::transaction_t:
                 case node_type::set_setting_t:
+                case node_type::prepare_t:
+                case node_type::deallocate_t:
                     return true;
                 default:
                     return false;
             }
+        }
+
+        // PostgreSQL 18 equalRowTypes: the same number of columns, each of the same name and type.
+        bool same_row_type(const std::pmr::vector<components::types::complex_logical_type>& expected,
+                           const std::pmr::vector<components::types::complex_logical_type>& found) {
+            if (expected.size() != found.size()) {
+                return false;
+            }
+            for (std::size_t i = 0; i < expected.size(); ++i) {
+                const std::string& expected_name = expected[i].has_alias() ? expected[i].alias() : std::string{};
+                const std::string& found_name = found[i].has_alias() ? found[i].alias() : std::string{};
+                if (expected[i] != found[i] || expected_name != found_name) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         void collect_inner_hash_join_oids(const components::logical_plan::node_ptr& node,
@@ -417,6 +440,7 @@ namespace services::collection::executor {
         out.participants = std::move(result.participants);
         out.host_rows = std::move(result.host_rows);
         out.dropped_functions = std::move(result.dropped_functions);
+        out.prepared_change = std::move(result.prepared_change);
         co_return std::move(out);
     }
 
@@ -1223,6 +1247,229 @@ namespace services::collection::executor {
             }
         }
         co_return execute_result_t{make_cursor(resource())};
+    }
+
+    // PREPARE (PostgreSQL 18 PrepareQuery): the body is described, with the declared types bound as typed NULLs; a
+    // body that does not describe is refused, and nothing is stored.
+    executor_t::unique_future<core::error_t>
+    executor_t::describe_prepared_(components::session::session_id_t session,
+                                   components::logical_plan::node_prepare_t& prepare,
+                                   const services::dispatcher::txn_session_context_t& session_ctx,
+                                   statement_registries_t registries) {
+        if (prepare.name().empty()) {
+            co_return core::error_t{core::error_code_t::protocol_violation,
+                                    std::pmr::string{"invalid statement name: must not be empty", resource()}};
+        }
+        std::pmr::vector<components::vector::vector_t> declared{resource()};
+        declared.reserve(prepare.declared_types().size());
+        for (const auto& type : prepare.declared_types()) {
+            declared.push_back(components::vector::make_null(resource(), type));
+        }
+        auto body = components::planner::expand_prepared(resource(),
+                                                         prepare.body_text(),
+                                                         declared,
+                                                         components::planner::prepared_use_t::describe);
+        if (body.has_error()) {
+            co_return core::error_on(resource(), body.error());
+        }
+        body.value().explain = components::logical_plan::explain_type::describe;
+        auto described = co_await execute_statement_(session,
+                                                     std::move(body.value()),
+                                                     session_ctx,
+                                                     registries,
+                                                     std::pmr::vector<expanded_view_t>{resource()});
+        if (described.cursor->is_error()) {
+            co_return core::error_on(resource(), described.cursor->get_error());
+        }
+        components::logical_plan::prepared_statement_t statement{prepare.body_text(), {}, {}};
+        statement.parameter_types.assign(prepare.declared_types().begin(), prepare.declared_types().end());
+        const auto& deduced = described.cursor->parameter_types();
+        for (std::size_t i = statement.parameter_types.size(); i < deduced.size(); ++i) {
+            statement.parameter_types.push_back(deduced[i]);
+        }
+        statement.columns.assign(described.cursor->type_data().begin(), described.cursor->type_data().end());
+        prepare.set_described(std::move(statement), session_ctx.prepared.has_value());
+        co_return core::error_t::no_error();
+    }
+
+    core::error_t
+    executor_t::refuse_execute_argument_(const components::logical_plan::node_t* argument,
+                                         const components::compute::function_registry_t& functions) const {
+        bool aggregate = false;
+        bool set_returning = false;
+        auto call = [&](const auto& found, const components::logical_plan::node_t&, bool) {
+            if constexpr (std::is_same_v<std::decay_t<decltype(found)>,
+                                         components::expressions::function_expression_t>) {
+                // A call is of the kind every overload of its name is of.
+                const auto uids = functions.find_functions(found.name());
+                bool aggregates_only = !uids.empty();
+                bool expands_only = !uids.empty();
+                for (const auto uid : uids) {
+                    const auto* function = functions.get_function(uid);
+                    if (function == nullptr) {
+                        continue;
+                    }
+                    for (const auto& signature : function->get_signatures()) {
+                        aggregates_only = aggregates_only &&
+                                          signature.function_type == components::compute::function_type_t::aggregate;
+                        expands_only =
+                            expands_only && signature.function_type == components::compute::function_type_t::expand;
+                    }
+                }
+                aggregate = aggregate || aggregates_only;
+                set_returning = set_returning || expands_only;
+            } else {
+                set_returning = true;
+            }
+        };
+        components::logical_plan::for_each_plan_call(argument, call);
+        if (aggregate) {
+            return core::error_t{
+                core::error_code_t::grouping_error,
+                std::pmr::string{"aggregate functions are not allowed in EXECUTE parameters", resource()}};
+        }
+        if (set_returning) {
+            return core::error_t{
+                core::error_code_t::unimplemented_yet,
+                std::pmr::string{"set-returning functions are not allowed in EXECUTE parameters", resource()}};
+        }
+        return core::error_t::no_error();
+    }
+
+    core::result_wrapper_t<components::vector::vector_t>
+    executor_t::coerce_argument_(const components::vector::vector_t& value,
+                                 const components::types::complex_logical_type& expected,
+                                 std::size_t number,
+                                 bool quoted_literal,
+                                 const components::casts::cast_registry_t& casts,
+                                 const components::graph_execution_context& settings) const {
+        if (value.is_null(0)) {
+            return components::vector::make_null(resource(), expected);
+        }
+        if (value.type() == expected) {
+            return components::vector::make_constant_copy(resource(), value, 0);
+        }
+        // coerce_to_target_type, COERCION_ASSIGNMENT: as an INSERT's VALUES cell.
+        auto conversion = casts.resolve_assignment(value.type(), expected, quoted_literal);
+        if (!conversion.has_value()) {
+            return core::error_t{core::error_code_t::datatype_mismatch,
+                                 std::pmr::string{"parameter $" + std::to_string(number) + " of type " +
+                                                      components::catalog::format_type_be(value.type(), false) +
+                                                      " cannot be coerced to the expected type " +
+                                                      components::catalog::format_type_be(expected, false),
+                                                  resource()}};
+        }
+        const auto source = components::vector::make_flat_copy(resource(), value, 1);
+        components::vector::vector_t converted{resource(), expected, 1};
+        if (auto failed = (*conversion)(components::casts::cast_kind::cast, source, &converted, settings, 1);
+            failed.contains_error()) {
+            return failed;
+        }
+        return converted;
+    }
+
+    // EXECUTE (PostgreSQL 18 ExecuteQuery): the statement of the name, its arguments' number checked first, then their
+    // forms; each argument is evaluated, coerced to its parameter's type and bound into a fresh plan of the stored
+    // text, which runs as this statement, in its transaction, with its EXPLAIN.
+    executor_t::unique_future<execute_result_t>
+    executor_t::execute_prepared_(components::session::session_id_t session,
+                                  components::logical_plan::execution_plan_t plan,
+                                  services::dispatcher::txn_session_context_t session_ctx,
+                                  statement_registries_t registries) {
+        using components::logical_plan::explain_type;
+        const auto* execute =
+            static_cast<const components::logical_plan::node_execute_t*>(plan.sub_queries.back().get());
+        // PostgreSQL 18 describes an EXPLAIN without looking at what it explains.
+        if (plan.explain == explain_type::describe_explain) {
+            co_return execute_result_t{
+                describe_(plan,
+                          services::dispatcher::validation::named_schema{resource()},
+                          std::pmr::vector<components::types::complex_logical_type>{resource()})};
+        }
+        if (!session_ctx.prepared.has_value()) {
+            if (plan.explain == explain_type::describe) {
+                co_return execute_result_t{make_cursor(resource())};
+            }
+            co_return execute_result_t{make_cursor(
+                resource(),
+                core::error_t{
+                    core::error_code_t::undefined_prepared_statement,
+                    std::pmr::string{"prepared statement \"" + execute->name() + "\" does not exist", resource()}})};
+        }
+        const auto& statement = *session_ctx.prepared;
+        if (plan.explain == explain_type::describe) {
+            auto described =
+                make_cursor(resource(),
+                            std::pmr::vector<components::types::complex_logical_type>{statement.columns.begin(),
+                                                                                      statement.columns.end(),
+                                                                                      resource()});
+            described->set_parameter_types(
+                std::pmr::vector<components::types::complex_logical_type>{statement.parameter_types.begin(),
+                                                                          statement.parameter_types.end(),
+                                                                          resource()});
+            co_return execute_result_t{std::move(described)};
+        }
+        const auto& arguments = execute->arguments();
+        if (arguments.size() != statement.parameter_types.size()) {
+            co_return execute_result_t{make_cursor(
+                resource(),
+                core::error_t{core::error_code_t::sql_parse_error,
+                              std::pmr::string{"wrong number of parameters for prepared statement \"" +
+                                                   execute->name() + "\"\nDETAIL: Expected " +
+                                                   std::to_string(statement.parameter_types.size()) +
+                                                   " parameters but got " + std::to_string(arguments.size()) + ".",
+                                               resource()}})};
+        }
+        // PostgreSQL 18 EvaluateParams analyzes the arguments in order: the plans are of the arguments before the
+        // one the transformer refused.
+        for (std::size_t i = 0; i + 1 < plan.sub_queries.size(); ++i) {
+            if (auto refused = refuse_execute_argument_(plan.sub_queries[i].get(), *registries.functions);
+                refused.contains_error()) {
+                co_return execute_result_t{make_cursor(resource(), std::move(refused))};
+            }
+        }
+        if (execute->refusal().contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), core::error_on(resource(), execute->refusal()))};
+        }
+        // The arguments are evaluated for EXPLAIN too, and nothing of them is shown.
+        std::pmr::vector<explain_plan_node> unshown{resource()};
+        if (auto failed =
+                co_await run_sub_queries_(session, plan, session_ctx, registries, explain_type::none, unshown);
+            failed.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(failed))};
+        }
+        const components::graph_execution_context settings{.timezone_offset = session_ctx.settings.timezone_offset};
+        std::pmr::vector<components::vector::vector_t> values{resource()};
+        values.reserve(arguments.size());
+        for (std::size_t i = 0; i < arguments.size(); ++i) {
+            auto coerced = coerce_argument_(plan.parameters->parameter(arguments[i].slot),
+                                            statement.parameter_types[i],
+                                            i + 1,
+                                            arguments[i].quoted_literal,
+                                            *registries.casts,
+                                            settings);
+            if (coerced.has_error()) {
+                co_return execute_result_t{make_cursor(resource(), coerced.error())};
+            }
+            values.push_back(std::move(coerced.value()));
+        }
+        auto body = components::planner::expand_prepared(resource(),
+                                                         statement.text,
+                                                         values,
+                                                         components::planner::prepared_use_t::execute);
+        if (body.has_error()) {
+            co_return execute_result_t{make_cursor(resource(), body.error())};
+        }
+        auto& run = body.value();
+        run.explain = plan.explain;
+        run.explain_render_id = plan.explain_render_id;
+        run.commits_when_done = plan.commits_when_done;
+        run.expected_columns.emplace(statement.columns.begin(), statement.columns.end(), resource());
+        co_return co_await execute_statement_(session,
+                                              std::move(run),
+                                              std::move(session_ctx),
+                                              registries,
+                                              std::pmr::vector<expanded_view_t>{resource()});
     }
 
     core::error_t executor_t::prepare_column_(const components::logical_plan::catalog_resolves_t& resolves,
@@ -2150,25 +2397,33 @@ namespace services::collection::executor {
         return parameters;
     }
 
-    cursor_t_ptr
-    executor_t::describe_(const components::logical_plan::execution_plan_t& plan,
-                          const services::dispatcher::validation::named_schema& returning,
-                          const std::pmr::vector<components::types::complex_logical_type>& parameters) const {
+    std::pmr::vector<components::types::complex_logical_type>
+    executor_t::result_columns_(const components::logical_plan::execution_plan_t& plan,
+                                const services::dispatcher::validation::named_schema& returning) const {
         using components::logical_plan::node_type;
-        using components::types::complex_logical_type;
-        using components::types::logical_type;
         const auto* root = services::dispatcher::validation::output_node_of(plan.sub_queries.back().get());
-        std::pmr::vector<complex_logical_type> columns{resource()};
+        std::pmr::vector<components::types::complex_logical_type> columns{resource()};
         const node_type kind = root ? root->type() : node_type::unused;
-        if (plan.explain == components::logical_plan::explain_type::describe_explain) {
-            columns.emplace_back(logical_type::STRING_LITERAL, "QUERY PLAN");
-        } else if (kind == node_type::insert_t || kind == node_type::insert_on_conflict_t ||
-                   kind == node_type::update_t || kind == node_type::delete_t) {
+        if (kind == node_type::insert_t || kind == node_type::insert_on_conflict_t || kind == node_type::update_t ||
+            kind == node_type::delete_t) {
             for (const auto& column : returning) {
                 columns.push_back(column.type);
             }
         } else if (root != nullptr && root->has_output_types()) {
             columns.assign(root->output_types().begin(), root->output_types().end());
+        }
+        return columns;
+    }
+
+    cursor_t_ptr
+    executor_t::describe_(const components::logical_plan::execution_plan_t& plan,
+                          const services::dispatcher::validation::named_schema& returning,
+                          const std::pmr::vector<components::types::complex_logical_type>& parameters) const {
+        std::pmr::vector<components::types::complex_logical_type> columns{resource()};
+        if (plan.explain == components::logical_plan::explain_type::describe_explain) {
+            columns.emplace_back(components::types::logical_type::STRING_LITERAL, "QUERY PLAN");
+        } else {
+            columns = result_columns_(plan, returning);
         }
         auto described = make_cursor(resource(), std::move(columns));
         described->set_parameter_types(parameters);
@@ -2319,6 +2574,92 @@ namespace services::collection::executor {
         }
     }
 
+    executor_t::unique_future<core::error_t>
+    executor_t::run_sub_queries_(components::session::session_id_t session,
+                                 components::logical_plan::execution_plan_t& plan,
+                                 const services::dispatcher::txn_session_context_t& session_ctx,
+                                 statement_registries_t registries,
+                                 components::logical_plan::explain_type explain,
+                                 std::pmr::vector<explain_plan_node>& captured_subplans) {
+        using node_type = components::logical_plan::node_type;
+        const bool plan_only = explain == components::logical_plan::explain_type::plan;
+        const bool capture_ir = explain == components::logical_plan::explain_type::analyze;
+        const bool describe = components::logical_plan::is_describe(explain);
+        for (std::size_t i = 0; i + 1 < plan.sub_queries.size(); ++i) {
+            auto* sub_root = plan.sub_queries[i].get();
+            const node_type sub_type = sub_root ? sub_root->type() : node_type::unused;
+            if (sub_type == node_type::insert_t || sub_type == node_type::insert_on_conflict_t ||
+                sub_type == node_type::update_t || sub_type == node_type::delete_t) {
+                co_return core::error_t{core::error_code_t::sql_parse_error,
+                                        std::pmr::string{"DML statement is not allowed in a sub-query", resource()}};
+            }
+            components::logical_plan::execution_plan_t sub_plan{resource(), plan.sub_queries[i], plan.parameters};
+            sub_plan.external_parameters = plan.external_parameters;
+            if (describe) {
+                sub_plan.explain = components::logical_plan::explain_type::describe;
+            } else if (plan_only) {
+                sub_plan.explain = components::logical_plan::explain_type::plan;
+                sub_plan.explain_capture_ir = true;
+            } else if (capture_ir) {
+                sub_plan.explain = components::logical_plan::explain_type::analyze;
+                sub_plan.explain_capture_ir = true;
+            }
+            auto sub_result = co_await execute_statement_(session,
+                                                          std::move(sub_plan),
+                                                          session_ctx,
+                                                          registries,
+                                                          std::pmr::vector<expanded_view_t>{resource()},
+                                                          true);
+            if (sub_result.cursor->is_error()) {
+                co_return core::error_on(resource(), sub_result.cursor->get_error());
+            }
+            const auto& mapping = plan.sub_query_results[i];
+            const auto& sub_node = plan.sub_queries[i];
+
+            auto result_type = plan.parameters->parameters().type(mapping.id);
+            if (components::vector::is_placeholder(result_type)) {
+                if (!sub_node->has_output_types() || sub_node->output_types().size() != 1) {
+                    co_return core::error_t{core::error_code_t::sql_parse_error,
+                                            std::pmr::string{"subquery must return only one column", resource()}};
+                }
+                result_type = components::vector::filled_placeholder(result_type, sub_node->output_types().front());
+            }
+
+            if (mapping.boolean_required) {
+                const auto out_type = sub_node->output_types().front().type();
+                if (out_type != components::types::logical_type::BOOLEAN &&
+                    out_type != components::types::logical_type::NA) {
+                    co_return core::error_t{
+                        core::error_code_t::sql_parse_error,
+                        std::pmr::string{"argument of WHERE/HAVING must be type boolean", resource()}};
+                }
+            }
+            if ((capture_ir || plan_only) && sub_result.captured_explain_ir.has_value()) {
+                sub_result.captured_explain_ir->subplan_returns = static_cast<uint32_t>(mapping.id);
+                captured_subplans.push_back(std::move(*sub_result.captured_explain_ir));
+            }
+            if (plan_only || describe) {
+                // Nothing runs: a NULL of the result's type stands for it in the plan the EXPLAIN renders.
+                plan.parameters->set_parameter(mapping.id, components::vector::make_null(resource(), result_type));
+                continue;
+            }
+            trace(log_,
+                  "DBG subq[{}] cursor success={} size={} cols={}",
+                  i,
+                  sub_result.cursor->is_success(),
+                  sub_result.cursor->size(),
+                  sub_result.cursor->column_count());
+            auto compacted = mapping.compacter(resource(), sub_result.cursor->chunks(), result_type);
+            trace(log_, "DBG subq[{}] compacted has_error={}", i, compacted.has_error());
+            if (compacted.has_error()) {
+                co_return core::error_on(resource(), compacted.error());
+            }
+            plan.parameters->set_parameter(mapping.id, std::move(compacted.value()));
+        }
+
+        co_return core::error_t::no_error();
+    }
+
     executor_t::unique_future<execute_result_t>
     executor_t::execute_statement_(components::session::session_id_t session,
                                    components::logical_plan::execution_plan_t plan,
@@ -2340,85 +2681,34 @@ namespace services::collection::executor {
         if (describe && plan.sub_queries.back() && is_utility(*plan.sub_queries.back())) {
             co_return execute_result_t{make_cursor(resource())};
         }
-        const bool plan_only = plan.explain == components::logical_plan::explain_type::plan;
-        const bool capture_ir = plan.explain == components::logical_plan::explain_type::analyze;
-        const bool run_sub_queries = !plan_only && !describe;
+        if (auto* statement = plan.sub_queries.back().get(); statement != nullptr) {
+            switch (statement->type()) {
+                case node_type::execute_t:
+                    co_return co_await execute_prepared_(session, std::move(plan), std::move(session_ctx), registries);
+                case node_type::prepare_t:
+                    if (auto refused = co_await describe_prepared_(
+                            session,
+                            *static_cast<components::logical_plan::node_prepare_t*>(statement),
+                            session_ctx,
+                            registries);
+                        refused.contains_error()) {
+                        co_return execute_result_t{make_cursor(resource(), std::move(refused))};
+                    }
+                    break;
+                case node_type::deallocate_t:
+                    static_cast<components::logical_plan::node_deallocate_t*>(statement)->set_exists(
+                        session_ctx.prepared.has_value());
+                    break;
+                default:
+                    break;
+            }
+        }
+
         std::pmr::vector<explain_plan_node> captured_subplans{resource()};
-        for (std::size_t i = 0; (run_sub_queries || plan_only || describe) && i + 1 < plan.sub_queries.size(); ++i) {
-            auto* sub_root = plan.sub_queries[i].get();
-            const node_type sub_type = sub_root ? sub_root->type() : node_type::unused;
-            if (sub_type == node_type::insert_t || sub_type == node_type::insert_on_conflict_t ||
-                sub_type == node_type::update_t || sub_type == node_type::delete_t) {
-                co_return execute_result_t{make_cursor(
-                    resource(),
-                    core::error_t{core::error_code_t::sql_parse_error,
-                                  std::pmr::string{"DML statement is not allowed in a sub-query", resource()}})};
-            }
-            components::logical_plan::execution_plan_t sub_plan{resource(), plan.sub_queries[i], plan.parameters};
-            sub_plan.external_parameters = plan.external_parameters;
-            if (describe) {
-                sub_plan.explain = components::logical_plan::explain_type::describe;
-            } else if (plan_only) {
-                sub_plan.explain = components::logical_plan::explain_type::plan;
-                sub_plan.explain_capture_ir = true;
-            } else if (capture_ir) {
-                sub_plan.explain = components::logical_plan::explain_type::analyze;
-                sub_plan.explain_capture_ir = true;
-            }
-            auto sub_result = co_await execute_statement_(session,
-                                                          std::move(sub_plan),
-                                                          session_ctx,
-                                                          registries,
-                                                          std::pmr::vector<expanded_view_t>{resource()},
-                                                          true);
-            if (sub_result.cursor->is_error()) {
-                co_return execute_result_t{std::move(sub_result.cursor)};
-            }
-            const auto& mapping = plan.sub_query_results[i];
-            const auto& sub_node = plan.sub_queries[i];
-
-            auto result_type = plan.parameters->parameters().type(mapping.id);
-            if (components::vector::is_placeholder(result_type)) {
-                if (!sub_node->has_output_types() || sub_node->output_types().size() != 1) {
-                    co_return execute_result_t{make_cursor(
-                        resource(),
-                        core::error_t{core::error_code_t::sql_parse_error,
-                                      std::pmr::string{"subquery must return only one column", resource()}})};
-                }
-                result_type = components::vector::filled_placeholder(result_type, sub_node->output_types().front());
-            }
-
-            if (mapping.boolean_required) {
-                const auto out_type = sub_node->output_types().front().type();
-                if (out_type != components::types::logical_type::BOOLEAN &&
-                    out_type != components::types::logical_type::NA) {
-                    co_return execute_result_t{make_cursor(
-                        resource(),
-                        core::error_t{core::error_code_t::sql_parse_error,
-                                      std::pmr::string{"argument of WHERE/HAVING must be type boolean", resource()}})};
-                }
-            }
-            if ((capture_ir || plan_only) && sub_result.captured_explain_ir.has_value()) {
-                sub_result.captured_explain_ir->subplan_returns = static_cast<uint32_t>(mapping.id);
-                captured_subplans.push_back(std::move(*sub_result.captured_explain_ir));
-            }
-            if (plan_only || describe) {
-                // Nothing runs: a NULL of the result's type stands for it in the plan the EXPLAIN renders.
-                plan.parameters->set_parameter(mapping.id, components::vector::make_null(resource(), result_type));
-                continue;
-            }
-            trace(log_,
-                  "DBG subq[{}] cursor success={} size={} cols={}",
-                  i,
-                  sub_result.cursor->is_success(),
-                  sub_result.cursor->size(),
-                  sub_result.cursor->column_count());
-            auto compacted = mapping.compacter(resource(), sub_result.cursor->chunks(), result_type);
-            trace(log_, "DBG subq[{}] compacted has_error={}", i, compacted.has_error());
-            if (compacted.has_error()) {
-                co_return execute_result_t{make_cursor(resource(), compacted.error())};
-            }
-            plan.parameters->set_parameter(mapping.id, std::move(compacted.value()));
+        if (auto failed =
+                co_await run_sub_queries_(session, plan, session_ctx, registries, plan.explain, captured_subplans);
+            failed.contains_error()) {
+            co_return execute_result_t{make_cursor(resource(), std::move(failed))};
         }
 
         components::table::transaction_data resolve_txn = session_ctx.txn;
@@ -2803,6 +3093,8 @@ namespace services::collection::executor {
             case node_type::transaction_t:
             case node_type::create_sequence_t:
             case node_type::create_macro_t:
+            case node_type::prepare_t:
+            case node_type::deallocate_t:
                 break;
             case node_type::create_view_t:
                 if (auto invalid = co_await validate_create_view_(session,
@@ -2957,6 +3249,13 @@ namespace services::collection::executor {
         if (error) {
             trace(log_, "executor::execute_plan_full: validation error: {}", error->get_error().what);
             co_return execute_result_t{std::move(error)};
+        }
+        if (plan.expected_columns.has_value() &&
+            !same_row_type(*plan.expected_columns, result_columns_(plan, returning))) {
+            co_return execute_result_t{
+                make_cursor(resource(),
+                            core::error_t{core::error_code_t::unimplemented_yet,
+                                          std::pmr::string{"cached plan must not change result type", resource()}})};
         }
         if (sub_query) {
             if (describe) {
@@ -4419,6 +4718,10 @@ namespace services::collection::executor {
                 result_tracking.applied_setting_scope = pipeline_context.applied_setting_scope;
                 result_tracking.applied_settings = std::move(pipeline_context.applied_settings);
                 pipeline_context.applied_settings.clear();
+            }
+            if (pipeline_context.prepared_change.kind != components::logical_plan::prepared_change_t::kind_t::none) {
+                result_tracking.prepared_change = std::move(pipeline_context.prepared_change);
+                pipeline_context.prepared_change = {};
             }
             pipeline_context.pg_catalog_appends.clear();
             pipeline_context.pg_catalog_delete_tables.clear();

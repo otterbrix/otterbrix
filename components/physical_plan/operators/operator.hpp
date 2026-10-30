@@ -73,6 +73,8 @@ namespace components::operators {
         checkpoint,
         // session_catalog_t mutation stays in the dispatcher post-success; touches no shared state.
         set_setting,
+        // PREPARE / DEALLOCATE: the session's store changes in the dispatcher after success, as a SET's settings do.
+        prepared_statement,
         vacuum,
         register_udf,
         unregister_udf,

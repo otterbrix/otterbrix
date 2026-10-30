@@ -48,6 +48,77 @@ namespace components::sql::transform {
 
     inline Node& pg_cell_to_node_cast(void* node) { return pg_cast<Node&>(*reinterpret_cast<Node*>(node)); }
 
+    // A list the grammar left out (null), wrote empty (the NIL sentinel) or filled with nothing.
+    inline bool is_empty_list(const List* list) { return list == nullptr || list == NIL || list->lst.empty(); }
+
+    // A string literal written without a cast: PostgreSQL 18 types it unknown.
+    inline bool is_quoted_literal(Node* node) {
+        return nodeTag(node) == T_A_Const && pg_ptr_cast<A_Const>(node)->val.type == T_String;
+    }
+
+    // Calls `visit` on each operand of the expression `node` (a null one too), in the order PostgreSQL 18 transforms
+    // them; false for a node whose operands it does not know. A column, a constant, a $n and a sub-query have none
+    // here: their readers handle them.
+    template<typename Visit>
+    bool for_each_operand(Node* node, Visit&& visit) {
+        const auto list = [&visit](const List* items) {
+            if (!is_empty_list(items)) {
+                for (const auto& item : items->lst) {
+                    visit(pg_ptr_cast<Node>(item.data));
+                }
+            }
+        };
+        switch (nodeTag(node)) {
+            case T_A_Expr:
+                visit(pg_ptr_cast<A_Expr>(node)->lexpr);
+                visit(pg_ptr_cast<A_Expr>(node)->rexpr);
+                return true;
+            case T_FuncCall:
+                list(pg_ptr_cast<FuncCall>(node)->args);
+                visit(pg_ptr_cast<FuncCall>(node)->agg_filter);
+                return true;
+            case T_TypeCast:
+                visit(pg_ptr_cast<TypeCast>(node)->arg);
+                return true;
+            case T_NullTest:
+                visit(pg_ptr_cast<Node>(pg_ptr_cast<NullTest>(node)->arg));
+                return true;
+            case T_BooleanTest:
+                visit(pg_ptr_cast<Node>(pg_ptr_cast<BooleanTest>(node)->arg));
+                return true;
+            case T_CoalesceExpr:
+                list(pg_ptr_cast<CoalesceExpr>(node)->args);
+                return true;
+            case T_MinMaxExpr:
+                list(pg_ptr_cast<MinMaxExpr>(node)->args);
+                return true;
+            case T_A_ArrayExpr:
+                list(pg_ptr_cast<A_ArrayExpr>(node)->elements);
+                return true;
+            case T_A_Indirection:
+                visit(pg_ptr_cast<A_Indirection>(node)->arg);
+                return true;
+            case T_CaseExpr: {
+                auto* expr = pg_ptr_cast<CaseExpr>(node);
+                visit(pg_ptr_cast<Node>(expr->arg));
+                if (!is_empty_list(expr->args)) {
+                    for (const auto& item : expr->args->lst) {
+                        auto* when = pg_ptr_cast<CaseWhen>(item.data);
+                        visit(pg_ptr_cast<Node>(when->expr));
+                        visit(pg_ptr_cast<Node>(when->result));
+                    }
+                }
+                visit(pg_ptr_cast<Node>(expr->defresult));
+                return true;
+            }
+            case T_List:
+                list(pg_ptr_cast<List>(node));
+                return true;
+            default:
+                return false;
+        }
+    }
+
     bool string_to_double(const char* buf, size_t len, double& result /*, char decimal_separator*/);
 
     inline std::string construct(const char* ptr) { return ptr ? ptr : std::string(); }

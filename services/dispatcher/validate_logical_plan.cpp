@@ -3231,8 +3231,7 @@ namespace services::dispatcher {
                     insert_node->set_column_bindings(std::move(bindings));
 
                     // Each deferred cell is cast to the TABLE column's type by assignment, as PostgreSQL's
-                    // transformInsertRow does. A cell of type text only reaches a non-text column through an
-                    // unknown (quoted) literal; `x::text` has no assignment cast to it.
+                    // transformInsertRow does.
                     for (auto& cell : insert_node->deferred_cells()) {
                         if (cell.column >= insert_node->column_bindings().size()) {
                             return core::error_t(core::error_code_t::internal_error,
@@ -3241,16 +3240,12 @@ namespace services::dispatcher {
                                                                   resource});
                         }
                         const auto& binding = insert_node->column_bindings()[cell.column];
-                        const bool text_to_other = !cell.quoted &&
-                                                   cell.value.type().type() == logical_type::STRING_LITERAL &&
-                                                   binding.target_type.type() != logical_type::STRING_LITERAL;
                         if (cell.value.type() == binding.target_type) {
                             continue;
                         }
-                        auto cast = cast_registry->resolve(cell.value.type(),
-                                                           binding.target_type,
-                                                           components::casts::cast_type::assignment);
-                        if (text_to_other || !cast.has_value()) {
+                        auto cast =
+                            cast_registry->resolve_assignment(cell.value.type(), binding.target_type, cell.quoted);
+                        if (!cast.has_value()) {
                             return core::error_t(
                                 core::error_code_t::datatype_mismatch,
                                 std::pmr::string{"column \"" + std::string(binding.target_name) + "\" is of type " +

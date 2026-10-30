@@ -82,6 +82,10 @@ namespace Duckstax.Otterbrix
         NoActiveSqlTransaction = 91,
         ObjectNotInPrerequisiteState = 92,
         InsufficientResources = 93,
+        UndefinedPreparedStatement = 94,
+        DuplicatePreparedStatement = 95,
+        UndefinedParameter = 96,
+        WindowingError = 97,
     }
 
     public struct ErrorMessage {

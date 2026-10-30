@@ -308,7 +308,23 @@ namespace components::sql::transform {
         return core::error_t::no_error();
     }
 
+    transform_result& transform_result::declare(size_t id, const types::complex_logical_type& type) {
+        if (last_error_.contains_error() || bound_flags_.contains(id)) {
+            return *this;
+        }
+        if (finalized_) {
+            last_error_ = core::error_t(core::error_code_t::sql_parse_error,
+                                        std::pmr::string{"transform_result was already finalized", resource_});
+            return *this;
+        }
+        bound_flags_[id] = true;
+        bound_types_.insert_or_assign(id, type);
+        return *this;
+    }
+
     size_t transform_result::parameter_count() const { return parameter_count_; }
+
+    bool transform_result::names_parameter(size_t id) const { return bound_flags_.contains(id); }
 
     bool transform_result::all_bound() const {
         return !std::any_of(bound_flags_.begin(), bound_flags_.end(), [](auto& flg) {

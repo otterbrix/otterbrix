@@ -28,6 +28,7 @@
 #include "impl/create_plan_insert_on_conflict.hpp"
 #include "impl/create_plan_join.hpp"
 #include "impl/create_plan_match.hpp"
+#include "impl/create_plan_prepared_statement.hpp"
 #include "impl/create_plan_recursive_cte.hpp"
 #include "impl/create_plan_register_cast.hpp"
 #include "impl/create_plan_register_udf.hpp"
@@ -261,6 +262,10 @@ namespace services::planner {
                 return impl::create_plan_checkpoint(context, node);
             case node_type::set_setting_t:
                 return impl::create_plan_set_setting(context, node);
+            case node_type::prepare_t:
+                return impl::create_plan_prepare(context, node);
+            case node_type::deallocate_t:
+                return impl::create_plan_deallocate(context, node);
             case node_type::vacuum_t:
                 return impl::create_plan_vacuum(context, node);
             case node_type::create_matview_t:

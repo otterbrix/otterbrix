@@ -56,6 +56,7 @@ set(${PROJECT_NAME}_SOURCES
         operators/operator_alter_column_set_not_null.cpp
         operators/operator_checkpoint.cpp
         operators/operator_set_setting.cpp
+        operators/operator_prepared_statement.cpp
         operators/operator_vacuum.cpp
         operators/operator_register_udf.cpp
         operators/operator_unregister_udf.cpp

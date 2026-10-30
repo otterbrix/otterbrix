@@ -236,6 +236,16 @@ namespace components::casts {
         return cast_info{level, no_cost};
     }
 
+    std::optional<cast_t> cast_registry_t::resolve_assignment(const types::complex_logical_type& source,
+                                                              const types::complex_logical_type& target,
+                                                              bool quoted_literal) const {
+        if (!quoted_literal && source.type() == types::logical_type::STRING_LITERAL &&
+            target.type() != types::logical_type::STRING_LITERAL) {
+            return std::nullopt;
+        }
+        return resolve(source, target, cast_type::assignment);
+    }
+
     std::optional<cast_t> cast_registry_t::resolve(const types::complex_logical_type& source,
                                                    const types::complex_logical_type& target,
                                                    cast_type allowed) const {

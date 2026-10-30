@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 #include "node.hpp"
 #include "node_catalog_resolve.hpp"
@@ -106,6 +107,10 @@ namespace components::logical_plan {
 
         // Every $n the statement names, by number. Empty for a plan whose parameters the host wrote itself.
         std::pmr::vector<external_parameter_t> external_parameters;
+
+        // The result columns PREPARE described, for the statement an EXECUTE runs: a statement whose columns differ is
+        // refused before it runs (PostgreSQL 18 RevalidateCachedQuery, equalRowTypes: names and types).
+        std::optional<std::pmr::vector<types::complex_logical_type>> expected_columns;
     };
 
 } // namespace components::logical_plan

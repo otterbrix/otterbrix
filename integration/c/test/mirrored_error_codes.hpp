@@ -15,3 +15,7 @@ inline constexpr int32_t EC_LOCK_FILE_EXISTS = 56;
 inline constexpr int32_t EC_DIVISION_BY_ZERO = 67;
 inline constexpr int32_t EC_UNIQUE_VIOLATION = 83;
 inline constexpr int32_t EC_NO_ACTIVE_SQL_TRANSACTION = 91;
+inline constexpr int32_t EC_UNDEFINED_PREPARED_STATEMENT = 94;
+inline constexpr int32_t EC_DUPLICATE_PREPARED_STATEMENT = 95;
+inline constexpr int32_t EC_UNDEFINED_PARAMETER = 96;
+inline constexpr int32_t EC_WINDOWING_ERROR = 97;

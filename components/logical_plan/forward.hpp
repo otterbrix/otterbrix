@@ -79,6 +79,10 @@ namespace components::logical_plan {
         // the DDL planner reads the batch via node_allocate_oids_t::oids().
         allocate_oids_t,
         set_setting_t,
+        // PREPARE / EXECUTE / DEALLOCATE: see node_prepare.hpp, node_execute.hpp, node_deallocate.hpp.
+        prepare_t,
+        execute_t,
+        deallocate_t,
         // A block a backend took (storage_offer), placed after optimize: see node_remote.hpp.
         remote_t,
         unused

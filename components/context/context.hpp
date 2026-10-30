@@ -10,6 +10,7 @@
 #include <components/context/pg_catalog_swap.hpp>
 #include <components/execution_context/graph_execution_context.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/logical_plan/prepared_statement.hpp>
 #include <components/session/session.hpp>
 #include <components/table/row_version_manager.hpp>
 #include <components/table/transaction.hpp>
@@ -110,6 +111,8 @@ namespace components::pipeline {
         // What a SET / SET LOCAL / ALTER SYSTEM ran: the dispatcher applies it once the statement succeeded.
         catalog::setting_scope_t applied_setting_scope{};
         std::pmr::vector<catalog::setting_assignment_t> applied_settings;
+        // What a PREPARE / DEALLOCATE ran: the dispatcher applies it to the session's store the same way.
+        logical_plan::prepared_change_t prepared_change{};
 
         // By reference: a by-value parameter froze the default allocator into `parameters` (context.cpp).
         context_t(const logical_plan::storage_parameters& init_parameters,

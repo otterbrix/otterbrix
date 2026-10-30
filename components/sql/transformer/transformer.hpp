@@ -143,8 +143,14 @@ namespace components::sql::transform {
         core::result_wrapper_t<logical_plan::node_ptr> transform_transaction(TransactionStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_set_setting(VariableSetStmt& node);
         core::result_wrapper_t<logical_plan::node_ptr> transform_alter_system(AlterSystemStmt& node);
+        // PREPARE keeps its body as written; EXECUTE lowers each argument to a sub-plan SELECT <argument> whose value
+        // fills the argument's slot; DEALLOCATE names one statement or ALL.
+        core::result_wrapper_t<logical_plan::node_ptr> transform_prepare(PrepareStmt& node);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_execute(ExecuteStmt& node,
+                                                                         logical_plan::execution_plan_t* plan);
+        core::result_wrapper_t<logical_plan::node_ptr> transform_deallocate(DeallocateStmt& node);
         // EXPLAIN / EXPLAIN ANALYZE: read the `analyze` option, restrict the inner to
-        // SELECT/INSERT/UPDATE/DELETE, stamp plan->explain, and lower the inner so sub_queries.back()
+        // SELECT/INSERT/UPDATE/DELETE/EXECUTE, stamp plan->explain, and lower the inner so sub_queries.back()
         // stays the real query node. Output formatting is a host concern (the executor's renderer
         // registry, selected per-query by execution_plan_t::explain_render_id).
         core::result_wrapper_t<logical_plan::node_ptr> transform_explain(ExplainStmt& node,

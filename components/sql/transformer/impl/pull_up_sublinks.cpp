@@ -26,8 +26,6 @@ namespace components::sql::transform {
 
         std::pmr::memory_resource* arena_of(const qualifier_set& set) { return set.get_allocator().resource(); }
 
-        bool is_empty_list(const List* list) { return list == nullptr || list == NIL || list->lst.empty(); }
-
         // The names a FROM item lets a column be qualified by.
         void qualifiers_of(Node* item, qualifier_set& out) {
             if (item == nullptr) {
@@ -147,13 +145,7 @@ namespace components::sql::transform {
             if (node == nullptr) {
                 return;
             }
-            const auto list = [&](const List* items) {
-                if (!is_empty_list(items)) {
-                    for (const auto& item : items->lst) {
-                        read(pg_ptr_cast<Node>(item.data), outer, shadows, reads);
-                    }
-                }
-            };
+            const auto operand = [&](Node* item) { read(item, outer, shadows, reads); };
             switch (nodeTag(node)) {
                 case T_ColumnRef: {
                     auto* ref = pg_ptr_cast<ColumnRef>(node);
@@ -178,12 +170,6 @@ namespace components::sql::transform {
                 case T_A_Const:
                 case T_ParamRef:
                     return;
-                case T_A_Expr: {
-                    auto* expr = pg_ptr_cast<A_Expr>(node);
-                    read(expr->lexpr, outer, shadows, reads);
-                    read(expr->rexpr, outer, shadows, reads);
-                    return;
-                }
                 case T_FuncCall: {
                     auto* call = pg_ptr_cast<FuncCall>(node);
                     if (call->agg_star || is_aggregate_name(function_name(call))) {
@@ -195,42 +181,7 @@ namespace components::sql::transform {
                     if (call->over) {
                         reads.unknown = true;
                     }
-                    list(call->args);
-                    read(call->agg_filter, outer, shadows, reads);
-                    return;
-                }
-                case T_TypeCast:
-                    read(pg_ptr_cast<TypeCast>(node)->arg, outer, shadows, reads);
-                    return;
-                case T_NullTest:
-                    read(pg_ptr_cast<Node>(pg_ptr_cast<NullTest>(node)->arg), outer, shadows, reads);
-                    return;
-                case T_BooleanTest:
-                    read(pg_ptr_cast<Node>(pg_ptr_cast<BooleanTest>(node)->arg), outer, shadows, reads);
-                    return;
-                case T_CoalesceExpr:
-                    list(pg_ptr_cast<CoalesceExpr>(node)->args);
-                    return;
-                case T_MinMaxExpr:
-                    list(pg_ptr_cast<MinMaxExpr>(node)->args);
-                    return;
-                case T_A_ArrayExpr:
-                    list(pg_ptr_cast<A_ArrayExpr>(node)->elements);
-                    return;
-                case T_A_Indirection:
-                    read(pg_ptr_cast<A_Indirection>(node)->arg, outer, shadows, reads);
-                    return;
-                case T_CaseExpr: {
-                    auto* expr = pg_ptr_cast<CaseExpr>(node);
-                    read(pg_ptr_cast<Node>(expr->arg), outer, shadows, reads);
-                    if (!is_empty_list(expr->args)) {
-                        for (const auto& item : expr->args->lst) {
-                            auto* when = pg_ptr_cast<CaseWhen>(item.data);
-                            read(pg_ptr_cast<Node>(when->expr), outer, shadows, reads);
-                            read(pg_ptr_cast<Node>(when->result), outer, shadows, reads);
-                        }
-                    }
-                    read(pg_ptr_cast<Node>(expr->defresult), outer, shadows, reads);
+                    for_each_operand(node, operand);
                     return;
                 }
                 case T_SubLink: {
@@ -271,11 +222,10 @@ namespace components::sql::transform {
                     read(join->quals, outer, shadows, reads);
                     return;
                 }
-                case T_List:
-                    list(pg_ptr_cast<List>(node));
-                    return;
                 default:
-                    reads.unknown = true;
+                    if (!for_each_operand(node, operand)) {
+                        reads.unknown = true;
+                    }
                     return;
             }
         }

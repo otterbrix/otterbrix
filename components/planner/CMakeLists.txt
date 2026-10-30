@@ -4,6 +4,7 @@ set(SOURCE_${PROJECT_NAME}
         planner.cpp
         optimizer.cpp
         view_expansion.cpp
+        prepared_expansion.cpp
         optimizer/rules/constant_folding.cpp
         optimizer/rules/column_pruning.cpp
         optimizer/rules/drop_redundant_distinct.cpp

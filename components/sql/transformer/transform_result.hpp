@@ -52,7 +52,12 @@ namespace components::sql::transform {
         // The parameter takes row `row` of `value`, whatever its vector type.
         transform_result& bind(size_t id, const vector::vector_t& value, uint64_t source_row = 0);
 
+        // A $id the statement does not name has `type` (a declared parameter of PREPARE).
+        transform_result& declare(size_t id, const types::complex_logical_type& type);
+
         size_t parameter_count() const;
+        // Does the statement name $id?
+        bool names_parameter(size_t id) const;
 
         bool all_bound() const;
 

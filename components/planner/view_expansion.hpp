@@ -8,6 +8,7 @@
 #include <components/logical_plan/node_aggregate.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/param_storage.hpp>
+#include <components/sql/parser/nodes/nodes.h>
 #include <core/result_wrapper.hpp>
 
 #include <memory_resource>
@@ -33,6 +34,13 @@ namespace components::planner {
         // The body's own catalog lookups; the caller must merge these and run another resolve round.
         logical_plan::catalog_resolves_t resolves;
     };
+
+    // The one statement of a stored body (a view's, a prepared statement's), parsed on `arena` without the host's
+    // grammar. `what` names the body in the refusals.
+    core::result_wrapper_t<Node*> parse_stored_body(std::pmr::memory_resource* resource,
+                                                    std::pmr::memory_resource* arena,
+                                                    const std::string& text,
+                                                    std::string_view what);
 
     // Each reference gets its own body -- filter pushdown appends a match child into it, so two
     // references cannot share a subtree (same policy as CTE inlining in optimizer.cpp).

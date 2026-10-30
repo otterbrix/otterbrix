@@ -213,6 +213,15 @@ namespace components::sql::transform {
             case T_AlterSystemStmt:
                 log_node = transform_alter_system(pg_cast<AlterSystemStmt>(node));
                 break;
+            case T_PrepareStmt:
+                log_node = transform_prepare(pg_cast<PrepareStmt>(node));
+                break;
+            case T_ExecuteStmt:
+                log_node = transform_execute(pg_cast<ExecuteStmt>(node), plan);
+                break;
+            case T_DeallocateStmt:
+                log_node = transform_deallocate(pg_cast<DeallocateStmt>(node));
+                break;
             case T_ExtensionNode: {
                 // route to the owning extension's transform stage by extension_id
                 auto& ext_node = pg_cast<ExtensionNode>(node);
@@ -263,7 +272,7 @@ namespace components::sql::transform {
                 }
             }
         }
-        // Only read/DML inner statements are supported — the renderer walks the physical plan the
+        // Only read/DML inner statements (and EXECUTE of one) are supported — the renderer walks the physical plan the
         // transformer already lowers for these; DDL/other inners are rejected.
         if (!node.query) {
             return core::error_t(core::error_code_t::sql_parse_error,
@@ -274,6 +283,7 @@ namespace components::sql::transform {
             case T_InsertStmt:
             case T_UpdateStmt:
             case T_DeleteStmt:
+            case T_ExecuteStmt:
                 break;
             default:
                 return core::error_t(core::error_code_t::sql_parse_error,

@@ -4,11 +4,13 @@
 #include <components/catalog/session_catalog.hpp>
 #include <components/compute/function.hpp>
 #include <components/context/pg_catalog_swap.hpp>
+#include <components/logical_plan/prepared_statement.hpp>
 #include <components/table/transaction.hpp>
 #include <core/date/date_types.hpp>
 #include <core/result_wrapper.hpp>
 #include <services/dispatcher/registry_changes.hpp>
 
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -33,12 +35,15 @@ namespace services::dispatcher {
     //   write_connection — the connection the transaction already wrote to; a write to another one is refused
     //              before it reaches that connection's backend.
     //   function_uid — the uid the master registry reserved for the function a register_udf statement registers.
+    //   prepared — the session's prepared statement of the name an EXECUTE, PREPARE or DEALLOCATE names; none
+    //              when the session has none of that name.
     struct txn_session_context_t {
         components::table::transaction_data txn{0, 0};
         components::catalog::session_catalog_t settings{};
         uint64_t lowest_active_start_time{0};
         std::string write_connection{};
         components::compute::function_uid function_uid{components::compute::invalid_function_uid};
+        std::optional<components::logical_plan::prepared_statement_t> prepared{};
     };
 
     // Result of txn_commit_drain_msg: the dispatcher snapshots txn_data, drains

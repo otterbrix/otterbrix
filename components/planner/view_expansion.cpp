@@ -105,12 +105,13 @@ namespace components::planner {
         return out;
     }
 
-    core::result_wrapper_t<view_body_t> expand_view_body(std::pmr::memory_resource* resource,
-                                                         const core::body_sql_t& view_sql) {
-        core::pmr::arena_resource_t parser_arena(resource);
-        auto parse_tree = raw_parser(&parser_arena, view_sql.t.c_str());
+    core::result_wrapper_t<Node*> parse_stored_body(std::pmr::memory_resource* resource,
+                                                    std::pmr::memory_resource* arena,
+                                                    const std::string& text,
+                                                    std::string_view what) {
+        auto parse_tree = raw_parser(arena, text.c_str());
         if (parse_tree.has_error()) {
-            // No position: it would count characters of the stored view body, not of the statement being run.
+            // No position: it would count characters of the stored body, not of the statement being run.
             return view_parse_error(resource, parse_tree.error().what.c_str());
         }
         List* statements = parse_tree.value();
@@ -118,20 +119,30 @@ namespace components::planner {
         // statements; linitial() alone would read past the end of an empty list, or silently drop every
         // statement after the first — so both counts are checked before it's called.
         if (list_length(statements) == 0) {
-            return view_parse_error(resource, "the view body parsed into no statement");
+            return view_parse_error(resource, "the " + std::string{what} + " parsed into no statement");
         }
         if (list_length(statements) > 1) {
             return view_parse_error(resource,
-                                    "the view body parsed into " + std::to_string(list_length(statements)) +
+                                    "the " + std::string{what} + " parsed into " +
+                                        std::to_string(list_length(statements)) +
                                         " statements; exactly one is expected");
         }
         void* parse_cell = linitial(statements);
         if (!parse_cell) {
-            return view_parse_error(resource, "the view body parsed into an empty statement");
+            return view_parse_error(resource, "the " + std::string{what} + " parsed into an empty statement");
+        }
+        return &components::sql::transform::pg_cell_to_node_cast(parse_cell);
+    }
+
+    core::result_wrapper_t<view_body_t> expand_view_body(std::pmr::memory_resource* resource,
+                                                         const core::body_sql_t& view_sql) {
+        core::pmr::arena_resource_t parser_arena(resource);
+        auto statement = parse_stored_body(resource, &parser_arena, view_sql.t, "view body");
+        if (statement.has_error()) {
+            return statement.error();
         }
         components::sql::transform::transformer local_transformer(resource, view_sql.t.c_str());
-        auto parsed =
-            local_transformer.transform(components::sql::transform::pg_cell_to_node_cast(parse_cell)).finalize();
+        auto parsed = local_transformer.transform(*statement.value()).finalize();
         if (parsed.has_error()) {
             // error_on, not a bare copy: error_t's copy assignment rebuilds the message via std::pmr::string's
             // copy ctor, which doesn't propagate the allocator, landing it on the process default (see

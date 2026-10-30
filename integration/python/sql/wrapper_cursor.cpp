@@ -365,6 +365,22 @@ py::tuple wrapper_cursor::get_error() const {
             type = "insufficient_resources";
             break;
 
+        case error_code_t::undefined_prepared_statement:
+            type = "undefined_prepared_statement";
+            break;
+
+        case error_code_t::duplicate_prepared_statement:
+            type = "duplicate_prepared_statement";
+            break;
+
+        case error_code_t::undefined_parameter:
+            type = "undefined_parameter";
+            break;
+
+        case error_code_t::windowing_error:
+            type = "windowing_error";
+            break;
+
         case error_code_t::unimplemented_yet:
             type = "unimplemented_yet";
             break;

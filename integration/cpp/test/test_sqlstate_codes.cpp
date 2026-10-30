@@ -72,6 +72,26 @@ TEST_CASE("integration::cpp::sqlstate_codes::each_refusal_answers_its_postgresql
         CHECK(error.type == refusal.expected);
     }
 
+    // A session's prepared statements.
+    const auto session = any();
+    db.ok(session, "PREPARE q AS SELECT v FROM s.p WHERE id = $1;");
+    const std::vector<refusal_t> prepared_refusals{
+        {"EXECUTE nope;", code::undefined_prepared_statement},
+        {"DEALLOCATE nope;", code::undefined_prepared_statement},
+        {"PREPARE q AS SELECT 1;", code::duplicate_prepared_statement},
+        {"EXECUTE q($1);", code::undefined_parameter},
+        {"EXECUTE q(row_number() OVER ());", code::windowing_error},
+        {"EXECUTE q(sum(1));", code::grouping_error},
+        {"EXECUTE q('1'::text);", code::datatype_mismatch},
+        {"EXECUTE q('x');", code::invalid_text_representation},
+        {"EXECUTE q(1, 2);", code::sql_parse_error},
+    };
+    for (const auto& refusal : prepared_refusals) {
+        const auto error = db.refused(session, refusal.sql);
+        INFO(refusal.sql << " -> " << static_cast<int>(error.type) << " " << error.what);
+        CHECK(error.type == refusal.expected);
+    }
+
     CHECK(db.ints(any(), "SELECT v FROM s.p ORDER BY id;") == ints{10, 20});
     CHECK(db.ints(any(), "SELECT count(*) FROM s.c;") == ints{0});
     CHECK(db.ints(any(), "SELECT count(*) FROM s.n;") == ints{0});

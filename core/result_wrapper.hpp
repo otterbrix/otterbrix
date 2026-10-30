@@ -84,6 +84,10 @@ namespace core {
         no_active_sql_transaction = 91,                 // PostgreSQL 25P01
         object_not_in_prerequisite_state = 92,          // PostgreSQL 55000
         insufficient_resources = 93,                    // PostgreSQL 53000
+        undefined_prepared_statement = 94,              // PostgreSQL 26000
+        duplicate_prepared_statement = 95,              // PostgreSQL 42P05
+        undefined_parameter = 96,                       // PostgreSQL 42P02
+        windowing_error = 97,                           // PostgreSQL 42P20
     };
 
     struct [[nodiscard]] error_t {

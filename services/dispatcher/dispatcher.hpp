@@ -33,6 +33,7 @@
 #include <components/log/log.hpp>
 #include <components/logical_plan/execution_plan.hpp>
 #include <components/logical_plan/node_transaction.hpp>
+#include <components/logical_plan/prepared_statement.hpp>
 #include <components/session/session.hpp>
 #include <components/table/transaction_manager.hpp>
 #include <core/result_wrapper.hpp>
@@ -210,6 +211,10 @@ namespace services::dispatcher {
         void finish_registry_changes_(components::session::session_id_t session,
                                       const settings_statement_t& statement,
                                       const collection::executor::execute_result_t& result);
+        // The change a PREPARE or a DEALLOCATE ran, once it succeeded; not undone by a ROLLBACK (PostgreSQL 18 keeps
+        // prepared statements outside transactions).
+        void finish_prepared_(components::session::session_id_t session,
+                              const collection::executor::execute_result_t& result);
 
         unique_future<void> finish_failed_statement_(components::session::session_id_t session,
                                                      uint64_t transaction_id);
@@ -224,8 +229,9 @@ namespace services::dispatcher {
         components::table::transaction_t* statement_transaction_(components::session::session_id_t session,
                                                                  uint64_t transaction_id);
 
-        // A statement that runs alone in its session: the end of a transaction or a savepoint, and the registration or
-        // drop of a function or a cast; the others of a transaction block may run beside one another.
+        // A statement that runs alone in its session: the end of a transaction or a savepoint, the registration or
+        // drop of a function or a cast, and a PREPARE or a DEALLOCATE; the others of a transaction block may run beside
+        // one another.
         enum class turn_t : bool
         {
             beside,
@@ -318,6 +324,12 @@ namespace services::dispatcher {
         // Only sessions that set something or are inside a transaction block have an entry.
         std::pmr::unordered_map<components::session::session_id_t, components::catalog::session_settings_t>
             session_settings_{resource_};
+
+        // Each session's prepared statements by name; only sessions that prepared one have an entry.
+        std::pmr::unordered_map<
+            components::session::session_id_t,
+            std::pmr::unordered_map<std::pmr::string, components::logical_plan::prepared_statement_t>>
+            prepared_statements_{resource_};
 
         components::catalog::session_catalog_t session_settings(components::session::session_id_t session) const;
         components::catalog::place_t place_of(components::session::session_id_t session) const;

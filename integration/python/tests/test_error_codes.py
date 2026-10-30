@@ -24,6 +24,15 @@ def test_a_cursor_names_the_postgresql_code_of_its_error(tmp_path):
         ("SAVEPOINT a;", "no_active_sql_transaction"),
         ("SELECT nosuch(1);", "unrecognized_function"),
         ("SET autocommit = maybe;", "invalid_parameter"),
+        ("EXECUTE nope;", "undefined_prepared_statement"),
+    ):
+        assert client.execute(statement).get_error()[0] == name, statement
+
+    assert not client.execute("PREPARE q AS SELECT v FROM s.t WHERE id = $1;").is_error()
+    for statement, name in (
+        ("PREPARE q AS SELECT 1;", "duplicate_prepared_statement"),
+        ("EXECUTE q($1);", "undefined_parameter"),
+        ("EXECUTE q(row_number() OVER ());", "windowing_error"),
     ):
         assert client.execute(statement).get_error()[0] == name, statement
 

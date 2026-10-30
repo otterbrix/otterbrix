@@ -215,6 +215,7 @@ set( ${PROJECT_NAME}_SOURCES
         test_parser_extension.cpp
         test_engine_lifecycle.cpp
         test_parameterized_queries.cpp
+        test_prepare.cpp
         test_list_array.cpp
         test_quantified.cpp
         test_lost_wakeup_streaming.cpp

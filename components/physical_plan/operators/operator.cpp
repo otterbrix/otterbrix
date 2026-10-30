@@ -80,6 +80,7 @@ namespace components::operators {
                 case operator_type::dynamic_cascade_delete:
                 case operator_type::checkpoint:
                 case operator_type::set_setting:
+                case operator_type::prepared_statement:
                 case operator_type::vacuum:
                 case operator_type::register_udf:
                 case operator_type::unregister_udf:

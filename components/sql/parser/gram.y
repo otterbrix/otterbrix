@@ -11675,6 +11675,8 @@ PrepareStmt: PREPARE name prep_type_clause AS PreparableStmt
 					n->name = $2;
 					n->argtypes = $3;
 					n->query = $5;
+					n->query_location = @5;
+					n->query_end_location = -1;	/* the body runs to the statement's end */
 					$$ = (Node *) n;
 				}
 		;

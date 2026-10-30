@@ -13,6 +13,7 @@
 #include <components/logical_plan/node_alter_table.hpp>
 #include <components/logical_plan/node_catalog_resolve.hpp>
 #include <components/logical_plan/node_limit.hpp>
+#include <components/logical_plan/node_prepare.hpp>
 #include <components/physical_plan/operators/operator.hpp>
 #include <components/vector/data_chunk.hpp>
 #include <optional>
@@ -116,6 +117,8 @@ namespace services::collection::executor {
         std::vector<components::host_rows_t> host_rows{};
         // Every pg_proc row the statement's DROPs took with their dependents.
         std::vector<components::pipeline::dropped_function_t> dropped_functions{};
+        // Filled only from a PREPARE's or a DEALLOCATE's sub-plan result.
+        components::logical_plan::prepared_change_t prepared_change{};
     };
 
     // The registries a statement sees: the executor's own, or copies of them with its transaction's own changes over
@@ -165,6 +168,7 @@ namespace services::collection::executor {
         std::vector<components::table::participant_t> participants;
         std::vector<components::host_rows_t> host_rows;
         std::vector<components::pipeline::dropped_function_t> dropped_functions;
+        components::logical_plan::prepared_change_t prepared_change;
     };
 
     // Implements subplan_runner_t: an operator inside this executor's coroutine drives a child sub-plan via
@@ -265,6 +269,38 @@ namespace services::collection::executor {
                                                     const components::logical_plan::resolved_table_metadata_t* view,
                                                     components::logical_plan::node_t* body);
 
+        // The sub-plans of `plan` before its main one, front to back: each runs, or for EXPLAIN and describe is only
+        // planned (its IR into `captured_subplans`, a NULL of its type for its value), and fills its slot.
+        unique_future<core::error_t> run_sub_queries_(components::session::session_id_t session,
+                                                      components::logical_plan::execution_plan_t& plan,
+                                                      const services::dispatcher::txn_session_context_t& session_ctx,
+                                                      statement_registries_t registries,
+                                                      components::logical_plan::explain_type explain,
+                                                      std::pmr::vector<explain_plan_node>& captured_subplans);
+
+        // EXECUTE: the statement the session stored under the name runs in place of this one.
+        unique_future<execute_result_t> execute_prepared_(components::session::session_id_t session,
+                                                          components::logical_plan::execution_plan_t plan,
+                                                          services::dispatcher::txn_session_context_t session_ctx,
+                                                          statement_registries_t registries);
+        // PREPARE: the body's describe, stamped on the node with whether the session has the name already.
+        unique_future<core::error_t> describe_prepared_(components::session::session_id_t session,
+                                                        components::logical_plan::node_prepare_t& prepare,
+                                                        const services::dispatcher::txn_session_context_t& session_ctx,
+                                                        statement_registries_t registries);
+        // An aggregate or a set-returning function in the plan of an EXECUTE argument (PostgreSQL 18
+        // EXPR_KIND_EXECUTE_PARAMETER).
+        core::error_t refuse_execute_argument_(const components::logical_plan::node_t* argument,
+                                               const components::compute::function_registry_t& functions) const;
+        // The value of $`number` as its parameter's type.
+        core::result_wrapper_t<components::vector::vector_t>
+        coerce_argument_(const components::vector::vector_t& value,
+                         const components::types::complex_logical_type& expected,
+                         std::size_t number,
+                         bool quoted_literal,
+                         const components::casts::cast_registry_t& casts,
+                         const components::graph_execution_context& settings) const;
+
         unique_future<execute_result_t> refresh_matview_(components::session::session_id_t session,
                                                          const components::logical_plan::execution_plan_t& plan,
                                                          const services::dispatcher::txn_session_context_t& session_ctx,
@@ -289,6 +325,10 @@ namespace services::collection::executor {
         // two types 42P08 (PostgreSQL 18 pg_analyze_and_rewrite_varparams, variable_coerce_param_hook).
         core::result_wrapper_t<std::pmr::vector<components::types::complex_logical_type>>
         parameter_types_of_(const components::logical_plan::execution_plan_t& plan) const;
+        // The result columns of the validated main plan: a query's own, the RETURNING ones of a write.
+        std::pmr::vector<components::types::complex_logical_type>
+        result_columns_(const components::logical_plan::execution_plan_t& plan,
+                        const services::dispatcher::validation::named_schema& returning) const;
         // A describe's answer: the result columns (the RETURNING ones of a write, QUERY PLAN of an EXPLAIN) and the
         // types of the $n.
         components::cursor::cursor_t_ptr

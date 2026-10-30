@@ -51,6 +51,9 @@ set(SOURCE_${PROJECT_NAME}
         node_cte_scan.cpp
         node_update.cpp
         node_set_setting.cpp
+        node_prepare.cpp
+        node_execute.cpp
+        node_deallocate.cpp
         node_vacuum.cpp
         param_storage.cpp
 )

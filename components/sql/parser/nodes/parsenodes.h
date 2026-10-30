@@ -3253,6 +3253,10 @@ typedef struct PrepareStmt {
     char* name;     /* Name of plan, arbitrary */
     List* argtypes; /* Types of parameters (List of TypeName) */
     Node* query;    /* The query itself (as a raw parsetree) */
+    /* Byte offset of `query`'s first token in the source text (0 = not recorded); the engine keeps the body as written. */
+    int query_location;
+    /* Byte offset just past `query`'s last token; -1 means the body runs to the statement's end. */
+    int query_end_location;
 } PrepareStmt;
 
 /* ----------------------

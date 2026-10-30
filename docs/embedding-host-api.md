@@ -428,6 +428,48 @@ cursors keep their rows readable; `Client.execute` and the `execute` of its curs
 `connection_closed`, "the session is closed". `Connection(client)` holds its client: `close()` closes it, `commit()`
 and `rollback()` run COMMIT and ROLLBACK in its session and answer as `execute` does.
 
+## Prepared statements
+
+`PREPARE name [(types)] AS statement`, `EXECUTE name [(arguments)]` and `DEALLOCATE [PREPARE] name | ALL`, as
+PostgreSQL 18 runs them (`test_prepare.cpp`). The session keeps the statement's text, the types of its `$n` and its
+result columns; nothing else: every EXECUTE parses and translates the text again in the engine, without the host's
+grammar, as a view's body is read, and runs it as its own statement, in its transaction, with its EXPLAIN. The host
+neither parses nor translates the statement again: it sends `EXECUTE name(...)` or the node.
+
+- PREPARE describes the statement (Describe below), with the declared types; a statement that does not describe is
+  refused and nothing is stored. It answers nothing: the columns and the `$n` types are what `describe_sql("EXECUTE
+  name")` answers. A name the session has already is refused after the statement is described, with
+  `duplicate_prepared_statement` (42P05) `prepared statement "q" already exists`. A body of a host's grammar
+  extension is refused at PREPARE. A declared type that the statement skips keeps its type (`PREPARE p(bigint,
+  bigint) AS SELECT $2`).
+- EXECUTE checks the number of arguments first: `sql_parse_error` (42601) `wrong number of parameters for prepared
+  statement "q"` with `DETAIL: Expected N parameters but got M.`. An argument is any expression without a sub-query
+  (0A000), a `$n` (`undefined_parameter`, 42P02 `there is no parameter $1`), an aggregate (`grouping_error`, 42803
+  `aggregate functions are not allowed in EXECUTE parameters`), a window function (`windowing_error`, 42P20) or a
+  set-returning function (0A000); the arguments are read in order and the first refused one answers. Each is evaluated
+  before the statement, also for EXPLAIN without ANALYZE, and takes its parameter's type on assignment, as a VALUES cell
+  of an INSERT does: a bare string literal takes any type its input accepts, and a value that has no assignment to the
+  type (`'5'::text` to bigint) is refused with `datatype_mismatch` (42804) `parameter $1 of type text cannot be coerced
+  to the expected type bigint`.
+- Every EXECUTE resolves names again: a dropped table is `table_not_exists`, a table created again under the name is
+  read. When the result columns differ in a name or a type from the ones PREPARE described (`SELECT *` after `ADD
+  COLUMN` or `RENAME COLUMN`), EXECUTE is refused before it runs with `unimplemented_yet` (0A000) `cached plan must
+  not change result type`; DEALLOCATE and PREPARE again take the new columns.
+- An unknown name is `undefined_prepared_statement` (26000) `prepared statement "q" does not exist`, for EXECUTE,
+  EXPLAIN EXECUTE and DEALLOCATE; `DEALLOCATE ALL` always succeeds.
+- The store is not transactional: ROLLBACK keeps a PREPARE and a DEALLOCATE of its block. A failed block refuses all
+  three with `transaction_finalized`, as any statement. Inside a block PREPARE and DEALLOCATE run alone in the
+  session: the statements running before them end first, and the ones sent after them wait. `close_session` drops
+  every statement of the session.
+- `CREATE TABLE … AS EXECUTE` is refused as `CREATE TABLE … AS` is (#675).
+- Otterbrix against PostgreSQL 18: a statement is always planned for the EXECUTE's values (PostgreSQL may keep a generic
+  plan after five executions); an argument's value is coerced after it is evaluated, so `EXECUTE q(1 / 0, '7'::text)`
+  answers division by zero, not 42804; a declared type of the user's (`PREPARE p(mood)`) is refused with
+  `unimplemented_yet` (0A000).
+- A declared type keeps its typmod: `PREPARE dd2(numeric(10,2))` answers a numeric(10,2) column and `EXECUTE
+  dd2(1.257)` answers 1.26. PostgreSQL 18 discards the declared typmod; otterbrix keeps it because it has no NUMERIC
+  without a precision (#885).
+
 ## Settings
 
 `timezone` and `autocommit`, as PostgreSQL 18 keeps its parameters (`test_session_settings.cpp`):
@@ -485,7 +527,18 @@ the ones its statement needs (`register_plan_targets`) — for INSERT and UPDATE
 outgoing FOREIGN KEY entries of the write target, for DELETE the FOREIGN KEYs that reference it — so they hold as for
 the same SQL, and the host does not add them (`test_hand_built_constraints.cpp`).
 
+A host's prepared statements are the nodes the SQL forms lower to (Prepared statements): `make_node_prepare(resource,
+name, text, declared_types)`, `make_node_execute(resource, name, slots)` whose arguments are the values the plan's
+parameters hold at `slots`, without sub-plans, and `make_node_deallocate(resource, name)` /
+`make_node_deallocate_all(resource)`. An empty name is refused with `protocol_violation` (08P01), `invalid statement
+name: must not be empty`; a text that is not one SELECT, INSERT, UPDATE or DELETE (what PostgreSQL's grammar lets
+PREPARE hold) is refused at PREPARE with `protocol_violation`, `the body of a prepared statement must be SELECT, INSERT,
+UPDATE or DELETE`.
+
 ## EXPLAIN
+
+`EXPLAIN [ANALYZE] EXECUTE name(...)` explains the statement the session prepared, as `EXPLAIN` of the same statement
+with the arguments' values written in; the arguments are evaluated and are not shown.
 
 `explain_label()` / `explain_details()` are public NVI over the private `explain_label_impl()` /
 `explain_details_impl()`. The label is the operator's line; each detail is printed under it, two columns right of
@@ -520,7 +573,10 @@ the same with `execution_plan_t::explain = explain_type::describe` through `exec
   same way and stands for a NULL of its column's type.
 - The result of an INSERT / UPDATE / DELETE is its RETURNING list, none without one.
 - DDL, BEGIN / COMMIT / ROLLBACK, SET and the other utilities answer no columns and no parameters and check nothing
-  (`describe CREATE TABLE` of a table that exists is no error), as PostgreSQL answers NoData.
+  (`describe CREATE TABLE` of a table that exists is no error), as PostgreSQL answers NoData. So do PREPARE and
+  DEALLOCATE, which store and drop nothing, and `EXECUTE` of a name the session does not have.
+- `EXECUTE name` answers the columns and the `$n` types PREPARE described, with any number of arguments, as
+  PostgreSQL's Describe of a prepared statement does; `EXPLAIN EXECUTE …` answers `QUERY PLAN`, the name known or not.
 - EXPLAIN [ANALYZE] answers one text column `QUERY PLAN` and the types of the inner statement's `$n`
   (`explain_type::describe_explain`); the inner statement is analyzed as above, and ANALYZE runs nothing either.
 - A describe opens no transaction block, also with `autocommit` off, and runs in the open block's snapshot, so it

@@ -232,6 +232,23 @@ namespace core {
         static constexpr bool trivial_store = std::is_default_constructible_v<T>;
         using Store_T = std::conditional_t<trivial_store, T, std::optional<T>>;
 
+        // gcc 11 -Wmaybe-uninitialized: a whole std::optional<T> move on `co_return error` when T has no default ctor.
+        static Store_T moved_value(Store_T& source) noexcept(std::is_nothrow_move_constructible_v<T>) {
+            if constexpr (trivial_store) {
+                return std::move(source);
+            } else {
+                return Store_T{};
+            }
+        }
+
+        void adopt_optional([[maybe_unused]] Store_T&& source) noexcept(std::is_nothrow_move_constructible_v<T>) {
+            if constexpr (!trivial_store) {
+                if (source.has_value()) {
+                    value_.emplace(std::move(*source));
+                }
+            }
+        }
+
     public:
         template<typename... Args>
         result_wrapper_t(Args&&... args) requires(std::constructible_from<T, Args...>)
@@ -253,8 +270,10 @@ namespace core {
             , error_(other.error_) {}
 
         result_wrapper_t(result_wrapper_t&& other) noexcept requires(std::is_move_constructible_v<T>)
-            : value_(std::move(other.value_))
-            , error_(std::move(other.error_)) {}
+            : value_(moved_value(other.value_))
+            , error_(std::move(other.error_)) {
+            adopt_optional(std::move(other.value_));
+        }
 
         result_wrapper_t& operator=(const result_wrapper_t& other) requires(std::is_copy_assignable_v<T>) {
             value_ = other.value_;
@@ -275,7 +294,11 @@ namespace core {
 #else
         result_wrapper_t(const result_wrapper_t& other) requires(std::is_copy_constructible_v<T>) = default;
 
-        result_wrapper_t(result_wrapper_t&&) noexcept requires(std::is_move_constructible_v<T>) = default;
+        result_wrapper_t(result_wrapper_t&& other) noexcept requires(std::is_move_constructible_v<T>)
+            : value_(moved_value(other.value_))
+            , error_(std::move(other.error_)) {
+            adopt_optional(std::move(other.value_));
+        }
 
         result_wrapper_t& operator=(const result_wrapper_t& other) requires(std::is_copy_assignable_v<T>) = default;
 

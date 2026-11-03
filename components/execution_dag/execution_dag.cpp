@@ -114,6 +114,8 @@ namespace components::execution_dag {
             vector::vector_ops::combine_hash(distinct_hashes_, arguments.data[position], count);
         }
         const auto* hash_data = distinct_hashes_.data<uint64_t>();
+        // Arguments that stay CONSTANT after flatten (an NA column) hash into one constant cell.
+        const bool constant_hash = distinct_hashes_.get_vector_type() == vector::vector_type::CONSTANT;
         // Rows kept by this call are not stored yet: they sit at distinct_values_.size() and are read
         // back from the arguments through distinct_rows_.
         const uint64_t pending_chunk = distinct_values_.size();
@@ -121,7 +123,8 @@ namespace components::execution_dag {
         for (uint64_t row = 0; row < count; row++) {
             const uint32_t group = group_ids_[row];
             auto& set = sets.at<value_set_t>(group);
-            const auto range = set.equal_range(hash_data[row]);
+            const uint64_t hash = hash_data[constant_hash ? 0 : row];
+            const auto range = set.equal_range(hash);
             bool seen = false;
             for (auto it = range.first; it != range.second && !seen; ++it) {
                 const auto& ref = it->second;
@@ -132,7 +135,7 @@ namespace components::execution_dag {
             if (seen) {
                 continue;
             }
-            set.emplace(hash_data[row], kept_row_t{pending_chunk, kept});
+            set.emplace(hash, kept_row_t{pending_chunk, kept});
             distinct_rows_.set_index(kept, row);
             distinct_groups_.push_back(group);
             kept++;

@@ -10,6 +10,9 @@ namespace components::compute {
     class function_registry_t;
     class function_options;
 
+    // True when no row of a kernel's (flattened) input column is null. An NA column is null in every
+    // row by its type and keeps no validity mask, so the mask alone would call it all valid.
+    bool column_all_valid(const vector::vector_t& column);
     bool all_inputs_valid(const vector::data_chunk_t& inputs);
     bool row_contains_null(const vector::data_chunk_t& inputs, uint64_t row);
 

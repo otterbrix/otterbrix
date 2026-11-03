@@ -1,4 +1,5 @@
 #include "../function.hpp"
+#include "../kernel_utils.hpp"
 #include <components/types/operations_helper.hpp>
 #include <components/vector/operations/apply_operator.hpp>
 #include <components/vector/vector_operations.hpp>
@@ -150,7 +151,7 @@ namespace {
     template<typename in_t, typename state_t, typename add_t>
     bool fold(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states, add_t add) {
         const auto* data = input.data<in_t>();
-        const bool all_valid = input.validity().all_valid();
+        const bool all_valid = column_all_valid(input);
         for (uint64_t row = 0; row < groups.size(); row++) {
             if (!all_valid && input.is_null(row)) {
                 continue;
@@ -317,7 +318,7 @@ namespace {
         core::error_t
         operator()(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) const {
             const auto* data = input.data<T>();
-            const bool all_valid = input.validity().all_valid();
+            const bool all_valid = column_all_valid(input);
             for (uint64_t row = 0; row < groups.size(); row++) {
                 if (!all_valid && input.is_null(row)) {
                     continue;
@@ -420,7 +421,7 @@ namespace {
     // current winner, and when it wins, copy it in. `wants_greater` picks max.
     template<bool wants_greater>
     core::error_t min_max_update(const vector_t& input, core::span<const uint32_t> groups, aggregate_states_t states) {
-        const bool all_valid = input.validity().all_valid();
+        const bool all_valid = column_all_valid(input);
         for (uint64_t row = 0; row < groups.size(); row++) {
             if (!all_valid && input.is_null(row)) {
                 continue;
@@ -557,7 +558,7 @@ namespace {
                                core::span<const uint32_t> groups,
                                aggregate_states_t states) {
         const auto& column = input.data.front();
-        const bool all_valid = column.validity().all_valid();
+        const bool all_valid = column_all_valid(column);
         for (uint64_t row = 0; row < groups.size(); row++) {
             if (!all_valid && column.is_null(row)) {
                 continue;

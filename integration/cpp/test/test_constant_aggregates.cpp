@@ -95,3 +95,26 @@ TEST_CASE("integration::cpp::constant_aggregates::empty_input") {
     CHECK(col(d, "SELECT count(1) FROM m.t WHERE id > 100;") == L{"0"});
     CHECK(col(d, "SELECT sum(1) FROM m.t WHERE id > 100;") == L{"NULL"});
 }
+
+// A NULL argument counts no row, whatever builds it: a bare NULL (a vector of type NA), a typed null
+// constant, a CASE no arm claims, a column holding only nulls (PostgreSQL answers 0 for each).
+TEST_CASE("integration::cpp::constant_aggregates::count_of_null") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("constant_aggregates/count_of_null"));
+    test_spaces space(config);
+    auto* d = space.dispatcher();
+    seed(d);
+    REQUIRE(ok(d, "CREATE TABLE m.n (id BIGINT, x BIGINT);"));
+    REQUIRE(ok(d, "INSERT INTO m.n (id, x) VALUES (1, NULL),(2, NULL);"));
+
+    CHECK(col(d, "SELECT count(NULL) FROM m.t;") == L{"0"});
+    CHECK(col(d, "SELECT count(NULL);") == L{"0"});
+    CHECK(col(d, "SELECT count(DISTINCT NULL) FROM m.t;") == L{"0"});
+    CHECK(col(d, "SELECT count(NULL), count(*) FROM m.t;", 1) == L{"3"});
+    CHECK(col(d, "SELECT g, count(NULL) FROM m.t GROUP BY g ORDER BY g;", 1) == L{"0", "0"});
+    CHECK(col(d, "SELECT count(NULL::int) FROM m.t;") == L{"0"});
+    CHECK(col(d, "SELECT count(CASE WHEN id < 0 THEN 1 END) FROM m.t;") == L{"0"});
+    CHECK(col(d, "SELECT count(x) FROM m.n;") == L{"0"});
+    CHECK(col(d, "SELECT count(*) FROM m.n;") == L{"2"});
+    CHECK(col(d, "SELECT count(1) FROM m.n;") == L{"2"});
+    CHECK(col(d, "SELECT count(id) FROM m.n;") == L{"2"});
+}

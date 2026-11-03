@@ -3,9 +3,13 @@
 
 namespace components::compute {
 
+    bool column_all_valid(const vector::vector_t& column) {
+        return column.type().type() != types::logical_type::NA && column.validity().all_valid();
+    }
+
     bool all_inputs_valid(const vector::data_chunk_t& inputs) {
         return std::all_of(inputs.data.begin(), inputs.data.end(), [](const auto& column) {
-            return column.type().type() != types::logical_type::NA && column.validity().all_valid();
+            return column_all_valid(column);
         });
     }
 

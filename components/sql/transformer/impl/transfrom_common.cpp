@@ -1273,6 +1273,7 @@ namespace components::sql::transform {
         }
         auto expr = make_function_expression(resource_, std::move(called), std::move(args));
         expr->set_distinct(node->agg_distinct);
+        expr->set_star_argument(node->agg_star);
         return expr;
     }
 

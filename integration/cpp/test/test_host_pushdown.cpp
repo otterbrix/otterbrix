@@ -364,6 +364,25 @@ TEST_CASE("integration::cpp::host_pushdown::returning_reads_the_columns_it_names
     CHECK(host.backend().rows("m2.shop.public.wide") == rows_t{{3, 33, 300}});
 }
 
+// An integer literal assigned to an INT column is cast on assignment (the literal is a BIGINT): the UPDATE the backend
+// is offered still names the column each assignment sets, as an assignment of the column's own type does.
+TEST_CASE("integration::cpp::host_pushdown::an_assignment_cast_to_its_column_keeps_the_column") {
+    host_t host("test_host_pushdown/assignment_cast");
+    shop(host);
+    host.db.ok(any(), "CREATE TABLE m2.shop.public.stock (id BIGINT, qty INT);");
+    host.backend().set_rows("m2.shop.public.stock", {{1, 5}, {2, 6}});
+    host.backend().clear_journal();
+    host.backend().set_take_policy({.simple_modify = true});
+
+    host.db.ok(any(), "UPDATE m2.shop.public.stock SET qty = 7 WHERE id = 1;");
+    const auto kept = host.backend().kept_blocks();
+    REQUIRE_FALSE(kept.empty());
+    INFO(kept.back().root);
+    CHECK(kept.back().assigned == strings{"qty@1"});
+    CHECK(host.backend().journal("run") == strings{"run update m2.shop.public.stock where column 0 set column 1"});
+    CHECK(host.backend().rows("m2.shop.public.stock") == rows_t{{1, 7}, {2, 6}});
+}
+
 // An uncorrelated sub-query (an InitPlan) is offered once, as a block of its own.
 TEST_CASE("integration::cpp::host_pushdown::an_init_plan_is_offered_once") {
     host_t host("test_host_pushdown/init_plan");

@@ -107,6 +107,8 @@ namespace components::expressions {
                 dst->set_pins({src->pins().begin(), src->pins().end(), resource});
                 dst->set_scope(src->scope());
                 dst->set_volatility(src->volatility());
+                dst->set_distinct(src->is_distinct());
+                dst->set_star_argument(src->has_star_argument());
                 copy = std::move(dst);
                 break;
             }
@@ -117,6 +119,7 @@ namespace components::expressions {
                                             src->result_type(),
                                             src->cast(),
                                             src->kind());
+                copy->key() = key_t{src->key(), resource};
                 break;
             }
             case expression_group::invalid: {
@@ -127,6 +130,7 @@ namespace components::expressions {
         }
         copy->set_result_alias(expr->result_alias());
         copy->set_result_type(expr->result_type());
+        copy->set_cardinality(expr->cardinality());
         return copy;
     }
 

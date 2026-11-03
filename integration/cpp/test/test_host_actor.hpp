@@ -1026,6 +1026,8 @@ namespace host_actor {
             std::vector<std::string> tables;
             // Joins that give each outer row one inner row at most (a scalar sub-query's).
             int single_match_joins{0};
+            // An UPDATE's assignments, each as the column its key names: name@position ("-" for no position).
+            std::vector<std::string> assigned;
         };
         std::vector<kept_block_t> kept_blocks() const {
             std::lock_guard<std::mutex> guard(state_mutex_);
@@ -1034,7 +1036,8 @@ namespace host_actor {
                 kept_block_t kept{block->root->to_string(),
                                   points_out(*block->root),
                                   {},
-                                  single_match_joins(*block->root)};
+                                  single_match_joins(*block->root),
+                                  assigned_of(*block->root)};
                 for (const auto& table : block->tables) {
                     std::string line = table.name.to_string() + ":";
                     for (const auto& column : table.columns) {
@@ -1330,6 +1333,19 @@ namespace host_actor {
             }
         }
 
+        static std::vector<std::string> assigned_of(const components::logical_plan::node_t& root) {
+            std::vector<std::string> out;
+            if (root.type() != components::logical_plan::node_type::update_t) {
+                return out;
+            }
+            for (const auto& update : static_cast<const components::logical_plan::node_update_t&>(root).updates()) {
+                const auto& key = update->key();
+                out.push_back(key.as_string() + "@" +
+                              (key.path().empty() ? std::string{"-"} : std::to_string(key.path().front())));
+            }
+            return out;
+        }
+
         static int single_match_joins(const components::logical_plan::node_t& node) {
             int count = node.type() == components::logical_plan::node_type::join_t &&
                                 static_cast<const components::logical_plan::node_join_t&>(node).single_match()
@@ -1583,7 +1599,9 @@ namespace host_actor {
             if (update) {
                 const auto& updates = static_cast<const components::logical_plan::node_update_t&>(root).updates();
                 core::parameter_id_t value{0};
-                if (updates.size() != 1 || !parameter_in(updates.front(), value)) {
+                // An assignment names the column it sets by its key; one that names none is not a statement.
+                if (updates.size() != 1 || !parameter_in(updates.front(), value) ||
+                    updates.front()->key().path().empty()) {
                     return {};
                 }
                 visible += " set column " + std::to_string(updates.front()->key().path().front());

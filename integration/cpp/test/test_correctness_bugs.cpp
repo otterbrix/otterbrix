@@ -3990,3 +3990,59 @@ TEST_CASE("integration::cpp::correctness_bugs::insert_values_chunk_types_differ_
     INFO("error: " << error);
     CHECK(error.find("several chunks") != std::string::npos);
 }
+
+// A row comparison reads an operand more than once, and every further read is a copy of the call
+// (lower_row_comparison): the copy of `count(DISTINCT x)` still counts distinct values. x is {1, 1, 2}:
+// count(DISTINCT x) = 2, count(x) = 3.
+TEST_CASE("integration::cpp::correctness_bugs::a_row_comparison_copies_a_distinct_call_whole") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/row_cmp_call_copy"));
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA s;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE s.d (x BIGINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO s.d (x) VALUES (1), (1), (2);")->is_success());
+
+    // (2, 0) < (2, 1) is `2 < 2 OR (2 = 2 AND 0 < 1)`: the second link reads count(DISTINCT x) again.
+    auto cur =
+        test_helpers::exec(dispatcher, "SELECT CASE WHEN (count(DISTINCT x), 0) < (2, 1) THEN 1 ELSE 0 END FROM s.d;");
+    INFO("error: " << (cur->is_error() ? cur->get_error().what : "none"));
+    REQUIRE(cur->is_success());
+    REQUIRE(cur->size() == 1);
+    auto cell = cur->get<int32_t>(0, 0);
+    REQUIRE_FALSE(cell.has_error());
+    CHECK(cell.value() == 1);
+}
+
+// `count(*)` inside an expression (a CASE condition, an operand of an operator, an argument of a call) is a star call
+// as it is at the top of a select list. x is {1, 1, 2}: count(*) = 3.
+TEST_CASE("integration::cpp::correctness_bugs::count_star_inside_an_expression") {
+    auto config = test_helpers::make_test_config(integration_fixture_path("test_correctness_bugs/count_star_in_expr"));
+    test_spaces space(config);
+    auto* dispatcher = space.dispatcher();
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE SCHEMA s;")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "CREATE TABLE s.d (x BIGINT);")->is_success());
+    REQUIRE(test_helpers::exec(dispatcher, "INSERT INTO s.d (x) VALUES (1), (1), (2);")->is_success());
+
+    const auto one_int = [&](const std::string& sql) -> int64_t {
+        auto cur = test_helpers::exec(dispatcher, sql);
+        INFO(sql << " error: " << (cur->is_error() ? cur->get_error().what : "none"));
+        REQUIRE(cur->is_success());
+        REQUIRE(cur->size() == 1);
+        REQUIRE(cur->column_count() == 1);
+        const auto& type = cur->chunks().front().data[0].type().type();
+        if (type == components::types::logical_type::INTEGER) {
+            auto cell = cur->get<int32_t>(0, 0);
+            REQUIRE_FALSE(cell.has_error());
+            return cell.value();
+        }
+        auto cell = cur->get<int64_t>(0, 0);
+        REQUIRE_FALSE(cell.has_error());
+        return cell.value();
+    };
+    CHECK(one_int("SELECT CASE WHEN count(*) < 4 THEN 1 ELSE 0 END FROM s.d;") == 1);
+    CHECK(one_int("SELECT CASE WHEN count(*) + 1 = 4 THEN 1 ELSE 0 END FROM s.d;") == 1);
+    CHECK(one_int("SELECT CASE WHEN count(*) < 4 AND count(*) > 2 THEN 1 ELSE 0 END FROM s.d;") == 1);
+    // A row comparison reads count(*) twice, the second time as a copy of the call: the copy is still a star call.
+    // (3, 0) < (3, 1) is `3 < 3 OR (3 = 3 AND 0 < 1)`.
+    CHECK(one_int("SELECT CASE WHEN (count(*), 0) < (3, 1) THEN 1 ELSE 0 END FROM s.d;") == 1);
+}
